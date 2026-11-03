@@ -38,6 +38,8 @@ class DataWorkspaceFrame(QtWidgets.QFrame):
         layout.setSpacing(0)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setDocumentMode(True)
+        self.tabs.setMinimumHeight(0)
+        self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
         layout.addWidget(self.tabs, 1)
 
         self.tabs.addTab(loaded_frame, "Loaded")
@@ -68,6 +70,15 @@ class DataWorkspaceFrame(QtWidgets.QFrame):
             session_frame.sigSessionActiveChanged.connect(actions_frame.setSessionActive)
         self.tabs.currentChanged.connect(self._tabChanged)
         self._tabChanged(self.tabs.currentIndex())
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        # Allow the DATA dock to collapse to a compact Quick Load workflow:
+        # toolbar + roughly one catalog row + shared reconstruction footer.
+        footer_h = max(0, int(self.actionsFrame.minimumSizeHint().height()))
+        hint.setHeight(max(82, footer_h + 46))
+        return hint
 
     def _tabChanged(self, index: int) -> None:
         context = {

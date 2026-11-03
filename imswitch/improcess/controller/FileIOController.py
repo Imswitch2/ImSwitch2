@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
-from qtpy import QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
@@ -33,6 +33,8 @@ from imswitch.improcess.model.folder_preferences import (
     save_folder_preferences,
     load_quick_load_source,
     save_quick_load_source,
+    load_quick_load_keep_history,
+    save_quick_load_keep_history,
 )
 from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
@@ -109,11 +111,18 @@ class FileIOController(ImProcessWidgetController):
         )
         self.multiDataFrameController.setAddDataDelegate(self.addDataToMultiData)
         self._loadedDataObjs = []
+        self._replaceLoadedCatalogOnNextRegistration = False
         loaded_frame = getattr(self._widget, "loadedDataFrame", None)
         if loaded_frame is not None:
             loaded_frame.setSourceMode(load_quick_load_source())
+            loaded_frame.setKeepHistory(load_quick_load_keep_history())
             loaded_frame.sigSourceChanged.connect(save_quick_load_source)
+            loaded_frame.sigKeepHistoryChanged.connect(save_quick_load_keep_history)
             loaded_frame.sigSetCurrentRequested.connect(self.setLoadedAsCurrent)
+            loaded_frame.sigOpenViewerRequested.connect(self.openLoadedInViewer)
+            loaded_frame.sigRevealRequested.connect(self.revealLoadedSource)
+            loaded_frame.sigRemoveRequested.connect(self.removeLoadedDataObj)
+            loaded_frame.sigAddToMultiDataRequested.connect(self.addLoadedSelectionToMultiData)
         self._commChannel.sigCurrentDataChanged.connect(self._currentDataChanged)
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
@@ -132,16 +141,36 @@ class FileIOController(ImProcessWidgetController):
         paths = self._requestQuickLoadPaths()
         if not paths:
             return
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        if frame is not None:
+            set_status = getattr(frame, 'setStatus', None)
+            if callable(set_status):
+                # A new Quick Load operation supersedes the previous routing
+                # status; the dedicated slot itself remains in place.
+                set_status("")
+        self._replaceLoadedCatalogOnNextRegistration = bool(
+            frame is not None and not frame.keepHistory()
+        )
         promoted = False
-        for dataPath in paths:
-            self._logger.debug(f'Loading data at: {dataPath}')
-            outcome = self._loadFromPath(
-                dataPath,
-                prefer_as_current=not promoted,
-                route_to_loaded=True,
-            )
-            if outcome == 'current':
-                promoted = True
+        try:
+            for dataPath in paths:
+                self._logger.debug(f'Loading data at: {dataPath}')
+                outcome = self._loadFromPath(
+                    dataPath,
+                    prefer_as_current=not promoted,
+                    route_to_loaded=True,
+                )
+                if outcome == 'current':
+                    promoted = True
+        finally:
+            # If no ordinary Quick Load source was registered (for example a
+            # special metadata/localization source), preserve the old catalog.
+            self._replaceLoadedCatalogOnNextRegistration = False
+        if frame is not None:
+            # The current load operation is the natural reconstruction scope.
+            # This selects every source chosen together while the first one is
+            # still the only item promoted to Current data.
+            frame.selectSources(paths)
         if hasattr(self._widget, 'raiseLoadedDataDock'):
             self._widget.raiseLoadedDataDock()
 
@@ -210,6 +239,73 @@ class FileIOController(ImProcessWidgetController):
         if added and hasattr(self._widget, 'raiseMultiDataDock'):
             self._widget.raiseMultiDataDock()
         return added
+
+    def removeLoadedDataObj(self, data_obj) -> None:
+        """Remove one source from the lightweight Loaded catalog only."""
+        if data_obj is None:
+            return
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        if frame is not None:
+            frame.removeDataObj(data_obj)
+        kept = []
+        for existing in self._loadedDataObjs:
+            same = existing is data_obj
+            if not same:
+                try:
+                    same = bool(existing.describesSameAs(data_obj))
+                except Exception:
+                    same = False
+            if not same:
+                kept.append(existing)
+        self._loadedDataObjs[:] = kept
+
+    def revealLoadedSource(self, data_obj) -> None:
+        path = str(
+            getattr(data_obj, 'sourceOriginalPath', None)
+            or getattr(data_obj, 'dataPath', '')
+            or ''
+        )
+        if not path:
+            return
+        source = Path(path)
+        target = source if source.is_dir() else source.parent
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
+
+    def openLoadedInViewer(self, data_obj) -> None:
+        """Inspect one Quick Load source without changing the active reconstructor."""
+        if data_obj is None or self._main is None:
+            return
+        manager = getattr(self._main, 'reconstructorManager', None)
+        opener = getattr(manager, 'openInspection', None)
+        if not callable(opener):
+            return
+        try:
+            if getattr(data_obj, 'sourceKind', 'image') == TIME_LAPSE_SOURCE_KIND:
+                index = getattr(data_obj, 'sourceMetadata', None)
+                if index is None:
+                    return
+                inspect_obj = DataObj.fromMetadataSource(
+                    index.name,
+                    index.anchor.path,
+                    TIME_LAPSE_SOURCE_KIND,
+                    index,
+                    originalPath=(
+                        getattr(data_obj, 'sourceOriginalPath', None)
+                        or getattr(data_obj, 'dataPath', '')
+                    ),
+                )
+                plugin_id = 'time-lapse'
+            else:
+                path = str(getattr(data_obj, 'dataPath', '') or '')
+                dataset = getattr(data_obj, 'datasetName', None)
+                if not path or dataset in (None, ''):
+                    return
+                inspect_obj = DataObj(Path(path).name, dataset, path=path)
+                inspect_obj.checkAndOpenData()
+                plugin_id = 'view-only'
+            opener(plugin_id, inspect_obj)
+        except Exception as exc:
+            self._logger.warning(f'Could not open Quick Load source in viewer: {exc}', exc_info=True)
 
     def quickLoadVirtualData(self):
         dataPath = self._requestLoadPath(caption_prefix='Open virtual')
@@ -807,7 +903,19 @@ class FileIOController(ImProcessWidgetController):
     def _registerLoadedDataObj(self, data_obj):
         match = self._matchingSessionDataset(data_obj)
         if match is not None:
+            frame = getattr(self._widget, 'loadedDataFrame', None)
+            set_status = getattr(frame, 'setStatus', None) if frame is not None else None
+            if callable(set_status):
+                set_status("Already in active Session")
             return data_obj, match
+        if self._replaceLoadedCatalogOnNextRegistration:
+            frame = getattr(self._widget, 'loadedDataFrame', None)
+            if frame is not None:
+                frame.clearCatalog()
+            # Catalog history is presentation/runtime state only. Queue and
+            # Multi-data keep their own references to any older objects.
+            self._loadedDataObjs.clear()
+            self._replaceLoadedCatalogOnNextRegistration = False
         for existing in self._loadedDataObjs:
             try:
                 same = data_obj.describesSameAs(existing)

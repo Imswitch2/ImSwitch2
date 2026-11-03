@@ -32,6 +32,11 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         self.queueList = QtWidgets.QTreeWidget()
         self.queueList.setColumnCount(3)
         self.queueList.setHeaderLabels(["Dataset", "State", "Origin"])
+        # Explicit section styling wins over theme-level QHeaderView fonts.
+        self.queueList.header().setStyleSheet(
+            "QHeaderView::section { font-size: 7pt; font-weight: normal; "
+            "padding: 0px 3px; }"
+        )
         self.queueList.setRootIsDecorated(False)
         self.queueList.setUniformRowHeights(True)
         self.queueList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -149,7 +154,7 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
             origin_text = "Auto" if origin == "auto" else source.replace("_", " ").title()
             item = QtWidgets.QTreeWidgetItem([
                 str(getattr(job, "label", "")),
-                state.upper(),
+                ("RECONSTRUCTING" if state == "processing" else state.upper()),
                 origin_text,
             ])
             job_id = str(getattr(job, "id", ""))
@@ -167,8 +172,8 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
             self.queueList.addTopLevelItem(item)
 
         if current is not None:
-            label = str(getattr(current, "label", "processing"))
-            summary = f"▶ {label} · processing"
+            label = str(getattr(current, "label", "reconstructing"))
+            summary = f"▶ {label} · reconstructing"
             if waiting_count:
                 summary += f" · {waiting_count} waiting"
         elif waiting_count:

@@ -89,8 +89,8 @@ class DataFrame(QtWidgets.QFrame):
         self.openDataBtn.setToolTip('Open a data source as Current Data')
         self.openDataBtn.clicked.connect(self.sigOpenDataClicked)
 
-        self.processCurrentBtn = BetterPushButton('Process current')
-        self.processCurrentBtn.setToolTip('Process the currently inspected data with the active reconstructor')
+        self.processCurrentBtn = BetterPushButton('Reconstruct current')
+        self.processCurrentBtn.setToolTip('Reconstruct the currently inspected data with the active reconstructor')
         self.processCurrentBtn.clicked.connect(self.sigProcessCurrentClicked)
         self.openDataBtn.hide()
         self.processCurrentBtn.hide()

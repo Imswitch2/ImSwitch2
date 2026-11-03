@@ -1692,9 +1692,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def setSessionAutoProcessingAvailable(self, available: bool) -> None:
         tooltip = (
-            'Automatically process existing unprocessed Session data and new arrivals.'
+            'Automatically reconstruct existing unprocessed Session data and new arrivals.'
             if available else
-            'Auto-process is currently available only for streaming-capable reconstructors.'
+            'Auto-reconstruct is currently available only for streaming-capable reconstructors.'
         )
         self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)
         btnFrame = getattr(self, '_btnFrame', None)
@@ -2404,6 +2404,9 @@ class BtnFrame(QtWidgets.QFrame):
         self._directItemTotal = None
         self._directItemLabel = ''
 
+        # Selection in Loaded/Session is the reconstruction scope. Keep the
+        # historical direct-current signal for compatibility, but do not expose
+        # a competing Current-vs-selected action in the DATA footer.
         self.reconCurrBtn = BetterPushButton('Reconstruct current')
         self.reconCurrBtn.clicked.connect(self.sigReconstuctCurrent)
         self.quickLoadDataBtn = BetterPushButton('Quick load data')
@@ -2413,7 +2416,7 @@ class BtnFrame(QtWidgets.QFrame):
         # A normal push button avoids the split QToolButton's taller size hint
         # and keeps the primary action row visually consistent. "Process next"
         # remains available from the Session dataset context menu.
-        self.processSelectedBtn = BetterPushButton('Process selected')
+        self.processSelectedBtn = BetterPushButton('Reconstruct')
         self.processSelectedBtn.clicked.connect(
             lambda: self.sigProcessSelectedRequested.emit(self._context, 'end')
         )
@@ -2423,14 +2426,14 @@ class BtnFrame(QtWidgets.QFrame):
         self.addToMultiDataBtn.clicked.connect(
             lambda: self.sigAddSelectedToMultiDataRequested.emit(self._context)
         )
-        self.autoProcessCheck = QtWidgets.QCheckBox('Auto-process')
+        self.autoProcessCheck = QtWidgets.QCheckBox('Auto-reconstruct')
         self.autoProcessCheck.toggled.connect(self.sigAutoProcessingChanged)
 
         self.reconMultiBtn = QtWidgets.QToolButton()
         self.reconMultiBtn.setSizePolicy(
             QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
         )
-        self.reconMultiBtn.setText('Reconstruct multidata')
+        self.reconMultiBtn.setText('Reconstruct Multi-data')
         self.reconMultiBtn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.reconMultiMenu = QtWidgets.QMenu(self.reconMultiBtn)
         self.reconMultiMenu.setToolTipsVisible(True)
@@ -2573,7 +2576,8 @@ class BtnFrame(QtWidgets.QFrame):
         data_context = self._context in {'loaded', 'session'}
         queue_context = self._context == 'queue'
         multi_context = self._context == 'multidata'
-        self.reconCurrBtn.setVisible(data_context and self._featureReconstructCurrent)
+        # Current data is inspection state; reconstruction is selection-driven.
+        self.reconCurrBtn.setVisible(False)
         self.processSelectedBtn.setVisible(data_context)
         self.addToMultiDataBtn.setVisible(data_context)
         self.autoProcessCheck.setVisible(self._context == 'session')
@@ -2598,7 +2602,7 @@ class BtnFrame(QtWidgets.QFrame):
             bool(self._currentDataProcessingEnabled and direct_available)
         )
         self.processSelectedBtn.setText(
-            'Process selected' if count <= 1 else f'Process selected ({count})'
+            'Reconstruct' if count <= 1 else f'Reconstruct ({count})'
         )
         self.processSelectedBtn.setEnabled(
             bool(self._batchProcessingAvailable and count > 0 and not self._reconstructionRunning)
@@ -2691,7 +2695,7 @@ class BtnFrame(QtWidgets.QFrame):
         if current is not None:
             progress = dict(self._queueProgress or snapshot.get('current_progress') or {})
             fraction = progress.get('fraction')
-            status = str(progress.get('status') or 'Processing')
+            status = str(progress.get('status') or 'Reconstructing')
             self._showProgressLine(
                 prefix=self._job_prefix(current),
                 fraction=fraction,

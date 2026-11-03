@@ -146,6 +146,7 @@ def _make_controller_stub():
     ctl._loadAsCurrent = FileIOController._loadAsCurrent.__get__(ctl)
     ctl._activeSourceSpecs = FileIOController._activeSourceSpecs.__get__(ctl)
     ctl._requestLoadPath = FileIOController._requestLoadPath.__get__(ctl)
+    ctl._requestQuickLoadPaths = FileIOController._requestQuickLoadPaths.__get__(ctl)
     ctl._needsSourceFamilyChoice = FileIOController._needsSourceFamilyChoice
     ctl._requestSourceFamily = FileIOController._requestSourceFamily.__get__(ctl)
     ctl.quickLoadData = FileIOController.quickLoadData.__get__(ctl)
@@ -178,11 +179,9 @@ def test_zarr_child_path_is_normalized_before_routing(monkeypatch):
     assert ctl.multiDataFrameController.added == [('store.zarr', 'APD', '/x/store.zarr')]
 
 
-def test_quick_load_uses_folder_dialog_for_active_zarr_format(monkeypatch):
-    _FakeDataObj.install(monkeypatch, {'/picked/store.zarr': ['APD']})
+def test_quick_load_zarr_source_uses_folder_dialog(monkeypatch):
     ctl = _make_controller_stub()
-    ctl._main._activeReconstructor = SimpleNamespace(file_extensions=['hdf5', 'zarr'])
-    ctl._widget.extension = SimpleNamespace(value=lambda: 'zarr')
+    ctl._widget.loadedDataFrame = SimpleNamespace(sourceMode=lambda: 'zarr')
 
     monkeypatch.setattr(
         'imswitch.improcess.controller.FileIOController.guitools.askForFolderPath',
@@ -193,42 +192,31 @@ def test_quick_load_uses_folder_dialog_for_active_zarr_format(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('file dialog used')),
     )
 
-    ctl.quickLoadData()
-
-    assert ctl._main._currentDataObj.datasetName == 'APD'
-    assert ctl._main._currentDataObj.path == '/picked/store.zarr'
-    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
-    assert ctl.multiDataFrameController.added == []
+    assert ctl._requestQuickLoadPaths() == ['/picked/store.zarr']
 
 
-def test_quick_load_view_only_can_choose_zarr_without_extension_param(monkeypatch):
-    _FakeDataObj.install(monkeypatch, {'/picked/store.zarr': ['APD']})
+def test_quick_load_files_source_uses_multi_file_dialog(monkeypatch):
     ctl = _make_controller_stub()
+    ctl._widget.loadedDataFrame = SimpleNamespace(sourceMode=lambda: 'files')
     ctl._main._activeReconstructor = SimpleNamespace(
         file_extensions=['hdf5', 'tiff', 'zarr']
     )
-    ctl._widget.extension = None
 
-    monkeypatch.setattr(
-        'imswitch.improcess.controller.FileIOController.QtWidgets.QInputDialog.getItem',
-        lambda *args, **kwargs: ('Zarr / OME-Zarr folder', True),
-    )
     monkeypatch.setattr(
         'imswitch.improcess.controller.FileIOController.guitools.askForFolderPath',
-        lambda *args, **kwargs: '/picked/store.zarr',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('folder dialog used')),
     )
+    seen = {}
+    def _pick(*args, **kwargs):
+        seen.update(kwargs)
+        return ['/picked/a.h5', '/picked/b.h5']
     monkeypatch.setattr(
         'imswitch.improcess.controller.FileIOController.guitools.askForFilePath',
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('file dialog used')),
+        _pick,
     )
 
-    ctl.quickLoadData()
-
-    assert ctl._main._currentDataObj.datasetName == 'APD'
-    assert ctl._main._currentDataObj.path == '/picked/store.zarr'
-    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
-    assert ctl.multiDataFrameController.added == []
-
+    assert ctl._requestQuickLoadPaths() == ['/picked/a.h5', '/picked/b.h5']
+    assert seen.get('multiFiles') is True
 
 def test_single_dataset_prefer_current_routes_to_current(monkeypatch):
     _FakeDataObj.install(monkeypatch, {'/x/file.h5': ['frame']})

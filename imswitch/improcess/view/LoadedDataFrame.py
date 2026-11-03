@@ -1,30 +1,37 @@
 from __future__ import annotations
 
-from qtpy import QtCore, QtWidgets
+from pathlib import Path
+
+from qtpy import QtCore, QtGui, QtWidgets
 
 
 class LoadedDataFrame(QtWidgets.QFrame):
-    """Ad-hoc Quick Load catalog.
+    """Lightweight runtime-only Quick Load catalog.
 
-    The catalog is deliberately runtime-only. It records ordinary data brought
-    in through Quick Load (or Multi-data -> Add data) without turning those
-    sources into Session members. One entry can be promoted to Current data by
-    activating it in the list.
+    Quick Load is deliberately simpler than Session: the catalog only shows
+    the source name and useful acquisition information.  Selection defines the
+    reconstruction scope; double-clicking promotes one entry to Current data.
     """
 
     sigQuickLoadRequested = QtCore.Signal()
     sigSourceChanged = QtCore.Signal(str)
+    sigKeepHistoryChanged = QtCore.Signal(bool)
     sigSetCurrentRequested = QtCore.Signal(object)
+    sigOpenViewerRequested = QtCore.Signal(object)
+    sigRevealRequested = QtCore.Signal(object)
+    sigRemoveRequested = QtCore.Signal(object)
+    sigAddToMultiDataRequested = QtCore.Signal()
     sigSelectionCountChanged = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setMinimumWidth(0)
+        self.setMinimumHeight(0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
 
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(6)
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(4)
 
         controls = QtWidgets.QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
@@ -38,39 +45,73 @@ class LoadedDataFrame(QtWidgets.QFrame):
             "Files supports multiple selection."
         )
         controls.addWidget(self.sourceCombo)
-        controls.addStretch(1)
+        # Keep a permanent status slot in the toolbar so informational text
+        # never changes the geometry of the Source / Quick Load controls.
+        self.statusLabel = QtWidgets.QLabel("")
+        self.statusLabel.setMinimumWidth(0)
+        self.statusLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
+        self.statusLabel.setStyleSheet("color: palette(mid);")
+        controls.addWidget(self.statusLabel, 1)
+        self.keepHistoryCheck = QtWidgets.QCheckBox("Keep history")
+        self.keepHistoryCheck.setToolTip(
+            "Keep earlier Quick Load groups in this lightweight catalog. "
+            "When disabled, each new Quick Load replaces the previous group."
+        )
+        controls.addWidget(self.keepHistoryCheck)
         self.quickLoadBtn = QtWidgets.QPushButton("Quick Load…")
-        self.quickLoadBtn.setToolTip("Load one or more datasets into the Quick Load catalog")
+        self.quickLoadBtn.setToolTip("Load one or more datasets")
         controls.addWidget(self.quickLoadBtn)
         root.addLayout(controls)
 
         self.dataList = QtWidgets.QTreeWidget()
-        self.dataList.setColumnCount(3)
-        self.dataList.setHeaderLabels(["Data", "Acquisition", "Status"])
+        self.dataList.setColumnCount(2)
+        self.dataList.setHeaderLabels(["Data", "Acquisition"])
+        # QHeaderView section text can be overridden by the active Qt theme,
+        # so style the visible sections explicitly rather than only changing
+        # the parent header font.
+        self.dataList.header().setStyleSheet(
+            "QHeaderView::section { font-size: 7pt; font-weight: normal; "
+            "padding: 0px 3px; }"
+        )
         self.dataList.setRootIsDecorated(False)
         self.dataList.setUniformRowHeights(True)
         self.dataList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.dataList.setAlternatingRowColors(True)
+        self.dataList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.dataList.setMinimumHeight(24)
+        self.dataList.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding
+        )
         self.dataList.header().setStretchLastSection(False)
         self.dataList.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.dataList.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.dataList.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         root.addWidget(self.dataList, 1)
 
-        self.emptyLabel = QtWidgets.QLabel(
-            "Quick Load data appears here. Loading one item makes it Current data; "
-            "loading several keeps all of them available and makes the first one current."
-        )
-        self.emptyLabel.setWordWrap(True)
+        self.emptyLabel = QtWidgets.QLabel("Quick Load data appears here.")
         self.emptyLabel.setStyleSheet("color: palette(mid);")
         root.addWidget(self.emptyLabel)
 
         self.quickLoadBtn.clicked.connect(self.sigQuickLoadRequested)
         self.sourceCombo.currentIndexChanged.connect(self._source_changed)
+        self.keepHistoryCheck.toggled.connect(self.sigKeepHistoryChanged)
         self.dataList.itemDoubleClicked.connect(self._item_activated)
         self.dataList.itemActivated.connect(self._item_activated)
         self.dataList.itemSelectionChanged.connect(self._selection_changed)
+        self.dataList.customContextMenuRequested.connect(self._context_menu)
 
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        # Keep Quick Load usable even when DATA is collapsed to roughly one row.
+        hint.setHeight(64)
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(0)
+        return hint
 
     def _selection_changed(self) -> None:
         self.sigSelectionCountChanged.emit(len(self.selectedDataObjs()))
@@ -83,6 +124,20 @@ class LoadedDataFrame(QtWidgets.QFrame):
                 out.append(data_obj)
         return out
 
+    def setStatus(self, text: str) -> None:
+        """Set the persistent Quick Load toolbar status.
+
+        The slot is always present, even when empty, so status changes never
+        shift the Source / Keep history / Quick Load controls.
+        """
+        text = str(text or "").strip()
+        self.statusLabel.setText(text)
+        self.statusLabel.setToolTip(text)
+
+    def showNotice(self, text: str, *, timeout_ms: int = 0) -> None:
+        """Compatibility alias for older callers; notices are persistent."""
+        self.setStatus(text)
+
     def sourceMode(self) -> str:
         return str(self.sourceCombo.currentData() or "files")
 
@@ -91,6 +146,12 @@ class LoadedDataFrame(QtWidgets.QFrame):
         if index < 0:
             index = 0
         self.sourceCombo.setCurrentIndex(index)
+
+    def keepHistory(self) -> bool:
+        return bool(self.keepHistoryCheck.isChecked())
+
+    def setKeepHistory(self, enabled: bool) -> None:
+        self.keepHistoryCheck.setChecked(bool(enabled))
 
     def _source_changed(self, _index: int) -> None:
         self.sigSourceChanged.emit(self.sourceMode())
@@ -101,6 +162,45 @@ class LoadedDataFrame(QtWidgets.QFrame):
         data_obj = item.data(0, QtCore.Qt.UserRole)
         if data_obj is not None:
             self.sigSetCurrentRequested.emit(data_obj)
+
+    def _context_menu(self, point) -> None:
+        item = self.dataList.itemAt(point)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.dataList.clearSelection()
+            item.setSelected(True)
+            self.dataList.setCurrentItem(item)
+        selected = self.selectedDataObjs()
+        if not selected:
+            return
+
+        menu = QtWidgets.QMenu(self)
+        if len(selected) == 1:
+            data_obj = selected[0]
+            open_viewer = menu.addAction("Open in viewer")
+            open_viewer.triggered.connect(
+                lambda _checked=False, obj=data_obj: self.sigOpenViewerRequested.emit(obj)
+            )
+            reveal = menu.addAction("Show in Explorer")
+            reveal.triggered.connect(
+                lambda _checked=False, obj=data_obj: self.sigRevealRequested.emit(obj)
+            )
+            menu.addSeparator()
+        add_multi = menu.addAction(
+            "Add selected to Multi-data" if len(selected) > 1 else "Add to Multi-data"
+        )
+        add_multi.triggered.connect(self.sigAddToMultiDataRequested)
+        menu.addSeparator()
+        remove = menu.addAction(
+            "Remove selected from Loaded" if len(selected) > 1 else "Remove from Loaded"
+        )
+        remove.triggered.connect(
+            lambda _checked=False, objs=list(selected): [
+                self.sigRemoveRequested.emit(obj) for obj in objs
+            ]
+        )
+        menu.exec(self.dataList.viewport().mapToGlobal(point))
 
     @staticmethod
     def _identity(data_obj) -> tuple:
@@ -127,7 +227,7 @@ class LoadedDataFrame(QtWidgets.QFrame):
         data_obj,
         *,
         acquisition: str = "",
-        status: str = "Loaded",
+        status: str = "",  # compatibility with older callers; intentionally hidden
         tooltip: str = "",
     ):
         item = self._findItem(data_obj)
@@ -143,10 +243,9 @@ class LoadedDataFrame(QtWidgets.QFrame):
             label = name or dataset or "Data"
         item.setText(0, label)
         item.setText(1, str(acquisition or ""))
-        item.setText(2, str(status or ""))
         if tooltip:
-            for column in range(3):
-                item.setToolTip(column, str(tooltip))
+            item.setToolTip(0, str(tooltip))
+            item.setToolTip(1, str(tooltip))
         self.emptyLabel.setVisible(self.dataList.topLevelItemCount() == 0)
         return item
 
@@ -158,8 +257,51 @@ class LoadedDataFrame(QtWidgets.QFrame):
         if index >= 0:
             self.dataList.takeTopLevelItem(index)
         self.emptyLabel.setVisible(self.dataList.topLevelItemCount() == 0)
+        self._selection_changed()
+
+    def clearCatalog(self) -> None:
+        self.dataList.clear()
+        self.emptyLabel.setVisible(True)
+        self._selection_changed()
+
+    def selectSources(self, paths) -> None:
+        wanted = {
+            str(Path(path).resolve())
+            for path in (paths or ())
+            if str(path or "").strip()
+        }
+        if not wanted:
+            return
+        self.dataList.clearSelection()
+        first = None
+        for index in range(self.dataList.topLevelItemCount()):
+            item = self.dataList.topLevelItem(index)
+            data_obj = item.data(0, QtCore.Qt.UserRole)
+            if data_obj is None:
+                continue
+            source_paths = {
+                str(getattr(data_obj, "dataPath", "") or ""),
+                str(getattr(data_obj, "sourceOriginalPath", "") or ""),
+            }
+            resolved = set()
+            for value in source_paths:
+                if not value:
+                    continue
+                try:
+                    resolved.add(str(Path(value).resolve()))
+                except Exception:
+                    resolved.add(value)
+            if wanted.intersection(resolved):
+                item.setSelected(True)
+                if first is None:
+                    first = item
+        if first is not None:
+            self.dataList.setCurrentItem(first)
+        self._selection_changed()
 
     def setCurrentDataObj(self, data_obj) -> None:
+        # Current is inspection state, not reconstruction selection.  Keep the
+        # current row bold without changing the user's selected reconstruction scope.
         for index in range(self.dataList.topLevelItemCount()):
             item = self.dataList.topLevelItem(index)
             existing = item.data(0, QtCore.Qt.UserRole)
@@ -167,9 +309,6 @@ class LoadedDataFrame(QtWidgets.QFrame):
             font = item.font(0)
             font.setBold(bool(is_current))
             item.setFont(0, font)
-            item.setText(2, "Current" if is_current else "Loaded")
-            if is_current:
-                self.dataList.setCurrentItem(item)
 
     def count(self) -> int:
         return self.dataList.topLevelItemCount()

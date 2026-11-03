@@ -6,6 +6,32 @@ from pathlib import Path
 from qtpy import QtCore, QtGui, QtWidgets
 
 
+_FAVORITE_COL_W = 24
+_ACQUISITION_COL_W = 118
+_STATUS_COL_W = 80
+_RESULT_ICON_COL_W = 16
+_AUTO_ICON_COL_W = 16
+
+
+def _auto_ignore_icon(widget) -> QtGui.QIcon:
+    """Small font-independent circle-with-slash marker for Auto exclusion."""
+    size = 12
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        color = widget.palette().color(QtGui.QPalette.Mid)
+        pen = QtGui.QPen(color, 1.5)
+        painter.setPen(pen)
+        rect = QtCore.QRectF(1.5, 1.5, size - 3.0, size - 3.0)
+        painter.drawEllipse(rect)
+        painter.drawLine(QtCore.QPointF(2.4, size - 2.4), QtCore.QPointF(size - 2.4, 2.4))
+    finally:
+        painter.end()
+    return QtGui.QIcon(pixmap)
+
+
 class _ElidingLabel(QtWidgets.QLabel):
     """Single-line label that never makes the Session dock wider."""
 
@@ -137,12 +163,44 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)
-        header.resizeSection(0, 24)
-        header.resizeSection(2, 118)
-        header.resizeSection(3, 92)
-        header.resizeSection(4, 24)
-        header.resizeSection(5, 22)
+        header.resizeSection(0, _FAVORITE_COL_W)
+        header.resizeSection(2, _ACQUISITION_COL_W)
+        header.resizeSection(3, _STATUS_COL_W)
+        header.resizeSection(4, _RESULT_ICON_COL_W)
+        header.resizeSection(5, _AUTO_ICON_COL_W)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+
+    def fitAuxiliaryColumns(self) -> None:
+        """Give spare width to the dataset name, not empty status/icon columns."""
+        header = self.header()
+        metrics = self.fontMetrics()
+        statuses = [
+            self.topLevelItem(index).text(3)
+            for index in range(self.topLevelItemCount())
+        ]
+        widest_status = max(
+            (metrics.horizontalAdvance(text) for text in statuses if text),
+            default=metrics.horizontalAdvance("No result"),
+        )
+        # Keep normal states readable but never let transient long status text
+        # steal substantial space from the (more useful) dataset name.
+        status_width = max(54, min(86, widest_status + 12))
+        header.resizeSection(3, status_width)
+
+        has_panel_link = any(
+            bool(self.topLevelItem(index).text(4))
+            for index in range(self.topLevelItemCount())
+        )
+        has_auto_ignore = any(
+            not self.topLevelItem(index).icon(5).isNull()
+            for index in range(self.topLevelItemCount())
+        )
+        self.setColumnHidden(4, not has_panel_link)
+        self.setColumnHidden(5, not has_auto_ignore)
+        if has_panel_link:
+            header.resizeSection(4, _RESULT_ICON_COL_W)
+        if has_auto_ignore:
+            header.resizeSection(5, _AUTO_ICON_COL_W)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
@@ -155,6 +213,98 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         hint.setWidth(0)
         hint.setHeight(145)
         return hint
+
+
+class _DatasetFilterBar(QtWidgets.QWidget):
+    """Filter controls aligned to the dataset tree's actual header geometry.
+
+    The tree is the source of truth for column widths.  This avoids drift from
+    frame widths, DPI/style differences, and vertical-scrollbar visibility.
+    """
+
+    _WATCHED_EVENTS = {
+        QtCore.QEvent.Resize,
+        QtCore.QEvent.Show,
+        QtCore.QEvent.LayoutRequest,
+        QtCore.QEvent.StyleChange,
+        QtCore.QEvent.FontChange,
+    }
+
+    def __init__(
+        self,
+        tree: QtWidgets.QTreeWidget,
+        *,
+        favorite_widget: QtWidgets.QWidget,
+        name_widget: QtWidgets.QWidget,
+        acquisition_widget: QtWidgets.QWidget,
+        status_widget: QtWidgets.QWidget,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._tree = tree
+        self._header = tree.header()
+        self._bindings = (
+            (favorite_widget, (0,)),
+            (name_widget, (1,)),
+            (acquisition_widget, (2,)),
+            (status_widget, (3, 4, 5)),
+        )
+        for widget, _columns in self._bindings:
+            widget.setParent(self)
+            widget.setMinimumWidth(0)
+
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self.setFixedHeight(
+            max(widget.sizeHint().height() for widget, _columns in self._bindings)
+        )
+
+        self._header.sectionResized.connect(self._scheduleSync)
+        self._header.geometriesChanged.connect(self._scheduleSync)
+        tree.verticalScrollBar().rangeChanged.connect(self._scheduleSync)
+
+        for watched in (tree, tree.viewport(), self._header, tree.verticalScrollBar()):
+            watched.installEventFilter(self)
+
+        QtCore.QTimer.singleShot(0, self._syncGeometry)
+
+    def eventFilter(self, watched, event):
+        if event.type() in self._WATCHED_EVENTS:
+            self._scheduleSync()
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._syncGeometry()
+
+    @QtCore.Slot()
+    def _scheduleSync(self, *args):
+        QtCore.QTimer.singleShot(0, self._syncGeometry)
+
+    def _syncGeometry(self):
+        if self._tree is None or self._header is None:
+            return
+        viewport = self._tree.viewport()
+        if viewport is None:
+            return
+
+        # Header section positions are in the tree viewport coordinate system.
+        # Map that viewport origin into this widget so the filter controls also
+        # account for the tree frame and platform-specific style metrics.
+        origin = self.mapFromGlobal(viewport.mapToGlobal(QtCore.QPoint(0, 0)))
+        height = self.height()
+        for widget, columns in self._bindings:
+            visible_columns = [
+                col for col in columns if not self._header.isSectionHidden(col)
+            ]
+            if not visible_columns:
+                widget.hide()
+                continue
+            first = visible_columns[0]
+            x = origin.x() + self._header.sectionViewportPosition(first)
+            width = sum(self._header.sectionSize(col) for col in visible_columns)
+            widget.setGeometry(x, 0, max(0, width), height)
+            widget.show()
 
 
 class _SessionSplitterHandle(QtWidgets.QSplitterHandle):
@@ -251,14 +401,14 @@ class _SessionSplitter(QtWidgets.QSplitter):
 
 
 class _ReconstructionTree(QtWidgets.QTreeWidget):
-    """Compact multi-select reconstruction list with inline workspace actions."""
+    """Compact result list; all result actions live in the context menu."""
 
     sigWorkspaceToggleRequested = QtCore.Signal(object)
     sigDiscardRequested = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(3)
+        self.setColumnCount(1)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(False)
         self.setItemsExpandable(False)
@@ -273,17 +423,9 @@ class _ReconstructionTree(QtWidgets.QTreeWidget):
             QtWidgets.QSizePolicy.Ignored,
             QtWidgets.QSizePolicy.Preferred,
         )
-
-        header = self.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-        header.resizeSection(1, 48)
-        header.resizeSection(2, 62)
+        self.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
 
     def _heightForRows(self, rows: int) -> int:
-        """Return a DPI-aware tree height for the requested number of rows."""
         row_height = self.sizeHintForRow(0) if self.topLevelItemCount() else -1
         if row_height <= 0:
             row_height = max(
@@ -293,9 +435,6 @@ class _ReconstructionTree(QtWidgets.QTreeWidget):
         return self.frameWidth() * 2 + max(1, int(rows)) * row_height + 2
 
     def _updateAdaptiveHeight(self) -> None:
-        """Prefer 1--3 visible rows while allowing the splitter to grow further."""
-        # Item widgets (Add/Close/trash buttons) can affect the effective row
-        # height, so ask the view for its row metric after entries are populated.
         self.doItemsLayout()
         count = self.topLevelItemCount()
         visible_rows = max(1, min(count, 3))
@@ -327,57 +466,28 @@ class _ReconstructionTree(QtWidgets.QTreeWidget):
                 keys.append(str(key))
         return keys
 
+    def selectedEntries(self) -> list[dict]:
+        return [
+            dict(item.data(0, QtCore.Qt.UserRole + 1) or {})
+            for item in self.selectedItems()
+        ]
+
     def setEntries(self, entries: list[dict], selected_key: str | None = None) -> None:
         selected_before = set(self.selectedKeys())
         self.blockSignals(True)
         self.clear()
         restore_current = None
-        palette = self.palette()
-        normal = palette.color(QtGui.QPalette.Text)
+        normal = self.palette().color(QtGui.QPalette.Text)
 
         for entry in entries:
             key = str(entry.get("key", ""))
             name = str(entry.get("name", "reconstruction"))
-            loaded = bool(entry.get("loaded", False))
-            saved = bool(entry.get("saved", False))
-
-            item = QtWidgets.QTreeWidgetItem([name, "", ""])
+            item = QtWidgets.QTreeWidgetItem([name])
             item.setData(0, QtCore.Qt.UserRole, key)
+            item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
             item.setToolTip(0, str(entry.get("tooltip") or name))
             item.setForeground(0, normal)
             self.addTopLevelItem(item)
-
-            workspace = QtWidgets.QToolButton()
-            workspace.setText("Close" if loaded else "Add")
-            workspace.setAutoRaise(True)
-            workspace.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-            workspace.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-            if loaded:
-                workspace.setToolTip(
-                    "Close this result object from the right-hand list; saved Session data is preserved"
-                )
-            elif saved:
-                workspace.setToolTip("Add this saved result to the Results panel")
-            else:
-                workspace.setToolTip("Result is not currently available")
-                workspace.setEnabled(False)
-            workspace.clicked.connect(
-                lambda _checked=False, k=key: self.sigWorkspaceToggleRequested.emit(k)
-            )
-            self.setItemWidget(item, 1, workspace)
-
-            discard = QtWidgets.QToolButton()
-            discard.setText("Discard")
-            discard.setAutoRaise(True)
-            discard.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-            discard.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-            discard.setStyleSheet("QToolButton { padding: 0 3px; }")
-            discard.setToolTip("Move this result to Session trash")
-            discard.clicked.connect(
-                lambda _checked=False, k=key: self.sigDiscardRequested.emit(k)
-            )
-            self.setItemWidget(item, 2, discard)
-
             if key in selected_before:
                 item.setSelected(True)
             if selected_key and key == selected_key:
@@ -620,6 +730,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigReuseCalibrationRequested = QtCore.Signal(object, str)
     sigAddSelectedReconstructionsRequested = QtCore.Signal()
     sigCloseSelectedDatasetReconstructionsRequested = QtCore.Signal()
+    sigDeleteSelectedDatasetReconstructionsRequested = QtCore.Signal()
     sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
     sigCancelAddingRequested = QtCore.Signal()
     sigCloseSessionReconstructionsRequested = QtCore.Signal()
@@ -651,19 +762,26 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         font = self.sessionTitleLabel.font()
         font.setBold(True)
         self.sessionTitleLabel.setFont(font)
+        self.statusLabel = _ElidingLabel("")
+        self.statusLabel.setMinimumWidth(0)
+        self.statusLabel.setMaximumWidth(150)
+        self.statusLabel.setStyleSheet("color: #d08b28;")
+        self.statusLabel.hide()
+        self._statusGeneration = 0
         self.sessionNameLabel = _ElidingLabel("")
         self.startSessionBtn = QtWidgets.QPushButton("Start session…")
+        # Manual rescan remains available as an exceptional Session action,
+        # not a normal header control while the folder watcher is healthy.
         self.refreshBtn = QtWidgets.QToolButton()
         self.refreshBtn.setText("↻")
-        self.refreshBtn.setToolTip("Refresh Session")
+        self.refreshBtn.setToolTip("Rescan Session folder")
         self.refreshBtn.setAutoRaise(True)
+        self.refreshBtn.hide()
         # Watching is Session state, not an action. The old disabled
         # "● Watching" tool button looked actionable while doing nothing.
         self.livePlaceholderBtn = QtWidgets.QLabel("● Watching")
-        self.livePlaceholderBtn.setToolTip(
-            "DirectoryWatcher is monitoring the active Session folder"
-        )
-        self.livePlaceholderBtn.setStyleSheet("color: palette(mid);")
+        self.livePlaceholderBtn.setToolTip("Session folder monitoring is active")
+        self.livePlaceholderBtn.setStyleSheet("color: #2e9b50; font-weight: 600;")
         self.actionsBtn = QtWidgets.QToolButton()
         self.actionsBtn.setText("Actions")
         self.actionsBtn.setToolTip("Session actions")
@@ -682,6 +800,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             "Select the source Session dataset when the active reconstruction changes"
         )
         self.actionsMenu.addSeparator()
+        self.rescanFolderAction = self.actionsMenu.addAction("Rescan folder")
+        self.actionsMenu.addSeparator()
         self.closeReconstructionsAction = self.actionsMenu.addAction("Close session results")
         self.closeNonFavoriteReconstructionsAction = self.actionsMenu.addAction(
             "Close results from non-favorites"
@@ -696,9 +816,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.actionsBtn.setMenu(self.actionsMenu)
 
         header.addWidget(self.sessionTitleLabel)
+        header.addWidget(self.statusLabel)
         header.addWidget(self.sessionNameLabel, 1)
         header.addWidget(self.startSessionBtn)
-        header.addWidget(self.refreshBtn)
         header.addWidget(self.livePlaceholderBtn)
         header.addWidget(self.actionsBtn)
         header.addWidget(self.settingsBtn)
@@ -733,9 +853,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         datasets_layout.setContentsMargins(0, 0, 0, 0)
         datasets_layout.setSpacing(4)
 
-        filter_row = QtWidgets.QHBoxLayout()
-        filter_row.setContentsMargins(0, 0, 0, 0)
-        filter_row.setSpacing(4)
+        self.favoriteOnlyBtn = QtWidgets.QToolButton()
+        self.favoriteOnlyBtn.setText("★")
+        self.favoriteOnlyBtn.setCheckable(True)
+        self.favoriteOnlyBtn.setAutoRaise(True)
+        self.favoriteOnlyBtn.setMinimumWidth(0)
+        self.favoriteOnlyBtn.setToolTip("Show favorites only")
+
         dataset_controls = QtWidgets.QHBoxLayout()
         dataset_controls.setContentsMargins(0, 0, 0, 0)
         dataset_controls.setSpacing(3)
@@ -825,31 +949,46 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         dimension_layout.addWidget(self.dimensionFilterCombo)
         # Match the fixed acquisition-info column below; no additional header
         # label is needed because placement makes the filter's meaning clear.
-        dimension_controls_widget.setFixedWidth(118)
+        dimension_controls_widget.setMinimumWidth(0)
+        dimension_controls_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed
+        )
         status_controls_widget = QtWidgets.QWidget()
         status_controls_widget.setLayout(status_controls)
-        status_controls_widget.setFixedWidth(132)
-        filter_row.addWidget(dataset_controls_widget, 1)
-        filter_row.addWidget(dimension_controls_widget)
-        filter_row.addWidget(status_controls_widget)
-        datasets_layout.addLayout(filter_row)
+        status_controls_widget.setMinimumWidth(0)
+        status_controls_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed
+        )
 
         self.datasetList = _CompactDatasetTree()
         self.datasetList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.datasetFilterBar = _DatasetFilterBar(
+            self.datasetList,
+            favorite_widget=self.favoriteOnlyBtn,
+            name_widget=dataset_controls_widget,
+            acquisition_widget=dimension_controls_widget,
+            status_widget=status_controls_widget,
+        )
+        datasets_layout.addWidget(self.datasetFilterBar)
         datasets_layout.addWidget(self.datasetList)
 
 
-        selection_row = QtWidgets.QHBoxLayout()
+        # Legacy selection controls are still referenced by controller compatibility
+        # paths, but selection/reconstruction actions now live in the shared DATA
+        # footer. Keep the controls owned by this widget so Qt can never expose a
+        # parentless button as a top-level window.
+        selection_compat_box = QtWidgets.QWidget(self)
+        selection_row = QtWidgets.QHBoxLayout(selection_compat_box)
         selection_row.setContentsMargins(0, 0, 0, 0)
         selection_row.setSpacing(4)
         self.selectionSummaryLabel = QtWidgets.QLabel("No dataset selected")
         self.selectionSummaryLabel.setStyleSheet('color: palette(mid);')
         self.processSelectedBtn = QtWidgets.QToolButton()
-        self.processSelectedBtn.setText("Process ▾")
+        self.processSelectedBtn.setText("Reconstruct ▾")
         self.processSelectedBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.processSelectedBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         self.processSelectedMenu = QtWidgets.QMenu(self.processSelectedBtn)
-        self.processNextAction = self.processSelectedMenu.addAction("Process next")
+        self.processNextAction = self.processSelectedMenu.addAction("Reconstruct next")
         self.processEndAction = self.processSelectedMenu.addAction("Add to end of queue")
         self.processSelectedBtn.setMenu(self.processSelectedMenu)
         self.addWorkingSetBtn = QtWidgets.QPushButton('+ Multi-data')
@@ -858,12 +997,12 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         selection_row.addWidget(self.selectionSummaryLabel, 1)
         selection_row.addWidget(self.processSelectedBtn)
         selection_row.addWidget(self.addWorkingSetBtn)
-        # Selection actions now live in the shared DATA footer. Keep these
-        # compatibility widgets/signals alive for existing controller paths,
-        # but do not consume vertical space inside the Session tab.
-        self.selectionSummaryLabel.hide()
-        self.processSelectedBtn.hide()
-        self.addWorkingSetBtn.hide()
+        # Selection actions now live in the shared DATA footer. Keep this hidden
+        # compatibility container parented for existing controller paths, but do
+        # not consume vertical space inside the Session tab.
+        self._selectionCompatibilityBox = selection_compat_box
+        root.addWidget(selection_compat_box)
+        selection_compat_box.hide()
 
         # The Session boundary itself carries the reconstruction summary.  This
         # avoids a separate selected-data row and a separate reconstruction title.
@@ -913,9 +1052,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         auto_row = QtWidgets.QHBoxLayout()
         auto_row.setContentsMargins(0, 0, 0, 0)
-        self.autoProcessCheck = QtWidgets.QCheckBox("Auto-process")
+        self.autoProcessCheck = QtWidgets.QCheckBox("Auto-reconstruct")
         self.autoProcessCheck.setToolTip(
-            "Queue existing unprocessed Session datasets and new arrivals automatically"
+            "Queue existing unreconstructed Session datasets and new arrivals automatically"
         )
         self.queueSummaryLabel = _ElidingLabel("Queue idle")
         self.queueSummaryLabel.setStyleSheet('color: palette(mid);')
@@ -961,11 +1100,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         root.addWidget(processing_box)
         processing_box.hide()
 
-        self.statusLabel = _ElidingLabel("No session active")
-        root.addWidget(self.statusLabel)
-
         self.startSessionBtn.clicked.connect(self.sigStartSessionRequested)
         self.refreshBtn.clicked.connect(self.sigRefresh)
+        self.rescanFolderAction.triggered.connect(self.sigRefresh)
         self.settingsBtn.clicked.connect(self.sigSettingsRequested)
         self.cancelAddingBtn.clicked.connect(self.sigCancelAddingRequested)
         self.followActiveReconstructionAction.toggled.connect(
@@ -985,6 +1122,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetList.itemDoubleClicked.connect(self._dataset_double_clicked)
         self.datasetList.customContextMenuRequested.connect(self._dataset_context_menu)
         self.datasetSearchEdit.textChanged.connect(self._applyDatasetView)
+        self.favoriteOnlyBtn.toggled.connect(self._applyDatasetView)
         self.datasetOrderGroup.triggered.connect(self._datasetOrderChanged)
         self.dimensionFilterCombo.currentIndexChanged.connect(self._applyDatasetView)
         self.datasetShowCombo.currentIndexChanged.connect(self._applyDatasetView)
@@ -1131,6 +1269,26 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         box.exec()
         return box.clickedButton() is remove
 
+    def requestDeleteSelectedResultsConfirmation(self, result_count: int) -> bool:
+        count = max(0, int(result_count or 0))
+        if count <= 0:
+            return False
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Delete Session results?")
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText(
+            f"Move {count} result{'s' if count != 1 else ''} to Session trash?"
+        )
+        box.setInformativeText(
+            "Loaded result objects will be closed and saved Session results will be "
+            "moved to Session trash. Raw data is not changed."
+        )
+        remove = box.addButton("Delete results", QtWidgets.QMessageBox.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is remove
+
     def requestSessionFinishChoice(
         self, *, favorite_count: int, nonfavorite_count: int
     ) -> str:
@@ -1193,17 +1351,24 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
     def setSessionActive(self, active: bool, name: str = "") -> None:
         self._sessionActive = bool(active)
+        self._statusGeneration += 1
+        self.statusLabel.clear()
+        self.statusLabel.setMinimumWidth(0)
+        self.statusLabel.hide()
         self.sigSessionActiveChanged.emit(self._sessionActive)
         self.sessionTitleLabel.setText("SESSION:" if active else "SESSION")
         self.sessionNameLabel.setText(str(name or ""))
         self.sessionNameLabel.setVisible(bool(active))
         self.startSessionBtn.setVisible(not active)
-        for widget in (self.refreshBtn, self.livePlaceholderBtn, self.actionsBtn, self.settingsBtn):
+        # Folder monitoring is automatic; manual rescan lives under Actions.
+        self.refreshBtn.setVisible(False)
+        for widget in (self.livePlaceholderBtn, self.actionsBtn, self.settingsBtn):
             widget.setVisible(bool(active))
         self.datasetList.setEnabled(bool(active))
         self.datasetSearchEdit.setEnabled(bool(active))
         self.datasetOrderBtn.setEnabled(bool(active))
         self.dimensionFilterCombo.setEnabled(bool(active))
+        self.favoriteOnlyBtn.setEnabled(bool(active))
         self.datasetShowCombo.setEnabled(bool(active))
         self.statusOrderBtn.setEnabled(bool(active))
         has_selection = bool(self.selectedDatasetIds())
@@ -1222,8 +1387,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         total = max(0, int(total or 0))
         current = max(0, min(int(current or 0), total)) if total else 0
         self.addingRow.setVisible(active)
-        for widget in (self.refreshBtn, self.actionsBtn, self.settingsBtn):
+        for widget in (self.actionsBtn, self.settingsBtn):
             widget.setEnabled(bool(self._sessionActive and not active))
+        self.rescanFolderAction.setEnabled(bool(self._sessionActive and not active))
         if active:
             self.addingLabel.setText("Adding results…")
             self.addingProgress.setRange(0, max(1, total))
@@ -1232,7 +1398,44 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.cancelAddingBtn.setEnabled(True)
 
     def setStatus(self, text: str) -> None:
-        self.statusLabel.setText(str(text))
+        """Surface only important Session notices in the compact header.
+
+        Routine progress/status is already visible in dedicated controls and
+        should not permanently consume vertical space. Errors and warnings are
+        shown transiently beside SESSION; routine informational chatter stays
+        out of the layout.
+        """
+        text = str(text or "").strip()
+        lowered = text.lower()
+        error = any(token in lowered for token in (
+            "could not", "failed", "error", "does not exist"
+        ))
+        warning = (
+            lowered.startswith("no ")
+            or lowered.startswith("already ")
+            or lowered.startswith("cancelling")
+        )
+        main_info = lowered.startswith("session closed")
+        if not (error or warning or main_info):
+            return
+        self._statusGeneration += 1
+        generation = self._statusGeneration
+        self.statusLabel.setStyleSheet(
+            "color: #d34a4a;" if error else "color: #d08b28;"
+        )
+        self.statusLabel.setMinimumWidth(48)
+        self.statusLabel.setText(text)
+        self.statusLabel.show()
+        QtCore.QTimer.singleShot(
+            7000, lambda: self._clearHeaderStatus(generation)
+        )
+
+    def _clearHeaderStatus(self, generation: int) -> None:
+        if int(generation) != self._statusGeneration:
+            return
+        self.statusLabel.clear()
+        self.statusLabel.setMinimumWidth(0)
+        self.statusLabel.hide()
 
     def _dataset_changed(self, current, _previous):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
@@ -1295,21 +1498,31 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             )
         if any(not bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
             ignore_auto = menu.addAction(
-                "Ignore selected in auto-processing"
-                if len(selected_items) > 1 else "Ignore in auto-processing"
+                "Ignore selected in auto-reconstruction"
+                if len(selected_items) > 1 else "Ignore in auto-reconstruction"
             )
             ignore_auto.triggered.connect(
                 lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(True)
             )
         if any(bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
             include_auto = menu.addAction(
-                "Include selected in auto-processing"
-                if len(selected_items) > 1 else "Include in auto-processing"
+                "Include selected in auto-reconstruction"
+                if len(selected_items) > 1 else "Include in auto-reconstruction"
             )
             include_auto.triggered.connect(
                 lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(False)
             )
         if selected_entries:
+            reconstruct_next = menu.addAction(
+                "Reconstruct selected next" if len(selected_items) > 1 else "Reconstruct next"
+            )
+            reconstruct_next.triggered.connect(
+                lambda _checked=False: self.sigProcessSelectedRequested.emit("next")
+            )
+            reconstruct_end = menu.addAction("Add to end of reconstruction queue")
+            reconstruct_end.triggered.connect(
+                lambda _checked=False: self.sigProcessSelectedRequested.emit("end")
+            )
             menu.addSeparator()
 
         saved_count = sum(
@@ -1318,6 +1531,10 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         )
         panel_count = sum(
             int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("panel_count", 0))
+            for item in selected_items
+        )
+        result_count = sum(
+            int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("result_count", 0))
             for item in selected_items
         )
         if saved_count:
@@ -1334,6 +1551,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 f"Close result{'s' if panel_count != 1 else ''} ({panel_count})"
             )
             close.triggered.connect(self.sigCloseSelectedDatasetReconstructionsRequested)
+        if saved_count or panel_count:
+            delete_results = menu.addAction(
+                f"Delete result{'s' if result_count != 1 else ''}…"
+            )
+            delete_results.triggered.connect(
+                self.sigDeleteSelectedDatasetReconstructionsRequested
+            )
             menu.addSeparator()
 
         if selected:
@@ -1370,7 +1594,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.selectionSummaryLabel.setText(text)
         self.sigSelectionCountChanged.emit(count)
         self.processSelectedBtn.setText(
-            "Process ▾" if count <= 1 else f"Process {count} ▾"
+            "Reconstruct ▾" if count <= 1 else f"Reconstruct {count} ▾"
         )
         self.processSelectedBtn.setEnabled(
             bool(self._sessionActive and self._processingAvailable and count)
@@ -1392,7 +1616,10 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def setProcessingAvailable(self, available: bool) -> None:
         available = bool(available)
         self._processingAvailable = available
-        self.processSelectedBtn.setVisible(available)
+        # This is a compatibility-only control. Never make it visible: a visible
+        # legacy button would duplicate the DATA footer and, if ever detached,
+        # could become a top-level floating window.
+        self._selectionCompatibilityBox.hide()
         self.processSelectedBtn.setEnabled(
             bool(available and self._sessionActive and self.selectedDatasetIds())
         )
@@ -1401,7 +1628,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._autoProcessingAvailable = bool(available)
         self.autoProcessCheck.setEnabled(bool(available and self._sessionActive))
         self.autoProcessCheck.setToolTip(str(tooltip or (
-            "Queue existing unprocessed Session datasets and new arrivals automatically"
+            "Queue existing unreconstructed Session datasets and new arrivals automatically"
         )))
 
     def _populateQueueList(self, snapshot: dict | None) -> None:
@@ -1449,7 +1676,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         if current is not None:
             label = str(getattr(current, "label", "processing"))
-            summary = f"▶ {label} · processing"
+            summary = f"▶ {label} · reconstructing"
             if waiting_count:
                 summary += f" · {waiting_count} waiting"
         elif waiting_count:
@@ -1670,10 +1897,12 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         show_mode = str(self.datasetShowCombo.currentData() or "all")
         order_mode = str(self._datasetOrderMode or "latest")
         status_order_mode = str(self._statusOrderMode or "none")
+        favorites_only = bool(self.favoriteOnlyBtn.isChecked())
         entries = [
             dict(entry) for entry in self._datasetEntries
             if (not query or query in str(entry.get("search", "")).casefold())
             and (dimension == "all" or str(entry.get("dimension") or "") == dimension)
+            and (not favorites_only or bool(entry.get("favorite", False)))
             and self._dataset_state_visible(entry.get("state", "raw"), show_mode)
         ]
         if order_mode == "name_asc":
@@ -1702,11 +1931,14 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 str(entry.get("info", "")),
                 str(entry.get("status", "")),
                 "●" if entry.get("panel_link") else "",
-                "⊘" if entry.get("auto_process_ignored") else "",
+                "",
             ])
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
             item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
             item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
+            item.setIcon(
+                5, _auto_ignore_icon(self) if entry.get("auto_process_ignored") else QtGui.QIcon()
+            )
             item.setToolTip(0, "Remove from favorites" if favorite else "Mark this acquisition as favorite")
             item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
             item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
@@ -1714,7 +1946,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             if entry.get("auto_process_ignored"):
                 item.setToolTip(
                     5,
-                    "Ignored by Session auto-processing. Manual processing remains available.",
+                    "Ignored by Session auto-reconstruction. Manual reconstruction remains available.",
                 )
             else:
                 item.setToolTip(5, "")
@@ -1748,6 +1980,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
             elif not self.datasetList.topLevelItemCount():
                 self.sigDatasetSelectionChanged.emit(None)
+        self.datasetList.fitAuxiliaryColumns()
         self._update_selection_summary()
 
     def _updateDatasetItem(self, item, entry: dict) -> None:
@@ -1761,7 +1994,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         item.setText(2, str(entry.get("info", "")))
         item.setText(3, str(entry.get("status", "")))
         item.setText(4, "●" if entry.get("panel_link") else "")
-        item.setText(5, "⊘" if entry.get("auto_process_ignored") else "")
+        item.setText(5, "")
+        item.setIcon(5, _auto_ignore_icon(self) if entry.get("auto_process_ignored") else QtGui.QIcon())
         item.setData(0, QtCore.Qt.UserRole, dataset_id)
         item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
         item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
@@ -1772,7 +2006,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if entry.get("auto_process_ignored"):
             item.setToolTip(
                 5,
-                "Ignored by Session auto-processing. Manual processing remains available.",
+                "Ignored by Session auto-reconstruction. Manual reconstruction remains available.",
             )
         else:
             item.setToolTip(5, "")
@@ -1823,6 +2057,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             if str(item.data(0, QtCore.Qt.UserRole) or "") == dataset_id:
                 self._updateDatasetItem(item, entry)
                 break
+        self.datasetList.fitAuxiliaryColumns()
         self._update_selection_summary()
 
     def setDatasets(self, entries: list[dict]) -> None:
@@ -1883,14 +2118,27 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.savedList.clearSelection()
             item.setSelected(True)
             self.savedList.setCurrentItem(item)
-        count = len(self.savedList.selectedItems())
+        entries = self.savedList.selectedEntries()
+        count = len(entries)
         if count <= 0:
             return
         menu = QtWidgets.QMenu(self)
         if count == 1:
-            keys = self.savedList.selectedKeys()
-            key = keys[0] if keys else None
+            entry = entries[0]
+            key = str(entry.get("key") or "")
             if key:
+                if bool(entry.get("loaded", False)):
+                    workspace = menu.addAction("Close result")
+                    workspace.triggered.connect(
+                        lambda _checked=False, k=key:
+                            self.sigReconstructionWorkspaceToggleRequested.emit(k)
+                    )
+                elif bool(entry.get("saved", False)):
+                    workspace = menu.addAction("Add result")
+                    workspace.triggered.connect(
+                        lambda _checked=False, k=key:
+                            self.sigReconstructionWorkspaceToggleRequested.emit(k)
+                    )
                 reuse = menu.addMenu("Reuse MoNaLISA calibration")
                 for label, mode in (
                     ("Lock localization…", "localization"),
@@ -1903,7 +2151,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                             self.sigReuseCalibrationRequested.emit(k, m)
                     )
                 menu.addSeparator()
-        label = "Discard result…" if count == 1 else f"Discard selected results ({count})…"
+        label = "Delete result…" if count == 1 else f"Delete selected results ({count})…"
         discard = menu.addAction(label)
         discard.triggered.connect(self.sigDiscardSelectedRequested)
         menu.exec(self.savedList.viewport().mapToGlobal(point))

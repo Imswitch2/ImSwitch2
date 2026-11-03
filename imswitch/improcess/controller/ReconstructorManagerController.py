@@ -689,7 +689,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         """Refresh the active MoNaLISA result without repeating extraction."""
         if self._shared_processing_queue_busy():
             self._set_reconstruction_job_state(
-                False, status="Processing queue is active; pause it before updating."
+                False, status="Reconstruction queue is active; pause it before updating."
             )
             return
         reconstructor = self._main._activeReconstructor
@@ -733,7 +733,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def reconstructCurrent(self):
         if self._shared_processing_queue_busy():
             self._set_reconstruction_job_state(
-                False, status="Processing queue is active; pause it before reconstructing current data."
+                False, status="Reconstruction queue is active; pause it before reconstructing current data."
             )
             return
         data_controller = getattr(self._main, 'dataFrameController', None)
@@ -845,7 +845,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def reconstructMulti(self, consolidate):
         if self._shared_processing_queue_busy():
             self._set_reconstruction_job_state(
-                False, status="Processing queue is active; pause it before reconstructing Multi-data."
+                False, status="Reconstruction queue is active; pause it before reconstructing Multi-data."
             )
             return
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
@@ -1187,11 +1187,16 @@ class ReconstructorManagerController(ImProcessWidgetController):
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"
         )
-        self._set_reconstruction_job_state(
-            False,
-            progress=1.0,
-            status="Viewer ready." if inspection else "Reconstruction complete.",
-        )
+        # Inspection is a transient open/view operation rather than a
+        # reconstruction result. Clear the shared DATA progress row as soon as
+        # the viewer is ready instead of leaving a completed "Viewer ready"
+        # bar visible until another tab/state refresh happens.
+        if inspection:
+            self._set_reconstruction_job_state(False)
+        else:
+            self._set_reconstruction_job_state(
+                False, progress=1.0, status="Reconstruction complete."
+            )
 
     @QtCore.Slot(object)
     def _on_reconstruction_failed(self, failure: ReconstructionWorkerFailure):

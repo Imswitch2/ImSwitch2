@@ -132,6 +132,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigCloseSelectedDatasetReconstructionsRequested.connect(
             self.closeSelectedDatasetReconstructions
         )
+        self._widget.sigDeleteSelectedDatasetReconstructionsRequested.connect(
+            self.deleteSelectedDatasetReconstructions
+        )
         self._widget.sigFollowActiveReconstructionChanged.connect(
             self.setFollowActiveReconstruction
         )
@@ -806,6 +809,58 @@ class ProcessingSessionController(ImProcessWidgetController):
             amount /= 1024.0
         return ""
 
+    @staticmethod
+    def _dataset_source_tooltip(dataset) -> str:
+        """Compact source summary: show shared path once, then datasets/items."""
+        refs = list(getattr(dataset, "source_refs", ()) or ())
+        if not refs:
+            path = str(getattr(dataset, "primary_path", "") or "")
+            dataset_name = getattr(dataset, "primary_dataset", None)
+            lines = [f"Path: {path}"] if path else []
+            if dataset_name not in (None, ""):
+                lines.append(f"Dataset: {dataset_name}")
+            return "\n".join(lines)
+
+        grouped: dict[str, list[str]] = {}
+        for ref in refs:
+            path = str(getattr(ref, "path", "") or "")
+            name = str(getattr(ref, "dataset", "") or "")
+            if not path:
+                continue
+            grouped.setdefault(path, [])
+            if name and name not in grouped[path]:
+                grouped[path].append(name)
+
+        if not grouped:
+            return ""
+        if len(grouped) == 1:
+            path, datasets = next(iter(grouped.items()))
+            lines = [f"Path: {path}"]
+            if datasets:
+                lines.append("Datasets:")
+                lines.extend(f"  {name}" for name in datasets)
+            return "\n".join(lines)
+
+        paths = list(grouped)
+        try:
+            common = os.path.commonpath(paths)
+        except (ValueError, OSError):
+            common = ""
+        lines = [f"Folder: {common}"] if common else []
+        lines.append("Sources:")
+        for path, datasets in grouped.items():
+            display_path = path
+            if common:
+                try:
+                    display_path = os.path.relpath(path, common)
+                except (ValueError, OSError):
+                    pass
+            if datasets:
+                lines.extend(f"  {display_path} :: {name}" for name in datasets)
+            else:
+                lines.append(f"  {display_path}")
+        return "\n".join(lines)
+
     @classmethod
     def _dataset_info(cls, dataset) -> tuple[str, str]:
         bits = []
@@ -897,7 +952,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             status = "Loading…"
             state = "loading"
         elif queue_state == "running":
-            status = "▶ Processing"
+            status = "▶ Reconstructing"
             state = "processing"
         elif queue_state == "waiting":
             status = "… Queued"
@@ -912,9 +967,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             status += " · data deleted"
         info, info_tooltip = self._dataset_info(dataset)
         search = self._dataset_search_text(dataset)
-        tooltip = search
+        tooltip = self._dataset_source_tooltip(dataset)
         if info_tooltip:
-            tooltip += f"\n{info_tooltip}"
+            tooltip = (tooltip + "\n" if tooltip else "") + info_tooltip
         return {
             "id": dataset.id,
             "label": dataset.label,
@@ -935,6 +990,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             ),
             "saved_count": len(dataset.saved_reconstructions),
             "panel_count": loaded_count,
+            "result_count": total_count,
             "panel_link": bool(loaded_count),
         }
 
@@ -1225,8 +1281,18 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._render()
         QtWidgets.QApplication.processEvents()
         try:
-            outcome = self._fileIO._loadFromPath(dataset.primary_path, prefer_as_current=True)
-            if outcome not in {"current", "multidata"}:
+            if getattr(dataset, "kind", "") == "time-lapse":
+                # Session timelapses are logical datasets just like Quick Load
+                # timelapses. Double-clicking opens the lazy lapse navigator
+                # directly instead of falling back to the legacy dataset picker
+                # / Multi-data routing.
+                data_obj = self._viewer_data_obj(dataset)
+                outcome = self._fileIO.setLoadedAsCurrent(data_obj)
+            else:
+                outcome = self._fileIO._loadFromPath(
+                    dataset.primary_path, prefer_as_current=True
+                )
+            if outcome != "current":
                 self._widget.setStatus(f"Could not load {dataset.label}")
             else:
                 self._widget.setStatus(f"Loaded {dataset.label}")
@@ -1369,7 +1435,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             )
             + f"{len(dataset_ids)} dataset{'s' if len(dataset_ids) != 1 else ''} "
             + ("from" if ignored else "in")
-            + " auto-processing"
+            + " auto-reconstruction"
         )
         self._render()
 
@@ -1660,6 +1726,29 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.setStatus(
             "Raw data moved to system Trash"
             + ("; reconstructions moved to Session trash" if delete_recons else "")
+        )
+        self._render()
+
+    def deleteSelectedDatasetReconstructions(self) -> None:
+        """Delete results associated with the selected raw datasets."""
+        if self._session is None:
+            return
+        datasets = [
+            self._session.dataset_by_id(dataset_id)
+            for dataset_id in self._selected_dataset_ids()
+        ]
+        datasets = [dataset for dataset in datasets if dataset is not None]
+        if not datasets:
+            return
+        count = self._reconstruction_count_for_datasets(datasets)
+        if count <= 0:
+            self._widget.setStatus("Selected datasets have no results to delete")
+            return
+        if not self._widget.requestDeleteSelectedResultsConfirmation(count):
+            return
+        self._discard_reconstructions_for_datasets(datasets)
+        self._widget.setStatus(
+            f"Moved {count} result{'s' if count != 1 else ''} to Session trash"
         )
         self._render()
 
@@ -2054,10 +2143,10 @@ class ProcessingSessionController(ImProcessWidgetController):
         added = self.queueDatasetsForProcessing(ids, position=str(position or "end"))
         if added:
             self._widget.setStatus(
-                f"Queued {added} dataset{'s' if added != 1 else ''} for processing"
+                f"Queued {added} dataset{'s' if added != 1 else ''} for reconstruction"
             )
         else:
-            self._widget.setStatus("No selected datasets were added to the processing queue")
+            self._widget.setStatus("No selected datasets were added to the reconstruction queue")
 
     def _queue_states(self) -> dict[str, str]:
         controller = self._processingQueueController or getattr(

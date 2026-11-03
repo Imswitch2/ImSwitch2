@@ -23,6 +23,8 @@ from imswitch.improcess.model.folder_preferences import (  # noqa: E402
     FolderPreferences,
     load_folder_preferences,
     save_folder_preferences,
+    load_quick_load_keep_history,
+    save_quick_load_keep_history,
 )
 
 # import_module, not `from ... import`: the controller package's lazy exports
@@ -76,6 +78,26 @@ def test_a_value_that_is_not_a_string_is_unset(tmp_path):
     path = tmp_path / "improcess_options.json"
     path.write_text(json.dumps({"dataFolder": 5, "saveFolder": "/out"}))
     assert load_folder_preferences(path) == FolderPreferences(saveFolder="/out")
+
+
+def test_quick_load_history_defaults_off_and_persists(tmp_path):
+    path = tmp_path / "improcess_options.json"
+    assert load_quick_load_keep_history(path) is False
+    save_quick_load_keep_history(True, path)
+    assert load_quick_load_keep_history(path) is True
+    save_quick_load_keep_history(False, path)
+    assert load_quick_load_keep_history(path) is False
+
+
+def test_quick_load_history_save_preserves_other_options(tmp_path):
+    path = tmp_path / "improcess_options.json"
+    path.write_text(json.dumps({"dataFolder": "/raw", "quickLoadSource": "zarr"}))
+    save_quick_load_keep_history(True, path)
+    assert json.loads(path.read_text()) == {
+        "dataFolder": "/raw",
+        "quickLoadKeepHistory": True,
+        "quickLoadSource": "zarr",
+    }
 
 
 # --- the dialog ------------------------------------------------------------------
