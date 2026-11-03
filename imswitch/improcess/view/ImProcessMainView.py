@@ -2662,14 +2662,14 @@ class BtnFrame(QtWidgets.QFrame):
 
     def _showProgressLine(
         self, *, prefix: str = '', fraction=None, status: str = '', cancellable=False,
-        indeterminate=False
+        indeterminate=False, status_tooltip: str = ''
     ) -> None:
         prefix = str(prefix or '')
         status = str(status or '')
         self.progressPrefix.setText(prefix)
         self.progressPrefix.setToolTip(prefix)
         self.reconstructionStatus.setText(status)
-        self.reconstructionStatus.setToolTip(status)
+        self.reconstructionStatus.setToolTip(str(status_tooltip or status))
         if indeterminate:
             self.reconstructionProgress.setRange(0, 0)
             self.progressPercentLabel.setText('')
@@ -2703,15 +2703,23 @@ class BtnFrame(QtWidgets.QFrame):
                 cancellable=True,
                 indeterminate=(fraction is None),
             )
-        elif waiting_count:
-            self._showProgressLine(
-                prefix=f'{waiting_count} waiting',
-                status='Paused' if paused else '',
-            )
-        elif paused:
-            self._showProgressLine(prefix='Queue paused')
         else:
-            self.progressRow.hide()
+            terminal = dict(snapshot.get('last_terminal_status') or {})
+            if terminal.get('kind') == 'error':
+                self._showProgressLine(
+                    prefix=str(terminal.get('label') or ''),
+                    status=str(terminal.get('status') or 'Reconstruction failed.'),
+                    status_tooltip=str(terminal.get('detail') or ''),
+                )
+            elif waiting_count:
+                self._showProgressLine(
+                    prefix=f'{waiting_count} waiting',
+                    status='Paused' if paused else '',
+                )
+            elif paused:
+                self._showProgressLine(prefix='Queue paused')
+            else:
+                self.progressRow.hide()
 
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = '', item_index=None,

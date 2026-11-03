@@ -459,3 +459,19 @@ if __name__ == "__main__":
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_probe_hdf5_streaming_rejects_preopened_raw_file(tmp_path):
+    """A loaded DataObj-style handle must block creation of a stream reader."""
+    import h5py
+
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
+    path = _hdf5_lapse_file_recorder_layout(tmp_path / "already-open.hdf5")
+
+    with h5py.File(path, "r", libver="latest", swmr=True):
+        with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+            probe_source_type(path)
+
+    # Closing the unrelated owner restores the normal streaming path.
+    assert probe_source_type(path).layout == LAYOUT_SINGLE_LAPSE_FILE

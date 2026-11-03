@@ -20,7 +20,10 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
     resolve_acquisition_layout,
 )
-from imswitch.improcess.model.hdf5_access import open_raw_hdf5
+from imswitch.improcess.model.hdf5_access import (
+    assert_raw_hdf5_new_reader_available,
+    open_raw_hdf5,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
@@ -1352,6 +1355,7 @@ class Hdf5LiveSource(LiveSource):
         else:
             path = Path(path_or_handle)
             self._path = str(path)
+            assert_raw_hdf5_new_reader_available(self._path)
             self._file = open_raw_hdf5(self._path)
             self._owns_file = True
 
@@ -1818,6 +1822,7 @@ class Hdf5LapseSource(LiveSource):
         else:
             path = Path(path_or_handle)
             self._path = str(path)
+            assert_raw_hdf5_new_reader_available(self._path)
             self._file = open_raw_hdf5(self._path)
             self._owns_file = True
         
@@ -2082,6 +2087,7 @@ class Hdf5LapseSource(LiveSource):
         # Close and re-open file to refresh SWMR
         if self._owns_file and self._file is not None:
             self._file.close()
+            assert_raw_hdf5_new_reader_available(self._path)
             self._file = open_raw_hdf5(self._path)
         
         current_group = self._file[self._scan_groups[self._current_group_index]]

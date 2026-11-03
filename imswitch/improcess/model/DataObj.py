@@ -353,7 +353,14 @@ class DataObj:
                 if self.data is not None:
                     self.__logger.debug('Data loaded')
             except Exception:
-                pass
+                self.__logger.exception(
+                    f"Failed to load data source {self.dataPath or self.name}"
+                )
+                # Error-path cleanup only. Successful loaded objects keep the
+                # existing lifecycle for now so the separate handle-lifetime
+                # issue remains reproducible.
+                self.checkAndUnloadData()
+                raise
 
     # --- what loading and previewing would cost --------------------------
 

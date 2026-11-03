@@ -12,6 +12,7 @@ module is intentionally not used for result files or writers.
 
 from __future__ import annotations
 
+import os
 from os import PathLike
 from typing import Any
 
@@ -29,6 +30,49 @@ class RawHdf5AccessConflict(OSError):
 
 
 _SWMR_MISMATCH_MARKER = "swmr read access flag not the same for file that is already open"
+
+
+def _canonical_path(path: str | PathLike[str]) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.fsdecode(path))))
+
+
+def raw_hdf5_open_handle_count(path: str | PathLike[str]) -> int:
+    """Count live HDF5 file handles for ``path`` in this Python process."""
+    target = _canonical_path(path)
+    count = 0
+    for file_id in h5py.h5f.get_obj_ids(h5py.h5f.OBJ_ALL, h5py.h5f.OBJ_FILE):
+        try:
+            name = h5py.h5f.get_name(file_id)
+        except Exception:
+            continue
+        if not name:
+            continue
+        try:
+            candidate = _canonical_path(name)
+        except (TypeError, ValueError, OSError):
+            continue
+        if candidate == target:
+            count += 1
+    return count
+
+
+def assert_raw_hdf5_new_reader_available(path: str | PathLike[str]) -> None:
+    """Reject creation of a second raw HDF5 reader for the same path.
+
+    A loaded ``DataObj`` is allowed to keep and use its own HDF5 handle.  The
+    unsafe state under investigation is specifically creation of an
+    independent reader (for example a Session timelapse stream) while another
+    handle to the same physical file is still alive.
+    """
+    count = raw_hdf5_open_handle_count(path)
+    if count:
+        plural = "handle" if count == 1 else "handles"
+        raise RawHdf5AccessConflict(
+            f"Cannot open a new raw HDF5 reader for {path}: "
+            f"the file already has {count} live in-process {plural}. "
+            "Unload the existing data source or restart ImProcess before "
+            "starting timelapse/session reconstruction."
+        )
 
 
 def open_raw_hdf5(path: str | PathLike[str], **kwargs: Any) -> h5py.File:
@@ -56,4 +100,9 @@ def open_raw_hdf5(path: str | PathLike[str], **kwargs: Any) -> h5py.File:
         raise
 
 
-__all__ = ["RawHdf5AccessConflict", "open_raw_hdf5"]
+__all__ = [
+    "RawHdf5AccessConflict",
+    "assert_raw_hdf5_new_reader_available",
+    "open_raw_hdf5",
+    "raw_hdf5_open_handle_count",
+]

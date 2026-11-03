@@ -79,6 +79,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._liveFinalResult = None
         self._currentProgress = {}
         self._currentPlannedTimepoints = None
+        self._lastTerminalStatus = {}
         self._skipRequested = False
 
         # Retry an auto job whose newly-created store is not readable yet.
@@ -98,6 +99,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         snapshot = self.queue.view_snapshot(waiting_limit=100)
         snapshot["auto_enabled"] = bool(self.autoPolicy.enabled)
         snapshot["current_progress"] = dict(self._currentProgress or {})
+        snapshot["last_terminal_status"] = dict(self._lastTerminalStatus or {})
         return snapshot
 
     def queueDatasetStates(self) -> dict[str, str]:
@@ -438,7 +440,10 @@ class ProcessingQueueController(ImProcessWidgetController):
             if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
                 reason = live_resolution.reason or "Streaming source access failed"
                 self._logger.error("Failing queued dataset %s: %s", job.label, reason)
-                self._finish_current(error=reason)
+                self._finish_current(
+                    error=reason,
+                    display_error=self._display_error_for_source_failure(reason),
+                )
                 return
             if live_resolution is not None and live_resolution.state == LiveJobState.UNSUPPORTED:
                 reason = live_resolution.reason or "Streaming source is unsupported"
@@ -781,15 +786,41 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     # ------------------------------------------------------------------ completion / lifecycle
 
-    def _finish_current(self, *, error: str = "", skipped: bool = False) -> None:
-        if self.queue.current is None:
+    @staticmethod
+    def _display_error_for_source_failure(reason: str) -> str:
+        """Return a short operator-facing message for source preflight errors."""
+        text = str(reason or "")
+        if (
+            "Cannot open a new raw HDF5 reader" in text
+            and "live in-process handle" in text
+        ):
+            return (
+                "Reconstruction failed: a timepoint from this timelapse is already loaded. "
+                "Unload it and try again."
+            )
+        return f"Reconstruction failed: {text}" if text else "Reconstruction failed."
+
+    def _finish_current(
+        self, *, error: str = "", display_error: str = "", skipped: bool = False
+    ) -> None:
+        job = self.queue.current
+        if job is None:
             return
         if skipped:
             self.queue.skip_current()
+            self._lastTerminalStatus = {}
         elif error:
-            self.queue.fail_current(error)
+            detail = str(error or "")
+            self.queue.fail_current(detail)
+            self._lastTerminalStatus = {
+                "kind": "error",
+                "label": str(getattr(job, "label", "") or "Data"),
+                "status": str(display_error or f"Reconstruction failed: {detail}"),
+                "detail": detail,
+            }
         else:
             self.queue.complete_current()
+            self._lastTerminalStatus = {}
         self._skipRequested = False
         self._liveFinalResult = None
         self._currentProgress = {}

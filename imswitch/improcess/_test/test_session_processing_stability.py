@@ -168,6 +168,59 @@ def test_persistent_live_access_error_fails_queue_instead_of_waiting(monkeypatch
     assert errors == ["persistent raw HDF5 access conflict"]
 
 
+def test_hdf5_access_conflict_gets_concise_queue_ui_message():
+    reason = (
+        "Cannot open a new raw HDF5 reader for /tmp/timelapse.hdf5: "
+        "the file already has 1 live in-process handle. "
+        "Unload the existing data source or restart ImProcess before starting "
+        "timelapse/session reconstruction."
+    )
+
+    message = ProcessingQueueController._display_error_for_source_failure(reason)
+
+    assert message == (
+        "Reconstruction failed: a timepoint from this timelapse is already loaded. "
+        "Unload it and try again."
+    )
+
+
+def test_queue_failure_is_retained_for_footer_status():
+    queue = ProcessingQueue()
+    queue.enqueue(ProcessingJob(
+        dataset_id="scan",
+        label="timelapse",
+        reconstructor_id="streaming",
+        params={},
+    ))
+    assert queue.take_next() is not None
+
+    fake = SimpleNamespace(
+        queue=queue,
+        _lastTerminalStatus={},
+        _skipRequested=False,
+        _liveFinalResult=None,
+        _currentProgress={},
+        _currentPlannedTimepoints=None,
+        _closing=True,
+        _emit_changed=lambda: None,
+        _emit_progress_changed=lambda: None,
+    )
+    technical = "Cannot open a new raw HDF5 reader for /tmp/timelapse.hdf5"
+    display = "Reconstruction failed: a timepoint from this timelapse is already loaded."
+
+    ProcessingQueueController._finish_current(
+        fake, error=technical, display_error=display
+    )
+
+    assert queue.current is None
+    assert fake._lastTerminalStatus == {
+        "kind": "error",
+        "label": "timelapse",
+        "status": display,
+        "detail": technical,
+    }
+
+
 def test_offline_queue_finishes_only_after_qthread_finished():
     """A worker terminal signal records outcome but does not free the queue slot."""
     thread = object()

@@ -37,6 +37,7 @@ import numpy as np
 
 from imswitch.improcess.model.hdf5_access import (
     RawHdf5AccessConflict,
+    assert_raw_hdf5_new_reader_available,
     open_raw_hdf5,
 )
 from imswitch.improcess.model.dataset_sources import (
@@ -258,6 +259,13 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
     format_id = format_id_for_path(seed_path)
     if format_id is None:
         return None
+
+    # Streaming reconstruction creates an independent reader.  A loaded
+    # DataObj may legitimately keep its own HDF5 handle, but starting another
+    # reader for that same physical file is the unsafe state we need to fail
+    # explicitly rather than silently reconstructing bad data.
+    if format_id == FORMAT_HDF5:
+        assert_raw_hdf5_new_reader_available(seed_path)
 
     # Zarr publishes its own readiness: a store is safe to follow once it is
     # write-complete or carries the committed-frames barrier. HDF5 has no

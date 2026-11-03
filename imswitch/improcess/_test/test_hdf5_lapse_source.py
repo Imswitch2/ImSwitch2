@@ -444,3 +444,57 @@ def test_hdf5_lapse_poll_stops_at_the_byte_budget_and_resumes(tmp_hdf5_path, mon
     chunks = [chunk for poll in polls for chunk in poll]
     assert [(c.start, c.end) for c in chunks] == [(i, i + 2) for i in range(0, 12, 2)]
     assert int(chunks[2].data[0, 0, 0]) == 1000  # the second timepoint, read on the second poll
+
+
+def test_hdf5_lapse_source_rejects_second_reader_but_allows_first(tmp_hdf5_path):
+    """The safety check belongs at new-reader creation, not DataObj processing."""
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        _write_hdf5_scan_group(
+            f, 0, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+            num_timepoints=1, is_writing=False,
+        )
+        f.flush()
+        f.swmr_mode = True
+
+    # Simulate the handle retained by a loaded timepoint DataObj.
+    loaded_handle = h5py.File(tmp_hdf5_path, 'r', libver='latest', swmr=True)
+    try:
+        source = Hdf5LapseSource(detector_name='CAM')
+        with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+            source.open(tmp_hdf5_path)
+    finally:
+        loaded_handle.close()
+
+    source = Hdf5LapseSource(detector_name='CAM')
+    info = source.open(tmp_hdf5_path)
+    assert info.frames_per_stack == 4
+    source.close()
+
+
+def test_hdf5_lapse_source_detects_handle_appearing_after_stream_start(tmp_hdf5_path):
+    """A retained DataObj handle appearing mid-stream must fail on source refresh."""
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        _write_hdf5_scan_group(
+            f, 0, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+            num_timepoints=1, is_writing=False,
+        )
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(detector_name='CAM', chunk_size=2)
+    source.open(tmp_hdf5_path)
+
+    # Simulate Current Data loading a timepoint while the stream exists.  The
+    # next poll closes the stream's own handle to refresh, then must see this
+    # independent owner instead of silently reopening beside it.
+    loaded_handle = h5py.File(tmp_hdf5_path, 'r', libver='latest', swmr=True)
+    try:
+        with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+            source.poll()
+    finally:
+        loaded_handle.close()
+        source.close()
