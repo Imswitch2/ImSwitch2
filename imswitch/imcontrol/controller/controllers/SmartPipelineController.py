@@ -53,6 +53,11 @@ class SmartPipelineController(ImConWidgetController):
         self._registry = None
         self._editor = None
         self._closing = False
+        self._shownGeometry = {}      # detector -> the scan geometry the live view shows (axes), or None
+        self._marksGeometry = None    # the geometry the overlay's marks belong to
+        shown = getattr(self._commChannel, 'sigScanGeometryShown', None)
+        if shown is not None:
+            shown.connect(self._onScanGeometryShown)
         self._marshal = _UIThreadExecWrapper(lambda fn: fn())
 
         self._statusTimer = QtCore.QTimer()
@@ -341,22 +346,48 @@ class SmartPipelineController(ImConWidgetController):
         except Exception:
             self.__logger.debug('Smart pipeline: the live view took no overlay', exc_info=True)
 
-    def _onOverlay(self, stepId, value):
+    @staticmethod
+    def _axesOf(geometry):
+        axes = (geometry or {}).get('axes') if isinstance(geometry, dict) else None
+        return [tuple(sorted(dict(axis).items())) for axis in axes] if axes else None
+
+    def _onScanGeometryShown(self, detectorName, shown):
+        """ The live view shows another scan's pixels: marks measured on an
+        earlier scan no longer belong to what is on screen. """
+        geometry = getattr(shown, 'geometry', None)
+        axes = self._axesOf(geometry.to_dict()) if geometry is not None and hasattr(geometry, 'to_dict') else None
+        self._shownGeometry[str(detectorName)] = axes
+        if self._marksGeometry is not None and self._marksGeometry != axes:
+            self._marksGeometry = None
+            self._widget.setOverlayPoints([], [])
+
+    def _onOverlay(self, stepId, value, frame=None):
         """ The engine's overlay sink (worker thread): points in the detector's
-        pixels onto the live view. Points in another frame are not drawn. """
+        pixels onto the live view -- only when the frame they were measured
+        on is the one the view shows (a scan's geometry; a camera frame has
+        none and always is). Points in another frame are not drawn. """
         from imswitch.imcommon.model.smartpipeline import frame_of, points_of
 
         coordinates = points_of(value)
         if coordinates is None:
             return
-        frame = frame_of(value)
-        if not frame.startswith('detector:'):
+        tag = frame_of(value)
+        if not tag.startswith('detector:'):
             return
+        geometry = self._axesOf((getattr(frame, 'metadata', None) or {}).get('geometry')) if frame is not None else None
+        detector = tag.split(':', 1)[1]
         if coordinates.shape[0] and coordinates.shape[1] >= 2:
             ys, xs = coordinates[:, 0].tolist(), coordinates[:, 1].tolist()
         else:
             ys, xs = [], []
-        self._invokeOnControllerThreadIfNeeded(lambda: self._widget.setOverlayPoints(xs, ys))
+
+        def draw():
+            if geometry is not None and self._shownGeometry.get(detector) not in (None, geometry):
+                return      # the view moved on to another scan
+            self._marksGeometry = geometry
+            self._widget.setOverlayPoints(xs, ys)
+
+        self._invokeOnControllerThreadIfNeeded(draw)
 
     def _onLogEntry(self, entry):
         text = str(entry)

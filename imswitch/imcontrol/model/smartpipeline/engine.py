@@ -641,7 +641,7 @@ class Engine:
         if isinstance(step, Gate):
             return self._gate(step, inputs[0], tick, now)
         if isinstance(step, Sink):
-            self._sink(step, inputs[0], tick, now)
+            self._sink(step, inputs[0], tick, now, frame)
             return {}
         state = self._state.setdefault(step.id, {})
         produced = self.steps.run_step(step, inputs, state=state, frame=frame)
@@ -718,12 +718,12 @@ class Engine:
 
     # -- sinks ----------------------------------------------------------------
 
-    def _sink(self, step: Sink, value, tick: int, now: float) -> None:
+    def _sink(self, step: Sink, value, tick: int, now: float, frame: Frame | None = None) -> None:
         if step.sink == "event-log":
             self.log.append(tick, now, step.id, "log", value=describe(value))
         elif step.sink == "overlay" and self.on_overlay is not None:
             try:
-                self.on_overlay(step.id, value)
+                self.on_overlay(step.id, value, frame)
             except Exception as exc:
                 self.log.append(tick, now, step.id, "overlay-failed", error=str(exc))
 

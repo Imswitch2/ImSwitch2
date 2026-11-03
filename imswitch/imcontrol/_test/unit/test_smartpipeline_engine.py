@@ -447,7 +447,7 @@ def test_overlay_sinks_hand_the_value_to_the_callback():
     document = pipeline(extra=(Sink("ov", "overlay", inputs=["c"]),), chain=())
     eng = Engine(document, source=ArrayFrameSource(FRAMES), steps=FunctionStepRunner(FUNCTIONS),
                  actions=MockActions(), transforms=transforms(), mode="visualize",
-                 on_overlay=lambda step, value: seen.append((step, value.count)))
+                 on_overlay=lambda step, value, frame: seen.append((step, value.count)))
     eng.run()
     assert seen == [("ov", 1), ("ov", 0), ("ov", 1)]
 
