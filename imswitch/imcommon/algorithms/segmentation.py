@@ -513,6 +513,52 @@ def _connected_components_fallback(mask: np.ndarray) -> tuple[np.ndarray, int]:
     return labels, current
 
 
+def _label_windows(labels: np.ndarray) -> list[tuple[int, tuple[slice, slice]]]:
+    """Each label with the smallest ``(rows, cols)`` slices that contain it.
+
+    Ascending by label. One pass over the image, so measuring N regions costs
+    the image once plus the regions' own areas, instead of N full-image scans.
+    """
+    try:
+        from scipy import ndimage
+    except Exception:
+        return _label_windows_fallback(labels)
+    windows = ndimage.find_objects(labels)
+    return [
+        (index + 1, (slices[0], slices[1]))
+        for index, slices in enumerate(windows)
+        if slices is not None
+    ]
+
+
+def _label_windows_fallback(labels: np.ndarray) -> list[tuple[int, tuple[slice, slice]]]:
+    """NumPy-only :func:`_label_windows`, for an install without scipy."""
+    rows, cols = np.nonzero(labels > 0)
+    if rows.size == 0:
+        return []
+    values = labels[rows, cols]
+    uniq, inverse = np.unique(values, return_inverse=True)
+    count = len(uniq)
+    row_min = np.full(count, labels.shape[0], dtype=np.intp)
+    row_max = np.full(count, -1, dtype=np.intp)
+    col_min = np.full(count, labels.shape[1], dtype=np.intp)
+    col_max = np.full(count, -1, dtype=np.intp)
+    np.minimum.at(row_min, inverse, rows)
+    np.maximum.at(row_max, inverse, rows)
+    np.minimum.at(col_min, inverse, cols)
+    np.maximum.at(col_max, inverse, cols)
+    return [
+        (
+            int(label),
+            (
+                slice(int(row_min[i]), int(row_max[i]) + 1),
+                slice(int(col_min[i]), int(col_max[i]) + 1),
+            ),
+        )
+        for i, label in enumerate(uniq)
+    ]
+
+
 def _filter_and_measure(
     labels: np.ndarray,
     image: np.ndarray,
@@ -520,25 +566,36 @@ def _filter_and_measure(
     min_area: int,
     pixel_size_um: float | tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, list[SegmentationRegion]]:
+    """Measure every label at least ``min_area`` pixels big, renumbered 1..N.
+
+    Everything about a region is read from its bounding window: the mask,
+    the intensities, the centroid and the eccentricity. This used to compare
+    the whole label image against each label in turn and run ``regionprops``
+    on a full-size mask per region, which made a mosaic with a few thousand
+    cells take minutes; the cost is now the image once plus the regions.
+    """
     output = np.zeros(labels.shape, dtype=np.int32)
     regions: list[SegmentationRegion] = []
     pixel_size = _normalize_pixel_size(pixel_size_um)
     next_label = 1
-    for label in sorted(int(v) for v in np.unique(labels) if v > 0):
-        coords = np.nonzero(labels == label)
-        area = int(coords[0].size)
+    for label, (rows, cols) in _label_windows(labels):
+        local = labels[rows, cols] == label
+        area = int(np.count_nonzero(local))
         if area < min_area:
             continue
-        r0, r1 = int(coords[0].min()), int(coords[0].max()) + 1
-        c0, c1 = int(coords[1].min()), int(coords[1].max()) + 1
-        values = image[coords]
+        r0, r1 = int(rows.start), int(rows.stop)
+        c0, c1 = int(cols.start), int(cols.stop)
+        local_rows, local_cols = np.nonzero(local)
+        values = image[rows, cols][local]
         finite = values[np.isfinite(values)]
         mean_intensity = float(np.mean(finite)) if finite.size else float("nan")
         max_intensity = float(np.max(finite)) if finite.size else float("nan")
-        centroid_row = float(np.mean(coords[0])) if area else float("nan")
-        centroid_col = float(np.mean(coords[1])) if area else float("nan")
+        # Summed in image coordinates, as before, so the value is the same to
+        # the last bit rather than the window mean plus an offset.
+        centroid_row = float(np.mean(local_rows + r0)) if area else float("nan")
+        centroid_col = float(np.mean(local_cols + c0)) if area else float("nan")
         bbox = (r0, c0, r1, c1)
-        eccentricity = _region_eccentricity(labels == label)
+        eccentricity = _region_eccentricity(local)
         area_um2 = centroid_y_um = centroid_x_um = height_um = width_um = None
         if pixel_size is not None:
             pixel_y_um, pixel_x_um = pixel_size
@@ -547,14 +604,8 @@ def _filter_and_measure(
             centroid_x_um = float(centroid_col * pixel_x_um)
             height_um = float((r1 - r0) * pixel_y_um)
             width_um = float((c1 - c0) * pixel_x_um)
-        # Encoded straight from the coordinate arrays. Materialising one
-        # Python tuple per pixel — which is what this used to do — is roughly
-        # a million objects for a megapixel region, paid on every region of
-        # every segmentation.
-        local = np.zeros((r1 - r0, c1 - c0), dtype=bool)
-        local[coords[0] - r0, coords[1] - c0] = True
         mask_payload = encode_mask(local)
-        output[coords] = next_label
+        output[rows, cols][local] = next_label
         regions.append(
             SegmentationRegion(
                 label=next_label,

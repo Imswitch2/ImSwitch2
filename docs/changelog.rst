@@ -43,6 +43,21 @@ Unreleased
   processor runs off the GUI thread; feed its positions to the list with
   ``setTargets``. See :doc:`tiling`.
 
+**Fixes**
+
+- **Segmentation no longer slows down with the number of objects.** The shared
+  classical segmentation kernel (the ImProcess *Segmentation* processor and
+  panel, WidefieldSTARSS analysis, the scripted tiling ``Segmenter``) measured
+  its regions by comparing the whole label image against each label in turn
+  and running ``regionprops`` on a full-size mask per region, so the work grew
+  with *regions x pixels*: a stitched mosaic with a few thousand cells took
+  minutes, and a segmentation of a busy field was slow for no visible reason.
+  Each region is now measured inside its own bounding window from one pass
+  over the image (``scipy.ndimage.find_objects``, with a NumPy-only fallback),
+  which brings 2000 objects on a 4-megapixel image from minutes to well under
+  a second. The regions, their order, masks, bounds, centroids, intensities
+  and eccentricities are unchanged.
+
 v0.4.0 (2026-10-29)
 ===================
 
