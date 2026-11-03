@@ -123,7 +123,8 @@ class Gate:
     unchanged) or not, and says so (``fired``, an event).
 
     Rules: ``condition`` (points: at least ``min_count`` of them, 1 by
-    default; a value: within ``min``..``max``; an event: fired),
+    default; a value: within ``min``..``max``; an event: fired; ``invert``
+    opens when the condition does not hold),
     ``min-interval`` (at most once per ``seconds``), ``once`` (the first
     time only, until re-armed), ``count-limit`` (``count`` times), ``busy``
     (not while an action of this pipeline is still running).
@@ -163,6 +164,8 @@ class Gate:
                     self.params[key] = float(self.params[key])
             if self.params.get("min_count") is not None:
                 self.params["min_count"] = max(0, int(self.params["min_count"]))
+            if "invert" in self.params:
+                self.params["invert"] = bool(self.params["invert"])
 
     def declared_kind(self, kinds: dict) -> str:
         """``out`` carries what the input carries."""
@@ -191,6 +194,9 @@ class Action:
     params: dict = field(default_factory=dict)
     inputs: list[Ref] = field(default_factory=list)
     timeout_s: float | None = None
+    #: Started once right after arming, before any frame (a first overview
+    #: scan, say); it then runs again whenever its inputs say so.
+    on_arm: bool = False
 
     kind = "action"
     ports = (DONE_PORT,)
@@ -204,6 +210,7 @@ class Action:
         self.inputs = _refs(self.inputs)
         if self.timeout_s is not None:
             self.timeout_s = _non_negative(self.id, "timeout_s", self.timeout_s) or None
+        self.on_arm = bool(self.on_arm)
 
     def declared_kind(self, kinds: dict) -> str:
         return EVENT_KIND
@@ -213,6 +220,8 @@ class Action:
                    "inputs": [str(r) for r in self.inputs]}
         if self.timeout_s is not None:
             payload["timeout_s"] = self.timeout_s
+        if self.on_arm:
+            payload["on_arm"] = True
         return payload
 
 

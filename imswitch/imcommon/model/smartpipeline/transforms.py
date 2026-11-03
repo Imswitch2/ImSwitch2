@@ -239,7 +239,54 @@ class Polynomial3:
         )
 
 
-_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3}
+@dataclass(frozen=True)
+class ScanGeometry:
+    """Pixels of a scan-driven detector into the scanner's micrometres, by
+    the geometry of the scan that made the frame.
+
+    No calibration numbers: the scan itself says where each pixel was
+    (``frame_geometry_from_scan``; the frame carries it under
+    ``metadata["geometry"]`` as ``{"axes": [{"device", "step_um", "count",
+    "first_um"}, ...]}``, fast axis first, so rows are the second axis and
+    columns the first). Column 0 of the points (rows) becomes the second
+    axis's position, column 1 (columns) the first axis's -- ``(Y_um, X_um)``
+    for an X-fast scan, which is the ``["Y", "X"]`` axis order the actions
+    take by default.
+    """
+
+    id: str
+    source_frame: str
+    target_frame: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "source_frame", str(FrameTag.parse(self.source_frame)))
+        object.__setattr__(self, "target_frame", str(FrameTag.parse(self.target_frame)))
+
+    def apply(self, points, context=None) -> np.ndarray:
+        array = np.array(points, dtype=np.float64, copy=True)
+        if array.size == 0:
+            return array
+        frame = (context or {}).get("frame")
+        geometry = getattr(frame, "metadata", {}).get("geometry") if frame is not None else None
+        axes = list((geometry or {}).get("axes") or [])
+        if len(axes) < 2:
+            raise CoordinateError(f"transform {self.id!r}: this frame carries no scan geometry")
+        fast, slow = axes[0], axes[1]
+        out = array.copy()
+        out[:, 0] = float(slow["first_um"]) + array[:, 0] * float(slow["step_um"])
+        out[:, 1] = float(fast["first_um"]) + array[:, 1] * float(fast["step_um"])
+        return out
+
+    def to_dict(self) -> dict:
+        return {"type": "scan-geometry", "id": self.id, "source_frame": self.source_frame,
+                "target_frame": self.target_frame}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "ScanGeometry":
+        return cls(id=str(payload["id"]), source_frame=payload["source_frame"], target_frame=payload["target_frame"])
+
+
+_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3, "scan-geometry": ScanGeometry}
 
 
 def transform_from_dict(payload: dict):
@@ -315,6 +362,7 @@ __all__ = [
     "Identity",
     "Polynomial3",
     "ScaleFlip",
+    "ScanGeometry",
     "polynomial3_apply",
     "TransformRegistry",
     "apply_transform",

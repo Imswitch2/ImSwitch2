@@ -262,8 +262,13 @@ class SmartPipelineController(ImConWidgetController):
         mode = RunMode.of(self._widget.getMode())
         source = LiveFrameSource(self._master.detectorsManager, document.source.detector,
                                  logger=self.__logger)
+        scan = None
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        if workflow is not None:
+            scan = {'controllers': self._commChannel.controllerRegistry, 'workflow': workflow,
+                    'capture': source.capture_latest}
         actions = live_backend(self._master.positionersManager, snap=self._snap, marshal=self._marshal,
-                               logger=self.__logger)
+                               logger=self.__logger, scan=scan)
         try:
             transforms = self._transforms()
             steps = self._stepRunner(document)

@@ -1507,6 +1507,17 @@ and saves as CSV or JSON (**Save log…**). A ``sink`` of kind ``overlay``
 marks the points it receives (in the detector's pixels) on the live view
 while the pipeline runs.
 
+**Scans.** On a point-scanning setup the ``run-scan`` action drives the Scan
+panel: an ``overview`` of ``field_um`` (the panel's overview page), or an
+``acquisition`` of ``length_um`` at ``pixel_um`` centred on the point it is
+given, with ``lasers`` as the channel that fires; it completes when the scan
+has. A ``live`` source on a scan-driven detector (an APD) gives one tick per
+completed scan, carrying that scan's geometry, and the ``scan-geometry``
+transform turns pixels of such a frame into scanner micrometres. An action
+with *Run on arm* set runs once before any frame -- the first overview. The
+shipped ``apd_scan_cells_demo.json`` does overview → segment → fine scan at
+the largest cell → overview on ``galvo_apd_simple_mock_scan_setup.json``.
+
 **Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
 your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,
 ``scale-flip`` (a pixel size per axis, an origin, swap, invert, offset, and

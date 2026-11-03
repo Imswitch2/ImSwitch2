@@ -168,10 +168,20 @@ class SimpleCompletion:
     def wait_ended(self, timeout: float | None = None) -> bool:
         return self._ended.wait(timeout)
 
+    #: Optional: what an abort does besides cancelling (a scan's abort).
+    abort_hook = None
+
     def abort(self) -> bool:
         self.abort_requested = True
-        self.cancel()
-        return True
+        hook = self.abort_hook
+        can = True
+        if callable(hook):
+            try:
+                can = bool(hook())
+            except Exception:  # noqa: BLE001
+                can = False
+        self.cancel(ended=can)
+        return can
 
 
 # --------------------------------------------------------------------------

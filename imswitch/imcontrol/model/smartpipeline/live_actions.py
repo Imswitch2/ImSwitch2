@@ -24,7 +24,7 @@ import threading
 from typing import Any, Callable, Protocol
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
-from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, SNAP, axis_targets, catalog
+from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, RUN_SCAN, SNAP, axis_targets, catalog
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest, SimpleCompletion
 
 
@@ -160,6 +160,111 @@ class MoveToAdapter:
             self.quarantined.discard(resource)
 
 
+class RunScanAdapter:
+    """``run-scan`` through the Scan panel's controller (the SimplePointScan
+    plan) and the scan workflow service's exact completion.
+
+    ``controllers()`` is the comm channel's controller registry (the scan
+    controller is found under the ``source`` parameter, ``Scan`` by
+    default); ``scan_workflow`` the service whose ``run_scan_prepared``
+    dispatches to the UI thread itself; ``marshal`` runs a function on the
+    GUI thread (the plan setters are widget code); ``capture()`` is the
+    live source's :meth:`~.live_source.LiveFrameSource.capture_latest`,
+    called when a scan completed so its frame becomes the next tick.
+    """
+
+    spec = RUN_SCAN
+
+    def __init__(self, controllers, scan_workflow, *, marshal=None, capture=None, logger=None):
+        self._controllers = controllers
+        self._workflow = scan_workflow
+        self._marshal = marshal if marshal is not None else (lambda fn: fn())
+        self._capture = capture
+        self._logger = logger
+
+    def resources(self, params: dict) -> set[str]:
+        return set()   # scans admit the waveform output themselves (finding 1)
+
+    def _controller(self, source: str):
+        registry = self._controllers() if callable(self._controllers) else self._controllers
+        controller = (registry or {}).get(source)
+        if controller is None:
+            raise RuntimeError(f"run-scan: no scan panel {source!r} in this setup")
+        return controller
+
+    def _prepare(self, request: ActionRequest) -> dict:
+        """On the GUI thread: put the Scan panel's plan as the step says."""
+        params = request.params
+        source = str(params.get("source") or "Scan")
+        controller = self._controller(source)
+        mode = str(params.get("mode") or "acquisition").lower()
+        lasers = [str(name) for name in (params.get("lasers") or [])]
+        dwell = float(params.get("dwell_s") or 0.0) or None
+        if mode == "overview":
+            field = float(params.get("field_um") or 0.0)
+            controller.applyOverviewPlan(field_um=field or None, lasers=lasers or None)
+            return {"mode": mode, "field_um": field}
+        centre = {}
+        coordinates = points_of(request.inputs[0]) if request.inputs else None
+        axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
+        if coordinates is not None and coordinates.shape[0]:
+            point = [float(v) for v in coordinates[0]]
+            for axis, value in zip(axes, point):
+                centre[axis] = value
+        controller.applyAcquisitionPlan(
+            centres_um=centre, length_um=float(params.get("length_um") or 0.0) or None,
+            step_um=float(params.get("pixel_um") or 0.0) or None, dwell_s=dwell, lasers=lasers or None,
+        )
+        return {"mode": mode, "centre_um": centre, "length_um": params.get("length_um"),
+                "pixel_um": params.get("pixel_um"), "lasers": lasers}
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        try:
+            summary = self._marshal(lambda: self._prepare(request))
+        except Exception as exc:
+            completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
+            return completion
+        source = str(request.params.get("source") or "Scan")
+        try:
+            result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,
+                                                      exact_completion=True)
+        except Exception as exc:
+            completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
+            return completion
+        if not getattr(result, "accepted", False) or not result.acceptedCompletions:
+            completion.fail(f"run-scan refused: {getattr(result, 'rejectionMessage', '') or 'not accepted'}")
+            return completion
+        owner, run_token, request_completion = result.acceptedCompletions[0]
+        capture = self._capture
+
+        def settle(_completion=None):
+            if request_completion.successful:
+                captured = False
+                if capture is not None:
+                    try:
+                        captured = bool(capture(metadata={"scan": summary}))
+                    except Exception as exc:  # noqa: BLE001 - reported in the result
+                        completion.complete({**summary, "scanned": True, "frame": f"not captured: {exc}"})
+                        return
+                completion.complete({**summary, "scanned": True, "frame": captured})
+            else:
+                completion.fail(f"run-scan: {request_completion.message or 'the scan failed'}")
+
+        completion.abort_hook = lambda: self._abort(owner, run_token)
+        request_completion.add_done_callback(settle)
+        return completion
+
+    def _abort(self, owner, run_token) -> bool:
+        try:
+            self._workflow.abort_scan_from(owner, run_token)
+            return True
+        except Exception:
+            if self._logger is not None:
+                self._logger.warning("run-scan: abort failed", exc_info=True)
+            return False
+
+
 class LiveActionBackend:
     """The engine's action backend over the adapters; ``token`` is the
     pipeline's reservation token, set by the run after reserving."""
@@ -200,17 +305,22 @@ class LiveActionBackend:
         return adapter.start(request, self.token)
 
 
-def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, logger=None) -> LiveActionBackend:
-    """The v1 backend: move-to, snap and log over the given managers."""
+def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, logger=None, scan=None) -> LiveActionBackend:
+    """The v1 backend: move-to, snap, log and -- with ``scan`` (a dict of
+    ``controllers``, ``workflow``, ``capture``) -- run-scan."""
     adapters = [
         MoveToAdapter(positionersManager, executor=executor, logger=logger),
         SnapAdapter(snap, marshal),
         LogAdapter(),
     ]
+    if scan is not None:
+        adapters.append(RunScanAdapter(scan.get("controllers"), scan.get("workflow"), marshal=marshal,
+                                       capture=scan.get("capture"), logger=logger))
     return LiveActionBackend(adapters, catalog=catalog())
 
 
-__all__ = ["ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "SnapAdapter", "live_backend"]
+__all__ = ["ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "RunScanAdapter", "SnapAdapter",
+           "live_backend"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -511,6 +511,49 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         self._pushToView()
         self._scheduleEstimate()
 
+    # -- a plan from code (the smart pipeline's run-scan action) ------------------
+
+    def applyOverviewPlan(self, *, field_um=None, lasers=None):
+        """ Put the panel on the overview page, with ``field_um`` and the
+        overview's lasers when given; the plan is rebuilt at once. """
+        state = self._simple()
+        if lasers:
+            acquisition = state['acquisition']
+            channels = acquisition.channels or ()
+            if channels[:1] != ((tuple(lasers)),):
+                self._onAcquisitionEdited(dataclasses.replace(acquisition, channels=(tuple(lasers),) + channels[1:]))
+            state['overviewChannel'] = 0
+        if field_um:
+            state['overviewFieldUm'] = float(field_um)
+        self._replanOverview()
+        self.setSimpleScanMode(OVERVIEW)
+
+    def applyAcquisitionPlan(self, *, centres_um=None, length_um=None, step_um=None, dwell_s=None, lasers=None):
+        """ Put the panel on the acquisition page with a region centred at
+        ``centres_um`` (axis -> µm; axes not named keep their centre), of
+        ``length_um`` per axis at ``step_um``, the dwell and the one channel
+        of ``lasers`` when given. The region is clamped to the scanners'
+        range and the dwell to what the fast axis allows. """
+        state = self._simple()
+        plan = state['acquisition']
+        limits = state['limits']
+        regions = dict(plan.regions)
+        ranges = {axis.name: axis.range_um for axis in limits.axes if axis.range_um is not None}
+        for device, region in regions.items():
+            centre = float((centres_um or {}).get(device, region.center_um))
+            step = float(step_um) if step_um else region.step_um
+            length = float(length_um) if length_um else region.length_um
+            low, high = ranges.get(device, (centre - length, centre + length))
+            centre = min(max(centre, low + length / 2), high - length / 2)
+            regions[device] = dataclasses.replace(region, center_um=centre, length_um=length, step_um=step)
+        changes = {'regions': regions}
+        if dwell_s:
+            changes['dwell_s'] = float(dwell_s)
+        if lasers:
+            changes['channels'] = (tuple(str(name) for name in lasers),)
+        self._onAcquisitionEdited(dataclasses.replace(plan, **changes))
+        self.setSimpleScanMode(ACQUISITION)
+
     def _onAcquisitionEdited(self, plan: SimpleScanPlan):
         state = self._simple()
         limits = state['limits']

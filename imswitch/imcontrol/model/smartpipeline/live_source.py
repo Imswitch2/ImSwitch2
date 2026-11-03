@@ -100,6 +100,11 @@ class LiveFrameSource:
         self.identity: FrameIdentity | None = None
         self.duplicates = 0
         self.ignored = 0   # frames of other detectors
+        #: A scan-driven detector (an APD): its frames come one per scan,
+        #: through :meth:`capture_latest` after the scan completed, never
+        #: from the signal (which also carries the partial frames of a scan
+        #: in progress); it needs no lease.
+        self.scan_driven = False
 
     # -- the lease --------------------------------------------------------------
 
@@ -120,9 +125,13 @@ class LiveFrameSource:
         if purpose is None:
             raise LeasePurposeMissing("the detectors manager has no EVENT_STREAM lease purpose")
         with self._lock:
-            if self._lease is not None:
+            if self._lease is not None or self.scan_driven:
                 return
             detector = self._manager[self.detector]
+            if bool(getattr(detector, "isScanDriven", False)):
+                self.scan_driven = True
+                self.identity = None
+                return
             self.identity = frame_identity_of(detector)
             self._lease = self._manager.acquire([self.detector], purpose)
             self.release_pending = False
@@ -158,7 +167,7 @@ class LiveFrameSource:
         if str(detectorName) != self.detector:
             self.ignored += 1
             return False
-        if self._lease is None:
+        if self.scan_driven or self._lease is None:
             return False
         array = np.asarray(image)
         if array.ndim < 2:
@@ -190,6 +199,34 @@ class LiveFrameSource:
         self._last_sample = sample.copy()
         self._last_shape = array.shape
         return False
+
+    def capture_latest(self, *, metadata: dict | None = None) -> bool:
+        """The detector's latest frame as a tick, with the scan geometry it
+        carries (a scan-driven detector, after its scan completed)."""
+        detector = self._manager[self.detector]
+        # The broker-safe reader (never the bare one, which can steal a
+        # recording's frames); is_save=False is the frame with its geometry.
+        reader = getattr(detector, "getLatestFrameShared", None)
+        latest = reader(is_save=False) if callable(reader) else None
+        if latest is None:
+            return False
+        array = np.asarray(latest)
+        if array.ndim < 2:
+            return False
+        geometry = getattr(latest, "geometry", None)
+        geometry = geometry.to_dict() if geometry is not None and hasattr(geometry, "to_dict") else None
+        scale = getattr(detector, "scale", None) or ()
+        try:
+            scale = tuple(float(v) for v in scale)
+        except (TypeError, ValueError):
+            scale = ()
+        self._sequence += 1
+        frame = Frame(
+            image=np.array(array, copy=True), detector=self.detector, sequence=self._sequence, t=self._clock(),
+            scale=scale, unit="um" if scale else "px",
+            metadata={"scan_driven": True, "geometry": geometry, **dict(metadata or {})},
+        )
+        return self._inbox.push(frame)
 
     def frames(self) -> Iterator[Frame]:
         return self._inbox.frames()

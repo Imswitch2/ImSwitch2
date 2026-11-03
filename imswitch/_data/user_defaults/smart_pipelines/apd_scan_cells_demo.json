@@ -1,0 +1,146 @@
+{
+  "name": "scan the cells (mock APD demo)",
+  "schema": 1,
+  "description": "The shipped demo for galvo_apd_simple_mock_scan_setup.json: an overview scan of the synthetic sample (60 um, the 488 laser) on arm; the largest cell in it is scanned finely (8 um at 50 nm, the 561 laser); then an overview again, and so on. With no cell found, the overview repeats. Run it in Validate to watch the decisions, or in Experiment after creating the two setup modes the roles name.",
+  "metadata": {
+    "smart_pipeline": {
+      "roles": {
+        "scouting": "pipeline-scouting",
+        "idle": "pipeline-idle"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": "live",
+      "id": "apd",
+      "detector": "APD"
+    },
+    {
+      "step": "process",
+      "id": "thr",
+      "processor": "threshold",
+      "params": {
+        "method": "otsu",
+        "min_area": 30
+      },
+      "inputs": [
+        "apd"
+      ]
+    },
+    {
+      "step": "process",
+      "id": "rp",
+      "processor": "regionprops",
+      "params": {
+        "frame": "detector:APD"
+      },
+      "inputs": [
+        "thr",
+        "apd"
+      ]
+    },
+    {
+      "step": "process",
+      "id": "pk",
+      "processor": "pick",
+      "params": {
+        "rule": "largest"
+      },
+      "inputs": [
+        "rp"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "found",
+      "rule": "condition",
+      "inputs": [
+        "pk"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "nothing",
+      "rule": "condition",
+      "inputs": [
+        "pk"
+      ],
+      "params": {
+        "invert": true
+      }
+    },
+    {
+      "step": "transform",
+      "id": "tf",
+      "transform": "apd_scan_geometry",
+      "inputs": [
+        "found"
+      ]
+    },
+    {
+      "step": "action",
+      "id": "fine",
+      "action": "run-scan",
+      "params": {
+        "mode": "acquisition",
+        "length_um": 8.0,
+        "pixel_um": 0.05,
+        "lasers": [
+          "561 (EXC)"
+        ],
+        "frame": "scanner:galvo"
+      },
+      "inputs": [
+        "tf"
+      ]
+    },
+    {
+      "step": "action",
+      "id": "back",
+      "action": "run-scan",
+      "params": {
+        "mode": "overview",
+        "field_um": 60.0,
+        "lasers": [
+          "488 (EXC)"
+        ]
+      },
+      "inputs": [
+        "fine.done"
+      ]
+    },
+    {
+      "step": "action",
+      "id": "again",
+      "action": "run-scan",
+      "params": {
+        "mode": "overview",
+        "field_um": 60.0,
+        "lasers": [
+          "488 (EXC)"
+        ]
+      },
+      "inputs": [
+        "nothing"
+      ],
+      "on_arm": true
+    },
+    {
+      "step": "sink",
+      "id": "log",
+      "sink": "event-log",
+      "inputs": [
+        "pk"
+      ]
+    },
+    {
+      "step": "sink",
+      "id": "marks",
+      "sink": "overlay",
+      "inputs": [
+        "pk"
+      ]
+    }
+  ]
+}

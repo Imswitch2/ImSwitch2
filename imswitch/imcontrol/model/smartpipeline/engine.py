@@ -444,6 +444,9 @@ class Engine:
         if not self.armed:
             self.arm()
         try:
+            self._kickoff()
+            if self.wait_actions and self._pending is not None:
+                self._wait_chain()
             for frame in self.source.frames():
                 if self._stop.is_set():
                     break
@@ -461,6 +464,18 @@ class Engine:
         finally:
             self._drain()
         return self.summary
+
+    def _kickoff(self) -> None:
+        """Start the first action marked ``on_arm``, with no inputs, before
+        any frame: how a scan-driven pipeline takes its first picture."""
+        for index, step in enumerate(self._chain):
+            if not getattr(step, "on_arm", False):
+                continue
+            try:
+                self._start_action(step, [], {}, 0, index)
+            except Exception as exc:
+                self._fail(step.id, str(exc) if isinstance(exc, CoordinateError) else f"{type(exc).__name__}: {exc}")
+            return
 
     def _wait_chain(self) -> None:
         """Offline: let the chain complete before the next frame, so a
@@ -546,7 +561,10 @@ class Engine:
             if self.summary.error:
                 return TickResult(tick, frame.sequence, TICK_FAILED, error=self.summary.error)
             # the grid this detector's points are measured on
-            if self._armed_identity is None:
+            scan_driven = bool((frame.metadata or {}).get("scan_driven"))
+            if scan_driven:
+                pass   # a scan-driven detector's grid is the scan's; the transform reads it per frame
+            elif self._armed_identity is None:
                 self._armed_identity = frame.identity
             elif frame.identity is not None and self._armed_identity.differs_from(frame.identity):
                 reasons = "; ".join(self._armed_identity.differs_from(frame.identity))
@@ -578,9 +596,11 @@ class Engine:
                 inputs = [values[self._key(ref, values)] for ref in refs]
                 try:
                     if isinstance(step, Action):
-                        if chain_started or step is not self._chain[0]:
+                        if chain_started:
                             # Later actions run from the chain, on completion.
                             continue
+                        # The first action, in file order, whose inputs the
+                        # tick has starts the chain (a suppressed one is passed).
                         chain_started = True
                         if self._pending is not None:
                             self.summary.dropped_busy += 1
@@ -589,7 +609,7 @@ class Engine:
                             continue
                         # The chain keeps the tick's values: a later action
                         # reads them, and the tick's result shows ``done``.
-                        self._start_action(step, inputs, values, tick, 0)
+                        self._start_action(step, inputs, values, tick, self._chain.index(step))
                         result.started = step.id
                         continue
                     produced = self._run_step(step, inputs, frame, tick, now)
@@ -649,6 +669,9 @@ class Engine:
             else:
                 open_ = bool(value is not None)
                 reason = kind
+            if params.get("invert"):
+                open_ = not open_
+                reason = f"inverted: {reason}"
         elif step.rule == "min-interval":
             seconds = float(params.get("seconds", DEFAULT_INTERVAL_S))
             open_ = state.last_t is None or now - state.last_t >= seconds

@@ -108,6 +108,7 @@ class MockActions:
         self.pending: list[SimpleCompletion] = []
         self.position: dict[str, dict[str, float]] = {}   # positioner -> axis -> value
         self.snaps: list[str] = []
+        self.scans: list[tuple[str, list | None]] = []
 
     def start(self, request: ActionRequest) -> SimpleCompletion:
         self.requests.append(request)
@@ -145,6 +146,14 @@ class MockActions:
         if request.action == "snap":
             self.snaps.append(str(request.params.get("detector") or ""))
             return {"snapped": True, "detector": request.params.get("detector")}
+        if request.action == "run-scan":
+            centre = None
+            if request.inputs:
+                coordinates = points_of(request.inputs[0])
+                if coordinates is not None and coordinates.shape[0]:
+                    centre = [float(v) for v in coordinates[0]]
+            self.scans.append((str(request.params.get("mode")), centre))
+            return {"scanned": True, "mode": request.params.get("mode"), "centre": centre}
         return {"logged": True}
 
     def settle_all(self) -> None:

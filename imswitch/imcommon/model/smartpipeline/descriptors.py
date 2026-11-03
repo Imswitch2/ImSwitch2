@@ -46,6 +46,7 @@ _GATE_FIELDS = {
         ParamField("min_count", "int", 1, label="At least", help="Points needed for the gate to open", min=0),
         ParamField("min", "float", None, label="Minimum", help="A value below this closes the gate", nullable=True),
         ParamField("max", "float", None, label="Maximum", help="A value above this closes the gate", nullable=True),
+        ParamField("invert", "bool", False, label="Invert", help="Open when the condition does NOT hold"),
     ),
     "min-interval": (
         ParamField("seconds", "float", 1.0, label="At most every", suffix="s", min=1e-3, decimals=3),
@@ -133,6 +134,8 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
                 _select_or_text("action", "", action_ids, label="Action", help=action_help),
                 ParamField("timeout_s", "float", None, label="Timeout", suffix="s", min=0.0, nullable=True,
                            help="The action fails after this long without completing"),
+                ParamField("on_arm", "bool", False, label="Run on arm",
+                           help="Start once right after arming, before any frame (a first overview scan)"),
             ),
             fields_for=action_fields,
             min_inputs=1, max_inputs=None, ports=(DONE_PORT,), make=make_action,

@@ -228,7 +228,7 @@ def test_design_opens_the_editor_on_the_pipeline_with_the_setup_s_choices(panel,
         assert [d.kind for d in catalog.steps] == ['live', 'transform', 'gate', 'action', 'sink']
         assert catalog.step('live').attribute('detector').options == ('Camera',)
         assert catalog.step('transform').attribute('transform').options == ('cam2stage',)
-        assert catalog.step('action').attribute('action').options == ('move-to', 'snap', 'log')
+        assert catalog.step('action').attribute('action').options == ('move-to', 'snap', 'log', 'run-scan')
         assert ('live', '') in editor.palette.all_choices()
         assert editor.catalog.processor('threshold') is not None
         recipes = catalog.recipes()
