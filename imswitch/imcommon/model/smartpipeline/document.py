@@ -348,9 +348,13 @@ def _action_issues(workflow, step: Action, kinds, actions, transforms) -> list[I
         accepted = spec.accepted_kind(index) if spec is not None else "any"
         if accepted != "any" and kind in RESULT_KINDS and kind != accepted:
             issues.append(Issue(step.id, f"{step.action!r} takes {accepted} on input {index + 1}; {ref} carries {kind}"))
-        # The coordinate rule holds for points the graph declares and for an
-        # input the action will read as points, whatever the graph knows.
-        if kind != POINTS_KIND and accepted != POINTS_KIND:
+        # The coordinate rule holds for points the action will read as
+        # coordinates: an input it takes as points, or one that carries points
+        # when the action names the frame it moves in. An action that takes
+        # anything and names no frame (an overview scan triggered by "nothing
+        # found") only waits for the input and never reads the numbers.
+        reads_points = accepted == POINTS_KIND or (kind == POINTS_KIND and bool(action_frame))
+        if not reads_points:
             continue
         producer = _points_producer(workflow, ref)
         if not isinstance(producer, Transform):

@@ -1,7 +1,7 @@
 {
   "name": "scan the cells (mock APD demo)",
   "schema": 1,
-  "description": "The shipped demo for galvo_apd_simple_mock_scan_setup.json: an overview scan of the synthetic sample (60 um, the 488 laser) on arm; the largest cell in it is scanned finely (8 um at 50 nm, the 561 laser); then an overview again, and so on. With no cell found, the overview repeats. Run it in Validate to watch the decisions, or in Experiment after creating the two setup modes the roles name.",
+  "description": "The shipped demo for galvo_apd_simple_mock_scan_setup.json: an overview scan of the synthetic sample (60 um, the 488 laser) on arm; the frame is smoothed (Gaussian, 3 px) and thresholded (Otsu), and every cell found is scanned finely, one after the other (12 um at 50 nm, the 561 laser), centred on its centroid; then an overview again, and so on. With no cell found, the overview repeats. Run it in Experiment after creating the two setup modes the roles name (Validate only logs the first overview).",
   "metadata": {
     "smart_pipeline": {
       "roles": {
@@ -18,14 +18,26 @@
     },
     {
       "step": "process",
+      "id": "smooth",
+      "processor": "filter",
+      "params": {
+        "method": "gaussian",
+        "radius": 3.0
+      },
+      "inputs": [
+        "apd"
+      ]
+    },
+    {
+      "step": "process",
       "id": "thr",
       "processor": "threshold",
       "params": {
         "method": "otsu",
-        "min_area": 30
+        "min_area": 40
       },
       "inputs": [
-        "apd"
+        "smooth"
       ]
     },
     {
@@ -37,18 +49,7 @@
       },
       "inputs": [
         "thr",
-        "apd"
-      ]
-    },
-    {
-      "step": "process",
-      "id": "pk",
-      "processor": "pick",
-      "params": {
-        "rule": "largest"
-      },
-      "inputs": [
-        "rp"
+        "smooth"
       ]
     },
     {
@@ -56,7 +57,7 @@
       "id": "found",
       "rule": "condition",
       "inputs": [
-        "pk"
+        "rp"
       ]
     },
     {
@@ -64,7 +65,7 @@
       "id": "nothing",
       "rule": "condition",
       "inputs": [
-        "pk"
+        "rp"
       ],
       "params": {
         "invert": true
@@ -84,12 +85,13 @@
       "action": "run-scan",
       "params": {
         "mode": "acquisition",
-        "length_um": 8.0,
+        "length_um": 12.0,
         "pixel_um": 0.05,
         "lasers": [
           "561 (EXC)"
         ],
-        "frame": "scanner:galvo"
+        "frame": "scanner:galvo",
+        "points": "all"
       },
       "inputs": [
         "tf"
@@ -131,7 +133,7 @@
       "id": "log",
       "sink": "event-log",
       "inputs": [
-        "pk"
+        "rp"
       ]
     },
     {
@@ -139,7 +141,7 @@
       "id": "marks",
       "sink": "overlay",
       "inputs": [
-        "pk"
+        "rp"
       ]
     }
   ]

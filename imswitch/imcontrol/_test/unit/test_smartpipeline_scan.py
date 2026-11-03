@@ -130,12 +130,17 @@ def test_a_scan_driven_source_takes_no_lease_and_ticks_only_on_capture():
 class _Completion:
     def __init__(self):
         self._callbacks, self.successful, self.message, self.runToken = [], True, "", "tok-1"
+        self._done = threading.Event()
 
     def add_done_callback(self, callback):
         self._callbacks.append(callback)
 
+    def wait(self, timeout=None):
+        return self._done.wait(timeout)
+
     def finish(self, successful=True, message=""):
         self.successful, self.message = successful, message
+        self._done.set()
         for callback in self._callbacks:
             callback(self)
 
@@ -144,13 +149,21 @@ class _Workflow:
     def __init__(self, *, accept=True):
         self.accept, self.calls, self.aborted = accept, [], []
         self.completion = None
+        self.started = threading.Event()
 
     def run_scan_prepared(self, recalculate, non_final, notify_starting=True, preferred_source=None,
                           exact_completion=False):
         self.calls.append(preferred_source)
         self.completion = _Completion()
+        self.started.set()
         return SimpleNamespace(accepted=self.accept, rejectionMessage="busy" if not self.accept else "",
                                acceptedCompletions=[("owner", "tok-1", self.completion)] if self.accept else [])
+
+    def next_scan(self, timeout=2.0):
+        """The completion of the scan the adapter just started (blocks until it has)."""
+        assert self.started.wait(timeout), "no scan was started"
+        self.started.clear()
+        return self.completion
 
     def abort_scan_from(self, source, runToken=None):
         self.aborted.append((source, runToken))
@@ -178,27 +191,57 @@ def test_the_run_scan_adapter_sets_the_plan_runs_the_scan_and_captures_the_frame
     adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow, capture=lambda metadata=None: captured.append(metadata) or True)
 
     completion = adapter.start(_request({"mode": "overview", "field_um": 60.0, "lasers": ["488 (EXC)"]}), None)
+    scan = workflow.next_scan()
     assert not completion.done and panel.overviews == [(60.0, ["488 (EXC)"])] and workflow.calls == ["Scan"]
-    workflow.completion.finish()
-    assert completion.done and completion.outcome == "ok" and completion.result["scanned"]
+    scan.finish()
+    assert completion.wait(2) and completion.outcome == "ok" and completion.result["scanned"]
     assert captured == [{"scan": {"mode": "overview", "field_um": 60.0}}]
 
     point = Points([[2.5, -4.0]], frame=GALVO)
     completion = adapter.start(_request({"mode": "acquisition", "length_um": 8.0, "pixel_um": 0.05,
                                          "dwell_s": 0.0001, "lasers": ["561 (EXC)"]}, [point]), None)
+    scan = workflow.next_scan()
     assert panel.acquisitions == [({"Y": 2.5, "X": -4.0}, 8.0, 0.05, 0.0001, ["561 (EXC)"])]
-    workflow.completion.finish(False, "the scan failed")
-    assert completion.outcome == "failed" and "the scan failed" in completion.error
+    scan.finish(False, "the scan failed")
+    assert completion.wait(2) and completion.outcome == "failed" and "the scan failed" in completion.error
 
     refused = RunScanAdapter(lambda: {"Scan": panel}, _Workflow(accept=False)).start(_request({"mode": "overview"}), None)
-    assert refused.outcome == "failed" and "busy" in refused.error
+    assert refused.wait(2) and refused.outcome == "failed" and "busy" in refused.error
     missing = RunScanAdapter(lambda: {}, workflow).start(_request({"source": "Nope"}), None)
-    assert "no scan panel 'Nope'" in missing.error
+    assert missing.wait(2) and "no scan panel 'Nope'" in missing.error
+
+
+def test_every_input_point_is_scanned_one_after_the_other():
+    panel, workflow = _ScanPanel(), _Workflow()
+    captured = []
+    adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow, capture=lambda metadata=None: captured.append(metadata) or True)
+    cells = Points([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], frame=GALVO)
+    completion = adapter.start(_request({"mode": "acquisition", "length_um": 12.0, "pixel_um": 0.1}, [cells]), None)
+    for index in range(3):
+        scan = workflow.next_scan()
+        assert not completion.done
+        assert panel.acquisitions[index][0] == {"Y": cells.coordinates[index][0], "X": cells.coordinates[index][1]}
+        scan.finish()
+    assert completion.wait(2) and completion.outcome == "ok"
+    assert completion.result["scans"] == 3 and len(captured) == 3 and workflow.calls == ["Scan"] * 3
+
+    first_only = adapter.start(_request({"mode": "acquisition", "points": "first"}, [cells]), None)
+    workflow.next_scan().finish()
+    assert first_only.wait(2) and first_only.result["scans"] == 1
+    limited = adapter.start(_request({"mode": "acquisition", "max_points": 2}, [cells]), None)
+    workflow.next_scan().finish()
+    workflow.next_scan().finish()
+    assert limited.wait(2) and limited.result["scans"] == 2
 
 
 def test_aborting_a_running_scan_asks_the_workflow_to_abort_it():
     panel, workflow = _ScanPanel(), _Workflow()
     adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow)
-    completion = adapter.start(_request({"mode": "overview"}), None)
+    cells = Points([[1.0, 2.0], [3.0, 4.0]], frame=GALVO)
+    completion = adapter.start(_request({"mode": "acquisition"}, [cells]), None)
+    scan = workflow.next_scan()
     assert completion.abort() and completion.outcome == "cancelled" and completion.ended
     assert workflow.aborted == [("owner", "tok-1")]
+    scan.finish()                          # the current scan ends: no second scan is started
+    time.sleep(0.2)
+    assert workflow.calls == ["Scan"]

@@ -209,6 +209,16 @@ def test_the_points_frame_tag_must_match_the_source_and_the_transform():
                for m in messages)
 
 
+def test_points_that_only_trigger_an_action_need_no_transform():
+    # a run-scan overview takes anything and names no frame: the points are a trigger, not coordinates
+    scan = ActionSpec("run-scan", accepts=("any",), params={"mode": "overview", "frame": ""}, frame_param="frame")
+    catalog = ActionCatalog([scan])
+    trigger = Workflow("p", [Live("cam", detector="Camera"), Process("rp", "regionprops", {"frame": CAMERA}, inputs=["cam"]),
+                             Gate("nothing", "condition", {"invert": True}, inputs=["rp"]),
+                             Action("again", "run-scan", {"mode": "overview"}, inputs=["nothing"])])
+    assert validate_pipeline(trigger, actions=catalog) == []
+
+
 def test_an_action_input_of_the_wrong_kind_is_refused():
     workflow = Workflow("p", [Live("cam", detector="Camera"), Process("rp", "regionprops", {}, inputs=["cam"]),
                               Transform("tf", "cam2stage", inputs=["rp"]),

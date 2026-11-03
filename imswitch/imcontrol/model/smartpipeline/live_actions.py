@@ -192,7 +192,21 @@ class RunScanAdapter:
             raise RuntimeError(f"run-scan: no scan panel {source!r} in this setup")
         return controller
 
-    def _prepare(self, request: ActionRequest) -> dict:
+    def _centres(self, request: ActionRequest) -> list[dict]:
+        """One scan centre (axis -> µm) per input point: all of them, or the
+        first, as ``points`` says; at most ``max_points`` when above 0."""
+        params = request.params
+        coordinates = points_of(request.inputs[0]) if request.inputs else None
+        if coordinates is None or coordinates.shape[0] == 0:
+            return [{}]
+        axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
+        rows = coordinates if str(params.get("points", "all")).lower() == "all" else coordinates[:1]
+        limit = int(params.get("max_points") or 0)
+        if limit > 0:
+            rows = rows[:limit]
+        return [{axis: float(value) for axis, value in zip(axes, row)} for row in rows]
+
+    def _prepare(self, request: ActionRequest, centre: dict | None = None) -> dict:
         """On the GUI thread: put the Scan panel's plan as the step says."""
         params = request.params
         source = str(params.get("source") or "Scan")
@@ -204,13 +218,7 @@ class RunScanAdapter:
             field = float(params.get("field_um") or 0.0)
             controller.applyOverviewPlan(field_um=field or None, lasers=lasers or None)
             return {"mode": mode, "field_um": field}
-        centre = {}
-        coordinates = points_of(request.inputs[0]) if request.inputs else None
-        axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
-        if coordinates is not None and coordinates.shape[0]:
-            point = [float(v) for v in coordinates[0]]
-            for axis, value in zip(axes, point):
-                centre[axis] = value
+        centre = dict(centre or {})
         controller.applyAcquisitionPlan(
             centres_um=centre, length_um=float(params.get("length_um") or 0.0) or None,
             step_um=float(params.get("pixel_um") or 0.0) or None, dwell_s=dwell, lasers=lasers or None,
@@ -218,41 +226,59 @@ class RunScanAdapter:
         return {"mode": mode, "centre_um": centre, "length_um": params.get("length_um"),
                 "pixel_um": params.get("pixel_um"), "lasers": lasers}
 
+    def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict):
+        """Prepare and run one scan; returns its request completion (the
+        scan runs while the caller waits on it)."""
+        summary = self._marshal(lambda: self._prepare(request, centre))
+        source = str(request.params.get("source") or "Scan")
+        result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,
+                                                  exact_completion=True)
+        if not getattr(result, "accepted", False) or not result.acceptedCompletions:
+            raise RuntimeError(f"refused: {getattr(result, 'rejectionMessage', '') or 'not accepted'}")
+        owner, run_token, request_completion = result.acceptedCompletions[0]
+        state["current"] = (owner, run_token)
+        return summary, request_completion
+
     def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
         completion = SimpleCompletion(request.epoch)
-        try:
-            summary = self._marshal(lambda: self._prepare(request))
-        except Exception as exc:
-            completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
-            return completion
-        source = str(request.params.get("source") or "Scan")
-        try:
-            result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,
-                                                      exact_completion=True)
-        except Exception as exc:
-            completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
-            return completion
-        if not getattr(result, "accepted", False) or not result.acceptedCompletions:
-            completion.fail(f"run-scan refused: {getattr(result, 'rejectionMessage', '') or 'not accepted'}")
-            return completion
-        owner, run_token, request_completion = result.acceptedCompletions[0]
+        mode = str(request.params.get("mode") or "acquisition").lower()
+        centres = [None] if mode == "overview" else self._centres(request)
+        state: dict = {"current": None, "abort": threading.Event()}
         capture = self._capture
 
-        def settle(_completion=None):
-            if request_completion.successful:
-                captured = False
-                if capture is not None:
-                    try:
-                        captured = bool(capture(metadata={"scan": summary}))
-                    except Exception as exc:  # noqa: BLE001 - reported in the result
-                        completion.complete({**summary, "scanned": True, "frame": f"not captured: {exc}"})
+        def run_all():
+            scans = []
+            try:
+                for index, centre in enumerate(centres):
+                    if state["abort"].is_set():
+                        completion.cancel()
                         return
-                completion.complete({**summary, "scanned": True, "frame": captured})
-            else:
-                completion.fail(f"run-scan: {request_completion.message or 'the scan failed'}")
+                    summary, request_completion = self._one_scan(request, centre, state)
+                    request_completion.wait()
+                    state["current"] = None
+                    if not request_completion.successful:
+                        completion.fail(f"run-scan: {request_completion.message or 'the scan failed'}"
+                                        + (f" (scan {index + 1} of {len(centres)})" if len(centres) > 1 else ""))
+                        return
+                    captured = False
+                    if capture is not None:
+                        try:
+                            captured = bool(capture(metadata={"scan": summary}))
+                        except Exception as exc:  # noqa: BLE001 - reported in the result
+                            captured = f"not captured: {exc}"
+                    scans.append({**summary, "frame": captured})
+                completion.complete({"scanned": True, "scans": len(scans), "mode": mode,
+                                     **(scans[-1] if scans else {}), "all": scans})
+            except Exception as exc:  # noqa: BLE001 - the action failed
+                completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
 
-        completion.abort_hook = lambda: self._abort(owner, run_token)
-        request_completion.add_done_callback(settle)
+        def abort():
+            state["abort"].set()
+            current = state.get("current")
+            return self._abort(*current) if current else True
+
+        completion.abort_hook = abort
+        threading.Thread(target=run_all, name="run-scan", daemon=True).start()
         return completion
 
     def _abort(self, owner, run_token) -> bool:

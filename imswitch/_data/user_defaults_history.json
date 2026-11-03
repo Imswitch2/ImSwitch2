@@ -427,7 +427,8 @@
    "fd5650fe21633ea989bb7ef66dc112e84d797873141ca3760b6364094e5cd493"
   ],
   "smart_pipelines/apd_scan_cells_demo.json": [
-   "834d223084c5520f5799b149e87bca69636d6cd956ff9c499c6c2b84840b66cf"
+   "834d223084c5520f5799b149e87bca69636d6cd956ff9c499c6c2b84840b66cf",
+   "8590b0a7ae53f20cfc3d7bead3c4b5425fffc48a375c7555fed464c67cbab323"
   ],
   "smart_pipelines/threshold_move_demo.json": [
    "4e6e9aaaca9836d00b380646dbb6806a3c3f5d98e9b597e2d20bc896925e8fb2",

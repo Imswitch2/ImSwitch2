@@ -38,11 +38,12 @@ LOG = ActionSpec(
 RUN_SCAN = ActionSpec(
     "run-scan", label="Run scan", accepts=("any",),
     params={"source": "Scan", "mode": "acquisition", "field_um": 60.0, "length_um": 8.0, "pixel_um": 0.1,
-            "dwell_s": 0.0, "lasers": [], "axes": ["Y", "X"], "frame": ""},
+            "dwell_s": 0.0, "lasers": [], "axes": ["Y", "X"], "frame": "", "points": "all", "max_points": 0},
     frame_param="frame", hardware=True,
     description="Run a point scan: 'overview' of field_um around the current centre, or 'acquisition' of "
-                "length_um at pixel_um centred on the first input point (its columns mapped to the scan axes "
-                "by 'axes'); 'lasers' are the lasers of its one channel; dwell_s 0 keeps the plan's dwell.",
+                "length_um at pixel_um centred on the input points (their columns mapped to the scan axes by "
+                "'axes'): 'points' all (one scan after the other; max_points 0 = no limit) or first; 'lasers' "
+                "are the lasers of its one channel; dwell_s 0 keeps the plan's dwell.",
 )
 
 ACTION_SPECS = (MOVE_TO, SNAP, LOG, RUN_SCAN)
