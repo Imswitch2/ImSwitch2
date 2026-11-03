@@ -86,7 +86,7 @@ class MultiDataFrameController(ImProcessWidgetController):
                     yield dataObj
 
     def addDataObj(self, dataObj):
-        """Reference an existing DataObj in the Working Set without copying it."""
+        """Reference an existing DataObj in Multi-data without copying it."""
         for existingDataObj in self._widget.getAllDataObjs():
             if dataObj is existingDataObj or dataObj.describesSameAs(existingDataObj):
                 return existingDataObj
@@ -106,7 +106,7 @@ class MultiDataFrameController(ImProcessWidgetController):
         return normalized, os.path.basename(normalized) or normalized
 
     def setAddDataDelegate(self, callback) -> None:
-        """Let FileIO own the picker while preserving the Working Set action."""
+        """Let FileIO own the picker while preserving the Multi-data action."""
         self._addDataDelegate = callback
 
     def addDataClicked(self):

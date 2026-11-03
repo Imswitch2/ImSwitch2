@@ -602,6 +602,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigOpenViewerRequested = QtCore.Signal()
     sigLoadSelectedAsMultiDataRequested = QtCore.Signal()
     sigProcessSelectedRequested = QtCore.Signal(str)
+    sigSelectionCountChanged = QtCore.Signal(int)
+    sigSessionActiveChanged = QtCore.Signal(bool)
     sigAutoProcessingChanged = QtCore.Signal(bool)
     sigPauseProcessingRequested = QtCore.Signal()
     sigResumeProcessingRequested = QtCore.Signal()
@@ -721,10 +723,14 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.addingRow.setVisible(False)
         root.addWidget(self.addingRow)
 
-        datasets_box = QtWidgets.QGroupBox("Raw datasets")
+        # Keep the dataset browser visually flat inside the Session tab.  The
+        # DATA tab already provides the enclosing context; an additional
+        # "Raw datasets" group title/frame only consumes vertical space.
+        datasets_box = QtWidgets.QWidget()
         datasets_box.setMinimumWidth(0)
         datasets_box.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         datasets_layout = QtWidgets.QVBoxLayout(datasets_box)
+        datasets_layout.setContentsMargins(0, 0, 0, 0)
         datasets_layout.setSpacing(4)
 
         filter_row = QtWidgets.QHBoxLayout()
@@ -846,13 +852,18 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.processNextAction = self.processSelectedMenu.addAction("Process next")
         self.processEndAction = self.processSelectedMenu.addAction("Add to end of queue")
         self.processSelectedBtn.setMenu(self.processSelectedMenu)
-        self.addWorkingSetBtn = QtWidgets.QPushButton('+ Working set')
-        self.addWorkingSetBtn.setToolTip('Add the selected Session datasets to the persistent Working Set')
+        self.addWorkingSetBtn = QtWidgets.QPushButton('+ Multi-data')
+        self.addWorkingSetBtn.setToolTip('Add the selected Session datasets to Multi-data')
         self.addWorkingSetBtn.clicked.connect(self.sigLoadSelectedAsMultiDataRequested)
         selection_row.addWidget(self.selectionSummaryLabel, 1)
         selection_row.addWidget(self.processSelectedBtn)
         selection_row.addWidget(self.addWorkingSetBtn)
-        datasets_layout.addLayout(selection_row)
+        # Selection actions now live in the shared DATA footer. Keep these
+        # compatibility widgets/signals alive for existing controller paths,
+        # but do not consume vertical space inside the Session tab.
+        self.selectionSummaryLabel.hide()
+        self.processSelectedBtn.hide()
+        self.addWorkingSetBtn.hide()
 
         # The Session boundary itself carries the reconstruction summary.  This
         # avoids a separate selected-data row and a separate reconstruction title.
@@ -942,7 +953,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.queueList.setVisible(False)
         processing_layout.addWidget(self.queueList)
         self.queueList.hide()
+        # Auto/queue execution controls now live in the shared DATA footer and
+        # Queue tab. Keep this hidden compatibility container parented to the
+        # Session widget because existing controller state updates still touch
+        # its controls (auto checkbox, pause/skip, queue summary).
+        self._processingCompatibilityBox = processing_box
         root.addWidget(processing_box)
+        processing_box.hide()
 
         self.statusLabel = _ElidingLabel("No session active")
         root.addWidget(self.statusLabel)
@@ -1176,6 +1193,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
     def setSessionActive(self, active: bool, name: str = "") -> None:
         self._sessionActive = bool(active)
+        self.sigSessionActiveChanged.emit(self._sessionActive)
         self.sessionTitleLabel.setText("SESSION:" if active else "SESSION")
         self.sessionNameLabel.setText(str(name or ""))
         self.sessionNameLabel.setVisible(bool(active))
@@ -1320,7 +1338,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         if selected:
             action = menu.addAction(
-                "Add selected to Working Set" if len(selected) > 1 else "Add to Working Set"
+                "Add selected to Multi-data" if len(selected) > 1 else "Add to Multi-data"
             )
             action.triggered.connect(self.sigLoadSelectedAsMultiDataRequested)
             menu.addSeparator()
@@ -1350,6 +1368,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         else:
             text = f"{count} datasets selected"
         self.selectionSummaryLabel.setText(text)
+        self.sigSelectionCountChanged.emit(count)
         self.processSelectedBtn.setText(
             "Process ▾" if count <= 1 else f"Process {count} ▾"
         )

@@ -107,7 +107,7 @@ class FileIOController(ImProcessWidgetController):
         self.multiDataFrameController = self._factory.createController(
             MultiDataFrameController, self._widget.multiDataFrame
         )
-        self.multiDataFrameController.setAddDataDelegate(self.addDataToWorkingSet)
+        self.multiDataFrameController.setAddDataDelegate(self.addDataToMultiData)
         self._loadedDataObjs = []
         loaded_frame = getattr(self._widget, "loadedDataFrame", None)
         if loaded_frame is not None:
@@ -168,11 +168,11 @@ class FileIOController(ImProcessWidgetController):
         )
         return list(paths or [])
 
-    def addDataToWorkingSet(self):
-        """Preserve Working Set -> Add data through the common file loader.
+    def addDataToMultiData(self):
+        """Preserve Multi-data -> Add data through the common file loader.
 
-        The historic Working Set action remains a multi-file action. External
-        sources are also registered in Loaded, but Current data is not changed.
+        External sources are also registered in Loaded, but Current data is
+        not changed merely because the operator is assembling Multi-data.
         """
         specs = self._activeSourceSpecs()
         file_specs = [
@@ -180,7 +180,7 @@ class FileIOController(ImProcessWidgetController):
         ]
         paths = guitools.askForFilePath(
             self._widget,
-            caption='Add data to Working Set',
+            caption='Add data to Multi-data',
             defaultFolder=self._dataFolder,
             nameFilter=file_dialog_filter(file_specs or specs),
             multiFiles=True,
@@ -194,6 +194,22 @@ class FileIOController(ImProcessWidgetController):
             )
         if paths and hasattr(self._widget, 'raiseMultiDataDock'):
             self._widget.raiseMultiDataDock()
+
+    # Compatibility alias for older callers; user-facing terminology is Multi-data.
+    addDataToWorkingSet = addDataToMultiData
+
+    def addLoadedSelectionToMultiData(self) -> int:
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        selected = frame.selectedDataObjs() if frame is not None else []
+        added = 0
+        for data_obj in selected:
+            before = len(list(self.multiDataFrameController._widget.getAllDataObjs()))
+            self._addDataObjToWorkingSet(data_obj)
+            after = len(list(self.multiDataFrameController._widget.getAllDataObjs()))
+            added += int(after > before)
+        if added and hasattr(self._widget, 'raiseMultiDataDock'):
+            self._widget.raiseMultiDataDock()
+        return added
 
     def quickLoadVirtualData(self):
         dataPath = self._requestLoadPath(caption_prefix='Open virtual')
@@ -324,7 +340,7 @@ class FileIOController(ImProcessWidgetController):
             route_to_loaded: Register ordinary image sources in the Quick Load
                 catalog instead of routing multi-selection to MultiData.
             add_to_multidata: Also reference catalogued sources from the
-                Working Set; does not change Current data.
+                Multi-data; does not change Current data.
 
         Returns:
             ``'current'``     — routed to the current DataObj (and raised),

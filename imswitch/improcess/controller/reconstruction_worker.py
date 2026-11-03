@@ -43,6 +43,7 @@ class ReconstructionWorker(QtCore.QObject):
     """Run immutable reconstruction jobs away from the GUI thread."""
 
     progress = QtCore.Signal(object)
+    itemProgress = QtCore.Signal(int, int, object)  # 1-based item, total, local progress
     resultReady = QtCore.Signal(object, object)  # (result, ReconstructionRun)
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(object)
@@ -66,6 +67,7 @@ class ReconstructionWorker(QtCore.QObject):
 
     def _forward_progress(self, job_index, update):
         count = max(1, len(self._jobs))
+        self.itemProgress.emit(job_index + 1, count, update)
         overall = min(1.0, (job_index + update.fraction) / count)
         message = update.message
         if count > 1:

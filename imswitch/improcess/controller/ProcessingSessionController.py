@@ -1299,7 +1299,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                 added += 1
         if added:
             self._fileIO._widget.raiseMultiDataDock()
-        message = f"Added {added} dataset{'s' if added != 1 else ''} to Working Set"
+        message = f"Added {added} dataset{'s' if added != 1 else ''} to Multi-data"
         if skipped:
             message += f" · skipped {skipped} ambiguous source{'s' if skipped != 1 else ''}"
         self._widget.setStatus(message)

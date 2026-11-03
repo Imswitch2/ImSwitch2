@@ -152,6 +152,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigLocalizeRequested = QtCore.Signal()
     sigLocalizationModeChanged = QtCore.Signal(str)
     sigModeChanged = QtCore.Signal(str)
+    sigUpdateRequested = QtCore.Signal()
+    sigUpdateEligibilityChanged = QtCore.Signal()
 
     _MODE_LABELS = (
         ("Fast", PRESET_FAST),
@@ -397,13 +399,19 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.scanningAdvancedButton.setToolTip(
             "Review or override scan metadata used only for reconstruction."
         )
+        self.updateReconstructionButton = QtWidgets.QPushButton("Update")
+        self.updateReconstructionButton.setToolTip(
+            "Re-place the selected Fast MoNaLISA reconstruction using the current scan orientation."
+        )
+        self.updateReconstructionButton.setEnabled(False)
         scan.addWidget(QtWidgets.QLabel("Orientation"), 0, 0)
         scan.addWidget(self.orientationModeCombo, 0, 1)
         scan.addWidget(self.orientationCombo, 0, 2)
         scan.addWidget(self.orientationResultLabel, 0, 2)
         scan.addWidget(self.lockOrientationButton, 0, 3)
         scan.addWidget(self.clearOrientationButton, 0, 4)
-        scan.setColumnStretch(5, 1)
+        scan.addWidget(self.updateReconstructionButton, 0, 5)
+        scan.setColumnStretch(6, 1)
 
         self.scanSummaryLabel = QtWidgets.QLabel("Scan metadata: —")
         self.scanSummaryLabel.setWordWrap(True)
@@ -573,6 +581,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.lockOrientationButton.clicked.connect(self._lock_current_orientation)
         self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
         self.scanningAdvancedButton.clicked.connect(self._open_scanning_advanced)
+        self.updateReconstructionButton.clicked.connect(self.sigUpdateRequested.emit)
         self.advancedButton.clicked.connect(self._open_advanced_reconstruction)
 
         for control in (
@@ -688,6 +697,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "reconstructor for manual legacy scan-parameter recovery." if legacy else
             "Inspect or override scan counts and step size used for reconstruction."
         )
+        # Placement-only update is a Fast unified-MoNaLISA action.  The
+        # controller additionally gates it on the selected result/signature and
+        # processing state, so a visible button is never merely aspirational.
+        self.updateReconstructionButton.setVisible(fast and not legacy)
 
         localization_mode = str(self._combo_data(self.localizationModeCombo))
         manual = localization_mode == LOCALIZATION_MANUAL
@@ -751,6 +764,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftYSpin.setEnabled(manual_ism)
         self.shiftXLabel.setEnabled(True)
         self.shiftYLabel.setEnabled(True)
+        self.sigUpdateEligibilityChanged.emit()
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def _refresh_scroll_minimum(self) -> None:
@@ -758,6 +772,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if not hasattr(self, "_scrollContent") or not hasattr(self, "_contentLayout"):
             return
         self._scrollContent.setMinimumHeight(self._contentLayout.minimumSize().height())
+
+    def setUpdateReconstructionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        """Expose placement-only update only when it is actually valid."""
+        self.updateReconstructionButton.setEnabled(bool(enabled))
+        self.updateReconstructionButton.setToolTip(
+            str(tooltip or "Re-place the selected Fast MoNaLISA reconstruction using the current scan orientation.")
+        )
 
     # -------------------------------------------------------------- dialogs
     def _open_localization_settings(self):

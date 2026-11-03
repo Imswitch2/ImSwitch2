@@ -344,13 +344,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.directoryWatcherFrame = DirectoryWatcherFrame()
         self.processingSessionFrame = ProcessingSessionFrame()
         self.processingQueueFrame = ProcessingQueueFrame()
+
+        btnFrame = BtnFrame()
+        self._btnFrame = btnFrame
         self.dataWorkspaceFrame = DataWorkspaceFrame(
             self.loadedDataFrame,
             self.processingSessionFrame,
             self.processingQueueFrame,
             self.multiDataFrame,
+            btnFrame,
             show_session=showSessionPanel,
             show_multidata=showMultiDataPanel,
+            show_actions=showActionsPanel,
         )
         self.dataFrame.sigOpenDataClicked.connect(self.sigQuickLoadData)
         self.dataFrame.sigProcessCurrentClicked.connect(self.sigReconstuctCurrent)
@@ -362,8 +367,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.sigReconstructMultiConsolidated
         )
 
-        btnFrame = BtnFrame()
-        self._btnFrame = btnFrame
         btnFrame.sigReconstuctCurrent.connect(self.sigReconstuctCurrent)
         btnFrame.sigCancelReconstruction.connect(self.sigCancelReconstruction)
         btnFrame.sigReconstructMultiConsolidated.connect(self.sigReconstructMultiConsolidated)
@@ -535,16 +538,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.processingSessionDock = self.dataWorkspaceDock
         self.multiDataDock = self.dataWorkspaceDock
 
-        actionsDock = Dock('Actions', size=(2, 1))
-        actionsDock.addWidget(btnFrame)
-        self.dockArea.addDock(actionsDock, 'bottom', self.dataWorkspaceDock)
-        self.docks['Actions'] = actionsDock
-        if not showActionsPanel:
-            actionsDock.hide()
-
         self.currentDataDock = Dock('Current data', size=(2, 4))
         self.currentDataDock.addWidget(self.dataFrame)
-        self.dockArea.addDock(self.currentDataDock, 'bottom', actionsDock)
+        self.dockArea.addDock(self.currentDataDock, 'bottom', self.dataWorkspaceDock)
         self.docks['Current data'] = self.currentDataDock
         if not showCurrentDataPanel:
             self.currentDataDock.hide()
@@ -1701,6 +1697,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Auto-process is currently available only for streaming-capable reconstructors.'
         )
         self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is not None:
+            btnFrame.setAutoProcessingAvailable(available, tooltip)
 
     def setDirectoryWatcherAvailable(self, available: bool) -> None:
         """Show the Directory watcher only for reconstructors that stream.
@@ -1728,11 +1727,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._syncDockVisibilityActions()
 
     def setUpdateReconstructionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        widget = getattr(self, 'parTree', None)
+        setter = getattr(widget, 'setUpdateReconstructionEnabled', None)
+        if callable(setter):
+            setter(bool(enabled), str(tooltip or ""))
+
+    def setBatchProcessingAvailable(self, available: bool) -> None:
         btnFrame = getattr(self, '_btnFrame', None)
-        if btnFrame is None or not hasattr(btnFrame, 'updateBtn'):
-            return
-        btnFrame.updateBtn.setEnabled(bool(enabled))
-        btnFrame.updateBtn.setToolTip(str(tooltip or ""))
+        if btnFrame is not None:
+            btnFrame.setBatchProcessingAvailable(bool(available))
 
     def setReconstructionActionsVisible(
         self,
@@ -1742,13 +1745,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         multidata_consolidate: str = 'enabled',
         multidata_labels: tuple[str, str] | None = None,
     ) -> None:
-        """Show or hide the modality-specific Actions buttons.
+        """Show or hide the modality-specific DATA-footer actions.
 
         - reconstruct_current: hide for pass-through plugins (process() is a
           no-op wrap, so the data has already auto-routed to the viewer).
-        - update_reconstruction: hide for non-MoNaLISA plugins. The 'Update
-          reconstruction' button re-applies MoNaLISA scan parameters and is
-          meaningless elsewhere.
+        - update_reconstruction: retained for API compatibility; unified
+          MoNaLISA now owns its Update action inside the Scanning controls.
         - reconstruct_multidata: show/hide the whole multidata button.
         - multidata_consolidate: 'enabled', 'disabled' (visible but greyed,
           with a tooltip saying the active plugin cannot consolidate) or
@@ -1760,15 +1762,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame = getattr(self, '_btnFrame', None)
         if btnFrame is None:
             return
-        if hasattr(btnFrame, 'reconCurrBtn'):
-            btnFrame.reconCurrBtn.setVisible(bool(reconstruct_current))
+        btnFrame.setActionAvailability(
+            reconstruct_current=bool(reconstruct_current),
+            update_reconstruction=bool(update_reconstruction),
+            reconstruct_multidata=bool(reconstruct_multidata),
+        )
         if hasattr(self, 'dataFrame'):
-            # Current data remains an inspector; processing lives in Actions.
+            # Current data remains an inspector; processing lives in DATA footer.
             self.dataFrame.setProcessCurrentVisible(False)
-        if hasattr(btnFrame, 'updateBtn'):
-            btnFrame.updateBtn.setVisible(bool(update_reconstruction))
         if hasattr(btnFrame, 'reconMultiBtn'):
-            btnFrame.reconMultiBtn.setVisible(bool(reconstruct_multidata))
             button_text, individual_text = (
                 multidata_labels
                 if multidata_labels is not None
@@ -1790,8 +1792,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 consolidated.setToolTip(tooltip)
                 consolidated.setStatusTip(tooltip)
         if hasattr(self, 'multiDataFrame'):
-            # Working Set owns collection management only in the integrated DATA
-            # workspace. The common Actions dock owns processing commands.
+            # Multi-data owns collection management only; processing is exposed
+            # by the shared DATA footer.
             self.multiDataFrame.setProcessActionsVisible(False)
 
     def setCurrentDataProcessingEnabled(self, enabled: bool) -> None:
@@ -1803,12 +1805,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.dataFrame.setProcessCurrentEnabled(bool(enabled))
 
     def setReconstructionJobState(
-        self, running: bool, *, progress=None, status: str = ""
+        self, running: bool, *, progress=None, status: str = "", item_index=None,
+        item_total=None, item_label=""
     ) -> None:
         btnFrame = getattr(self, '_btnFrame', None)
         if btnFrame is not None:
             btnFrame.setReconstructionJobState(
-                running, progress=progress, status=status
+                running, progress=progress, status=status, item_index=item_index,
+                item_total=item_total, item_label=item_label
             )
         if hasattr(self, 'dataFrame'):
             ready = bool(
@@ -2364,36 +2368,63 @@ class ReconParTree(ParameterTree):
 
 
 class BtnFrame(QtWidgets.QFrame):
+    """Compact contextual action/progress footer for the DATA workspace."""
+
     sigReconstuctCurrent = QtCore.Signal()
     sigCancelReconstruction = QtCore.Signal()
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
-    sigUpdate = QtCore.Signal()
+    sigUpdate = QtCore.Signal()  # retained for compatibility; MoNaLISA owns its Update UI
+    sigProcessSelectedRequested = QtCore.Signal(str, str)  # context, next/end
+    sigAddSelectedToMultiDataRequested = QtCore.Signal(str)
+    sigAutoProcessingChanged = QtCore.Signal(bool)
+    sigQueuePauseResumeRequested = QtCore.Signal()
+    sigQueueSkipCurrentRequested = QtCore.Signal()
+    sigQueueRemoveSelectedRequested = QtCore.Signal()
+    sigQueueMoveSelectedRequested = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._reconstructionRunning = False
         self._currentDataProcessingEnabled = True
+        self._context = 'loaded'
+        self._selectionCounts = {'loaded': 0, 'session': 0}
+        self._multiDataCount = 0
+        self._batchProcessingAvailable = True
+        self._featureReconstructCurrent = True
+        self._featureReconstructMulti = True
+        self._queueSnapshot = {}
+        self._queueProgress = {}
+        self._queueSelectionState = (False, False, False)
+        self._autoProcessingAvailable = False
+        self._sessionActive = False
+        self._autoProcessingTooltip = ''
+        self._directItemIndex = None
+        self._directItemTotal = None
+        self._directItemLabel = ''
 
         self.reconCurrBtn = BetterPushButton('Reconstruct current')
         self.reconCurrBtn.clicked.connect(self.sigReconstuctCurrent)
         self.quickLoadDataBtn = BetterPushButton('Quick load data')
         self.quickLoadDataBtn.clicked.connect(self.sigQuickLoadData)
-        self.updateBtn = BetterPushButton('Update reconstruction')
-        self.updateBtn.clicked.connect(self.sigUpdate)
+        self.quickLoadDataBtn.hide()
 
-        self.cancelReconstructionBtn = BetterPushButton('Cancel reconstruction')
-        self.cancelReconstructionBtn.clicked.connect(
-            self.sigCancelReconstruction
+        # A normal push button avoids the split QToolButton's taller size hint
+        # and keeps the primary action row visually consistent. "Process next"
+        # remains available from the Session dataset context menu.
+        self.processSelectedBtn = BetterPushButton('Process selected')
+        self.processSelectedBtn.clicked.connect(
+            lambda: self.sigProcessSelectedRequested.emit(self._context, 'end')
         )
-        self.cancelReconstructionBtn.setVisible(False)
-        self.reconstructionProgress = QtWidgets.QProgressBar()
-        self.reconstructionProgress.setRange(0, 1000)
-        self.reconstructionProgress.setVisible(False)
-        self.reconstructionStatus = QtWidgets.QLabel()
-        self.reconstructionStatus.setWordWrap(True)
-        self.reconstructionStatus.setVisible(False)
+
+        self.addToMultiDataBtn = BetterPushButton('+ Multi-data')
+        self.addToMultiDataBtn.setToolTip('Add selected datasets to Multi-data')
+        self.addToMultiDataBtn.clicked.connect(
+            lambda: self.sigAddSelectedToMultiDataRequested.emit(self._context)
+        )
+        self.autoProcessCheck = QtWidgets.QCheckBox('Auto-process')
+        self.autoProcessCheck.toggled.connect(self.sigAutoProcessingChanged)
 
         self.reconMultiBtn = QtWidgets.QToolButton()
         self.reconMultiBtn.setSizePolicy(
@@ -2401,8 +2432,6 @@ class BtnFrame(QtWidgets.QFrame):
         )
         self.reconMultiBtn.setText('Reconstruct multidata')
         self.reconMultiBtn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        # Explicit menu (rather than QToolButton.addAction) so a disabled
-        # 'Consolidate' entry can explain itself through its tooltip.
         self.reconMultiMenu = QtWidgets.QMenu(self.reconMultiBtn)
         self.reconMultiMenu.setToolTipsVisible(True)
         self.reconMultiConsolidated = self.reconMultiMenu.addAction(
@@ -2415,40 +2444,307 @@ class BtnFrame(QtWidgets.QFrame):
         self.reconMultiIndividual.triggered.connect(self.sigReconstructMultiIndividual)
         self.reconMultiBtn.setMenu(self.reconMultiMenu)
 
-        layout = QtWidgets.QGridLayout()
-        self.setLayout(layout)
+        self.queuePauseResumeBtn = BetterPushButton('Pause')
+        self.queuePauseResumeBtn.clicked.connect(self.sigQueuePauseResumeRequested)
+        self.queueRemoveBtn = BetterPushButton('Remove')
+        self.queueRemoveBtn.setToolTip('Remove selected waiting job(s)')
+        self.queueRemoveBtn.clicked.connect(self.sigQueueRemoveSelectedRequested)
+        self.queueMoveUpBtn = QtWidgets.QToolButton()
+        self.queueMoveUpBtn.setText('↑')
+        self.queueMoveUpBtn.setToolTip('Move selected waiting job(s) earlier')
+        self.queueMoveUpBtn.clicked.connect(
+            lambda: self.sigQueueMoveSelectedRequested.emit(-1)
+        )
+        self.queueMoveDownBtn = QtWidgets.QToolButton()
+        self.queueMoveDownBtn.setText('↓')
+        self.queueMoveDownBtn.setToolTip('Move selected waiting job(s) later')
+        self.queueMoveDownBtn.clicked.connect(
+            lambda: self.sigQueueMoveSelectedRequested.emit(1)
+        )
 
-        layout.addWidget(self.quickLoadDataBtn, 0, 0, 1, 2)
-        layout.addWidget(self.reconCurrBtn, 1, 0)
-        layout.addWidget(self.reconMultiBtn, 1, 1)
-        layout.addWidget(self.updateBtn, 2, 0, 1, 2)
-        layout.addWidget(self.reconstructionProgress, 3, 0, 1, 2)
-        layout.addWidget(self.reconstructionStatus, 4, 0, 1, 2)
-        layout.addWidget(self.cancelReconstructionBtn, 5, 0, 1, 2)
+        self.cancelReconstructionBtn = BetterPushButton('Cancel')
+        self.cancelReconstructionBtn.clicked.connect(self._cancelCurrentWork)
+
+        self.progressPrefix = QtWidgets.QLabel()
+        self.progressPrefix.setMinimumWidth(0)
+        self.progressPrefix.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
+        self.reconstructionProgress = QtWidgets.QProgressBar()
+        self.reconstructionProgress.setRange(0, 1000)
+        self.reconstructionProgress.setTextVisible(False)
+        self.reconstructionProgress.setMinimumWidth(70)
+        self.reconstructionProgress.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self.progressPercentLabel = QtWidgets.QLabel('')
+        self.progressPercentLabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.reconstructionStatus = QtWidgets.QLabel()
+        self.reconstructionStatus.setMinimumWidth(0)
+        self.reconstructionStatus.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
+
+        self.actionRow = QtWidgets.QWidget()
+        action_layout = QtWidgets.QHBoxLayout(self.actionRow)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(4)
+        for widget in (
+            self.reconCurrBtn, self.processSelectedBtn, self.addToMultiDataBtn,
+            self.reconMultiBtn, self.queuePauseResumeBtn, self.queueRemoveBtn,
+            self.queueMoveUpBtn, self.queueMoveDownBtn,
+        ):
+            action_layout.addWidget(widget)
+        action_layout.addStretch(1)
+        action_layout.addWidget(self.autoProcessCheck)
+
+        self.progressRow = QtWidgets.QWidget()
+        progress_layout = QtWidgets.QHBoxLayout(self.progressRow)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(4)
+        progress_layout.addWidget(self.progressPrefix, 2)
+        progress_layout.addWidget(self.reconstructionProgress, 3)
+        progress_layout.addWidget(self.progressPercentLabel)
+        progress_layout.addWidget(self.reconstructionStatus, 2)
+        progress_layout.addWidget(self.cancelReconstructionBtn)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(3)
+        layout.addWidget(self.actionRow)
+        layout.addWidget(self.progressRow)
+        self.progressRow.hide()
+
+        self.setContext('loaded')
+
+    def setContext(self, context: str) -> None:
+        context = str(context or 'loaded')
+        if context not in {'loaded', 'session', 'queue', 'multidata'}:
+            context = 'loaded'
+        self._context = context
+        self._syncContextVisibility()
+        self._syncProcessingEnabled()
+        if not self._reconstructionRunning:
+            self._showQueueStatus()
+
+    def setSelectionCount(self, context: str, count: int) -> None:
+        context = str(context or '')
+        if context in self._selectionCounts:
+            self._selectionCounts[context] = max(0, int(count or 0))
+        self._syncProcessingEnabled()
+
+    def setMultiDataCount(self, count: int) -> None:
+        self._multiDataCount = max(0, int(count or 0))
+        self._syncProcessingEnabled()
+
+    def setBatchProcessingAvailable(self, available: bool) -> None:
+        self._batchProcessingAvailable = bool(available)
+        self._syncProcessingEnabled()
+
+    def setActionAvailability(
+        self, *, reconstruct_current: bool, update_reconstruction: bool,
+        reconstruct_multidata: bool
+    ) -> None:
+        self._featureReconstructCurrent = bool(reconstruct_current)
+        self._featureReconstructMulti = bool(reconstruct_multidata)
+        self._syncContextVisibility()
+        self._syncProcessingEnabled()
+
+    def setUpdateEnabled(self, enabled: bool, tooltip: str = '') -> None:
+        # Compatibility shim: Update reconstruction now lives in the unified
+        # MoNaLISA Scanning controls where its availability can be exact.
+        return
+
+    def setSessionActive(self, active: bool) -> None:
+        self._sessionActive = bool(active)
+        self._syncProcessingEnabled()
+
+    def setAutoProcessingAvailable(self, available: bool, tooltip: str = '') -> None:
+        self._autoProcessingAvailable = bool(available)
+        self._autoProcessingTooltip = str(tooltip or '')
+        self.autoProcessCheck.setToolTip(self._autoProcessingTooltip)
+        self._syncProcessingEnabled()
+
+    def setQueueSelectionState(self, has_selection: bool, can_up: bool, can_down: bool) -> None:
+        self._queueSelectionState = (bool(has_selection), bool(can_up), bool(can_down))
+        self._syncProcessingEnabled()
+
+    def _syncContextVisibility(self) -> None:
+        data_context = self._context in {'loaded', 'session'}
+        queue_context = self._context == 'queue'
+        multi_context = self._context == 'multidata'
+        self.reconCurrBtn.setVisible(data_context and self._featureReconstructCurrent)
+        self.processSelectedBtn.setVisible(data_context)
+        self.addToMultiDataBtn.setVisible(data_context)
+        self.autoProcessCheck.setVisible(self._context == 'session')
+        self.reconMultiBtn.setVisible(multi_context and self._featureReconstructMulti)
+        for widget in (
+            self.queuePauseResumeBtn, self.queueRemoveBtn,
+            self.queueMoveUpBtn, self.queueMoveDownBtn,
+        ):
+            widget.setVisible(queue_context)
 
     def _syncProcessingEnabled(self) -> None:
-        self.reconCurrBtn.setEnabled(
-            bool(self._currentDataProcessingEnabled and not self._reconstructionRunning)
+        count = self._selectionCounts.get(self._context, 0)
+        snapshot = self._queueSnapshot or {}
+        queue_current = snapshot.get('current')
+        waiting_count = int(snapshot.get('waiting_count', len(snapshot.get('waiting', ()) or ())) or 0)
+        queue_blocking = queue_current is not None or (
+            waiting_count > 0 and not bool(snapshot.get('paused', False))
         )
-        self.reconMultiBtn.setEnabled(not self._reconstructionRunning)
+        direct_available = not self._reconstructionRunning and not queue_blocking
+
+        self.reconCurrBtn.setEnabled(
+            bool(self._currentDataProcessingEnabled and direct_available)
+        )
+        self.processSelectedBtn.setText(
+            'Process selected' if count <= 1 else f'Process selected ({count})'
+        )
+        self.processSelectedBtn.setEnabled(
+            bool(self._batchProcessingAvailable and count > 0 and not self._reconstructionRunning)
+        )
+        self.addToMultiDataBtn.setEnabled(bool(count > 0))
+        self.autoProcessCheck.setEnabled(bool(self._autoProcessingAvailable and self._sessionActive))
+        self.reconMultiBtn.setEnabled(bool(direct_available and self._multiDataCount > 0))
+
+        paused = bool(snapshot.get('paused', False))
+        current = snapshot.get('current')
+        waiting = list(snapshot.get('waiting', ()) or ())
+        waiting_count = int(snapshot.get('waiting_count', len(waiting)) or 0)
+        self.queuePauseResumeBtn.setText('Resume' if paused else 'Pause')
+        self.queuePauseResumeBtn.setEnabled(bool(current or waiting_count or paused))
+        has_selection, can_up, can_down = self._queueSelectionState
+        self.queueRemoveBtn.setEnabled(has_selection)
+        self.queueMoveUpBtn.setEnabled(can_up)
+        self.queueMoveDownBtn.setEnabled(can_down)
 
     def setCurrentDataProcessingEnabled(self, enabled: bool) -> None:
         self._currentDataProcessingEnabled = bool(enabled)
         self._syncProcessingEnabled()
 
+    def setProcessingQueue(self, snapshot: dict | None) -> None:
+        snapshot = dict(snapshot or {})
+        self._queueSnapshot = snapshot
+        self._queueProgress = dict(snapshot.get('current_progress') or self._queueProgress or {})
+        auto_enabled = bool(snapshot.get('auto_enabled', False))
+        self.autoProcessCheck.blockSignals(True)
+        self.autoProcessCheck.setChecked(auto_enabled)
+        self.autoProcessCheck.blockSignals(False)
+        self._syncProcessingEnabled()
+        if not self._reconstructionRunning:
+            self._showQueueStatus()
+
+    def setQueueProgress(self, state: dict | None) -> None:
+        state = dict(state or {})
+        self._queueProgress = dict(state.get('current_progress') or {})
+        current = state.get('current')
+        if current is not None:
+            snapshot = dict(self._queueSnapshot or {})
+            snapshot['current'] = current
+            self._queueSnapshot = snapshot
+        if not self._reconstructionRunning:
+            self._showQueueStatus()
+
+    @staticmethod
+    def _job_prefix(job) -> str:
+        if job is None:
+            return ''
+        label = str(getattr(job, 'label', '') or 'Data')
+        index = max(1, int(getattr(job, 'batch_index', 1) or 1))
+        total = max(1, int(getattr(job, 'batch_total', 1) or 1))
+        if total > 1:
+            return f'Item {index} / {total} · {label}'
+        return label
+
+    def _showProgressLine(
+        self, *, prefix: str = '', fraction=None, status: str = '', cancellable=False,
+        indeterminate=False
+    ) -> None:
+        prefix = str(prefix or '')
+        status = str(status or '')
+        self.progressPrefix.setText(prefix)
+        self.progressPrefix.setToolTip(prefix)
+        self.reconstructionStatus.setText(status)
+        self.reconstructionStatus.setToolTip(status)
+        if indeterminate:
+            self.reconstructionProgress.setRange(0, 0)
+            self.progressPercentLabel.setText('')
+            self.reconstructionProgress.show()
+        elif fraction is not None:
+            value = max(0.0, min(1.0, float(fraction)))
+            self.reconstructionProgress.setRange(0, 1000)
+            self.reconstructionProgress.setValue(int(round(value * 1000)))
+            self.progressPercentLabel.setText(f'{int(round(value * 100))}%')
+            self.reconstructionProgress.show()
+        else:
+            self.reconstructionProgress.hide()
+            self.progressPercentLabel.setText('')
+        self.cancelReconstructionBtn.setVisible(bool(cancellable))
+        self.progressRow.setVisible(bool(prefix or status or fraction is not None or indeterminate))
+
+    def _showQueueStatus(self) -> None:
+        snapshot = self._queueSnapshot or {}
+        current = snapshot.get('current')
+        waiting = list(snapshot.get('waiting', ()) or ())
+        waiting_count = int(snapshot.get('waiting_count', len(waiting)) or 0)
+        paused = bool(snapshot.get('paused', False))
+        if current is not None:
+            progress = dict(self._queueProgress or snapshot.get('current_progress') or {})
+            fraction = progress.get('fraction')
+            status = str(progress.get('status') or 'Processing')
+            self._showProgressLine(
+                prefix=self._job_prefix(current),
+                fraction=fraction,
+                status=status,
+                cancellable=True,
+                indeterminate=(fraction is None),
+            )
+        elif waiting_count:
+            self._showProgressLine(
+                prefix=f'{waiting_count} waiting',
+                status='Paused' if paused else '',
+            )
+        elif paused:
+            self._showProgressLine(prefix='Queue paused')
+        else:
+            self.progressRow.hide()
+
     def setReconstructionJobState(
-        self, running: bool, *, progress=None, status: str = ""
+        self, running: bool, *, progress=None, status: str = '', item_index=None,
+        item_total=None, item_label=''
     ) -> None:
         running = bool(running)
         self._reconstructionRunning = running
+        if item_index is not None:
+            self._directItemIndex = int(item_index)
+        if item_total is not None:
+            self._directItemTotal = int(item_total)
+        if item_label:
+            self._directItemLabel = str(item_label)
         self._syncProcessingEnabled()
-        self.cancelReconstructionBtn.setVisible(running)
-        if progress is not None:
-            value = max(0.0, min(1.0, float(progress)))
-            self.reconstructionProgress.setValue(int(round(value * 1000)))
-        self.reconstructionProgress.setVisible(running or progress is not None)
-        self.reconstructionStatus.setText(str(status or ""))
-        self.reconstructionStatus.setVisible(bool(status))
+        if running or progress is not None:
+            total = max(1, int(self._directItemTotal or 1))
+            index = max(1, min(total, int(self._directItemIndex or 1)))
+            label = str(self._directItemLabel or '')
+            prefix = f'Item {index} / {total} · {label}' if total > 1 else label
+            self._showProgressLine(
+                prefix=prefix,
+                fraction=progress,
+                status=str(status or ''),
+                cancellable=running,
+                indeterminate=(running and progress is None),
+            )
+        elif status:
+            self._showProgressLine(prefix='', status=str(status))
+        else:
+            self._showQueueStatus()
+
+    def _cancelCurrentWork(self) -> None:
+        if self._reconstructionRunning:
+            self.sigCancelReconstruction.emit()
+            return
+        if (self._queueSnapshot or {}).get('current') is not None:
+            self.sigQueueSkipCurrentRequested.emit()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

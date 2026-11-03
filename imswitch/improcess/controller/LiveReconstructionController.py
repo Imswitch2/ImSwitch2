@@ -24,6 +24,7 @@ class LiveReconstructionController(QtCore.QObject):
     sigFinished = QtCore.Signal()
     sigFinalResult = QtCore.Signal(object)
     sigPausedChanged = QtCore.Signal(bool)
+    sigTimepointProgress = QtCore.Signal(int)  # completed timepoints, 1-based
     # Emitted on the GUI thread, received on the process thread: a queued
     # marker that lands behind every frame already posted (see stop()).
     sigRequestDrain = QtCore.Signal()
@@ -612,8 +613,9 @@ class LiveReconstructionController(QtCore.QObject):
 
     @QtCore.Slot(int)
     def _on_timepoint_done(self, timepoint: int) -> None:
-        """Relay a completed-timepoint index so the viewer can move its slider."""
+        """Relay completion to the viewer and queue-progress consumers."""
         self._commChannel.sigLiveTimepointDone.emit(timepoint)
+        self.sigTimepointProgress.emit(int(timepoint) + 1)
 
     @QtCore.Slot(object)
     def _on_result_updated(self, result) -> None:

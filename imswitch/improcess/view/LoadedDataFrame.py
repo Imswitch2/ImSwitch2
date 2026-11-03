@@ -7,7 +7,7 @@ class LoadedDataFrame(QtWidgets.QFrame):
     """Ad-hoc Quick Load catalog.
 
     The catalog is deliberately runtime-only. It records ordinary data brought
-    in through Quick Load (or Working Set -> Add data) without turning those
+    in through Quick Load (or Multi-data -> Add data) without turning those
     sources into Session members. One entry can be promoted to Current data by
     activating it in the list.
     """
@@ -15,6 +15,7 @@ class LoadedDataFrame(QtWidgets.QFrame):
     sigQuickLoadRequested = QtCore.Signal()
     sigSourceChanged = QtCore.Signal(str)
     sigSetCurrentRequested = QtCore.Signal(object)
+    sigSelectionCountChanged = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -68,6 +69,19 @@ class LoadedDataFrame(QtWidgets.QFrame):
         self.sourceCombo.currentIndexChanged.connect(self._source_changed)
         self.dataList.itemDoubleClicked.connect(self._item_activated)
         self.dataList.itemActivated.connect(self._item_activated)
+        self.dataList.itemSelectionChanged.connect(self._selection_changed)
+
+
+    def _selection_changed(self) -> None:
+        self.sigSelectionCountChanged.emit(len(self.selectedDataObjs()))
+
+    def selectedDataObjs(self) -> list:
+        out = []
+        for item in self.dataList.selectedItems():
+            data_obj = item.data(0, QtCore.Qt.UserRole)
+            if data_obj is not None:
+                out.append(data_obj)
+        return out
 
     def sourceMode(self) -> str:
         return str(self.sourceCombo.currentData() or "files")

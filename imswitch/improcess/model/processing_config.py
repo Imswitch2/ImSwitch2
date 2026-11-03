@@ -60,7 +60,7 @@ def is_reconstruction_panel_enabled(processing_config: dict[str, Any]) -> bool:
 
 
 def is_actions_panel_enabled(processing_config: dict[str, Any]) -> bool:
-    """Return whether the ImProcess Actions dock should be shown at startup."""
+    """Return whether the ImProcess DATA processing footer should be shown at startup."""
     return bool(processing_config.get("actionsPanel", True))
 
 

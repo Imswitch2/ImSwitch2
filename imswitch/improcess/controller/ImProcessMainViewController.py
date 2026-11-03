@@ -76,9 +76,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._activeReconstructor = None
         self.reconstructorManager.initActiveReconstructor()
 
-        # Patch-2 processing lane.  It is backend-only for now: the existing
-        # Session/DirectoryWatcher widgets remain wired to their legacy actions
-        # until the integrated UX lands in Patch 4.
+        # Shared processing lane for Session auto/manual work and Loaded batches.
+        # DirectoryWatcher remains a separate legacy entry point.
         self.processingQueueController = self._factory.createController(
             ProcessingQueueController,
             self._widget,
@@ -104,6 +103,34 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 queue_frame.setProcessingQueue
             )
             queue_frame.setProcessingQueue(self.processingQueueController.queueSnapshot())
+
+        footer = getattr(self._widget, '_btnFrame', None)
+        if footer is not None:
+            footer.sigProcessSelectedRequested.connect(self._processSelectedFromDataFooter)
+            footer.sigAddSelectedToMultiDataRequested.connect(
+                self._addSelectedToMultiDataFromFooter
+            )
+            footer.sigAutoProcessingChanged.connect(
+                self.processingSessionController.setAutoProcessingEnabled
+            )
+            footer.sigQueuePauseResumeRequested.connect(
+                self._queuePauseResumeFromFooter
+            )
+            footer.sigQueueSkipCurrentRequested.connect(
+                self.processingQueueController.skipCurrent
+            )
+            footer.sigQueueRemoveSelectedRequested.connect(
+                queue_frame.requestRemoveSelected if queue_frame is not None else lambda: None
+            )
+            footer.sigQueueMoveSelectedRequested.connect(
+                queue_frame.requestMoveSelected if queue_frame is not None else lambda _direction: None
+            )
+            self.processingQueueController.sigQueueChanged.connect(footer.setProcessingQueue)
+            self.processingQueueController.sigProgressChanged.connect(footer.setQueueProgress)
+            self.processingQueueController.sigQueueChanged.connect(
+                lambda _snapshot: self.reconstructorManager.refreshUpdateReconstructionAvailability()
+            )
+            footer.setProcessingQueue(self.processingQueueController.queueSnapshot())
 
         self._currentDataObj = None
 
@@ -153,6 +180,34 @@ class ImProcessMainViewController(ImProcessWidgetController):
             pass
         self.monalisaController.updatePattern()
         self.monalisaController.updateScanParams()
+
+    def _processSelectedFromDataFooter(self, context: str, position: str) -> None:
+        context = str(context or '')
+        position = 'next' if str(position) == 'next' else 'end'
+        if context == 'session':
+            self.processingSessionController.processSelectedDatasets(position)
+            return
+        if context != 'loaded':
+            return
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        data_objs = frame.selectedDataObjs() if frame is not None else []
+        self.processingQueueController.enqueueLoadedDataObjs(
+            data_objs, position=position
+        )
+
+    def _addSelectedToMultiDataFromFooter(self, context: str) -> None:
+        context = str(context or '')
+        if context == 'session':
+            self.processingSessionController.loadSelectedAsMultiData()
+        elif context == 'loaded':
+            self.fileIOController.addLoadedSelectionToMultiData()
+
+    def _queuePauseResumeFromFooter(self) -> None:
+        snapshot = self.processingQueueController.queueSnapshot()
+        if bool((snapshot or {}).get('paused', False)):
+            self.processingQueueController.resume()
+        else:
+            self.processingQueueController.pause()
 
     def currentDataChanged(self, dataObj):
         """Thin dispatcher: set shared state and delegate to specialized

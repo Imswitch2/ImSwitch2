@@ -34,12 +34,16 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = None
         self._reconstructionWorker = None
         self._reconstructionWorkerReconstructor = None
+        self._reconstructionJobLabels = []
         self._localizationThread = None
         self._localizationWorker = None
         self._localizationActiveJob = None
         self._localizationPendingJob = None
         self._localizationRequestCounter = 0
         self._localizationExpectedRequestId = None
+        current_result_changed = getattr(self._commChannel, "sigCurrentResultChanged", None)
+        if current_result_changed is not None:
+            current_result_changed.connect(lambda _result: self.refreshUpdateReconstructionAvailability())
 
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
@@ -450,13 +454,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
-        # Gate the modality-specific Actions buttons:
+        # Gate the modality-specific DATA-footer actions:
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
         #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' reuses retained MoNaLISA coefficients.
-        #   Legacy has its classic coefficient re-render; unified MoNaLISA
-        #   exposes the placement-only Fast path for quick orientation checks.
+        # - Update reconstruction is now owned by unified MoNaLISA's Scanning
+        #   controls; the compatibility flag below no longer creates a footer
+        #   button.
         # - The multidata button stays visible for every plugin. Pass-through
         #   plugins get it relabeled as a batch 'load to viewer' action with
         #   the consolidate entry hidden; plugins without consolidation
@@ -495,6 +499,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
             auto_available = streaming and derived
             self._widget.setDirectoryWatcherAvailable(streaming)
             self._widget.processingSessionFrame.setProcessingAvailable(derived)
+            self._widget.setBatchProcessingAvailable(derived)
             self._widget.setSessionAutoProcessingAvailable(auto_available)
             # An unavailable Auto control must not leave a hidden policy armed.
             # Re-enabling Auto is an explicit user action for the new reconstructor.
@@ -516,7 +521,6 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if reconstructor.id == "monalisa-legacy":
             try:
                 self._widget.setLegacyMonalisaParameterWidget()
-                self._widget.setUpdateReconstructionEnabled(True)
             except Exception:
                 pass
             return
@@ -544,12 +548,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
-        if reconstructor.id == "monalisa" and hasattr(widget, "sigModeChanged"):
+        if reconstructor.id == "monalisa":
             try:
-                widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
-                self._set_monalisa_update_enabled(
-                    widget.get_values().get("preset", "Fast")
-                )
+                if hasattr(widget, "sigModeChanged"):
+                    widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
+                if hasattr(widget, "sigUpdateRequested"):
+                    widget.sigUpdateRequested.connect(self.updateReconstruction)
+                if hasattr(widget, "sigUpdateEligibilityChanged"):
+                    widget.sigUpdateEligibilityChanged.connect(
+                        self.refreshUpdateReconstructionAvailability
+                    )
+                self.refreshUpdateReconstructionAvailability()
             except Exception:
                 pass
 
@@ -594,26 +603,37 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
 
     @QtCore.Slot(str)
-    def _set_monalisa_update_enabled(self, mode):
+    def _set_monalisa_update_enabled(self, _mode):
+        self.refreshUpdateReconstructionAvailability()
+
+    @QtCore.Slot()
+    def refreshUpdateReconstructionAvailability(self):
+        """Keep the MoNaLISA Scan/Orientation update action exactly gated."""
+        reconstructor = getattr(self._main, "_activeReconstructor", None)
+        widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "setUpdateReconstructionEnabled", None)
+        if reconstructor is None or reconstructor.id != "monalisa" or not callable(setter):
+            return
+        if self.isReconstructionRunning():
+            setter(False, "Wait for the current reconstruction to finish.")
+            return
+        if self._shared_processing_queue_busy():
+            setter(False, "Pause or finish queued processing before updating reconstruction.")
+            return
+        result = None
+        reconstruction_controller = getattr(self._main, "reconstructionController", None)
+        if reconstruction_controller is not None:
+            result = reconstruction_controller.getActiveResult()
         try:
-            fast = str(mode) == "Fast"
-            placement_only = fast
-            reason = "Update reconstruction is currently available only in Fast mode."
-            if fast:
-                widget = getattr(self, "_previewWidget", None)
-                values = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
-                corrected = bool(values.get("intensity_correction", False)) or bool(
-                    values.get("cell_offsets", False)
-                )
-                placement_only = not corrected
-                reason = (
-                    "Re-place the retained Fast extraction after changing scan orientation."
-                    if placement_only
-                    else "Fast corrections require a full reconstruction; placement-only update is unavailable."
-                )
-            self._widget.setUpdateReconstructionEnabled(placement_only, reason)
-        except Exception:
-            pass
+            params = widget.get_values() if hasattr(widget, "get_values") else {}
+            checker = getattr(reconstructor, "can_update_reconstruction", None)
+            if callable(checker):
+                enabled, reason = checker(result, params)
+            else:
+                enabled, reason = False, "Update reconstruction is unavailable."
+        except Exception as exc:
+            enabled, reason = False, str(exc)
+        setter(bool(enabled), str(reason or ""))
 
     @QtCore.Slot(str)
     def _set_monalisa_relocalize_enabled(self, mode):
@@ -654,8 +674,24 @@ class ReconstructorManagerController(ImProcessWidgetController):
             dict(snapshot or {}), mode=str(mode), source_label=str(source_label or "reconstruction")
         )
 
+    def _shared_processing_queue_busy(self) -> bool:
+        controller = getattr(self._main, 'processingQueueController', None)
+        if controller is None:
+            return False
+        queue = getattr(controller, 'queue', None)
+        if queue is None:
+            return False
+        if getattr(queue, 'current', None) is not None:
+            return True
+        return bool(getattr(queue, 'waiting', ())) and not bool(getattr(queue, 'paused', False))
+
     def updateReconstruction(self):
         """Refresh the active MoNaLISA result without repeating extraction."""
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Processing queue is active; pause it before updating."
+            )
+            return
         reconstructor = self._main._activeReconstructor
         if reconstructor is None:
             return
@@ -695,6 +731,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
 
     def reconstructCurrent(self):
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Processing queue is active; pause it before reconstructing current data."
+            )
+            return
         data_controller = getattr(self._main, 'dataFrameController', None)
         ready = getattr(data_controller, 'currentDataReadyForProcessing', None)
         if callable(ready) and not ready():
@@ -802,6 +843,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
         return "ready"
 
     def reconstructMulti(self, consolidate):
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Processing queue is active; pause it before reconstructing Multi-data."
+            )
+            return
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
@@ -1038,7 +1084,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._on_reconstruction_progress)
+        worker.itemProgress.connect(self._on_reconstruction_item_progress)
         worker.finished.connect(self._on_reconstruction_finished)
         worker.failed.connect(self._on_reconstruction_failed)
         worker.cancelled.connect(self._on_reconstruction_cancelled)
@@ -1053,6 +1099,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = thread
         self._reconstructionWorker = worker
         self._reconstructionWorkerReconstructor = reconstructor
+        self._reconstructionJobLabels = [
+            str(getattr(job.data_obj, "name", "") or getattr(job.data_obj, "datasetName", "") or "Data")
+            for job in jobs
+        ]
         inspection = (
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"
@@ -1065,6 +1115,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 if inspection
                 else f"Starting {reconstructor.name}..."
             ),
+            item_index=1,
+            item_total=max(1, len(jobs)),
+            item_label=(self._reconstructionJobLabels[0] if self._reconstructionJobLabels else ""),
         )
         thread.start()
         return True
@@ -1081,11 +1134,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
             True, status="Cancelling after the current read or processing step..."
         )
 
-    @QtCore.Slot(object)
-    def _on_reconstruction_progress(self, progress):
-        status = progress.message or progress.phase.capitalize()
+    @QtCore.Slot(int, int, object)
+    def _on_reconstruction_item_progress(self, item_index, item_total, progress):
+        status = progress.message or progress.phase.replace("_", " ").capitalize()
+        label = ""
+        index = int(item_index) - 1
+        if 0 <= index < len(self._reconstructionJobLabels):
+            label = self._reconstructionJobLabels[index]
         self._set_reconstruction_job_state(
-            True, progress=progress.fraction, status=status
+            True,
+            progress=progress.fraction,
+            status=status,
+            item_index=int(item_index),
+            item_total=int(item_total),
+            item_label=label,
         )
 
     @QtCore.Slot(object)
@@ -1152,15 +1214,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._reconstructionThread = None
             self._reconstructionWorker = None
             self._reconstructionWorkerReconstructor = None
+            self._reconstructionJobLabels = []
 
     def _set_reconstruction_job_state(
-        self, running, *, progress=None, status=""
+        self, running, *, progress=None, status="", item_index=None, item_total=None,
+        item_label=""
     ):
         setter = getattr(self._widget, 'setReconstructionJobState', None)
         if callable(setter):
             setter(
-                bool(running), progress=progress, status=str(status or "")
+                bool(running), progress=progress, status=str(status or ""),
+                item_index=item_index, item_total=item_total, item_label=str(item_label or ""),
             )
+        self.refreshUpdateReconstructionAvailability()
 
     def closeEvent(self):
         self.cancelReconstruction()

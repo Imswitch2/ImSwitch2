@@ -1,4 +1,4 @@
-"""Pure backend tests for the shared Session processing queue."""
+"""Pure backend tests for the shared ImProcess processing queue."""
 
 from types import SimpleNamespace
 
@@ -141,6 +141,24 @@ def test_view_snapshot_is_lightweight_and_limits_waiting_details():
     assert "history" not in snapshot
 
 
+
+
+def test_job_view_preserves_source_without_copying_params():
+    queue = ProcessingQueue()
+    queue.enqueue(ProcessingJob(
+        dataset_id="loaded:image:/tmp/a.h5:Camera:",
+        label="a.h5",
+        reconstructor_id="monalisa",
+        params={"large": list(range(100))},
+        source="loaded",
+    ))
+
+    snapshot = queue.view_snapshot(waiting_limit=10)
+
+    assert snapshot["waiting"][0].source == "loaded"
+    assert not hasattr(snapshot["waiting"][0], "params")
+
+
 def test_active_dataset_index_tracks_finish_and_clear():
     queue = ProcessingQueue()
     queue.enqueue_many([_job("a"), _job("b")])
@@ -196,3 +214,20 @@ def test_changed_dataset_ids_are_incremental_not_full_queue_snapshots():
     assert queue.consume_changed_dataset_ids() == ("a",)
     queue.complete_current()
     assert queue.consume_changed_dataset_ids() == ("a",)
+
+
+def test_enqueue_many_assigns_truthful_batch_positions_after_deduplication():
+    queue = ProcessingQueue()
+    queue.enqueue(_job("already"))
+
+    jobs = [_job("a"), _job("already"), _job("b"), _job("a")]
+    assert queue.enqueue_many(jobs) == 2
+
+    waiting = [job for job in queue.waiting if job.dataset_id in {"a", "b"}]
+    assert [(job.dataset_id, job.batch_index, job.batch_total) for job in waiting] == [
+        ("a", 1, 2),
+        ("b", 2, 2),
+    ]
+    view = waiting[0].view()
+    assert view.batch_index == 1
+    assert view.batch_total == 2

@@ -283,3 +283,135 @@ def test_manual_single_scan_stays_offline_but_auto_single_scan_streams():
 
     assert not ProcessingQueueController._uses_streaming_runner(manual, dataset, reconstructor)
     assert ProcessingQueueController._uses_streaming_runner(auto, dataset, reconstructor)
+
+
+def test_loaded_manual_batch_enqueues_as_external_source_without_session_ownership(tmp_path):
+    path = tmp_path / "old_control.h5"
+    path.touch()
+    data_obj = SimpleNamespace(
+        name="old_control.h5",
+        datasetName="Camera",
+        dataPath=str(path),
+        sourceOriginalPath=str(path),
+        sourceKind="image",
+        sourceMetadata=None,
+    )
+    reconstructor = SimpleNamespace(id="monalisa", result_role="derived")
+    queue = ProcessingQueue()
+    emitted = []
+    fake = SimpleNamespace(
+        queue=queue,
+        _main=SimpleNamespace(_activeReconstructor=reconstructor),
+        _sessionController=SimpleNamespace(session=None),
+        _externalSources={},
+        _snapshot_params=lambda _reconstructor: {"preset": "Fast"},
+        _emit_changed=lambda: emitted.append(True),
+        _process_next=lambda: None,
+    )
+
+    added = ProcessingQueueController.enqueueLoadedDataObjs(fake, [data_obj])
+
+    assert added == 1
+    job = queue.waiting[0]
+    assert job.source == "loaded"
+    assert job.origin == ProcessingOrigin.MANUAL
+    assert fake._externalSources[job.dataset_id] is data_obj
+    assert emitted == [True]
+
+
+def test_loaded_source_matching_active_session_keeps_session_ownership(tmp_path):
+    path = tmp_path / "today.h5"
+    path.touch()
+    data_obj = SimpleNamespace(
+        name="today.h5", datasetName="Camera", dataPath=str(path),
+        sourceOriginalPath=str(path), sourceKind="image", sourceMetadata=None,
+    )
+    dataset = SimpleNamespace(
+        id="session-id", label="today.h5", raw_deleted=False,
+        matches_source=lambda candidate_path, dataset_name: (
+            str(candidate_path) == str(path) and dataset_name == "Camera"
+        ),
+    )
+    session = SimpleNamespace(datasets=[dataset])
+    reconstructor = SimpleNamespace(id="monalisa", result_role="derived")
+    queue = ProcessingQueue()
+    fake = SimpleNamespace(
+        queue=queue,
+        _main=SimpleNamespace(_activeReconstructor=reconstructor),
+        _sessionController=SimpleNamespace(session=session),
+        _externalSources={},
+        _snapshot_params=lambda _reconstructor: {},
+        _emit_changed=lambda: None,
+        _process_next=lambda: None,
+    )
+
+    added = ProcessingQueueController.enqueueLoadedDataObjs(fake, [data_obj])
+
+    assert added == 1
+    job = queue.waiting[0]
+    assert job.dataset_id == "session-id"
+    assert job.source == "session"
+    assert fake._externalSources == {}
+
+
+def test_external_source_registry_prunes_finished_loaded_jobs():
+    queue = ProcessingQueue()
+    job = ProcessingJob(
+        dataset_id="loaded:image:/tmp/a.h5:Camera:",
+        label="a.h5", reconstructor_id="monalisa", params={}, source="loaded",
+    )
+    queue.enqueue(job)
+    source = object()
+    fake = SimpleNamespace(queue=queue, _externalSources={job.dataset_id: source})
+
+    ProcessingQueueController._prune_external_sources(fake)
+    assert fake._externalSources == {job.dataset_id: source}
+
+    queue.take_next()
+    queue.complete_current()
+    ProcessingQueueController._prune_external_sources(fake)
+    assert fake._externalSources == {}
+
+
+def test_closing_session_removes_only_session_waiting_jobs():
+    queue = ProcessingQueue()
+    session_job = ProcessingJob(
+        dataset_id="session-a", label="session-a", reconstructor_id="monalisa",
+        params={}, source="session",
+    )
+    loaded_job = ProcessingJob(
+        dataset_id="loaded:image:/tmp/a.h5:Camera:", label="old-a",
+        reconstructor_id="monalisa", params={}, source="loaded",
+    )
+    queue.enqueue_many([session_job, loaded_job])
+    fake = SimpleNamespace(
+        queue=queue,
+        autoPolicy=SimpleNamespace(enabled=True),
+        _emit_changed=lambda: None,
+        _process_next=lambda: None,
+    )
+
+    ProcessingQueueController.sessionClosed(fake)
+
+    assert fake.autoPolicy.enabled is False
+    assert [job.dataset_id for job in queue.waiting] == [loaded_job.dataset_id]
+
+
+def test_loaded_running_job_does_not_block_session_close():
+    queue = ProcessingQueue()
+    queue.enqueue(ProcessingJob(
+        dataset_id="loaded:image:/tmp/a.h5:Camera:", label="old-a",
+        reconstructor_id="monalisa", params={}, source="loaded",
+    ))
+    queue.take_next()
+    fake = SimpleNamespace(queue=queue)
+
+    assert ProcessingQueueController.canCloseSession(fake)
+
+    queue.complete_current()
+    queue.enqueue(ProcessingJob(
+        dataset_id="session-a", label="session-a", reconstructor_id="monalisa",
+        params={}, source="session",
+    ))
+    queue.take_next()
+    assert not ProcessingQueueController.canCloseSession(fake)

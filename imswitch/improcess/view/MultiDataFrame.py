@@ -35,7 +35,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.relocalizeEachDataItemCheck = QtWidgets.QCheckBox('Relocalize each data item')
         self.relocalizeEachDataItemCheck.setChecked(False)
         self.relocalizeEachDataItemCheck.setToolTip(
-            'MoNaLISA Working Set only. Off reuses one Auto localization across all data items.'
+            'MoNaLISA Multi-data only. Off reuses one Auto localization across all data items.'
         )
         self.relocalizeEachDataItemCheck.setVisible(False)
 

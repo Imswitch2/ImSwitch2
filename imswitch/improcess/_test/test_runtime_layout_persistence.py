@@ -132,9 +132,9 @@ def test_set_widget_state_swallows_restore_exceptions():
 
 
 def test_schema_version_bumped():
-    """The integrated DATA dock invalidates older separate Session/Working Set layouts."""
+    """The shared DATA footer removes the former standalone Actions dock."""
     adapter = _GuiLayoutStateAdapter(_make_view_stub())
-    assert adapter.getStateSchemaVersion() == 4
+    assert adapter.getStateSchemaVersion() == 5
 
 
 def test_startup_hidden_docks_are_rehidden_after_layout_restore():

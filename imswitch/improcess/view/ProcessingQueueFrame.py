@@ -4,7 +4,7 @@ from qtpy import QtCore, QtWidgets
 
 
 class ProcessingQueueFrame(QtWidgets.QFrame):
-    """View/control surface for the existing shared Session processing queue."""
+    """View surface for the shared ImProcess processing queue."""
 
     sigPauseRequested = QtCore.Signal()
     sigResumeRequested = QtCore.Signal()
@@ -12,6 +12,7 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
     sigRemoveWaitingRequested = QtCore.Signal(object)
     sigMoveWaitingRequested = QtCore.Signal(object, int)
     sigQueueCountChanged = QtCore.Signal(int)
+    sigWaitingSelectionStateChanged = QtCore.Signal(bool, bool, bool)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -26,7 +27,7 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
 
         self.summaryLabel = QtWidgets.QLabel("Queue idle")
         self.summaryLabel.setStyleSheet("color: palette(mid);")
-        root.addWidget(self.summaryLabel)
+        self.summaryLabel.hide()
 
         self.queueList = QtWidgets.QTreeWidget()
         self.queueList.setColumnCount(3)
@@ -58,7 +59,11 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         actions.addWidget(self.moveUpBtn)
         actions.addWidget(self.moveDownBtn)
         actions.addStretch(1)
-        root.addLayout(actions)
+        self.pauseResumeBtn.hide()
+        self.skipCurrentBtn.hide()
+        self.removeWaitingBtn.hide()
+        self.moveUpBtn.hide()
+        self.moveDownBtn.hide()
 
         self.pauseResumeBtn.clicked.connect(self._pause_resume_clicked)
         self.skipCurrentBtn.clicked.connect(self.sigSkipCurrentRequested)
@@ -103,11 +108,28 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         waiting_ids = [str(getattr(job, "id", "")) for job in waiting]
         indices = [index for index, job_id in enumerate(waiting_ids) if job_id in selected]
         has_selection = bool(indices)
+        can_up = bool(indices) and min(indices) > 0
+        can_down = bool(indices) and max(indices) < len(waiting_ids) - 1
         self.removeWaitingBtn.setEnabled(has_selection)
-        self.moveUpBtn.setEnabled(bool(indices) and min(indices) > 0)
-        self.moveDownBtn.setEnabled(
-            bool(indices) and max(indices) < len(waiting_ids) - 1
-        )
+        self.moveUpBtn.setEnabled(can_up)
+        self.moveDownBtn.setEnabled(can_down)
+        self.sigWaitingSelectionStateChanged.emit(has_selection, can_up, can_down)
+
+
+    def requestPauseResume(self) -> None:
+        self._pause_resume_clicked()
+
+    def requestSkipCurrent(self) -> None:
+        if (self._lastSnapshot or {}).get("current") is not None:
+            self.sigSkipCurrentRequested.emit()
+
+    def requestRemoveSelected(self) -> None:
+        self._remove_selected_waiting()
+
+    def requestMoveSelected(self, direction: int) -> None:
+        ids = self._selected_waiting_ids()
+        if ids and int(direction) in {-1, 1}:
+            self.sigMoveWaitingRequested.emit(ids, int(direction))
 
     def setProcessingQueue(self, snapshot: dict | None) -> None:
         selected_ids = set(self._selected_waiting_ids())
@@ -122,10 +144,13 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         jobs = ([current] if current is not None else []) + waiting
         for job in jobs:
             state = self._value(getattr(job, "state", ""))
+            origin = self._value(getattr(job, "origin", ""))
+            source = str(getattr(job, "source", "session") or "session")
+            origin_text = "Auto" if origin == "auto" else source.replace("_", " ").title()
             item = QtWidgets.QTreeWidgetItem([
                 str(getattr(job, "label", "")),
                 state.upper(),
-                self._value(getattr(job, "origin", "")).replace("_", " ").title(),
+                origin_text,
             ])
             job_id = str(getattr(job, "id", ""))
             item.setData(0, QtCore.Qt.UserRole, job_id)

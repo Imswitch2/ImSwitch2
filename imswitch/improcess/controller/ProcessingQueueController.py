@@ -1,9 +1,8 @@
-"""Shared Session processing queue and serial runner.
+"""Shared serial processing queue for Session and ad-hoc Loaded data.
 
-Patch-2 backend: manual Session batches and automatic Session processing feed the
-same lazy queue.  The legacy DirectoryWatcher UI is intentionally left intact in
-this patch; the integrated Session UI can switch to this controller later once
-the execution model has been validated.
+Manual Session batches, Session auto-processing, and Quick Load batches feed the
+same lazy queue. Sources remain lightweight until execution; Session ownership
+and autosave semantics are retained only for Session-backed jobs.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from imswitch.improcess.live.job import (
     watcher_entry_for_source,
 )
 from imswitch.improcess.model.DataObj import DataObj
+from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
 from imswitch.improcess.model.processing_queue import (
     AutoProcessPolicy,
     ProcessingJob,
@@ -39,9 +39,10 @@ from imswitch.improcess.reconstructors.registry import get_registry
 
 
 class ProcessingQueueController(ImProcessWidgetController):
-    """One serial processing lane shared by manual and automatic Session work."""
+    """One serial processing lane shared by manual and automatic processing."""
 
     sigQueueChanged = QtCore.Signal(object)
+    sigProgressChanged = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -58,6 +59,10 @@ class ProcessingQueueController(ImProcessWidgetController):
 
         self.queue = ProcessingQueue()
         self.autoPolicy = AutoProcessPolicy()
+        # Runtime-only ad-hoc sources queued from Quick Load. The queue model
+        # keeps only a stable logical id; this registry keeps the lightweight
+        # DataObj reference needed to materialize the source lazily at execution.
+        self._externalSources: dict[str, DataObj] = {}
 
         self._offlineThread = None
         self._offlineWorker = None
@@ -70,7 +75,10 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._live = LiveReconstructionController(self._commChannel)
         self._live.sigFinalResult.connect(self._on_live_final_result)
         self._live.sigFinished.connect(self._on_live_finished)
+        self._live.sigTimepointProgress.connect(self._on_live_timepoint_progress)
         self._liveFinalResult = None
+        self._currentProgress = {}
+        self._currentPlannedTimepoints = None
         self._skipRequested = False
 
         # Retry an auto job whose newly-created store is not readable yet.
@@ -89,6 +97,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     def queueSnapshot(self):
         snapshot = self.queue.view_snapshot(waiting_limit=100)
         snapshot["auto_enabled"] = bool(self.autoPolicy.enabled)
+        snapshot["current_progress"] = dict(self._currentProgress or {})
         return snapshot
 
     def queueDatasetStates(self) -> dict[str, str]:
@@ -170,6 +179,81 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._process_next()
         return added
 
+    def enqueueLoadedDataObjs(self, data_objs, *, position: str = "end") -> int:
+        """Queue selected Quick Load sources through the shared serial runner.
+
+        The catalog objects themselves remain unloaded until their job starts.
+        If an object actually belongs to the active Session, submit the Session
+        identity instead so result ownership/autosave semantics remain exact.
+        """
+        reconstructor = getattr(self._main, "_activeReconstructor", None)
+        if reconstructor is None:
+            return 0
+        if str(getattr(reconstructor, "result_role", "derived")) == "inspection":
+            return 0
+        params = self._snapshot_params(reconstructor)
+        session = getattr(self._sessionController, "session", None)
+        jobs = []
+        for data_obj in list(data_objs or ()):
+            if data_obj is None:
+                continue
+            session_dataset = None
+            if session is not None:
+                path = getattr(data_obj, "dataPath", None)
+                dataset_name = getattr(data_obj, "datasetName", None)
+                for candidate in session.datasets:
+                    if candidate.matches_source(path, dataset_name):
+                        session_dataset = candidate
+                        break
+            if session_dataset is not None:
+                jobs.append(self._job_for_dataset(
+                    session_dataset, reconstructor, params,
+                    origin=ProcessingOrigin.MANUAL,
+                ))
+                continue
+
+            source_kind = str(getattr(data_obj, "sourceKind", "image") or "image")
+            if source_kind not in {"image", TIME_LAPSE_SOURCE_KIND}:
+                continue
+            # Batch jobs must be reopenable independently of the Current-data
+            # object. Quick Load normally satisfies this; reject RAM-only
+            # objects rather than letting the queue later mutate/unload them.
+            if not (getattr(data_obj, "dataPath", None) or getattr(data_obj, "sourceOriginalPath", None)):
+                self._logger.warning(
+                    "Cannot queue %s: the source has no reopenable path",
+                    getattr(data_obj, "name", "Loaded data"),
+                )
+                continue
+            source_id = self._external_source_id(data_obj)
+            self._externalSources[source_id] = data_obj
+            jobs.append(ProcessingJob(
+                dataset_id=source_id,
+                label=str(getattr(data_obj, "name", "") or getattr(data_obj, "datasetName", "") or "Data"),
+                reconstructor_id=str(reconstructor.id),
+                params=copy.deepcopy(params),
+                origin=ProcessingOrigin.MANUAL,
+                source="loaded",
+            ))
+        added = self.queue.enqueue_many(jobs, position=position)
+        if added:
+            self._emit_changed()
+            self._process_next()
+        return added
+
+    @staticmethod
+    def _external_source_id(data_obj) -> str:
+        path = str(
+            getattr(data_obj, "sourceOriginalPath", "")
+            or getattr(data_obj, "dataPath", "")
+            or ""
+        )
+        dataset = str(getattr(data_obj, "datasetName", "") or "")
+        kind = str(getattr(data_obj, "sourceKind", "image") or "image")
+        index = getattr(data_obj, "sourceMetadata", None)
+        anchor = getattr(index, "anchor", None)
+        anchor_dataset = str(getattr(anchor, "dataset", "") or "")
+        return f"loaded:{kind}:{path}:{dataset}:{anchor_dataset}"
+
     def pause(self) -> None:
         """Pause queue advancement and a live run at its next TP boundary."""
         self.queue.pause()
@@ -185,15 +269,21 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._process_next()
 
     def canCloseSession(self) -> bool:
-        """An active job must remain attached to its Session until it finishes."""
-        return self.queue.current is None
+        """Only a running Session-owned job blocks closing the Session."""
+        current = self.queue.current
+        return current is None or str(getattr(current, "source", "session")) != "session"
 
     def sessionClosed(self) -> None:
-        """Discard pending work only after Session close has been confirmed."""
+        """Discard Session-owned waiting work without disturbing Loaded jobs."""
         self.autoPolicy.enabled = False
-        self.queue.clear_waiting()
-        self.queue.resume()
+        session_job_ids = [
+            job.id for job in self.queue.waiting
+            if str(getattr(job, "source", "session")) == "session"
+        ]
+        if session_job_ids:
+            self.queue.remove_waiting(session_job_ids)
         self._emit_changed()
+        self._process_next()
 
     def skipCurrent(self) -> None:
         """Skip the current job at the safest boundary the active runner offers."""
@@ -262,18 +352,32 @@ class ProcessingQueueController(ImProcessWidgetController):
             reconstructor_id=str(reconstructor.id),
             params=copy.deepcopy(params),
             origin=origin,
+            source="session",
         )
+
+    def _resolve_job_source(self, job):
+        if str(getattr(job, "source", "session") or "session") == "loaded":
+            return self._externalSources.get(str(job.dataset_id))
+        session = getattr(self._sessionController, "session", None)
+        return session.dataset_by_id(job.dataset_id) if session is not None else None
+
+    @staticmethod
+    def _is_external_source(source) -> bool:
+        return isinstance(source, DataObj)
 
     # ------------------------------------------------------------------ execution
 
     @QtCore.Slot()
     def _process_next(self) -> None:
+        reconstructor_manager = getattr(self, "_reconstructorManager", None)
+        direct_running = getattr(reconstructor_manager, "isReconstructionRunning", None)
         if (
             self._closing
             or self.queue.paused
             or self.queue.current is not None
             or self._offlineThread is not None
             or self._live.is_running
+            or (callable(direct_running) and direct_running())
         ):
             return
 
@@ -281,37 +385,27 @@ class ProcessingQueueController(ImProcessWidgetController):
         if not waiting:
             return
 
-        # Match the original DirectoryWatcher/JobQueue behavior: a newly
-        # discovered Auto source stays WAITING while it is still becoming
-        # readable. Previously we took/deferred the job every 500 ms, emitting
-        # RUNNING -> WAITING twice per probe and forcing the Session UI to
-        # rebuild on every retry.
+        # Probe a streaming source while it is still WAITING. A newly-created
+        # Session/Loaded recording may not be readable yet; do not churn the
+        # visible queue through RUNNING -> WAITING on every retry.
         candidate = waiting[0]
-        prepared_live_job = None
-        live_resolution = None
-        session = getattr(self._sessionController, "session", None)
-        candidate_dataset = (
-            session.dataset_by_id(candidate.dataset_id) if session is not None else None
-        )
+        candidate_source = self._resolve_job_source(candidate)
         candidate_reconstructor = get_registry().get_reconstructor(
             candidate.reconstructor_id, raise_on_missing=False
         )
+        prepared_live_job = None
+        live_resolution = None
         if (
-            candidate_dataset is not None
+            candidate_source is not None
             and candidate_reconstructor is not None
-            and ProcessingQueueController._uses_streaming_runner(
-                candidate, candidate_dataset, candidate_reconstructor
+            and self._uses_streaming_runner(
+                candidate, candidate_source, candidate_reconstructor
             )
         ):
-            # Re-enter the exact DirectoryWatcher/JobQueue boundary. Session
-            # discovery may have descended into a container and stored the
-            # child dataset as primary_path; the old live path starts from the
-            # immediate watched entry and lets JobQueue choose the seed.
-            raw_root = getattr(session, "raw_root", Path(candidate_dataset.primary_path).parent)
-            job_path = watcher_entry_for_source(raw_root, candidate_dataset.primary_path)
-            live_resolution = prepare_entry_job(
-                job_path, candidate_reconstructor
-            )
+            job_path = self._streaming_job_path(candidate_source)
+            if not job_path:
+                return
+            live_resolution = prepare_entry_job(job_path, candidate_reconstructor)
             if live_resolution.state == LiveJobState.PENDING:
                 return
             prepared_live_job = live_resolution.prepared
@@ -321,76 +415,95 @@ class ProcessingQueueController(ImProcessWidgetController):
             return
         self._skipRequested = False
         self._liveFinalResult = None
+        self._currentProgress = {
+            "fraction": 0.0,
+            "status": "Starting…",
+        }
+        self._currentPlannedTimepoints = None
         self._emit_changed()
+        self._emit_progress_changed()
 
-        dataset = session.dataset_by_id(job.dataset_id) if session is not None else None
+        source = self._resolve_job_source(job)
         reconstructor = get_registry().get_reconstructor(
             job.reconstructor_id, raise_on_missing=False
         )
-        if dataset is None:
-            self._finish_current(error="Session dataset no longer exists")
+        if source is None:
+            self._finish_current(error="Queued source no longer exists")
             return
         if reconstructor is None:
             self._finish_current(error=f"Reconstructor {job.reconstructor_id!r} is unavailable")
             return
 
-        if ProcessingQueueController._uses_streaming_runner(
-            job, dataset, reconstructor
-        ):
+        if self._uses_streaming_runner(job, source, reconstructor):
             if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
                 reason = live_resolution.reason or "Streaming source access failed"
-                self._logger.error(
-                    "Failing queued dataset %s: %s",
-                    getattr(dataset, "label", job.label),
-                    reason,
-                )
+                self._logger.error("Failing queued dataset %s: %s", job.label, reason)
                 self._finish_current(error=reason)
                 return
             if live_resolution is not None and live_resolution.state == LiveJobState.UNSUPPORTED:
                 reason = live_resolution.reason or "Streaming source is unsupported"
-                self._logger.warning(
-                    "Skipping queued dataset %s: %s",
-                    getattr(dataset, "label", job.label),
-                    reason,
-                )
+                self._logger.warning("Skipping queued dataset %s: %s", job.label, reason)
                 self._finish_current(error=reason)
                 return
-            if self._start_live(
-                job, dataset, reconstructor, prepared=prepared_live_job
-            ):
+            if self._start_live(job, source, reconstructor, prepared=prepared_live_job):
                 return
             self._finish_current(error="Streaming source is not compatible with this dataset")
             return
 
-        self._start_offline(job, dataset, reconstructor)
+        self._start_offline(job, source, reconstructor)
 
     @staticmethod
-    def _uses_streaming_runner(job, dataset, reconstructor) -> bool:
-        """Whether this logical dataset must stay one streaming reconstruction.
+    def _source_kind(source) -> str:
+        if isinstance(source, DataObj):
+            return (
+                "time-lapse"
+                if str(getattr(source, "sourceKind", "image") or "image")
+                == TIME_LAPSE_SOURCE_KIND
+                else "scan"
+            )
+        return str(getattr(source, "kind", "") or "")
 
-        Automatic jobs follow growing sources through the streaming runner, as
-        before.  More importantly, a logical Session time-lapse is *always* one
-        processing unit when the selected reconstructor supports streaming --
-        independent of whether it was submitted manually, automatically, or
-        from Multi Data Management.  Exploding its ``source_refs`` into offline
-        jobs would turn one T-series into one Result per timepoint.
-        """
-        if dataset is None or reconstructor is None:
+    @staticmethod
+    def _planned_timepoints(source):
+        if isinstance(source, DataObj):
+            index = getattr(source, "sourceMetadata", None)
+            return getattr(index, "planned_count", None) if index is not None else None
+        return getattr(source, "planned_timepoints", None)
+
+    def _streaming_job_path(self, source) -> str | None:
+        if isinstance(source, DataObj):
+            return str(
+                getattr(source, "sourceOriginalPath", "")
+                or getattr(source, "dataPath", "")
+                or ""
+            ) or None
+        path = str(getattr(source, "primary_path", "") or "")
+        if not path:
+            return None
+        session = getattr(self._sessionController, "session", None)
+        raw_root = getattr(session, "raw_root", Path(path).parent)
+        return watcher_entry_for_source(raw_root, path)
+
+    @staticmethod
+    def _uses_streaming_runner(job, source, reconstructor) -> bool:
+        """Keep every logical time-lapse as one processing unit when possible."""
+        if source is None or reconstructor is None:
             return False
         if not getattr(reconstructor, "supports_streaming", False):
             return False
         return (
             job.origin == ProcessingOrigin.AUTO
-            or str(getattr(dataset, "kind", "")) == "time-lapse"
+            or ProcessingQueueController._source_kind(source) == "time-lapse"
         )
 
-    def _start_live(self, job, dataset, reconstructor, *, prepared=None) -> bool:
+    def _start_live(self, job, source, reconstructor, *, prepared=None) -> bool:
+        self._currentPlannedTimepoints = self._planned_timepoints(source)
         if not getattr(reconstructor, "supports_streaming", False):
             return False
         if prepared is None:
-            session = getattr(self._sessionController, "session", None)
-            raw_root = getattr(session, "raw_root", Path(dataset.primary_path).parent)
-            job_path = watcher_entry_for_source(raw_root, dataset.primary_path)
+            job_path = self._streaming_job_path(source)
+            if not job_path:
+                return False
             resolution = prepare_entry_job(job_path, reconstructor)
             if resolution.state != LiveJobState.READY:
                 return False
@@ -398,16 +511,17 @@ class ProcessingQueueController(ImProcessWidgetController):
 
         source_type = prepared.source_type
         self._logger.info(
-            "Processing dataset %s: kind=%s origin=%s runner=streaming "
-            "job=%s seed=%s source=%s/%s timepoints=%s",
-            getattr(dataset, "label", job.label),
-            getattr(dataset, "kind", ""),
+            "Processing dataset %s: kind=%s origin=%s source=%s runner=streaming "
+            "job=%s seed=%s raw=%s/%s timepoints=%s",
+            job.label,
+            self._source_kind(source),
             getattr(job.origin, "value", str(job.origin)),
+            getattr(job, "source", "session"),
             prepared.job_path,
             prepared.seed_path,
             getattr(source_type, "format_id", "?"),
             getattr(source_type, "layout", "?"),
-            getattr(dataset, "planned_timepoints", None),
+            self._planned_timepoints(source),
         )
         try:
             started = start_prepared_live_job(
@@ -425,13 +539,13 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error="Live reconstruction did not start")
         return True
 
-    def _start_offline(self, job, dataset, reconstructor) -> None:
+    def _start_offline(self, job, source, reconstructor) -> None:
         self._logger.info(
             "Processing dataset %s: kind=%s origin=%s runner=offline timepoints=%s",
-            getattr(dataset, "label", job.label),
-            getattr(dataset, "kind", ""),
+            job.label,
+            self._source_kind(source),
             getattr(job.origin, "value", str(job.origin)),
-            getattr(dataset, "planned_timepoints", None),
+            self._planned_timepoints(source),
         )
         if reconstructor.id == "monalisa-legacy":
             self._finish_current(
@@ -439,7 +553,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             )
             return
 
-        data_objs = self._data_objs_for_dataset(dataset)
+        data_objs = self._data_objs_for_source(source)
         if not data_objs:
             self._finish_current(error="No readable source units found")
             return
@@ -483,6 +597,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.progress.connect(self._on_offline_progress)
         worker.resultReady.connect(
             lambda result, _run, r=reconstructor: self._on_offline_result(result, r)
         )
@@ -500,9 +615,30 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineWorker = worker
         thread.start()
 
-    def _data_objs_for_dataset(self, dataset) -> list[DataObj]:
-        refs = list(getattr(dataset, "source_refs", ()) or ())
-        if dataset.kind != "time-lapse":
+    def _data_objs_for_source(self, source) -> list[DataObj]:
+        if isinstance(source, DataObj):
+            if str(getattr(source, "sourceKind", "image") or "image") != "image":
+                return []
+            path = getattr(source, "dataPath", None)
+            dataset_name = getattr(source, "datasetName", None)
+            if path:
+                if dataset_name in (None, ""):
+                    try:
+                        names = list(DataObj.getDatasetNames(str(path)))
+                    except Exception:
+                        return []
+                    if len(names) != 1:
+                        return []
+                    dataset_name = names[0]
+                # Use a fresh lazy DataObj so a queued batch cannot unload or
+                # mutate the catalog/current object the operator is inspecting.
+                return [DataObj(Path(str(path)).name, str(dataset_name), path=str(path))]
+            # Shared queued processing is intentionally disk-backed so worker
+            # cleanup can never unload/mutate the catalog or Current-data object.
+            return []
+
+        refs = list(getattr(source, "source_refs", ()) or ())
+        if self._source_kind(source) != "time-lapse":
             refs = refs[:1]
         out = []
         for ref in refs:
@@ -520,9 +656,42 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     def _claim_current_result(self, result) -> None:
         job = self.queue.current
+        if job is None or str(getattr(job, "source", "session")) != "session":
+            return
         claimer = getattr(self._sessionController, "claimResultForDataset", None)
-        if job is not None and callable(claimer):
+        if callable(claimer):
             claimer(result, job.dataset_id)
+
+    @QtCore.Slot(object)
+    def _on_offline_progress(self, progress) -> None:
+        if self.queue.current is None:
+            return
+        message = str(progress.message or progress.phase.replace("_", " ").capitalize())
+        # ReconstructionWorker may prefix internal source-unit position.  The
+        # footer already shows the logical queue-batch Item x/y, so keep the
+        # phase/status concise there.
+        if message.startswith("Item ") and ": " in message:
+            message = message.split(": ", 1)[1]
+        self._currentProgress = {
+            "fraction": max(0.0, min(1.0, float(progress.fraction))),
+            "status": message,
+        }
+        self._emit_progress_changed()
+
+    @QtCore.Slot(int)
+    def _on_live_timepoint_progress(self, completed: int) -> None:
+        if self.queue.current is None or not self._live.is_running:
+            return
+        total = int(self._currentPlannedTimepoints or 0)
+        completed = max(0, int(completed))
+        if total > 0:
+            fraction = max(0.0, min(1.0, completed / total))
+            status = f"Timepoint {min(completed, total)}/{total}"
+        else:
+            fraction = None
+            status = f"Timepoint {completed}"
+        self._currentProgress = {"fraction": fraction, "status": status}
+        self._emit_progress_changed()
 
     @QtCore.Slot(object, object)
     def _on_offline_result(self, result, reconstructor) -> None:
@@ -623,11 +792,35 @@ class ProcessingQueueController(ImProcessWidgetController):
             self.queue.complete_current()
         self._skipRequested = False
         self._liveFinalResult = None
+        self._currentProgress = {}
+        self._currentPlannedTimepoints = None
         self._emit_changed()
+        self._emit_progress_changed()
         if not self._closing and not self.queue.paused:
             QtCore.QTimer.singleShot(0, self._process_next)
 
+    def _prune_external_sources(self) -> None:
+        active_ids = {
+            str(job.dataset_id)
+            for job in (
+                ([self.queue.current] if self.queue.current is not None else [])
+                + list(self.queue.waiting)
+            )
+            if str(getattr(job, "source", "session") or "session") == "loaded"
+        }
+        for source_id in tuple(self._externalSources):
+            if source_id not in active_ids:
+                self._externalSources.pop(source_id, None)
+
+    def _emit_progress_changed(self) -> None:
+        snapshot = self.queueSnapshot()
+        self.sigProgressChanged.emit({
+            "current": snapshot.get("current"),
+            "current_progress": dict(snapshot.get("current_progress") or {}),
+        })
+
     def _emit_changed(self) -> None:
+        self._prune_external_sources()
         snapshot = self.queueSnapshot()
         snapshot["changed_dataset_ids"] = self.queue.consume_changed_dataset_ids()
         self.sigQueueChanged.emit(snapshot)
@@ -637,6 +830,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._retryTimer.stop()
         self.autoPolicy.enabled = False
         self.queue.clear_waiting()
+        self._externalSources.clear()
         self.queue.pause()
         if self._live.is_running:
             self._live.stop(graceful=False)

@@ -1,6 +1,6 @@
-"""Shared lazy processing queue for manual, Working Set and automatic Session jobs.
+"""Shared lazy processing queue for manual, Multi-data and automatic Session jobs.
 
-The queue stores *references* to logical Session datasets, never loaded image data.
+The queue stores lightweight logical source references, never loaded image pixels.
 Loading and execution belong to the controller/runner layer.  Keeping this model
 Qt-free makes ordering and state transitions deterministic and easy to test.
 """
@@ -41,6 +41,9 @@ class ProcessingJobView:
     origin: ProcessingOrigin
     state: ProcessingJobState
     error: str = ""
+    source: str = "session"
+    batch_index: int = 1
+    batch_total: int = 1
 
 @dataclass
 class ProcessingJob:
@@ -58,6 +61,9 @@ class ProcessingJob:
     id: str = field(default_factory=lambda: uuid4().hex)
     state: ProcessingJobState = ProcessingJobState.WAITING
     error: str = ""
+    source: str = "session"
+    batch_index: int = 1
+    batch_total: int = 1
 
     def snapshot(self) -> "ProcessingJob":
         return ProcessingJob(
@@ -69,6 +75,9 @@ class ProcessingJob:
             origin=self.origin,
             state=self.state,
             error=self.error,
+            source=self.source,
+            batch_index=self.batch_index,
+            batch_total=self.batch_total,
         )
 
     def view(self) -> ProcessingJobView:
@@ -80,6 +89,9 @@ class ProcessingJob:
             origin=self.origin,
             state=self.state,
             error=self.error,
+            source=self.source,
+            batch_index=self.batch_index,
+            batch_total=self.batch_total,
         )
 
 
@@ -142,12 +154,30 @@ class ProcessingQueue:
     def enqueue_many(
         self, jobs: Iterable[ProcessingJob], *, position: str = "end"
     ) -> int:
-        jobs = list(jobs)
-        if position == "next":
-            # Preserve caller order while repeatedly inserting at the front.
-            jobs = list(reversed(jobs))
+        if position not in {"next", "end"}:
+            raise ValueError("position must be 'next' or 'end'")
+
+        # Resolve deduplication before assigning batch metadata.  This keeps
+        # Item x/y truthful even when callers submit an already-active dataset
+        # alongside new work. Duplicate dataset ids inside one submission are
+        # also collapsed deterministically.
+        accepted: list[ProcessingJob] = []
+        seen = set(self._active_dataset_ids)
+        for job in list(jobs):
+            dataset_id = str(job.dataset_id)
+            if dataset_id in seen:
+                continue
+            seen.add(dataset_id)
+            accepted.append(job)
+
+        total = len(accepted)
+        for index, job in enumerate(accepted, start=1):
+            job.batch_index = index
+            job.batch_total = max(1, total)
+
+        ordered = list(reversed(accepted)) if position == "next" else accepted
         added = 0
-        for job in jobs:
+        for job in ordered:
             added += int(self.enqueue(job, position=position))
         return added
 

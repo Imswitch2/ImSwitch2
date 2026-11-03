@@ -417,6 +417,26 @@ class MonalisaReconstructor(StreamingReconstructor):
             "sharpen": bool(params.get("sharpen", False)),
         }
 
+    def can_update_reconstruction(self, result, params: dict) -> tuple[bool, str]:
+        """Return whether Fast placement-only update is valid for ``result``."""
+        if result is None:
+            return False, "Select a Fast MoNaLISA reconstruction to update."
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        if str(merged.get("preset", "Fast")) != "Fast":
+            return False, "Update reconstruction is available only in Fast mode."
+        expected = getattr(result, "_monalisa_fast_update_signature", None)
+        if expected is None or not hasattr(result, "_fast_placement_cache"):
+            return False, "The selected result has no retained Fast extraction."
+        current = self._fast_update_signature(merged)
+        if current != expected:
+            return (
+                False,
+                "Localization, spot model, scan or extraction settings changed; "
+                "run a full reconstruction first.",
+            )
+        return True, "Re-place the selected Fast reconstruction using the current scan orientation."
+
     def update_reconstruction(self, result, params: dict):
         """Fast placement-only refresh, primarily for visual orientation checks."""
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
@@ -425,21 +445,9 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         merged = unified_default_params()
         merged.update(dict(params or {}))
-        if str(merged.get("preset", "Fast")) != "Fast":
-            raise ValueError(
-                "Update reconstruction is currently available only in Fast mode."
-            )
-        expected = getattr(result, "_monalisa_fast_update_signature", None)
-        if expected is None or not hasattr(result, "_fast_placement_cache"):
-            raise ValueError(
-                "This result has no retained Fast extraction. Run Fast reconstruction first."
-            )
-        current = self._fast_update_signature(merged)
-        if current != expected:
-            raise ValueError(
-                "Localization, spot model, scan or extraction settings changed. "
-                "Run a full reconstruction before using Update reconstruction."
-            )
+        available, reason = self.can_update_reconstruction(result, merged)
+        if not available:
+            raise ValueError(reason)
 
         orientation = self._orientation_literal(merged)
         if orientation is None:
