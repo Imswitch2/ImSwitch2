@@ -29,6 +29,10 @@ from imswitch.improcess.live.job import (
 )
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
+from imswitch.improcess.model.timepoint_scope import (
+    TimepointScope,
+    coerce_timepoint_scope,
+)
 from imswitch.improcess.model.processing_queue import (
     AutoProcessPolicy,
     ProcessingJob,
@@ -141,6 +145,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                 reconstructor,
                 params,
                 origin=ProcessingOrigin.AUTO,
+                timepoint_scope=TimepointScope.all(),
             ))
         added = self.queue.enqueue_many(jobs, position="end")
         if added:
@@ -154,8 +159,13 @@ class ProcessingQueueController(ImProcessWidgetController):
         *,
         origin: ProcessingOrigin | str = ProcessingOrigin.MANUAL,
         position: str = "end",
+        timepoint_scope=None,
     ) -> int:
-        """Queue logical Session datasets without loading them first."""
+        """Queue logical Session datasets without loading them first.
+
+        ``timepoint_scope`` is meaningful only for a single logical lapse. It is
+        snapped into the queue job and never follows later Current-T changes.
+        """
         session = getattr(self._sessionController, "session", None)
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         if session is None or reconstructor is None:
@@ -169,19 +179,30 @@ class ProcessingQueueController(ImProcessWidgetController):
             raise ValueError(f"Unknown processing origin: {origin!r}")
 
         params = self._snapshot_params(reconstructor)
+        dataset_ids = list(dataset_ids or ())
+        requested_scope = coerce_timepoint_scope(timepoint_scope)
         jobs = []
         for dataset_id in dataset_ids:
             dataset = session.dataset_by_id(str(dataset_id))
             if dataset is None or getattr(dataset, "raw_deleted", False):
                 continue
-            jobs.append(self._job_for_dataset(dataset, reconstructor, params, origin=origin))
+            scope = (
+                requested_scope
+                if len(dataset_ids) == 1 and getattr(dataset, "kind", "") == "time-lapse"
+                else TimepointScope.all()
+            )
+            jobs.append(self._job_for_dataset(
+                dataset, reconstructor, params, origin=origin, timepoint_scope=scope
+            ))
         added = self.queue.enqueue_many(jobs, position=position)
         if added:
             self._emit_changed()
             self._process_next()
         return added
 
-    def enqueueLoadedDataObjs(self, data_objs, *, position: str = "end") -> int:
+    def enqueueLoadedDataObjs(
+        self, data_objs, *, position: str = "end", timepoint_scope=None
+    ) -> int:
         """Queue selected Quick Load sources through the shared serial runner.
 
         The catalog objects themselves remain unloaded until their job starts.
@@ -195,8 +216,10 @@ class ProcessingQueueController(ImProcessWidgetController):
             return 0
         params = self._snapshot_params(reconstructor)
         session = getattr(self._sessionController, "session", None)
+        data_objs = list(data_objs or ())
+        requested_scope = coerce_timepoint_scope(timepoint_scope)
         jobs = []
-        for data_obj in list(data_objs or ()):
+        for data_obj in data_objs:
             if data_obj is None:
                 continue
             session_dataset = None
@@ -208,9 +231,14 @@ class ProcessingQueueController(ImProcessWidgetController):
                         session_dataset = candidate
                         break
             if session_dataset is not None:
+                scope = (
+                    requested_scope
+                    if len(data_objs) == 1 and getattr(session_dataset, "kind", "") == "time-lapse"
+                    else TimepointScope.all()
+                )
                 jobs.append(self._job_for_dataset(
                     session_dataset, reconstructor, params,
-                    origin=ProcessingOrigin.MANUAL,
+                    origin=ProcessingOrigin.MANUAL, timepoint_scope=scope,
                 ))
                 continue
 
@@ -228,6 +256,11 @@ class ProcessingQueueController(ImProcessWidgetController):
                 continue
             source_id = self._external_source_id(data_obj)
             self._externalSources[source_id] = data_obj
+            scope = (
+                requested_scope
+                if len(data_objs) == 1 and source_kind == TIME_LAPSE_SOURCE_KIND
+                else TimepointScope.all()
+            )
             jobs.append(ProcessingJob(
                 dataset_id=source_id,
                 label=str(getattr(data_obj, "name", "") or getattr(data_obj, "datasetName", "") or "Data"),
@@ -235,6 +268,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                 params=copy.deepcopy(params),
                 origin=ProcessingOrigin.MANUAL,
                 source="loaded",
+                timepoint_scope=scope,
             ))
         added = self.queue.enqueue_many(jobs, position=position)
         if added:
@@ -347,7 +381,9 @@ class ProcessingQueueController(ImProcessWidgetController):
         return {}
 
     @staticmethod
-    def _job_for_dataset(dataset, reconstructor, params, *, origin):
+    def _job_for_dataset(
+        dataset, reconstructor, params, *, origin, timepoint_scope=None
+    ):
         return ProcessingJob(
             dataset_id=str(dataset.id),
             label=str(dataset.label),
@@ -355,6 +391,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             params=copy.deepcopy(params),
             origin=origin,
             source="session",
+            timepoint_scope=coerce_timepoint_scope(timepoint_scope),
         )
 
     def _resolve_job_source(self, job):

@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from imswitch.improcess.model.timepoint_scope import TimepointScope
 from imswitch.improcess.model.processing_queue import (
     AutoProcessPolicy,
     ProcessingJob,
@@ -231,3 +232,17 @@ def test_enqueue_many_assigns_truthful_batch_positions_after_deduplication():
     view = waiting[0].view()
     assert view.batch_index == 1
     assert view.batch_total == 2
+
+
+def test_timepoint_scope_is_snapshotted_with_logical_job_and_not_part_of_dedup_identity():
+    queue = ProcessingQueue()
+    scoped = _job("lapse")
+    scoped.timepoint_scope = TimepointScope.range(3, 11)
+    assert queue.enqueue(scoped) is True
+
+    view = queue.view_snapshot()["waiting"][0]
+    assert view.timepoint_scope == TimepointScope.range(3, 11)
+    assert queue.enqueue(ProcessingJob(
+        dataset_id="lapse", label="lapse", reconstructor_id="test", params={},
+        timepoint_scope=TimepointScope.single(15),
+    )) is False

@@ -11,6 +11,11 @@ import copy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable
+
+from imswitch.improcess.model.timepoint_scope import (
+    TimepointScope,
+    coerce_timepoint_scope,
+)
 from uuid import uuid4
 
 
@@ -44,6 +49,7 @@ class ProcessingJobView:
     source: str = "session"
     batch_index: int = 1
     batch_total: int = 1
+    timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
 
 @dataclass
 class ProcessingJob:
@@ -64,6 +70,10 @@ class ProcessingJob:
     source: str = "session"
     batch_index: int = 1
     batch_total: int = 1
+    timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
+
+    def __post_init__(self) -> None:
+        self.timepoint_scope = coerce_timepoint_scope(self.timepoint_scope)
 
     def snapshot(self) -> "ProcessingJob":
         return ProcessingJob(
@@ -78,6 +88,7 @@ class ProcessingJob:
             source=self.source,
             batch_index=self.batch_index,
             batch_total=self.batch_total,
+            timepoint_scope=self.timepoint_scope,
         )
 
     def view(self) -> ProcessingJobView:
@@ -92,6 +103,7 @@ class ProcessingJob:
             source=self.source,
             batch_index=self.batch_index,
             batch_total=self.batch_total,
+            timepoint_scope=self.timepoint_scope,
         )
 
 

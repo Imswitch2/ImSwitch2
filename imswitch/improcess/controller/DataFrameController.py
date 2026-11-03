@@ -198,6 +198,34 @@ class DataFrameController(ImProcessWidgetController):
             and not self._widget.timepointLoading.isVisible()
         )
 
+    def currentTimeLapseContext(self) -> dict | None:
+        """Read-only logical-lapse inspection state for reconstruction scope UI.
+
+        The returned position is stable only when ``ready`` is true.  Callers
+        must snapshot it at queue submission rather than retaining this dict.
+        """
+        source = self._timeLapseSource
+        if source is None:
+            return None
+        total = (
+            len(self._timeLapsePlan.slots)
+            if self._timeLapsePlan is not None
+            else int(getattr(getattr(source, "sourceMetadata", None), "planned_count", 0) or 0)
+        )
+        current = getattr(self._main, "_currentDataObj", None) if self._main else None
+        ready = bool(
+            self.currentDataReadyForProcessing()
+            and current is not None
+            and getattr(current, "_timeLapseParent", None) is source
+            and int(getattr(current, "_timeLapsePosition", -1)) == int(self._timepointPosition)
+        )
+        return {
+            "source": source,
+            "position": int(self._timepointPosition),
+            "total": max(0, int(total or 0)),
+            "ready": ready,
+        }
+
     def patternUpdated(self, pattern):
         self._pattern = pattern
         self._patternGridMade = False
