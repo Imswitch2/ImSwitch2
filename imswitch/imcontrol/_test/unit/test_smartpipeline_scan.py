@@ -170,8 +170,15 @@ class _Workflow:
 
 
 class _ScanPanel:
-    def __init__(self):
+    def __init__(self, busy_for=0):
         self.overviews, self.acquisitions = [], []
+        self._busy_polls = busy_for
+
+    def _isBusy(self):
+        if self._busy_polls > 0:
+            self._busy_polls -= 1
+            return True
+        return False
 
     def applyOverviewPlan(self, *, field_um=None, lasers=None):
         self.overviews.append((field_um, lasers))
@@ -232,6 +239,25 @@ def test_every_input_point_is_scanned_one_after_the_other():
     workflow.next_scan().finish()
     workflow.next_scan().finish()
     assert limited.wait(2) and limited.result["scans"] == 2
+
+
+def test_the_adapter_waits_for_the_panel_to_be_idle_before_setting_a_plan():
+    panel, workflow = _ScanPanel(busy_for=3), _Workflow()
+    adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow)
+    completion = adapter.start(_request({"mode": "overview"}), None)
+    scan = workflow.next_scan()                   # started once the panel reported idle
+    assert panel.overviews == [(60.0, None)] and panel._busy_polls == 0
+    scan.finish()
+    assert completion.wait(2) and completion.outcome == "ok"
+
+    class Stuck(_ScanPanel):
+        def _isBusy(self):
+            return True
+
+    stuck = RunScanAdapter(lambda: {"Scan": Stuck()}, _Workflow())
+    completion = stuck.start(_request({"mode": "overview"}), None)
+    stuck._wait_idle = lambda source, timeout_s=0.1: RunScanAdapter._wait_idle(stuck, source, 0.1)
+    assert completion.wait(8) and completion.outcome == "failed" and "stayed busy" in completion.error
 
 
 def test_aborting_a_running_scan_asks_the_workflow_to_abort_it():

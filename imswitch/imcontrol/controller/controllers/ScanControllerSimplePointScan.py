@@ -516,6 +516,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     def applyOverviewPlan(self, *, field_um=None, lasers=None):
         """ Put the panel on the overview page, with ``field_um`` and the
         overview's lasers when given; the plan is rebuilt at once. """
+        if self._isBusy():
+            raise RuntimeError('the Scan panel is busy (a scan is running or being released)')
         state = self._simple()
         if lasers:
             acquisition = state['acquisition']
@@ -534,6 +536,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         ``length_um`` per axis at ``step_um``, the dwell and the one channel
         of ``lasers`` when given. The region is clamped to the scanners'
         range and the dwell to what the fast axis allows. """
+        if self._isBusy():
+            raise RuntimeError('the Scan panel is busy (a scan is running or being released)')
         state = self._simple()
         plan = state['acquisition']
         limits = state['limits']

@@ -21,6 +21,7 @@ a function there and returns its result.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable, Protocol
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
@@ -226,9 +227,22 @@ class RunScanAdapter:
         return {"mode": mode, "centre_um": centre, "length_um": params.get("length_um"),
                 "pixel_um": params.get("pixel_um"), "lasers": lasers}
 
+    def _wait_idle(self, source: str, timeout_s: float = 5.0) -> None:
+        """The panel releases its run a moment after the completion resolves;
+        a plan set in that moment would be refused, so wait for it."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            busy = self._marshal(lambda: bool(getattr(self._controller(source), "_isBusy", lambda: False)()))
+            if not busy:
+                return
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"the Scan panel {source!r} stayed busy for {timeout_s:g} s")
+            time.sleep(0.05)
+
     def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict):
         """Prepare and run one scan; returns its request completion (the
         scan runs while the caller waits on it)."""
+        self._wait_idle(str(request.params.get("source") or "Scan"))
         summary = self._marshal(lambda: self._prepare(request, centre))
         source = str(request.params.get("source") or "Scan")
         result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,

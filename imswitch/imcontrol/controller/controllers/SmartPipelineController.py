@@ -361,6 +361,11 @@ class SmartPipelineController(ImConWidgetController):
     def _onLogEntry(self, entry):
         text = str(entry)
         self._invokeOnControllerThreadIfNeeded(lambda: self._widget.appendLog(text))
+        if entry.event in ('started', 'would', 'skipped') and entry.detail.get('action'):
+            # The marks belong to the frame they were measured on; an action
+            # (a scan) changes what the live view shows, so they come off
+            # until the next tick draws its own.
+            self._invokeOnControllerThreadIfNeeded(lambda: self._widget.setOverlayPoints([], []))
 
     def _applyMode(self, modeName):
         """ Applies a setup mode on the GUI thread; returns a problem text or None. """
