@@ -51,7 +51,8 @@ def test_a_folder_of_calibrations_loads_and_saves(tmp_path):
 def test_an_etsted_calibration_file_becomes_a_polynomial_transform(tmp_path):
     coefficients = np.random.default_rng(3).normal(size=20)
     path = tmp_path / "2026-11-03.csv"
-    path.write_text("\n".join(str(c) for c in coefficients) + "\n", encoding="utf-8")   # as EtSTED writes it
+    # as EtSTED writes it, at full precision (another test may have narrowed numpy's print options)
+    path.write_text("\n".join(repr(float(c)) for c in coefficients) + "\n", encoding="utf-8")
     assert read_et_coefficients(path) == tuple(float(c) for c in coefficients)
     transform = et_polynomial("etsted_2026-11-03", path, detector="Camera", target_frame="scanner:galvo",
                               swap_xy=True, invert_x=True, calibrated_on=FrameIdentity((512, 512), (2, 2)))
