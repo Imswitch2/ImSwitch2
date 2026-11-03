@@ -12,6 +12,7 @@ from imswitch.improcess.model.lapse_source import (
     read_lapse_headers,
 )
 from imswitch.improcess.model.plane_navigation import extract_plane, plane_axes
+from imswitch.improcess.model.timepoint_scope import logical_time_lapse_identity
 
 from .DataEditController import DataEditController
 from .basecontrollers import ImProcessWidgetController
@@ -190,6 +191,9 @@ class DataFrameController(ImProcessWidgetController):
         setter = getattr(view, 'setCurrentDataProcessingEnabled', None)
         if callable(setter):
             setter(bool(enabled))
+        context_setter = getattr(view, 'setCurrentTimeLapseContext', None)
+        if callable(context_setter):
+            context_setter(self.currentTimeLapseContext())
 
     def currentDataReadyForProcessing(self):
         return (
@@ -221,6 +225,7 @@ class DataFrameController(ImProcessWidgetController):
         )
         return {
             "source": source,
+            "identity": logical_time_lapse_identity(source),
             "position": int(self._timepointPosition),
             "total": max(0, int(total or 0)),
             "ready": ready,

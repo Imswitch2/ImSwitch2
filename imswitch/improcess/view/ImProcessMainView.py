@@ -14,6 +14,7 @@ from imswitch.improcess.model.runtime_tools import (
     runtime_analysis_panel_shortcuts,
 )
 from imswitch.improcess.model.luts import IMAGE_LUTS
+from imswitch.improcess.model.timepoint_scope import TimepointScope
 from .DataFrame import DataFrame
 from .DataWorkspaceFrame import DataWorkspaceFrame
 from .LoadedDataFrame import LoadedDataFrame
@@ -1804,6 +1805,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if hasattr(self, 'dataFrame'):
             self.dataFrame.setProcessCurrentEnabled(bool(enabled))
 
+    def setCurrentTimeLapseContext(self, context) -> None:
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is not None:
+            btnFrame.setCurrentTimeLapseContext(context)
+
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = "", item_index=None,
         item_total=None, item_label=""
@@ -2390,6 +2396,10 @@ class BtnFrame(QtWidgets.QFrame):
         self._currentDataProcessingEnabled = True
         self._context = 'loaded'
         self._selectionCounts = {'loaded': 0, 'session': 0}
+        self._timeLapseSelections = {'loaded': None, 'session': None}
+        self._currentTimeLapseContext = None
+        self._timepointScopeMode = 'all'
+        self._timepointScopeRange = None
         self._multiDataCount = 0
         self._batchProcessingAvailable = True
         self._featureReconstructCurrent = True
@@ -2412,6 +2422,15 @@ class BtnFrame(QtWidgets.QFrame):
         self.quickLoadDataBtn = BetterPushButton('Quick load data')
         self.quickLoadDataBtn.clicked.connect(self.sigQuickLoadData)
         self.quickLoadDataBtn.hide()
+
+        self.scopeLabel = QtWidgets.QLabel('Scope:')
+        self.scopeCombo = QtWidgets.QComboBox()
+        self.scopeCombo.addItem('All T', 'all')
+        self.scopeCombo.addItem('Current T', 'current')
+        self.scopeCombo.addItem('Range…', 'range')
+        self.scopeCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.scopeCombo.setToolTip('Choose which timepoints of the selected logical lapse to reconstruct')
+        self.scopeCombo.currentIndexChanged.connect(self._timepointScopeChanged)
 
         # A normal push button avoids the split QToolButton's taller size hint
         # and keeps the primary action row visually consistent. "Process next"
@@ -2493,7 +2512,8 @@ class BtnFrame(QtWidgets.QFrame):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(4)
         for widget in (
-            self.reconCurrBtn, self.processSelectedBtn, self.addToMultiDataBtn,
+            self.reconCurrBtn, self.scopeLabel, self.scopeCombo,
+            self.processSelectedBtn, self.addToMultiDataBtn,
             self.reconMultiBtn, self.queuePauseResumeBtn, self.queueRemoveBtn,
             self.queueMoveUpBtn, self.queueMoveDownBtn,
         ):
@@ -2524,11 +2544,152 @@ class BtnFrame(QtWidgets.QFrame):
         context = str(context or 'loaded')
         if context not in {'loaded', 'session', 'queue', 'multidata'}:
             context = 'loaded'
+        changed = context != self._context
         self._context = context
+        if changed:
+            self._resetTimepointScope()
         self._syncContextVisibility()
         self._syncProcessingEnabled()
         if not self._reconstructionRunning:
             self._showQueueStatus()
+
+    def setTimeLapseSelection(self, context: str, descriptor) -> None:
+        context = str(context or '')
+        if context not in self._timeLapseSelections:
+            return
+        normalized = None
+        if isinstance(descriptor, dict) and descriptor.get('identity'):
+            total = int(descriptor.get('total') or 0)
+            if total > 0:
+                normalized = {
+                    'identity': tuple(descriptor.get('identity')),
+                    'total': total,
+                }
+        changed = normalized != self._timeLapseSelections.get(context)
+        self._timeLapseSelections[context] = normalized
+        if changed and context == self._context:
+            self._resetTimepointScope()
+        self._syncScopeVisibility()
+        self._syncProcessingEnabled()
+
+    def setCurrentTimeLapseContext(self, context) -> None:
+        normalized = None
+        if isinstance(context, dict) and context.get('identity'):
+            normalized = {
+                'identity': tuple(context.get('identity')),
+                'position': int(context.get('position') or 0),
+                'total': int(context.get('total') or 0),
+                'ready': bool(context.get('ready', False)),
+            }
+        self._currentTimeLapseContext = normalized
+        self._syncScopeVisibility()
+        self._syncProcessingEnabled()
+
+    def selectedTimepointScope(self):
+        descriptor = self._timeLapseSelections.get(self._context)
+        if descriptor is None:
+            return TimepointScope.all()
+        if self._timepointScopeMode == 'current':
+            if not self._currentScopeAvailable():
+                return None
+            return TimepointScope.single(self._currentTimeLapseContext['position'])
+        if self._timepointScopeMode == 'range' and self._timepointScopeRange is not None:
+            return TimepointScope.range(*self._timepointScopeRange)
+        return TimepointScope.all()
+
+    def _currentScopeAvailable(self) -> bool:
+        descriptor = self._timeLapseSelections.get(self._context)
+        current = self._currentTimeLapseContext
+        return bool(
+            descriptor is not None
+            and current is not None
+            and current.get('ready')
+            and tuple(descriptor.get('identity') or ()) == tuple(current.get('identity') or ())
+            and 0 <= int(current.get('position', -1)) < int(descriptor.get('total') or 0)
+        )
+
+    def _setCurrentScopeItemEnabled(self, enabled: bool) -> None:
+        model = self.scopeCombo.model()
+        item = model.item(1) if hasattr(model, 'item') else None
+        if item is not None:
+            item.setEnabled(bool(enabled))
+
+    def _resetTimepointScope(self) -> None:
+        self._timepointScopeMode = 'all'
+        self._timepointScopeRange = None
+        with QtCore.QSignalBlocker(self.scopeCombo):
+            self.scopeCombo.setItemText(2, 'Range…')
+            self.scopeCombo.setCurrentIndex(0)
+
+    def _syncScopeVisibility(self) -> None:
+        descriptor = self._timeLapseSelections.get(self._context)
+        visible = bool(self._context in {'loaded', 'session'} and descriptor is not None)
+        self.scopeLabel.setVisible(visible)
+        self.scopeCombo.setVisible(visible)
+        self._setCurrentScopeItemEnabled(self._currentScopeAvailable())
+        if visible:
+            self.scopeCombo.setToolTip(
+                f"Reconstruct timepoints from this {int(descriptor['total'])}-point logical lapse"
+            )
+
+    def _timepointScopeChanged(self, index: int) -> None:
+        mode = str(self.scopeCombo.itemData(int(index)) or 'all')
+        if mode == 'current' and not self._currentScopeAvailable():
+            self._resetTimepointScope()
+            self._syncProcessingEnabled()
+            return
+        if mode == 'range':
+            selected = self._chooseTimepointRange()
+            if selected is None:
+                # Cancel returns to the previously committed mode.
+                target = {'all': 0, 'current': 1, 'range': 2}.get(self._timepointScopeMode, 0)
+                with QtCore.QSignalBlocker(self.scopeCombo):
+                    self.scopeCombo.setCurrentIndex(target)
+                return
+            self._timepointScopeRange = selected
+            self._timepointScopeMode = 'range'
+            total = int((self._timeLapseSelections.get(self._context) or {}).get('total') or 0)
+            self.scopeCombo.setItemText(
+                2, f"Range {TimepointScope.range(*selected).label(total)}"
+            )
+        else:
+            self._timepointScopeMode = mode
+            self._timepointScopeRange = None
+        self._syncProcessingEnabled()
+
+    def _chooseTimepointRange(self):
+        descriptor = self._timeLapseSelections.get(self._context)
+        total = int((descriptor or {}).get('total') or 0)
+        if total <= 0:
+            return None
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Timepoint range')
+        form = QtWidgets.QFormLayout(dialog)
+        first = QtWidgets.QSpinBox()
+        last = QtWidgets.QSpinBox()
+        first.setRange(1, total)
+        last.setRange(1, total)
+        if self._timepointScopeRange is not None:
+            first.setValue(self._timepointScopeRange[0] + 1)
+            last.setValue(self._timepointScopeRange[1] + 1)
+        else:
+            first.setValue(1)
+            last.setValue(total)
+        form.addRow('From:', first)
+        form.addRow('To:', last)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        start = int(first.value()) - 1
+        stop = int(last.value()) - 1
+        if stop < start:
+            start, stop = stop, start
+        return start, stop
 
     def setSelectionCount(self, context: str, count: int) -> None:
         context = str(context or '')
@@ -2587,6 +2748,7 @@ class BtnFrame(QtWidgets.QFrame):
             self.queueMoveUpBtn, self.queueMoveDownBtn,
         ):
             widget.setVisible(queue_context)
+        self._syncScopeVisibility()
 
     def _syncProcessingEnabled(self) -> None:
         count = self._selectionCounts.get(self._context, 0)
@@ -2604,8 +2766,16 @@ class BtnFrame(QtWidgets.QFrame):
         self.processSelectedBtn.setText(
             'Reconstruct' if count <= 1 else f'Reconstruct ({count})'
         )
+        scope_valid = not (
+            self._timepointScopeMode == 'current'
+            and self._timeLapseSelections.get(self._context) is not None
+            and not self._currentScopeAvailable()
+        )
         self.processSelectedBtn.setEnabled(
-            bool(self._batchProcessingAvailable and count > 0 and not self._reconstructionRunning)
+            bool(
+                self._batchProcessingAvailable and count > 0
+                and not self._reconstructionRunning and scope_valid
+            )
         )
         self.addToMultiDataBtn.setEnabled(bool(count > 0))
         self.autoProcessCheck.setEnabled(bool(self._autoProcessingAvailable and self._sessionActive))
@@ -2654,6 +2824,13 @@ class BtnFrame(QtWidgets.QFrame):
         if job is None:
             return ''
         label = str(getattr(job, 'label', '') or 'Data')
+        total_timepoints = getattr(job, 'timepoint_total', None)
+        if total_timepoints:
+            try:
+                scope = getattr(job, 'timepoint_scope', TimepointScope.all())
+                label = f"{label} · {scope.label(total_timepoints)}"
+            except Exception:
+                pass
         index = max(1, int(getattr(job, 'batch_index', 1) or 1))
         total = max(1, int(getattr(job, 'batch_total', 1) or 1))
         if total > 1:

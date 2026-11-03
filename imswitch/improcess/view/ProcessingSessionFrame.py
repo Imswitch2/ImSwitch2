@@ -1698,6 +1698,19 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 ids.append(str(value))
         return list(dict.fromkeys(ids))
 
+    def selectedTimeLapseDescriptor(self) -> dict | None:
+        items = self.datasetList.selectedItems()
+        if len(items) != 1:
+            return None
+        entry = items[0].data(0, QtCore.Qt.UserRole + 1) or {}
+        if str(entry.get("kind") or "") != "time-lapse":
+            return None
+        identity = entry.get("time_lapse_identity")
+        total = int(entry.get("planned_timepoints") or 0)
+        if not identity or total <= 0:
+            return None
+        return {"identity": tuple(identity), "total": total}
+
     def currentDatasetId(self) -> str | None:
         item = self.datasetList.currentItem()
         value = item.data(0, QtCore.Qt.UserRole) if item is not None else None

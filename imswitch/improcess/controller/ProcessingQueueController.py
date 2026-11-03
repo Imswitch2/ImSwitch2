@@ -272,6 +272,10 @@ class ProcessingQueueController(ImProcessWidgetController):
                 origin=ProcessingOrigin.MANUAL,
                 source="loaded",
                 timepoint_scope=scope,
+                timepoint_total=(
+                    int(getattr(getattr(data_obj, "sourceMetadata", None), "planned_count", 0) or 0)
+                    if source_kind == TIME_LAPSE_SOURCE_KIND else None
+                ),
             ))
         added = self.queue.enqueue_many(jobs, position=position)
         if added:
@@ -395,6 +399,10 @@ class ProcessingQueueController(ImProcessWidgetController):
             origin=origin,
             source="session",
             timepoint_scope=coerce_timepoint_scope(timepoint_scope),
+            timepoint_total=(
+                int(getattr(dataset, "planned_timepoints", 0) or 0)
+                if getattr(dataset, "kind", "") == "time-lapse" else None
+            ),
         )
 
     def _resolve_job_source(self, job):

@@ -21,6 +21,7 @@ from imswitch.improcess.model.processing_session import (
 from imswitch.improcess.model.provenance import graph_of, output_node
 from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
 from imswitch.improcess.model.session_result_presentation import reconstruction_presentation
+from imswitch.improcess.model.timepoint_scope import logical_time_lapse_identity
 from imswitch.improcess.model.session_result_store import FORMAT_SUFFIX, SessionResultStore
 
 
@@ -988,6 +989,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             "auto_process_ignored": bool(
                 getattr(dataset, "auto_process_ignored", False)
             ),
+            "kind": str(getattr(dataset, "kind", "") or ""),
+            "planned_timepoints": int(getattr(dataset, "planned_timepoints", 0) or 0),
+            "time_lapse_identity": logical_time_lapse_identity(dataset),
             "saved_count": len(dataset.saved_reconstructions),
             "panel_count": loaded_count,
             "result_count": total_count,
@@ -2136,11 +2140,15 @@ class ProcessingSessionController(ImProcessWidgetController):
                 dataset_id, render_selected=(dataset_id == self._selectedDatasetId)
             )
 
-    def processSelectedDatasets(self, position: str = "end") -> None:
+    def processSelectedDatasets(
+        self, position: str = "end", *, timepoint_scope=None
+    ) -> None:
         ids = self._selected_dataset_ids()
         if not ids:
             return
-        added = self.queueDatasetsForProcessing(ids, position=str(position or "end"))
+        added = self.queueDatasetsForProcessing(
+            ids, position=str(position or "end"), timepoint_scope=timepoint_scope
+        )
         if added:
             self._widget.setStatus(
                 f"Queued {added} dataset{'s' if added != 1 else ''} for reconstruction"
@@ -2223,7 +2231,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             controller.sigQueueChanged.connect(self._processingQueueChanged)
             self._widget.setProcessingQueue(controller.queueSnapshot())
 
-    def queueDatasetsForProcessing(self, dataset_ids, *, position: str = "end") -> int:
+    def queueDatasetsForProcessing(
+        self, dataset_ids, *, position: str = "end", timepoint_scope=None
+    ) -> int:
         """Submit Session datasets to the shared lazy processing queue.
 
         Kept as a controller-level bridge so the future Session widget does not
@@ -2234,7 +2244,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         if controller is None:
             return 0
-        return controller.enqueueSessionDatasets(dataset_ids, position=position)
+        return controller.enqueueSessionDatasets(
+            dataset_ids, position=position, timepoint_scope=timepoint_scope
+        )
 
     def setAutoProcessingEnabled(self, enabled: bool) -> None:
         controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)

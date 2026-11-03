@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from imswitch.improcess.model.timepoint_scope import TimepointScope
+
 
 class ProcessingQueueFrame(QtWidgets.QFrame):
     """View surface for the shared ImProcess processing queue."""
@@ -92,6 +94,18 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
     def _value(value) -> str:
         return str(getattr(value, "value", value) or "")
 
+    @staticmethod
+    def _job_label(job) -> str:
+        label = str(getattr(job, "label", "") or "Data")
+        total = getattr(job, "timepoint_total", None)
+        if total:
+            try:
+                scope = getattr(job, "timepoint_scope", TimepointScope.all())
+                label = f"{label} · {scope.label(total)}"
+            except Exception:
+                pass
+        return label
+
     def _selected_waiting_ids(self) -> tuple[str, ...]:
         out = []
         for item in self.queueList.selectedItems():
@@ -153,8 +167,8 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
             source = str(getattr(job, "source", "session") or "session")
             origin_text = "Auto" if origin == "auto" else source.replace("_", " ").title()
             item = QtWidgets.QTreeWidgetItem([
-                str(getattr(job, "label", "")),
-                ("RECONSTRUCTING" if state == "processing" else state.upper()),
+                self._job_label(job),
+                ("RECONSTRUCTING" if state in {"processing", "running"} else state.upper()),
                 origin_text,
             ])
             job_id = str(getattr(job, "id", ""))
@@ -172,7 +186,7 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
             self.queueList.addTopLevelItem(item)
 
         if current is not None:
-            label = str(getattr(current, "label", "reconstructing"))
+            label = self._job_label(current)
             summary = f"▶ {label} · reconstructing"
             if waiting_count:
                 summary += f" · {waiting_count} waiting"

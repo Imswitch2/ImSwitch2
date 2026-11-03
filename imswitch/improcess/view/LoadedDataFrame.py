@@ -4,6 +4,8 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
+from imswitch.improcess.model.timepoint_scope import logical_time_lapse_identity
 
 class LoadedDataFrame(QtWidgets.QFrame):
     """Lightweight runtime-only Quick Load catalog.
@@ -123,6 +125,20 @@ class LoadedDataFrame(QtWidgets.QFrame):
             if data_obj is not None:
                 out.append(data_obj)
         return out
+
+    def selectedTimeLapseDescriptor(self) -> dict | None:
+        selected = self.selectedDataObjs()
+        if len(selected) != 1:
+            return None
+        data_obj = selected[0]
+        if str(getattr(data_obj, "sourceKind", "image") or "image") != TIME_LAPSE_SOURCE_KIND:
+            return None
+        metadata = getattr(data_obj, "sourceMetadata", None)
+        total = int(getattr(metadata, "planned_count", 0) or 0)
+        identity = logical_time_lapse_identity(data_obj)
+        if identity is None or total <= 0:
+            return None
+        return {"identity": identity, "total": total}
 
     def setStatus(self, text: str) -> None:
         """Set the persistent Quick Load toolbar status.

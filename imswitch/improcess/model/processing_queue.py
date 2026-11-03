@@ -50,6 +50,7 @@ class ProcessingJobView:
     batch_index: int = 1
     batch_total: int = 1
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
+    timepoint_total: int | None = None
 
 @dataclass
 class ProcessingJob:
@@ -71,9 +72,14 @@ class ProcessingJob:
     batch_index: int = 1
     batch_total: int = 1
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
+    timepoint_total: int | None = None
 
     def __post_init__(self) -> None:
         self.timepoint_scope = coerce_timepoint_scope(self.timepoint_scope)
+        if self.timepoint_total not in (None, 0):
+            self.timepoint_total = max(1, int(self.timepoint_total))
+        else:
+            self.timepoint_total = None
 
     def snapshot(self) -> "ProcessingJob":
         return ProcessingJob(
@@ -89,6 +95,7 @@ class ProcessingJob:
             batch_index=self.batch_index,
             batch_total=self.batch_total,
             timepoint_scope=self.timepoint_scope,
+            timepoint_total=self.timepoint_total,
         )
 
     def view(self) -> ProcessingJobView:
@@ -104,6 +111,7 @@ class ProcessingJob:
             batch_index=self.batch_index,
             batch_total=self.batch_total,
             timepoint_scope=self.timepoint_scope,
+            timepoint_total=self.timepoint_total,
         )
 
 

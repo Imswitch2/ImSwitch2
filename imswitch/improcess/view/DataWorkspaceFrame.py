@@ -59,17 +59,28 @@ class DataWorkspaceFrame(QtWidgets.QFrame):
         if hasattr(multidata_frame, 'sigCountChanged'):
             multidata_frame.sigCountChanged.connect(self.setMultiDataCount)
         if hasattr(loaded_frame, 'sigSelectionCountChanged'):
-            loaded_frame.sigSelectionCountChanged.connect(
-                lambda count: actions_frame.setSelectionCount('loaded', count)
-            )
+            loaded_frame.sigSelectionCountChanged.connect(self._loadedSelectionChanged)
         if hasattr(session_frame, 'sigSelectionCountChanged'):
-            session_frame.sigSelectionCountChanged.connect(
-                lambda count: actions_frame.setSelectionCount('session', count)
-            )
+            session_frame.sigSelectionCountChanged.connect(self._sessionSelectionChanged)
         if hasattr(session_frame, 'sigSessionActiveChanged'):
             session_frame.sigSessionActiveChanged.connect(actions_frame.setSessionActive)
         self.tabs.currentChanged.connect(self._tabChanged)
+        self._loadedSelectionChanged(len(loaded_frame.selectedDataObjs()) if hasattr(loaded_frame, 'selectedDataObjs') else 0)
+        self._sessionSelectionChanged(len(session_frame.selectedDatasetIds()) if hasattr(session_frame, 'selectedDatasetIds') else 0)
         self._tabChanged(self.tabs.currentIndex())
+
+
+    def _loadedSelectionChanged(self, count: int) -> None:
+        self.actionsFrame.setSelectionCount('loaded', count)
+        getter = getattr(self.loadedFrame, 'selectedTimeLapseDescriptor', None)
+        descriptor = getter() if callable(getter) else None
+        self.actionsFrame.setTimeLapseSelection('loaded', descriptor)
+
+    def _sessionSelectionChanged(self, count: int) -> None:
+        self.actionsFrame.setSelectionCount('session', count)
+        getter = getattr(self.sessionFrame, 'selectedTimeLapseDescriptor', None)
+        descriptor = getter() if callable(getter) else None
+        self.actionsFrame.setTimeLapseSelection('session', descriptor)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()

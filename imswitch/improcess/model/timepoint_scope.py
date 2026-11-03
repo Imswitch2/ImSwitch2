@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import os
 
 
 class TimepointScopeMode(str, Enum):
@@ -131,10 +132,34 @@ def coerce_timepoint_scope(value) -> TimepointScope:
     raise TypeError(f"cannot convert {type(value).__name__} to TimepointScope")
 
 
+
+
+def logical_time_lapse_identity(source) -> tuple[str, str] | None:
+    """Stable lightweight identity shared by Session and logical DataObj views."""
+    if source is None:
+        return None
+    path = (
+        getattr(source, "dataPath", None)
+        or getattr(source, "primary_path", None)
+        or getattr(source, "sourceOriginalPath", None)
+    )
+    metadata = getattr(source, "sourceMetadata", None)
+    anchor = getattr(metadata, "anchor", None) if metadata is not None else None
+    dataset = (
+        getattr(anchor, "dataset", None)
+        or getattr(source, "primary_dataset", None)
+        or ""
+    )
+    if not path:
+        return None
+    normalized = os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
+    return normalized, str(dataset or "")
+
 __all__ = [
     "TimepointScope",
     "TimepointScopeMode",
     "coerce_timepoint_scope",
+    "logical_time_lapse_identity",
     "TIMEPOINT_SCOPE_PROVENANCE_KEY",
     "scope_payload_from_graph",
     "scope_from_graph",

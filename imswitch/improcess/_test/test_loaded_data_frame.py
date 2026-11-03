@@ -63,3 +63,25 @@ def test_select_sources_selects_whole_quick_load_group(qapp, tmp_path):
     assert set(map(id, frame.selectedDataObjs())) == {id(a), id(c)}
 
     frame.deleteLater()
+
+
+def test_loaded_logical_lapse_exposes_scope_descriptor(qapp, tmp_path):
+    frame = LoadedDataFrame()
+    anchor = SimpleNamespace(dataset="CAM")
+    metadata = SimpleNamespace(planned_count=20, anchor=anchor)
+    lapse = SimpleNamespace(
+        sourceKind="time-lapse",
+        sourceMetadata=metadata,
+        dataPath=str(tmp_path / "lapse_scan0.h5"),
+        sourceOriginalPath=str(tmp_path / "lapse_scan0.h5"),
+        datasetName="time-lapse",
+        name="lapse",
+    )
+    frame.addOrUpdateDataObj(lapse, acquisition="XY · T=20")
+    frame.dataList.topLevelItem(0).setSelected(True)
+
+    descriptor = frame.selectedTimeLapseDescriptor()
+    assert descriptor["total"] == 20
+    assert descriptor["identity"][1] == "CAM"
+
+    frame.deleteLater()

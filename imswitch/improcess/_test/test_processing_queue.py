@@ -246,3 +246,20 @@ def test_timepoint_scope_is_snapshotted_with_logical_job_and_not_part_of_dedup_i
         dataset_id="lapse", label="lapse", reconstructor_id="test", params={},
         timepoint_scope=TimepointScope.single(15),
     )) is False
+
+
+def test_job_view_preserves_timelapse_scope_presentation_metadata():
+    queue = ProcessingQueue()
+    queue.enqueue(ProcessingJob(
+        dataset_id="lapse",
+        label="lapse",
+        reconstructor_id="monalisa",
+        params={},
+        timepoint_scope=TimepointScope.range(3, 11),
+        timepoint_total=20,
+    ))
+
+    view = queue.view_snapshot(waiting_limit=10)["waiting"][0]
+    assert view.timepoint_scope == TimepointScope.range(3, 11)
+    assert view.timepoint_total == 20
+    assert view.timepoint_scope.label(view.timepoint_total) == "T4–T12"

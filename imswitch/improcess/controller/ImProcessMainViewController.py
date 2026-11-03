@@ -184,15 +184,25 @@ class ImProcessMainViewController(ImProcessWidgetController):
     def _processSelectedFromDataFooter(self, context: str, position: str) -> None:
         context = str(context or '')
         position = 'next' if str(position) == 'next' else 'end'
+        footer = getattr(self._widget, '_btnFrame', None)
+        scope_getter = getattr(footer, 'selectedTimepointScope', None) if footer is not None else None
+        timepoint_scope = scope_getter() if callable(scope_getter) else None
+        # ``None`` means Current T was selected while its lazy load is not ready.
+        # The footer normally disables Reconstruct in that state; fail closed if
+        # a programmatic trigger still reaches this method.
+        if timepoint_scope is None:
+            return
         if context == 'session':
-            self.processingSessionController.processSelectedDatasets(position)
+            self.processingSessionController.processSelectedDatasets(
+                position, timepoint_scope=timepoint_scope
+            )
             return
         if context != 'loaded':
             return
         frame = getattr(self._widget, 'loadedDataFrame', None)
         data_objs = frame.selectedDataObjs() if frame is not None else []
         self.processingQueueController.enqueueLoadedDataObjs(
-            data_objs, position=position
+            data_objs, position=position, timepoint_scope=timepoint_scope
         )
 
     def _addSelectedToMultiDataFromFooter(self, context: str) -> None:
