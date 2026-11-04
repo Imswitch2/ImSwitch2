@@ -34,6 +34,14 @@ Unreleased
 
 - SNOUTY deskew results saved as HDF5 reloaded without a voxel size or axis labels — the volume came back as uncalibrated channels (``C, Y, X`` at 1 px), so anything measuring it, such as the PSF panel, analysed the first plane in pixels. The writer now stores ``axes`` and ``element_size_um`` on each volume, and files written before are recognised by their SNOUTY parameters and read as a ``Z, Y, X`` stack at the deskew's output voxel size. Opening a file for viewing and processing also kept losing those labels: the view-only reconstructor replaced every file's own axis labels with ``Frame, Y, X`` whenever the file had no acquisition layout, so a volume that names its axes (an ``axes`` attribute) reached the processors without a ``Z``. Declared labels are now kept; only labels guessed from the array's rank give way to ``Frame``.
 - The PSF resolution panel analysed only the first plane of a stack whose axis was not labelled ``Z``. Such a stack is now searched on its maximum projection and each bead is fitted in its brightest plane.
+- ``api.imcontrol.getLaserActive`` is defined once again. The laser widget
+  rework had added a second definition that read the widget's toggle, and
+  Python kept that later one, so the shared-state getter the laser power LUT
+  procedure records and restores through had been silently replaced since
+  2026-10-10. The one that stays answers with the state the controller last
+  applied (the ``Enabled`` shared attribute, written fail-closed from what
+  the hardware accepted); ``isLaserActive`` still reads the Laser widget's
+  toggle.
 
 v0.4.0 (2026-10-29)
 ===================
