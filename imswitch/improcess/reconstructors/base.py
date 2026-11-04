@@ -18,6 +18,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.execution.contracts import Contract, Incompatible, RawInfo
 
 
 @dataclass(frozen=True)
@@ -750,6 +751,17 @@ class StreamingReconstructor(Reconstructor):
     """Reconstructor that supports sub-stack live updates."""
 
     supports_streaming: bool = True
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        override = cls.__dict__.get("contract")
+        if override is not None and not isinstance(override, classmethod):
+            raise TypeError(f"{cls.__name__}.contract() must be a @classmethod")
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Metadata-only negotiation; legacy plugins can use this default."""
+        return Contract(init_frames=0, chunk_frames=1, params=dict(params or {}))
 
     @abstractmethod
     def make_session(self) -> StreamingSession:

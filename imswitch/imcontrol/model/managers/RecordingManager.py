@@ -1,3 +1,4 @@
+import asyncio
 import enum
 import json
 import math
@@ -551,6 +552,28 @@ class Storer(abc.ABC):
         return grouped
 
 
+if hasattr(zarr.storage, "LocalStore"):
+    class _RetryingLocalStore(zarr.storage.LocalStore):
+        """Retry Zarr-v3 atomic metadata renames blocked by readers on Windows.
+
+        A live ImProcess reader may temporarily hold ``zarr.json`` open while
+        the Zarr writer calls os.replace().  This is a transient sharing
+        conflict, not an acquisition failure.  Do not retry other exceptions.
+        """
+
+        _WRITE_ATTEMPTS = 50
+        _RETRY_DELAY_S = 0.01
+
+        async def set(self, key, value):
+            for attempt in range(self._WRITE_ATTEMPTS):
+                try:
+                    return await super().set(key, value)
+                except PermissionError:
+                    if attempt == self._WRITE_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(self._RETRY_DELAY_S)
+
+
 class ZarrStorer(Storer):
     """Storer for Zarr format with the same structured layout as HDF5."""
 
@@ -558,7 +581,7 @@ class ZarrStorer(Storer):
     def _make_store(path: str) -> Any:
         if hasattr(zarr.storage, 'DirectoryStore'):
             return zarr.storage.DirectoryStore(path)
-        return zarr.storage.LocalStore(path)
+        return _RetryingLocalStore(path)
 
     @staticmethod
     def _close_store(store) -> None:

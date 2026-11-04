@@ -21,7 +21,7 @@ from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import StreamingReconstructor
+from imswitch.improcess.reconstructors.base import Contract, RawInfo, StreamingReconstructor
 from imswitch.improcess.model.result_io import save_image_result
 
 if TYPE_CHECKING:
@@ -92,6 +92,11 @@ class ViewOnlyReconstructor(StreamingReconstructor):
     description = "Display raw frames without any reconstruction"
     is_pass_through = True
     result_role = "inspection"
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Pass-through can start on one frame even for full scan stacks."""
+        return Contract(init_frames=0, chunk_frames=1, params=dict(params or {}))
 
     @classmethod
     def default_params(cls) -> dict:

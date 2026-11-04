@@ -12,7 +12,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import DetectionPreview, StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import Contract, Incompatible, RawInfo, DetectionPreview, StreamInit, StreamingReconstructor
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
     placement_from_layout,
@@ -1071,6 +1071,18 @@ class MonalisaReconstructor(StreamingReconstructor):
             coeffs=coeffs,
             axis_label_map=dict(first.axis_label_map),
         )
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Orientation detection needs one *complete scan stack*, not a frame.
+
+        The next frames must not re-enter push() after begin() has consumed
+        them. Reject camera-series modes rather than interpreting their T as S.
+        """
+        if not info.S or info.frames_per_timepoint < 2:
+            raise Incompatible("MoNaLISA requires a multi-frame scan timepoint")
+        return Contract(init_frames=info.frames_per_timepoint,
+                        chunk_frames=1, params=dict(params or {}))
 
     def make_session(self) -> MonalisaLiveSession:
         """
