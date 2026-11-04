@@ -21,6 +21,7 @@ def test_pointscan_error_names_the_advanced_panel():
     assert isinstance(error, ValueError)
     assert '"Advanced"' in str(error)
     assert 'AdvancedScanTTLCycleDesigner' in str(error)
+    assert 'SimplePointScan' in str(error)
 
 
 def test_main_view_refuses_a_pointscan_setup_before_building_widgets():

@@ -243,6 +243,11 @@ Surviving plans (all rewritten with a `Status (2026-10-17)` paragraph):
 | `tiled-target-timelapse-smart-events.md` | T5 UI and controller adapters (model layer exists, unused) |
 | `tiling-multidetector.md` | Phase 1b session entry: `TilingController.py:~1543` reads `self._commChannel.__dict__.get('_main')`, but the channel stores a name-mangled `__main`, so it is always `None` and tiling always falls back to snapshots. Use `controllerRegistry()` **together with** explicit session ownership (the lookup alone stalls the run); `test_tile_layout_partition.py:~185` masks it with `SimpleNamespace(_main=...)`. Phase 3 (3D) deferred |
 
+Added on main after this triage (they arrived with the 2026-11-04 merge of
+main and were not triaged here): `calibration-tools.md` (its own status says
+superseded by `transient-instruments-step-scans.md`), `device-reconnect-2.0.md`,
+`improcess-workflow-editor-2.md` and `transient-instruments-step-scans.md`.
+
 Also flagged (not in a plan): EtSTED/EtMonalisa design their slow scan with
 `scanManager.makeFullScan` directly (`EtSTEDTriggeredScanRunner.py:~54`),
 bypassing `ScanControllerAdvanced._make_full_scan` — with Advanced and

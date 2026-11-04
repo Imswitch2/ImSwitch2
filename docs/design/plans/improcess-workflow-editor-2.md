@@ -20,7 +20,7 @@ render its own: `docs/images/workflow-editor/`, made by
 `tools/workflow_editor_screenshots.py`); the spike used the real plugin
 catalogue, the real `WorkflowDocument` and real run results, and the window
 around them was the proposal. Supersedes the "graph canvas" item of Phase 4
-in `improcess-workflow-editor.md`.
+in `improcess-workflow-editor.md` (retired; see git history).
 
 **Decisions taken** (2026-10-24): the graph is the default mode, with the list
 one click away and the choice remembered; interactive previews stay in the
@@ -197,7 +197,7 @@ curve plotted in the inspector, and the two CSV files the Save steps wrote.
   run session decides *what* to run and binds cached results; `run()` does the
   work, through the same code paths as the GUI and the CLI.
 - **Memory policy controls automatic work, never results** (the
-  `memory-budgets.md` principle). The cache is automatic work under a named
+  `memory-budgets.md` principle; retired, see git history). The cache is automatic work under a named
   limit of its own; evicting it costs a re-run. For a step declared
   nondeterministic a re-run can give a different answer, and §4.5 says how
   the cache keeps its descendants consistent.

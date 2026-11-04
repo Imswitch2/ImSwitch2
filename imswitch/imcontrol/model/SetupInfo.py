@@ -454,7 +454,8 @@ def retiredScanWidgetTypeError(scanWidgetType):
             'instead and set scan.TTLCycleDesigner to "AdvancedScanTTLCycleDesigner" '
             '(keep "GalvoScanDesigner" as scan.scanDesigner for galvo scans). '
             'The PointScan-only TTL_sequence feature has no replacement in the '
-            'Advanced panel. See docs/advanced-scanning.rst.'
+            'Advanced panel. For a simpler panel over Advanced, also set '
+            'scan.cloak to "SimplePointScan". See docs/advanced-scanning.rst.'
         )
     if scanWidgetType == "MoNaLISA":
         return ValueError(
@@ -463,8 +464,9 @@ def retiredScanWidgetTypeError(scanWidgetType):
             'in ms and the Cont. Laser Pulses mode) or "Advanced" (with '
             '"AdvancedScanTTLCycleDesigner"). The automatic axial XZ/YZ '
             'follow-up scans with bead-centre search have no replacement; '
-            'record the axial scan as a separate scan. See '
-            'docs/advanced-scanning.rst.'
+            'record the axial scan as a separate scan. For the profile-driven '
+            'MoNaLISA panel, use "Advanced" with scan.cloak "SimpleMoNaLISA". '
+            'See docs/advanced-scanning.rst.'
         )
     return None
 

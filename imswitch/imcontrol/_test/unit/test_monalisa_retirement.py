@@ -20,6 +20,7 @@ def test_monalisa_error_names_the_replacement_panels():
     assert '"Base"' in str(error)
     assert '"Advanced"' in str(error)
     assert 'axial' in str(error)
+    assert 'SimpleMoNaLISA' in str(error)
 
 
 def test_main_view_refuses_a_monalisa_setup_before_building_widgets():
