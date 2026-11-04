@@ -24,6 +24,7 @@ class StreamReaderWorker(QtCore.QObject):
     sigFinish = QtCore.Signal(int)
     sigFailed = QtCore.Signal(int, str)
     sigStopped = QtCore.Signal(int)
+    sigCoverage = QtCore.Signal(int, object)  # source-declared missing raw intervals
 
     def __init__(self, generation: int, reader: IncrementalReader, poll_ms: int = 100):
         super().__init__()
@@ -62,6 +63,7 @@ class StreamReaderWorker(QtCore.QObject):
                 self.sigPush.emit(self._generation, item.frames.start,
                                   item.frames.end, item.frames.data)
             elif item.kind == "finish":
+                self.sigCoverage.emit(self._generation, self._reader.missing_ranges)
                 self.sigFinish.emit(self._generation)
             else:
                 raise RuntimeError(f"Unknown streaming item {item.kind}")
@@ -159,6 +161,10 @@ class StreamProcessWorker(QtCore.QObject):
                            source_path=info.source_path, stack_info=effective_stack),
                 contract.params,
             )
+            if len(init_frames) % info.frames_per_timepoint == 0:
+                self.sigTimepoint.emit(
+                    generation, len(init_frames) // info.frames_per_timepoint,
+                )
             self._preview(force=True)
         except Exception as exc:
             self._fail(exc)

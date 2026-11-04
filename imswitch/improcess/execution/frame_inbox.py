@@ -17,10 +17,11 @@ import numpy as np
 class FrameBlock:
     start: int
     end: int
-    data: np.ndarray
+    data: np.ndarray | None
     # A sliced remainder still owns its original parent allocation. This is
     # the actual retained memory until the last frame has been consumed.
     allocation_bytes: int | None = None
+    missing: bool = False
 
 
 class FrameInbox:
@@ -32,6 +33,14 @@ class FrameInbox:
         self._bytes = 0
         self._frame_count = 0
         self._next_input: int | None = None
+        self._frame_shape: tuple[int, ...] | None = None
+        self._dtype: np.dtype | None = None
+        self._missing_ranges: list[tuple[int, int]] = []
+
+    @property
+    def missing_ranges(self) -> tuple[tuple[int, int], ...]:
+        """Exact raw-frame intervals explicitly skipped by the source."""
+        return tuple(self._missing_ranges)
 
     @property
     def nbytes(self) -> int:
@@ -49,18 +58,40 @@ class FrameInbox:
     def first_index(self) -> int | None:
         return self._blocks[0].start if self._blocks else None
 
-    def append(self, chunks) -> None:
-        """Accept a source's poll batch atomically, without exceeding budget."""
+    def append(self, chunks, *, allowed_gaps=()) -> None:
+        """Append one poll atomically. Only *source-declared* gaps are padded.
+
+        Lapse readers declare gaps only after observing a later physical
+        ``scanN``/timepoint; an absent future file is never considered missing.
+        Placeholder blocks account for logical indices without allocating a
+        complete blank stack. They become zero frames only when consumed.
+        ``missing_ranges`` must be retained alongside results as provenance.
+        """
         prepared: list[FrameBlock] = []
-        expected = self._next_input
+        expected = 0 if self._next_input is None else self._next_input
         size = self._bytes
+        new_missing = []
+        added_frames = 0
+        frame_shape, dtype = self._frame_shape, self._dtype
+        allowed = {(int(s), int(e)) for s, e in allowed_gaps}
         for chunk in chunks:
             data = np.asarray(chunk.data)
             start, end = int(chunk.start), int(chunk.end)
             if data.ndim != 3 or end <= start or len(data) != end - start:
                 raise ValueError(f"Invalid raw frame range [{start}:{end}] shape {data.shape}")
-            if expected is not None and start != expected:
-                raise ValueError(f"Non-contiguous raw frames: expected {expected}, got {start}")
+            if frame_shape is not None and (data.shape[1:] != frame_shape or data.dtype != dtype):
+                raise ValueError("Raw frame shape/dtype changed within one stream")
+            frame_shape, dtype = data.shape[1:], data.dtype
+            if start < expected:
+                raise ValueError(f"Overlapping raw frames: expected {expected}, got {start}")
+            if start > expected:
+                if (expected, start) not in allowed:
+                    raise ValueError(
+                        f"Non-contiguous raw frames: Unannounced raw frame gap: expected {expected}, got {start}"
+                    )
+                prepared.append(FrameBlock(expected, start, None, 0, missing=True))
+                new_missing.append((expected, start))
+                added_frames += start - expected
             expected = end
             size += data.nbytes
             if size > self.max_bytes:
@@ -69,11 +100,14 @@ class FrameInbox:
                     "Reduce source poll size or increase the configured budget."
                 )
             prepared.append(FrameBlock(start, end, data, data.nbytes))
+            added_frames += end - start
         self._blocks.extend(prepared)
         self._bytes = size
-        self._frame_count += sum(b.end - b.start for b in prepared)
+        self._frame_count += added_frames
         if prepared:
             self._next_input = expected
+            self._frame_shape, self._dtype = frame_shape, dtype
+            self._missing_ranges.extend(new_missing)
 
     def take(self, frames: int) -> FrameBlock | None:
         """Consume exactly N raw frames or leave the inbox untouched."""
@@ -88,16 +122,19 @@ class FrameInbox:
         while remaining:
             block = self._blocks.popleft()
             count = min(remaining, block.end - block.start)
-            arrays.append(block.data[:count])
-            if count < block.end - block.start:
-                # Retain a view, not a copy of almost the entire block on
-                # every single-frame push. Account for its backing allocation
-                # until the last frame is consumed (avoids quadratic copying).
-                self._blocks.appendleft(FrameBlock(
-                    block.start + count, block.end, block.data[count:],
-                    block.allocation_bytes,
-                ))
+            if block.missing:
+                arrays.append(np.zeros((count, *self._frame_shape), dtype=self._dtype))
             else:
+                arrays.append(block.data[:count])
+            if count < block.end - block.start:
+                # A sliced array keeps its parent's allocation alive, while
+                # a missing placeholder has no backing allocation at all.
+                self._blocks.appendleft(FrameBlock(
+                    block.start + count, block.end,
+                    None if block.missing else block.data[count:],
+                    block.allocation_bytes, block.missing,
+                ))
+            elif not block.missing:
                 self._bytes -= block.allocation_bytes or block.data.nbytes
             self._frame_count -= count
             remaining -= count

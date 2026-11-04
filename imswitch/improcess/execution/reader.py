@@ -68,6 +68,11 @@ class IncrementalReader:
         return self.info, self.contract
 
     @property
+    def missing_ranges(self) -> tuple[tuple[int, int], ...]:
+        """Source-confirmed missing frame ranges, for future result provenance."""
+        return self.inbox.missing_ranges
+
+    @property
     def waiting_for_ack(self) -> bool:
         return self._awaiting_ack
 
@@ -90,7 +95,10 @@ class IncrementalReader:
         need = self.contract.begin_frames if not self._begun else self.contract.chunk_frames
         if self.inbox.available >= need or (self._awaiting_ack and self.inbox.available):
             return
-        self.inbox.append(self.source.poll())
+        chunks = self.source.poll()
+        self.inbox.append(
+            chunks, allowed_gaps=getattr(self.source, "skipped_frame_ranges", ()),
+        )
 
     def next_item(self) -> StreamItem | None:
         if self._awaiting_ack or self._done:
@@ -114,6 +122,11 @@ class IncrementalReader:
             if self._sent_next % per_t == 0:
                 return None
         count = self.contract.chunk_frames
+        if self._pause_requested:
+            # Split a processing chunk at the next TP boundary; otherwise a
+            # multi-frame chunk can jump over that boundary indefinitely.
+            offset = self._sent_next % self.info.frames_per_timepoint
+            count = min(count, self.info.frames_per_timepoint - offset)
         block = self.inbox.take(count)
         if block is None and self.source.is_complete() and self.inbox.available:
             # The last partial chunk is not silently discarded.

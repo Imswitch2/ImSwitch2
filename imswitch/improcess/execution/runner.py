@@ -26,6 +26,7 @@ class QtIncrementalRunner(QtCore.QObject):
     sigResult = QtCore.Signal(object)
     sigPreview = QtCore.Signal(object, object)
     sigTimepoint = QtCore.Signal(int)
+    sigCoverage = QtCore.Signal(object)
     sigFailed = QtCore.Signal(str)
     sigFinished = QtCore.Signal(bool)  # True iff result finalized successfully
 
@@ -75,6 +76,7 @@ class QtIncrementalRunner(QtCore.QObject):
         self._reader_worker.sigPush.connect(self._process_worker.push)
         self._reader_worker.sigFinish.connect(self._process_worker.finish)
         self._process_worker.sigAcknowledged.connect(self._reader_worker.acknowledge)
+        self._reader_worker.sigCoverage.connect(self._on_coverage)
         self._reader_worker.sigFailed.connect(self._on_error)
         self._process_worker.sigFailed.connect(self._on_error)
         self._process_worker.sigResult.connect(self._on_result)
@@ -122,6 +124,11 @@ class QtIncrementalRunner(QtCore.QObject):
     def _on_preview(self, generation, result, plane):
         if generation == 1 and not self._cancelled:
             self.sigPreview.emit(result, plane)
+
+    @QtCore.Slot(int, object)
+    def _on_coverage(self, generation, missing_ranges):
+        if generation == 1 and not self._cancelled:
+            self.sigCoverage.emit(missing_ranges)
 
     @QtCore.Slot(int, int)
     def _on_timepoint(self, generation, index):
