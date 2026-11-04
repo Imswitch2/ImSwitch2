@@ -1,0 +1,72 @@
+"""Finite incremental Session job selection and physical source preparation.
+
+No queue ownership, auto-readiness heuristic, or GUI in this module. Review
+manually-selected, already-completed lapses use the same M1 executor without
+confusing job origin with finite/live execution policy.
+"""
+
+from __future__ import annotations
+
+from imswitch.improcess.execution.disk_sources import make_incremental_disk_source
+from imswitch.improcess.live.source_type import LAYOUT_SINGLE_LAPSE_FILE
+from imswitch.improcess.model.processing_queue import ExecutionRequirement
+from imswitch.improcess.model.timepoint_scope import coerce_timepoint_scope
+
+
+def finite_incremental_eligible(job, source, reconstructor, *, source_kind: str) -> bool:
+    """Restrict the first queue integration to finite logical timelapses.
+
+    Other jobs still use the proven pre-M2 controller. In particular, queued
+    Auto acquisition jobs are *not* inferred to be finite from their origin.
+    """
+    return bool(
+        source is not None
+        and reconstructor is not None
+        and source_kind == "time-lapse"
+        and ExecutionRequirement(getattr(job, "execution_requirement", "policy"))
+        == ExecutionRequirement.FINITE
+        and getattr(reconstructor, "supports_streaming", False)
+        and getattr(reconstructor, "result_role", "derived") != "inspection"
+        and getattr(reconstructor, "id", "") != "monalisa-legacy"
+    )
+
+
+def detector_from_logical_source(source) -> str | None:
+    """Respect the Session/Loaded-data detector, never select a sibling by name.
+
+    SourceRef.dataset can be 'CAM', 'scan0/CAM' or '/scan0/CAM/data'.
+    For a Loaded lapse, the TimeLapseIndex's anchor_detector is definitive.
+    """
+    index = getattr(source, "sourceMetadata", None)
+    if index is not None and getattr(index, "anchor_detector", None):
+        return str(index.anchor_detector)
+    refs = getattr(source, "source_refs", ()) or ()
+    dataset = (getattr(refs[0], "dataset", None) if refs else None) or getattr(
+        source, "primary_dataset", None
+    )
+    if dataset in (None, "", "time-lapse"):
+        return None
+    parts = [part for part in str(dataset).replace("\\", "/").strip("/").split("/") if part]
+    if parts and parts[-1] == "data":
+        parts.pop()
+    if parts and parts[0].startswith("scan") and parts[0][4:].isdigit():
+        parts.pop(0)
+    return parts[0] if len(parts) == 1 else None
+
+
+def make_finite_source(prepared, logical_source, scope, total, *, origin=0):
+    """Adapt a probed logical lapse to the physical reader, scoped once.
+
+    Readers use local zero-based T. Only one-file scanN layouts have physical
+    scan indices that can start after zero for a later lapse in the same file.
+    """
+    start, stop = coerce_timepoint_scope(scope).bounds(total)
+    if prepared.source_type.layout == LAYOUT_SINGLE_LAPSE_FILE:
+        start += max(0, int(origin or 0))
+        if stop is not None:
+            stop += max(0, int(origin or 0))
+    return make_incremental_disk_source(
+        prepared.seed_path, source_type=prepared.source_type,
+        detector_name=detector_from_logical_source(logical_source),
+        timepoint_start=start, timepoint_stop=stop,
+    )

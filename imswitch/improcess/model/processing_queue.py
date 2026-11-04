@@ -25,6 +25,18 @@ class ProcessingOrigin(str, Enum):
     WORKING_SET = "working-set"
 
 
+class ExecutionRequirement(str, Enum):
+    """How a job must execute; independent of who submitted it.
+
+    POLICY retains pre-M2 behavior for older queued jobs. FOLLOW is reserved
+    for the explicit readiness scheduler in M2B.
+    """
+
+    POLICY = "policy"
+    FINITE = "finite"
+    FOLLOW = "follow"
+
+
 class ProcessingJobState(str, Enum):
     WAITING = "waiting"
     RUNNING = "running"
@@ -51,6 +63,7 @@ class ProcessingJobView:
     batch_total: int = 1
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
     timepoint_total: int | None = None
+    execution_requirement: ExecutionRequirement = ExecutionRequirement.POLICY
 
 @dataclass
 class ProcessingJob:
@@ -73,8 +86,10 @@ class ProcessingJob:
     batch_total: int = 1
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
     timepoint_total: int | None = None
+    execution_requirement: ExecutionRequirement = ExecutionRequirement.POLICY
 
     def __post_init__(self) -> None:
+        self.execution_requirement = ExecutionRequirement(self.execution_requirement)
         self.timepoint_scope = coerce_timepoint_scope(self.timepoint_scope)
         if self.timepoint_total not in (None, 0):
             self.timepoint_total = max(1, int(self.timepoint_total))
@@ -96,6 +111,7 @@ class ProcessingJob:
             batch_total=self.batch_total,
             timepoint_scope=self.timepoint_scope,
             timepoint_total=self.timepoint_total,
+            execution_requirement=self.execution_requirement,
         )
 
     def view(self) -> ProcessingJobView:
@@ -112,6 +128,7 @@ class ProcessingJob:
             batch_total=self.batch_total,
             timepoint_scope=self.timepoint_scope,
             timepoint_total=self.timepoint_total,
+            execution_requirement=self.execution_requirement,
         )
 
 
@@ -386,5 +403,6 @@ __all__ = [
     "ProcessingJobView",
     "ProcessingJobState",
     "ProcessingOrigin",
+    "ExecutionRequirement",
     "ProcessingQueue",
 ]

@@ -122,7 +122,8 @@ class StreamProcessWorker(QtCore.QObject):
     sigStopped = QtCore.Signal(int)
 
     def __init__(self, generation: int, reconstructor, *, name: str,
-                 dataset_name: str | None = None, preview_interval_s: float = 0.2):
+                 dataset_name: str | None = None, preview_interval_s: float = 0.2,
+                 enable_preview: bool = True):
         super().__init__()
         self._generation = generation
         self._reconstructor = reconstructor
@@ -133,6 +134,7 @@ class StreamProcessWorker(QtCore.QObject):
         self._last_preview = 0.0
         self._preview_sent = False
         self._preview_interval_s = float(preview_interval_s)
+        self._enable_preview = bool(enable_preview)
         self._stopped = False
 
     @QtCore.Slot(int, object, object, object, object)
@@ -211,7 +213,7 @@ class StreamProcessWorker(QtCore.QObject):
         self._stop()
 
     def _preview(self, *, force: bool = False):
-        if self._session is None:
+        if self._session is None or not self._enable_preview:
             return
         now = time.monotonic()
         if not force and now - self._last_preview < self._preview_interval_s:

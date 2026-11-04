@@ -32,7 +32,8 @@ class QtIncrementalRunner(QtCore.QObject):
 
     def __init__(self, reconstructor, source, params: dict, *,
                  name: str, path=None, dataset_name: str | None = None,
-                 max_buffer_bytes: int = 256 * 1024 * 1024, poll_ms: int = 100):
+                 max_buffer_bytes: int = 256 * 1024 * 1024, poll_ms: int = 100,
+                 enable_preview: bool = True):
         super().__init__(None)
         self._reconstructor = reconstructor
         self._source = source
@@ -42,6 +43,7 @@ class QtIncrementalRunner(QtCore.QObject):
         self._dataset_name = dataset_name
         self._buffer_bytes = max_buffer_bytes
         self._poll_ms = poll_ms
+        self._enable_preview = bool(enable_preview)
         self._started = False
         self._cancelled = False
         self._final_result = False
@@ -63,6 +65,7 @@ class QtIncrementalRunner(QtCore.QObject):
         self._process_worker = StreamProcessWorker(
             1, self._reconstructor, name=self._name,
             dataset_name=self._dataset_name,
+            enable_preview=self._enable_preview,
         )
         r_thread, p_thread = QtCore.QThread(), QtCore.QThread()
         self._threads = [r_thread, p_thread]

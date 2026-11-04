@@ -35,12 +35,18 @@ from imswitch.improcess.model.timepoint_scope import (
     coerce_timepoint_scope,
 )
 from imswitch.improcess.model.processing_queue import (
+    ExecutionRequirement,
     AutoProcessPolicy,
     ProcessingJob,
     ProcessingOrigin,
     ProcessingQueue,
 )
 from imswitch.improcess.reconstructors.registry import get_registry
+from imswitch.improcess.execution.contracts import Incompatible
+from imswitch.improcess.execution.queue_finite import (
+    finite_incremental_eligible, make_finite_source,
+)
+from imswitch.improcess.execution.runner import QtIncrementalRunner
 
 
 class ProcessingQueueController(ImProcessWidgetController):
@@ -77,6 +83,13 @@ class ProcessingQueueController(ImProcessWidgetController):
         # slot occupied until the thread itself is gone so a following job can
         # never overwrite the only strong references to a still-running QThread.
         self._offlinePendingOutcome: tuple[str, str] | None = None
+        # New M1 executor: finite manual timelapses only until M2 readiness.
+        # Kept separate so old Auto/one-shot paths remain available.
+        self._incrementalRunner = None
+        self._incrementalReconstructor = None
+        self._incrementalResult = None
+        self._incrementalError = ""
+        self._incrementalMissingRanges = ()
         self._closing = False
         self._live = LiveReconstructionController(self._commChannel)
         self._live.sigFinalResult.connect(self._on_live_final_result)
@@ -276,6 +289,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                     int(getattr(getattr(data_obj, "sourceMetadata", None), "planned_count", 0) or 0)
                     if source_kind == TIME_LAPSE_SOURCE_KIND else None
                 ),
+                execution_requirement=ExecutionRequirement.FINITE,
             ))
         added = self.queue.enqueue_many(jobs, position=position)
         if added:
@@ -302,12 +316,16 @@ class ProcessingQueueController(ImProcessWidgetController):
         self.queue.pause()
         if self._live.is_running:
             self._live.pause()
+        if self._incrementalRunner is not None:
+            self._incrementalRunner.pause(True)
         self._emit_changed()
 
     def resume(self) -> None:
         self.queue.resume()
         if self._live.is_running and self._live.is_paused:
             self._live.resume()
+        if self._incrementalRunner is not None:
+            self._incrementalRunner.pause(False)
         self._emit_changed()
         self._process_next()
 
@@ -333,6 +351,9 @@ class ProcessingQueueController(ImProcessWidgetController):
         if self.queue.current is None:
             return
         self._skipRequested = True
+        if self._incrementalRunner is not None:
+            self._incrementalRunner.cancel()
+            return
         if self._live.is_running:
             self._live.stop(graceful=True, notify_finished=True)
             return
@@ -403,6 +424,11 @@ class ProcessingQueueController(ImProcessWidgetController):
                 int(getattr(dataset, "planned_timepoints", 0) or 0)
                 if getattr(dataset, "kind", "") == "time-lapse" else None
             ),
+            execution_requirement=(
+                ExecutionRequirement.FINITE
+                if origin != ProcessingOrigin.AUTO
+                else ExecutionRequirement.POLICY
+            ),
         )
 
     def _resolve_job_source(self, job):
@@ -426,6 +452,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             or self.queue.paused
             or self.queue.current is not None
             or self._offlineThread is not None
+            or self._incrementalRunner is not None
             or self._live.is_running
             or (callable(direct_running) and direct_running())
         ):
@@ -484,6 +511,21 @@ class ProcessingQueueController(ImProcessWidgetController):
         if reconstructor is None:
             self._finish_current(error=f"Reconstructor {job.reconstructor_id!r} is unavailable")
             return
+
+        if self._uses_finite_incremental(job, source, reconstructor):
+            if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
+                self._finish_current(error=live_resolution.reason or "Source cannot be opened")
+                return
+            if live_resolution is not None and live_resolution.state == LiveJobState.UNSUPPORTED:
+                # Unsupported format/plugin keeps its pre-M2 one-shot behavior.
+                self._start_offline(job, source, reconstructor)
+                return
+            if self._start_finite_incremental(
+                job, source, reconstructor, prepared=prepared_live_job,
+            ):
+                return
+            # Source preflight incompatible with the M1 adapter; use the
+            # existing Session runner, never silently drop the queued job.
 
         if self._uses_streaming_runner(job, source, reconstructor):
             if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
@@ -575,6 +617,140 @@ class ProcessingQueueController(ImProcessWidgetController):
             job.origin == ProcessingOrigin.AUTO
             or ProcessingQueueController._source_kind(source) == "time-lapse"
         )
+
+    @staticmethod
+    def _uses_finite_incremental(job, source, reconstructor) -> bool:
+        return finite_incremental_eligible(
+            job, source, reconstructor,
+            source_kind=ProcessingQueueController._source_kind(source),
+        )
+
+    def _start_finite_incremental(self, job, source, reconstructor, *, prepared) -> bool:
+        """Launch one completed logical lapse through M1's bounded executor.
+
+        The queue owns the only finalization decision. Preview snapshots are
+        deliberately not published as completed Session results: Skip must
+        discard provisional work, and existing Session autosave only sees the
+        result when both worker threads have actually stopped.
+        """
+        if prepared is None:
+            return False
+        scope = coerce_timepoint_scope(job.timepoint_scope)
+        total = self._planned_timepoints(source)
+        try:
+            # Strictly no detector-default guessing for multi-detector files.
+            disk_source, detector = make_finite_source(
+                prepared, source, scope, total,
+                origin=self._timepoint_origin(source),
+            )
+        except Incompatible as exc:
+            # Never fall back to a reader that silently chooses the first
+            # detector of an ambiguous recording.
+            self._finish_current(error=str(exc))
+            return True
+        except (ValueError, TypeError, NotImplementedError) as exc:
+            self._logger.warning(
+                "Finite incremental source unavailable for %s: %s; using legacy path",
+                job.label, exc,
+            )
+            return False
+        except Exception as exc:
+            self._logger.exception("Finite source inspection failed")
+            self._finish_current(error=f"Finite source inspection failed: {exc}")
+            return True
+        count = scope.count(total)
+        self._currentSourceTimepoints = total
+        self._currentPlannedTimepoints = count or total
+        self._incrementalResult = None
+        self._incrementalError = ""
+        self._incrementalMissingRanges = ()
+        budget = self._reconstructorManager._default_memory_budget_bytes()
+        runner = QtIncrementalRunner(
+            reconstructor, disk_source, copy.deepcopy(job.params),
+            name=job.label, path=prepared.seed_path,
+            dataset_name="time-lapse",
+            max_buffer_bytes=max(1, min(256 * 1024 * 1024, int(budget) // 3)),
+            enable_preview=False,
+        )
+        self._incrementalRunner = runner
+        self._incrementalReconstructor = reconstructor
+        runner.sigTimepoint.connect(self._on_incremental_timepoint)
+        runner.sigCoverage.connect(self._on_incremental_coverage)
+        runner.sigResult.connect(self._on_incremental_result)
+        runner.sigFailed.connect(self._on_incremental_failed)
+        runner.sigFinished.connect(self._on_incremental_finished)
+        # Progressive queue/timepoint status is safe. Do not create a viewer
+        # result before finalization: cancellation must not leave an apparently
+        # completed result, and the normal result publisher owns autosave.
+        try:
+            runner.start()
+        except Exception as exc:
+            self._incrementalRunner = None
+            self._incrementalReconstructor = None
+            self._logger.exception("Incremental executor startup failed")
+            self._finish_current(error=f"Incremental executor startup failed: {exc}")
+        return True
+
+    @QtCore.Slot(int)
+    def _on_incremental_timepoint(self, completed: int) -> None:
+        if self._incrementalRunner is None or self.queue.current is None:
+            return
+        total = int(self._currentPlannedTimepoints or 0)
+        completed = max(0, int(completed))
+        self._currentProgress = {
+            "fraction": min(1., completed / total) if total else None,
+            "status": f"Timepoint {completed}/{total}" if total else f"Timepoint {completed}",
+        }
+        self._emit_progress_changed()
+
+    @QtCore.Slot(object)
+    def _on_incremental_coverage(self, missing_ranges) -> None:
+        self._incrementalMissingRanges = tuple(missing_ranges or ())
+
+    @QtCore.Slot(object)
+    def _on_incremental_result(self, result) -> None:
+        self._incrementalResult = result
+
+    @QtCore.Slot(str)
+    def _on_incremental_failed(self, message: str) -> None:
+        self._incrementalError = str(message or "Incremental processing failed")
+
+    @QtCore.Slot(bool)
+    def _on_incremental_finished(self, success: bool) -> None:
+        """Only publish after both QThreads stopped and Skip was ruled out."""
+        if self._incrementalRunner is None:
+            return
+        self._incrementalRunner = None
+        reconstructor = self._incrementalReconstructor
+        self._incrementalReconstructor = None
+        result = self._incrementalResult
+        error = self._incrementalError
+        self._incrementalResult = None
+        self._incrementalError = ""
+        if self._skipRequested:
+            self._finish_current(skipped=True)
+            return
+        if not success or result is None:
+            self._finish_current(error=error or "Incremental processing stopped without a result")
+            return
+        job = self.queue.current
+        if job is None:
+            return
+        scope = coerce_timepoint_scope(job.timepoint_scope)
+        annotate_result_timepoint_scope(result, scope, total=self._currentSourceTimepoints)
+        # Missing raw-frame ranges refer to the *selected* scope's frame space.
+        # In the first queue integration they are diagnostic only. Do not
+        # misrepresent them as global timepoint indices in provenance.
+        self._claim_current_result(result)
+        try:
+            self._reconstructorManager.publishQueuedResult(
+                result, getattr(result, "name", job.label), reconstructor=reconstructor,
+            )
+        except Exception as exc:
+            self._logger.exception("Incremental result publication failed")
+            self._finish_current(error=f"Result publication failed: {exc}")
+            return
+        self._finish_current()
 
     def _start_live(self, job, source, reconstructor, *, prepared=None) -> bool:
         total_timepoints = self._planned_timepoints(source)
@@ -1024,12 +1200,18 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._live.stop(graceful=False)
         if self._offlineWorker is not None:
             self._offlineWorker.request_cancel()
+        if self._incrementalRunner is not None:
+            self._incrementalRunner.cancel()
         # Do not unload DataObjs from the GUI thread while the worker may still
         # be reading them. _offline_thread_finished owns that cleanup.
         return self.shutdownComplete()
 
     def shutdownComplete(self):
-        return self._offlineThread is None and not self._live.is_running
+        return (
+            self._offlineThread is None
+            and self._incrementalRunner is None
+            and not self._live.is_running
+        )
 
 
 __all__ = ["ProcessingQueueController"]

@@ -36,7 +36,9 @@ def _detectors(group, *, hdf5: bool) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def inspect_detector_names(path: str | Path) -> tuple[str, ...]:
+def inspect_detector_names(
+    path: str | Path, *, timepoint_start: int = 0,
+) -> tuple[str, ...]:
     """Recognize detectors in single-store or ``scanN``-group Zarr/HDF5.
 
     Multi-file lapse stores are inspected at the selected seed item; siblings
@@ -52,7 +54,7 @@ def inspect_detector_names(path: str | Path) -> tuple[str, ...]:
         assert_raw_hdf5_new_reader_available(str(path))
         with open_raw_hdf5(str(path)) as root:
             indices = scan_group_indices(root.keys())
-            group = root[f"scan{indices[0]}"] if indices else root
+            group = root[f"scan{int(timepoint_start) if int(timepoint_start) in indices else indices[0]}"] if indices else root
             return _detectors(group, hdf5=True)
     if fmt == "zarr":
         import zarr
@@ -62,7 +64,7 @@ def inspect_detector_names(path: str | Path) -> tuple[str, ...]:
             name = root.attrs.get("recording:detector_name")
             return (str(name),) if name else ("raw",)
         indices = scan_group_indices(root.keys())
-        group = root[f"scan{indices[0]}"] if indices else root
+        group = root[f"scan{int(timepoint_start) if int(timepoint_start) in indices else indices[0]}"] if indices else root
         return _detectors(group, hdf5=False)
     raise Incompatible(f"No incremental Zarr/HDF5 reader for {path}")
 
@@ -79,7 +81,7 @@ def make_incremental_disk_source(
     reconstructing a different sibling. No new detector-selection UX is added.
     This is intentionally NOT the Follow Auto readiness gate (Milestone 2).
     """
-    available = inspect_detector_names(path)
+    available = inspect_detector_names(path, timepoint_start=timepoint_start)
     if detector_name is not None:
         if available and detector_name not in available:
             raise Incompatible(
