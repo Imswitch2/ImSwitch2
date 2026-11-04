@@ -1,4 +1,5 @@
 # ports: out, sharpness
+# curves: sharpness
 # Pick the sharpest plane of a focus stack.
 # Sharpness is the variance of each plane's Laplacian: a plane in focus has
 # more fine detail. 'out' is the sharpest plane; 'sharpness' is the score of

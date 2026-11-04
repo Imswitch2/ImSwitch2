@@ -1,4 +1,6 @@
+import math
 import threading
+from dataclasses import dataclass
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
@@ -186,6 +188,224 @@ class ScanRequestResult:
         return '; '.join(messages) or 'No scan controller accepted the request.'
 
 
+class LiveScreeningWorkflowService:
+    """Narrow controller-to-controller seam for simple live screening.
+
+    The service deliberately owns no power values and no acquisition lease. It
+    only coordinates existing Laser and Settings controller capabilities: Live
+    laser ON/OFF state and exact-target detector trigger changes.
+    """
+
+    def __init__(self, comm_channel) -> None:
+        self._comm_channel = comm_channel
+
+    def _controller(self, key, display_name):
+        controller = self._comm_channel.controllerRegistry().get(key)
+        if controller is None:
+            raise RuntimeError(f'Required {display_name} widget not available')
+        return controller
+
+    def resolve_live_lasers(self, device_names):
+        return self._controller('Laser', 'laser').resolveLiveIlluminationLasers(
+            device_names
+        )
+
+    def get_laser_active(self, laser_name: str) -> bool:
+        return bool(self._controller('Laser', 'laser').getLaserActive(laser_name))
+
+    def set_laser_active(self, laser_name: str, active: bool) -> None:
+        self._controller('Laser', 'laser').setLaserActive(laser_name, bool(active))
+
+    def get_trigger_setting(self, detector_name: str):
+        return self._controller(
+            'Settings', 'detector settings'
+        ).getDetectorTriggerSetting(detector_name)
+
+    def set_trigger_mode(self, detector_name: str, mode: str) -> None:
+        self._controller(
+            'Settings', 'detector settings'
+        ).setDetectorTriggerMode(detector_name, mode)
+
+    def restore_trigger_setting(self, detector_name: str, setting) -> None:
+        parameter_name, value = setting
+        self._controller(
+            'Settings', 'detector settings'
+        ).setDetectorParameterExact(detector_name, parameter_name, value)
+
+
+@dataclass(frozen=True)
+class ScanSeriesSettings:
+    """Runtime series settings shared by scan and Recording UIs.
+
+    This is deliberately workflow state, not scan state: loading a saved scan,
+    switching a Simple cloak profile, or editing hardware setup must never
+    rewrite cadence or timepoint file grouping.
+    """
+
+    timepoints: int = 1
+    interval_s: float = 0.0
+    single_file: bool = True
+
+
+class RecordingWorkflowService(SignalInterface):
+    """Narrow scan-panel seam into Recording's scan-series transaction.
+
+    Scan panels may ask for an acquisition to be recorded, but Recording keeps
+    ownership of writer configuration, arming, file naming and finalization.
+    The service owns the shared runtime series settings so Recording and Simple
+    scan UIs can edit canonical cadence/file-grouping values without depending
+    on each other.
+    """
+
+    sigScanSeriesSettingsChanged = Signal(object)
+    sigScanSeriesActivityChanged = Signal(object, bool)
+    sigRecordingAcquisitionOwnerChanged = Signal(object)
+
+    def __init__(self, comm_channel) -> None:
+        super().__init__()
+        self._comm_channel = comm_channel
+        self._scanSeriesSettings = ScanSeriesSettings()
+        self._activeScanSeriesSource = None
+        self._recordingAcquisitionOwner = None
+
+    @staticmethod
+    def _validated_scan_series_settings(timepoints, interval_s, single_file):
+        try:
+            timepoints_number = float(timepoints)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Scan-series timepoints must be a whole number, not {timepoints!r}.'
+            ) from None
+        if (
+            not math.isfinite(timepoints_number)
+            or timepoints_number < 1
+            or not timepoints_number.is_integer()
+        ):
+            raise ValueError(
+                f'Scan-series timepoints must be a whole number >= 1, not {timepoints!r}.'
+            )
+
+        try:
+            interval_number = float(interval_s)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Scan-series interval must be a finite number >= 0, not {interval_s!r}.'
+            ) from None
+        if not math.isfinite(interval_number) or interval_number < 0:
+            raise ValueError(
+                f'Scan-series interval must be a finite number >= 0, not {interval_s!r}.'
+            )
+
+        return ScanSeriesSettings(
+            timepoints=int(timepoints_number),
+            interval_s=interval_number,
+            single_file=bool(single_file),
+        )
+
+    def get_scan_series_settings(self) -> ScanSeriesSettings:
+        return self._scanSeriesSettings
+
+    def set_scan_series_settings(
+        self, *, timepoints=None, interval_s=None, single_file=None
+    ):
+        current = self._scanSeriesSettings
+        updated = self._validated_scan_series_settings(
+            current.timepoints if timepoints is None else timepoints,
+            current.interval_s if interval_s is None else interval_s,
+            current.single_file if single_file is None else single_file,
+        )
+        if updated == current:
+            return current
+        self._scanSeriesSettings = updated
+        self.sigScanSeriesSettingsChanged.emit(updated)
+        return updated
+
+    def record_scan_series(self, source, detector_names, *, use_series=True):
+        """Start one recorded scan request using the shared output settings.
+
+        ``use_series=False`` preserves the configured cadence for later but
+        records this request as a one-shot acquisition.
+        """
+        controller = self._comm_channel.controllerRegistry().get('Recording')
+        if controller is None:
+            raise RuntimeError('Required Recording widget not available')
+        settings = self.get_scan_series_settings()
+        return controller.recordScanSeries(
+            source,
+            detector_names,
+            settings.timepoints if use_series else 1,
+            settings.interval_s if use_series else 0.0,
+            settings.single_file,
+        )
+
+    def stop_scan_series(self, source) -> bool:
+        """Stop only a recorded series owned by ``source``."""
+        controller = self._comm_channel.controllerRegistry().get('Recording')
+        if controller is None:
+            return False
+        stop = getattr(controller, 'stopScanSeries', None)
+        return bool(stop(source)) if callable(stop) else False
+
+    def publish_scan_series_activity(self, source, active: bool) -> None:
+        active = bool(active)
+        if active:
+            if self._activeScanSeriesSource is source:
+                return
+            self._activeScanSeriesSource = source
+            self.sigScanSeriesActivityChanged.emit(source, True)
+            return
+        if self._activeScanSeriesSource is not source:
+            return
+        self._activeScanSeriesSource = None
+        self.sigScanSeriesActivityChanged.emit(source, False)
+
+    def scan_series_active_for(self, source) -> bool:
+        return self._activeScanSeriesSource is source
+
+    def recording_acquisition_owner(self):
+        """Return the scan UI currently owning Recording acquisition controls."""
+        return self._recordingAcquisitionOwner
+
+    def set_recording_acquisition_owner(self, source, active: bool = True) -> bool:
+        """Claim/release Recording acquisition ownership for one scan source.
+
+        Claims are source-scoped: an existing owner cannot be replaced by a
+        different source, and a source cannot release somebody else's claim.
+        """
+        if source is None:
+            return False
+        active = bool(active)
+        owner = self._recordingAcquisitionOwner
+        if active:
+            if owner is source:
+                return True
+            if owner is not None:
+                return False
+            self._recordingAcquisitionOwner = source
+            self.sigRecordingAcquisitionOwnerChanged.emit(source)
+            return True
+
+        if owner is not source:
+            return False
+        self._recordingAcquisitionOwner = None
+        self.sigRecordingAcquisitionOwnerChanged.emit(None)
+        return True
+
+    def recording_acquisition_owned_by(self, source) -> bool:
+        return self._recordingAcquisitionOwner is source
+
+    def recording_filename_suffix_changed(self, source) -> None:
+        """Refresh Recording's read-only scan suffix preview, if present."""
+        try:
+            controllers = self._comm_channel.controllerRegistry()
+        except Exception:
+            return
+        controller = controllers.get('Recording')
+        refresh = getattr(controller, 'scanFilenameSuffixChanged', None)
+        if callable(refresh):
+            refresh(source)
+
+
 class ScanWorkflowService(SignalInterface):
     """Small service wrapper for scan/recording workflow signals.
 
@@ -226,6 +446,22 @@ class ScanWorkflowService(SignalInterface):
     def laser_scan_state(self):
         """Return the latest semantic scan-laser state as a defensive copy."""
         return dict(self._laserScanState)
+
+    def laser_acquisition_states(self):
+        """Resolved effective scan powers for current runtime laser paths.
+
+        Scan-source features such as recording-name metadata can consume this
+        without depending directly on ``LaserController``.
+        """
+        try:
+            controllers = self._comm_channel.controllerRegistry()
+        except Exception:
+            return {}
+        laser = controllers.get('Laser')
+        getter = getattr(laser, 'getLaserAcquisitionStates', None)
+        if not callable(getter):
+            return {}
+        return dict(getter() or {})
 
     def set_laser_scan_preparation_error(self, message) -> None:
         """Record a safety-critical laser pre-arm failure for this scan run.
@@ -766,6 +1002,58 @@ class ScanWorkflowService(SignalInterface):
         # targeted abort through the same UI-affine envelope as scan starts so
         # abortScan/scanFailed never touch QWidget state from that worker.
         self._dispatch_scan_request(abortIfCurrent)
+
+
+    def finish_scan_run_after_current_from(self, source, runToken=None) -> None:
+        """Gracefully end a source's exact run after its current iteration."""
+        finish = getattr(source, 'finishScanRunAfterCurrent', None)
+        if not callable(finish):
+            raise TypeError(
+                'The selected scan source does not expose '
+                'finishScanRunAfterCurrent'
+            )
+
+        def finishIfCurrent():
+            if runToken is not None:
+                try:
+                    coordinator = getattr(source, '_scanCoordinator', None)
+                    runForOwner = getattr(coordinator, 'runForOwner', None)
+                except Exception:
+                    return
+                if callable(runForOwner):
+                    try:
+                        currentToken = runForOwner(source)
+                    except Exception:
+                        return
+                    if currentToken is not runToken:
+                        return
+                else:
+                    ownsToken = getattr(source, 'ownsScanRunToken', None)
+                    if callable(ownsToken):
+                        try:
+                            if not ownsToken(runToken):
+                                return
+                        except Exception:
+                            return
+                    else:
+                        try:
+                            localToken = getattr(
+                                source, '_scanRunToken', _MISSING_SCAN_IDENTITY
+                            )
+                        except Exception:
+                            return
+                        if localToken is not runToken:
+                            return
+                    if (
+                        not callable(ownsToken)
+                        and localToken is _MISSING_SCAN_IDENTITY
+                    ):
+                        return
+            finish()
+
+        # Keep all controller/widget touches on the scan service's UI thread,
+        # just like targeted start and abort operations.
+        self._dispatch_scan_request(finishIfCurrent)
 
 
 class BeadRecWorkflowService:

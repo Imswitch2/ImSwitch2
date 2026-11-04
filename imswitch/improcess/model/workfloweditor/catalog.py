@@ -86,7 +86,9 @@ class PluginEntry:
             return None
         merged = {**self.defaults(), **dict(params or {})}
         try:
-            return self.plugin.output_spec(merged)
+            from imswitch.improcess.processors.base import call_output_spec
+
+            return call_output_spec(self.plugin, merged)
         except Exception:
             return None
 

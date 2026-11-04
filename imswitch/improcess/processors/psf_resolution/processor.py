@@ -18,6 +18,7 @@ class PSFResolutionProcessor(Processor):
 
     name = "PSF / Bead Resolution"
     id = "psf-resolution"
+    output_kind = "table"
     category = "Measurement"
 
     @classmethod

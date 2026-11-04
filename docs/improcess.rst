@@ -687,7 +687,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Rank >= 2 image-like result for single-image FRC; two-image mode also
        needs a compare axis with at least two planes.
      - ``FRCResult`` curve data with axes ``C, Frequency`` and graph payload.
-       This is a curve/table result, not an image-stack input.
+       This is a curve/table result, not an image-stack input. The resolution
+       is in the input's calibrated unit unless a pixel size is set.
    * - ``multicolor-registration``
      - Registration
      - Strictly ``["Z", "Y", "X"]`` or ``["T", "Z", "Y", "X"]`` deskewed
@@ -905,6 +906,18 @@ panel.  (The former custom FRC panel duplicated the processor's parameters
 and plotted only locally; it was retired in the result-unification tool
 audit.)  If the panel is enabled at startup, ImProcess auto-registers the
 ``frc`` processor when it is not already listed under ``processing.processors``.
+
+The resolution comes out in the image's own unit: *Pixel size* 0 (shown as
+*From image*) takes the calibrated Y/X pixel size, and *Resolution unit*
+``auto`` keeps the image's unit, so a 65 nm-pixel image is measured in nm and
+an uncalibrated one in px.  Choosing ``nm`` or ``um`` converts the
+calibration; ``px`` reports pixels whatever the calibration.  A pixel size
+typed in wins over the calibration and is taken in the chosen unit (the
+image's own with ``auto``).  FRC needs square pixels and, for two inputs, one
+grid: Y and X sizes that differ, or two inputs calibrated differently, are
+refused unless a pixel size is set, and an uncalibrated image needs one to be
+reported in nm or µm.  Recorded runs from before this (``params_version`` 1)
+replay with the 1 px they meant.
 
 ROI statistics panel
 ====================
@@ -1185,6 +1198,8 @@ The code starts with these names, and no others:
        that line.  Change a copy instead (``work = data.copy()``).
    * - ``inputs``
      - The array of every input, in the order listed; read-only like ``data``.
+       ``inputs[0]`` is ``data``, ``inputs[1]`` the second input, and so on
+       (the workflow editor shows each input's name beside it).
    * - ``axes``, ``scales``, ``unit``
      - The first input's axis labels, pixel scales and scale unit.
    * - ``axis(label_or_index)``
@@ -1192,8 +1207,9 @@ The code starts with these names, and no others:
        itself when given a number.  An unknown axis is an error listing the
        labels.
    * - ``results``
-     - The input result objects themselves, for their metadata.  Read them;
-       do not change them.
+     - The input result objects themselves, for their metadata, in the same
+       order (``results[1]`` is the second input's).  Read them; do not
+       change them.
    * - ``make_result(array, *, axes=None, scales=None, name=None)``
      - An output with axes you name, for an array whose number of dimensions
        differs from the input's.
@@ -1322,6 +1338,10 @@ plain Python file whose first line may name the ports::
     ...
 
 That line is the only part that is not the code, and it is removed on load.  A
+comment line ``# curves: level, area`` among the first comments says which of
+those ports are curves (one-dimensional outputs); it stays in the code as a
+note, and a workflow built around the snippet saves those ports as CSV, since
+a curve cannot be written as TIFF.  A
 snippet that turns out to be useful beyond one session can become a drop-in
 plugin by the template in *Drop-in analysis plugins*; nothing forces that step.
 
@@ -2217,7 +2237,7 @@ How much RAM ImSwitch2 may spend on buffering and on automatic work is a
 property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
-three limits in MiB, each named for the one thing it bounds; the values
+four limits in MiB, each named for the one thing it bounds; the values
 shown are the defaults. Edit them in ImControl under **Preferences → Memory
 limits…**, which saves this file and applies the new limits at once, or edit
 the file by hand and restart::
@@ -2227,7 +2247,8 @@ the file by hand and restart::
         "memory": {
             "writerQueueMB": 512,
             "perDetectorQueueMB": 256,
-            "processingWorkingSetMB": 1024
+            "processingWorkingSetMB": 1024,
+            "workflowCacheMB": 4096
         }
     }
 
@@ -2260,6 +2281,15 @@ the file by hand and restart::
     request. Opening a dataset whose decoded size exceeds it is announced in
     the status bar before decoding starts, naming the size and whether
     *Open virtual* offers a lazy path for that source. Nothing is refused.
+
+``workflowCacheMB``
+    The results the workflow editor keeps between interactive runs, so that
+    changing one step re-runs only what follows it (see
+    :ref:`workflows-editor-runs`). Above it, outdated results go first, then
+    the least recently used; a dropped result is recomputed when needed. It
+    is not a hard cap: the selected step's results and pinned ones are kept,
+    and a result that reads lazily from its file counts only what it holds
+    in memory.
 
 None of these is a process limit and ImSwitch2 claims none: camera drivers
 allocate their own buffers, datasets and results are as large as the data.
@@ -2584,7 +2614,26 @@ Running and cancelling
 ``output_spec()`` (optional)
     One port ``out`` unless you say otherwise: named ports when ``apply``
     returns a ``ProcessorOutput`` with ``keys``, a pattern when the ports
-    depend on the data.
+    depend on the data.  The full signature is ``output_spec(params,
+    input_specs=None)``, where ``input_specs`` are the inputs' kinds in input
+    order (``None`` when not known); an override written as
+    ``output_spec(params)`` keeps working, because the framework leaves the
+    argument out for it.  Return the spec with ``kind=self.output_kind``.
+
+``output_kind`` (optional, recommended)
+    The kind of result ``apply`` returns: ``"image"``, ``"labels"``,
+    ``"table"``, ``"curve"``, ``"localization"``, ``"rgb"`` or
+    ``"composite"``; ``"any"`` when it depends on the run.  The workflow
+    editor colours a port by it, and a workflow is refused before it runs
+    when a declared kind meets a step that does not accept it.  Without it the
+    kind is ``"unknown"`` and nothing is checked against it.  Every built-in
+    declares one, and a test holds each declaration to what ``apply``
+    returns.  Reconstructors declare ``output_kind`` too.
+
+``deterministic`` (optional)
+    ``True`` by default: the same inputs and parameters give the same
+    result.  Set it to ``False`` when a run may differ from the last one (the
+    Python step does), so a cache of results never mixes outputs of two runs.
 
 ``params_version`` / ``migrate_params`` / ``encode_params`` / ``decode_params`` (optional)
     Only when the parameter schema changes over time, or parameters carry

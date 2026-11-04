@@ -161,6 +161,10 @@ scan driven by ``NidaqManager``.
      - int or null
      - ``None``
      - Seed of the mock counter's random generator, for reproducible mock scans.  Also read as ``mock_random_seed``.
+   * - ``mockSample``
+     - object or null
+     - ``None``
+     - Simulation only: image a synthetic sample (cells and beads) instead of uniform noise. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "seed": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm.
 
 **Low-level dependencies**
 
@@ -288,8 +292,11 @@ Hamamatsu sCMOS cameras driven through the DCAM API.
    * - ``hamamatsu``
      - dict
      - Dictionary of DCAM API property name → value pairs applied via ``setPropertyValue`` at startup.
+   * - ``mockSample``
+     - object or null
+     - Simulation only (mock camera on a simulated NI-DAQ): the frames show the synthetic sample (cells and beads) under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "latticePeriodUm": 0.72, "seed": 0}``; each axis carries its positioner's ``conversionFactor``. Without it the mock frames are uniform noise.
 
-Both fields are **required**; no defaults.
+``cameraListIndex`` and ``hamamatsu`` are **required**; ``mockSample`` defaults to ``null``.
 
 **Low-level dependencies**
 
