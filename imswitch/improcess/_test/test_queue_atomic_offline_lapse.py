@@ -57,6 +57,10 @@ def test_offline_scope_publication_occurs_once_after_real_thread_end(monkeypatch
         _release_data_objs=lambda data: events.append(("release", data)),
         _currentSourceTimepoints=4, queue=queue,
         _claim_current_result=lambda r: events.append(("claim", r)),
+        _publish_offline_completed=lambda r, reconstructor, scope=None: (
+            events.append(("scope", scope, 4)), events.append(("claim", r)),
+            events.append(("publish", r, getattr(r, "name", "result"), reconstructor))
+        ),
         _reconstructorManager=SimpleNamespace(
             publishQueuedResult=lambda r, label, reconstructor:
             events.append(("publish", r, label, reconstructor))),

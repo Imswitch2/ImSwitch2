@@ -122,9 +122,27 @@ def _queue_controller_stub():
         _claim_current_result=lambda result: setattr(result, "_claimed", True),
         _finish_current=lambda **kwargs: events.append(("finish", kwargs)),
         _logger=SimpleNamespace(exception=lambda *args: None),
+        _emit_progress_changed=lambda: None,
     )
-    for name in ("_tag_incremental_result", "_on_incremental_preview",
-                 "_finalize_incremental_publication"):
+    from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
+    from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
+    from imswitch.improcess.model.timepoint_scope import TimepointScope
+    stub._resultPublisher = ResultPublication(
+        ResultAssemblyPlan.for_timepoints(
+            str(queue.current.id), str(queue.current.dataset_id),
+            scope=queue.current.timepoint_scope, total=5,
+        ),
+        PublicationHooks(
+            claim=stub._claim_current_result,
+            annotate_scope=lambda *args: None,
+            preview=channel.sigLiveResultUpdated.emit,
+            plane=channel.sigLiveTimepointUpdated.emit,
+            timepoint_done=channel.sigLiveTimepointDone.emit,
+            finalized=channel.sigResultFinalized.emit,
+            current_changed=channel.sigCurrentResultChanged.emit,
+        ),
+    )
+    for name in ("_on_incremental_preview", "_on_incremental_timepoint"):
         setattr(stub, name, getattr(ProcessingQueueController, name).__get__(stub))
     return stub, events
 
@@ -146,12 +164,14 @@ def test_incremental_preview_and_skip_preserve_published_data(monkeypatch):
 
     controller._on_incremental_preview(None, (0, np.ones((1, 2))))
     assert events[-1][0] == "sigLiveTimepointUpdated"
-    controller._incrementalCompletedTimepoints = 1
+    controller._on_incremental_timepoint(1)
     controller._skipRequested = True
     ProcessingQueueController._on_incremental_finished(controller, False)
 
     assert events[-3][0] == "sigResultFinalized"
     assert events[-3][1] is result
+    assert result.metadata["result_assembly"]["status"] == "cancelled"
+    assert result.metadata["result_assembly"]["published_t_ranges"] == [[2, 3]]
     assert events[-2][0] == "sigCurrentResultChanged"
     assert events[-1] == ("finish", {"skipped": True})
     assert result.metadata["incremental_completion"] == {
@@ -176,16 +196,16 @@ def test_completed_incremental_result_uses_existing_live_entry(monkeypatch):
     preview = SimpleNamespace(name="lapse")
     final = SimpleNamespace(name="lapse")
     controller._on_incremental_preview(preview, None)
-    controller._incrementalCompletedTimepoints = 2
+    controller._on_incremental_timepoint(2)
     controller._incrementalResult = final
     ProcessingQueueController._on_incremental_finished(controller, True)
     assert [event[0] for event in events] == [
-        "sigLiveResultUpdated", "sigLiveResultUpdated", "sigResultFinalized",
-        "sigCurrentResultChanged", "finish",
+        "sigLiveResultUpdated", "sigLiveTimepointDone", "sigLiveResultUpdated",
+        "sigResultFinalized", "sigCurrentResultChanged", "finish",
     ]
     assert final._improcess_queue_job_id == preview._improcess_queue_job_id
     assert final.metadata["incremental_completion"]["status"] == "complete"
-    assert events[2][1] is final
+    assert events[3][1] is final
     assert events[-1] == ("finish", {})
 
 
