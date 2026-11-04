@@ -1073,6 +1073,28 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
 
     @classmethod
+    def supports_streaming_params(cls, params: dict) -> bool:
+        """Only Fast-compatible settings can use the present live session.
+
+        Full/Robust, ISM, corrections, manual stagger, etc. still run through
+        the complete offline Gaussian implementation for finite recordings.
+        This is a capability test, not a mutation or downgrade of parameters.
+        """
+        from .live_session import MonalisaLiveSession
+        from .params import PRESET_FULL
+
+        if str(params.get("preset", "")) in (PRESET_FULL, PRESET_LEGACY):
+            return False
+        if ("reconstruction_method" in params
+                and str(params["reconstruction_method"]) != "Fast Gauss MoNaLISA"):
+            return False
+        try:
+            MonalisaLiveSession._validate_unified_live_params(dict(params or {}))
+        except (ValueError, TypeError, KeyError):
+            return False
+        return True
+
+    @classmethod
     def contract(cls, info: RawInfo, params: dict) -> Contract:
         """Orientation detection needs one *complete scan stack*, not a frame.
 

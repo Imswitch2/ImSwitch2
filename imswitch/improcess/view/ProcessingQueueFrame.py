@@ -166,11 +166,15 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
             origin = self._value(getattr(job, "origin", ""))
             source = str(getattr(job, "source", "session") or "session")
             origin_text = "Auto" if origin == "auto" else source.replace("_", " ").title()
+            pending = str(getattr(job, "readiness_status", "") or "")
+            state_text = ("RECONSTRUCTING" if state in {"processing", "running"}
+                          else "WAITING FOR ACQUISITION" if state == "waiting" and pending
+                          else state.upper())
             item = QtWidgets.QTreeWidgetItem([
-                self._job_label(job),
-                ("RECONSTRUCTING" if state in {"processing", "running"} else state.upper()),
-                origin_text,
+                self._job_label(job), state_text, origin_text,
             ])
+            if pending:
+                item.setToolTip(1, pending)
             job_id = str(getattr(job, "id", ""))
             item.setData(0, QtCore.Qt.UserRole, job_id)
             item.setData(0, QtCore.Qt.UserRole + 1, state)

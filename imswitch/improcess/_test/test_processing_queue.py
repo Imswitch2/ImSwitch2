@@ -111,7 +111,7 @@ def test_auto_policy_respects_explicit_session_exclusion():
     assert not policy.eligible(dataset, queue=queue, reconstructor=reconstructor, processed=False)
 
 
-def test_auto_policy_rejects_inspection_and_non_streaming_v1_plugins():
+def test_auto_policy_rejects_inspection_but_allows_non_streaming_plugins():
     queue = ProcessingQueue()
     policy = AutoProcessPolicy()
     policy.enabled = True
@@ -121,7 +121,7 @@ def test_auto_policy_rejects_inspection_and_non_streaming_v1_plugins():
     assert not policy.eligible(dataset, queue=queue, reconstructor=inspection, processed=False)
 
     offline_only = SimpleNamespace(result_role="derived", supports_streaming=False)
-    assert not policy.eligible(dataset, queue=queue, reconstructor=offline_only, processed=False)
+    assert policy.eligible(dataset, queue=queue, reconstructor=offline_only, processed=False)
 
 
 def test_view_snapshot_is_lightweight_and_limits_waiting_details():

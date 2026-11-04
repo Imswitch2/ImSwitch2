@@ -8,6 +8,7 @@ and autosave semantics are retained only for Session-backed jobs.
 from __future__ import annotations
 
 import copy
+import time
 from pathlib import Path
 
 from qtpy import QtCore
@@ -47,6 +48,12 @@ from imswitch.improcess.execution.queue_finite import (
     finite_incremental_eligible, make_finite_source,
 )
 from imswitch.improcess.execution.runner import QtIncrementalRunner
+from imswitch.improcess.execution.policy import (
+    ExecutionPath, choose_execution, supports_streaming_settings,
+)
+from imswitch.improcess.execution.readiness import (
+    Readiness, ReadinessState, probe_scope,
+)
 
 
 class ProcessingQueueController(ImProcessWidgetController):
@@ -83,6 +90,14 @@ class ProcessingQueueController(ImProcessWidgetController):
         # slot occupied until the thread itself is gone so a following job can
         # never overwrite the only strong references to a still-running QThread.
         self._offlinePendingOutcome: tuple[str, str] | None = None
+        self._offlineAtomicLapse = False
+        self._offlinePendingResult = None
+        self._offlineReconstructor = None
+        # Readiness is throttled and finalized physical partitions are cached
+        # per queued job. A pending acquisition never occupies the run slot.
+        self._readinessDue: dict[str, float] = {}
+        self._readinessCached: dict[str, Readiness] = {}
+        self._readinessInspected: dict[str, dict] = {}
         # New M1 executor: finite manual timelapses only until M2 readiness.
         # Kept separate so old Auto/one-shot paths remain available.
         self._incrementalRunner = None
@@ -343,6 +358,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         ]
         if session_job_ids:
             self.queue.remove_waiting(session_job_ids)
+            for job_id in session_job_ids:
+                self._clear_readiness(job_id)
         self._emit_changed()
         self._process_next()
 
@@ -368,6 +385,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         removed = self.queue.remove_waiting(job_ids or ())
         if not removed:
             return 0
+        for job in removed:
+            self._clear_readiness(job.id)
         self._emit_changed()
         if not self.queue.paused:
             QtCore.QTimer.singleShot(0, self._process_next)
@@ -443,6 +462,30 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     # ------------------------------------------------------------------ execution
 
+    def _clear_readiness(self, job_id) -> None:
+        job_id = str(job_id)
+        self._readinessDue.pop(job_id, None)
+        self._readinessCached.pop(job_id, None)
+        self._readinessInspected.pop(job_id, None)
+
+    def _probe_auto_readiness(self, job, source) -> Readiness:
+        """Throttle metadata-only probes; never use file stability as a signal."""
+        job_id = str(job.id)
+        now = time.monotonic()
+        if now < self._readinessDue.get(job_id, 0.):
+            return self._readinessCached.get(job_id, Readiness(
+                ReadinessState.UNKNOWN, "Waiting for source metadata"))
+        self._readinessDue[job_id] = now + 2.0
+        try:
+            status = probe_scope(
+                source, job, is_lapse=self._source_kind(source) == "time-lapse",
+                inspected=self._readinessInspected.setdefault(job_id, {}),
+            )
+        except (ValueError, TypeError, IndexError) as exc:
+            status = Readiness(ReadinessState.UNKNOWN, f"Readiness unavailable: {exc}")
+        self._readinessCached[job_id] = status
+        return status
+
     @QtCore.Slot()
     def _process_next(self) -> None:
         reconstructor_manager = getattr(self, "_reconstructorManager", None)
@@ -462,34 +505,88 @@ class ProcessingQueueController(ImProcessWidgetController):
         if not waiting:
             return
 
-        # Probe a streaming source while it is still WAITING. A newly-created
-        # Session/Loaded recording may not be readable yet; do not churn the
-        # visible queue through RUNNING -> WAITING on every retry.
-        candidate = waiting[0]
-        candidate_source = self._resolve_job_source(candidate)
-        candidate_reconstructor = get_registry().get_reconstructor(
-            candidate.reconstructor_id, raise_on_missing=False
-        )
+        # Search in submission order, skipping acquisitions that still lack
+        # trustworthy finalization. Pending Auto jobs do not monopolize the
+        # execution slot and are never treated as finished by a quiet period.
+        selected = None
+        selected_source = None
+        selected_reconstructor = None
+        selected_choice = None
         prepared_live_job = None
-        live_resolution = None
-        if (
-            candidate_source is not None
-            and candidate_reconstructor is not None
-            and self._uses_streaming_runner(
-                candidate, candidate_source, candidate_reconstructor
+        selected_failure = ""
+        for position, candidate in enumerate(waiting):
+            source = self._resolve_job_source(candidate)
+            reconstructor = get_registry().get_reconstructor(
+                candidate.reconstructor_id, raise_on_missing=False,
             )
-        ):
-            job_path = self._streaming_job_path(candidate_source)
-            if not job_path:
-                return
-            live_resolution = prepare_entry_job(job_path, candidate_reconstructor)
-            if live_resolution.state == LiveJobState.PENDING:
-                return
-            prepared_live_job = live_resolution.prepared
+            if source is None or reconstructor is None:
+                selected = position  # run and report the missing dependency
+                break
 
-        job = self.queue.take_next()
+            growing = False
+            if candidate.origin == ProcessingOrigin.AUTO:
+                readiness = self._probe_auto_readiness(candidate, source)
+                if readiness.state != ReadinessState.READY:
+                    growing = readiness.state == ReadinessState.ACQUIRING
+                    choice = choose_execution(
+                        candidate, self._source_kind(source), reconstructor,
+                        growing=growing, live_reader=readiness.live_readable,
+                    )
+                    if choice.path != ExecutionPath.INCREMENTAL_FOLLOW:
+                        status = readiness.reason or "Waiting for acquisition"
+                        if candidate.readiness_status != status:
+                            candidate.readiness_status = status
+                            self._emit_changed()
+                        continue
+                else:
+                    choice = choose_execution(
+                        candidate, self._source_kind(source), reconstructor,
+                    )
+            else:
+                choice = choose_execution(
+                    candidate, self._source_kind(source), reconstructor,
+                )
+
+            if choice.path in (ExecutionPath.INCREMENTAL_FINITE,
+                               ExecutionPath.INCREMENTAL_FOLLOW):
+                path = self._streaming_job_path(source)
+                if not path:
+                    if candidate.origin == ProcessingOrigin.AUTO:
+                        continue
+                    choice = choose_execution(candidate, "scan", reconstructor)
+                else:
+                    resolution = prepare_entry_job(path, reconstructor)
+                    if resolution.state == LiveJobState.PENDING:
+                        if candidate.origin == ProcessingOrigin.AUTO:
+                            continue
+                        # Explicit finite/manual jobs can still use the
+                        # conventional file reader where compatible.
+                        choice = choose_execution(candidate, "scan", reconstructor)
+                    elif resolution.state == LiveJobState.READY:
+                        prepared_live_job = resolution.prepared
+                    elif resolution.state == LiveJobState.UNSUPPORTED:
+                        choice = choose_execution(candidate, "scan", reconstructor)
+                    elif resolution.state == LiveJobState.FAILED:
+                        # Preserve explicit HDF5 conflict diagnostics.
+                        selected = position
+                        selected_choice = choice
+                        selected_source = source
+                        selected_reconstructor = reconstructor
+                        selected_failure = resolution.reason
+                        break
+            selected = position
+            selected_choice = choice
+            selected_source = source
+            selected_reconstructor = reconstructor
+            selected_failure = ""
+            break
+
+        if selected is None:
+            return
+        job = self.queue.take_ready(selected)
         if job is None:
             return
+        self._clear_readiness(job.id)
         self._skipRequested = False
         self._liveFinalResult = None
         self._currentProgress = {
@@ -512,40 +609,24 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error=f"Reconstructor {job.reconstructor_id!r} is unavailable")
             return
 
-        if self._uses_finite_incremental(job, source, reconstructor):
-            if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
-                self._finish_current(error=live_resolution.reason or "Source cannot be opened")
-                return
-            if live_resolution is not None and live_resolution.state == LiveJobState.UNSUPPORTED:
-                # Unsupported format/plugin keeps its pre-M2 one-shot behavior.
-                self._start_offline(job, source, reconstructor)
-                return
+        if selected_failure:
+            self._finish_current(
+                error=selected_failure,
+                display_error=self._display_error_for_source_failure(selected_failure),
+            )
+            return
+        if selected_choice is not None and selected_choice.path in (
+            ExecutionPath.INCREMENTAL_FINITE, ExecutionPath.INCREMENTAL_FOLLOW,
+        ):
             if self._start_finite_incremental(
                 job, source, reconstructor, prepared=prepared_live_job,
             ):
                 return
-            # Source preflight incompatible with the M1 adapter; use the
-            # existing Session runner, never silently drop the queued job.
-
-        if self._uses_streaming_runner(job, source, reconstructor):
-            if live_resolution is not None and live_resolution.state == LiveJobState.FAILED:
-                reason = live_resolution.reason or "Streaming source access failed"
-                self._logger.error("Failing queued dataset %s: %s", job.label, reason)
-                self._finish_current(
-                    error=reason,
-                    display_error=self._display_error_for_source_failure(reason),
-                )
+            # An unsupported physical layout can use the conventional finite
+            # reader; do not silently switch a growing follow job to offline.
+            if selected_choice.path == ExecutionPath.INCREMENTAL_FOLLOW:
+                self._finish_current(error="Growing acquisition has no compatible reader")
                 return
-            if live_resolution is not None and live_resolution.state == LiveJobState.UNSUPPORTED:
-                reason = live_resolution.reason or "Streaming source is unsupported"
-                self._logger.warning("Skipping queued dataset %s: %s", job.label, reason)
-                self._finish_current(error=reason)
-                return
-            if self._start_live(job, source, reconstructor, prepared=prepared_live_job):
-                return
-            self._finish_current(error="Streaming source is not compatible with this dataset")
-            return
-
         self._start_offline(job, source, reconstructor)
 
     @staticmethod
@@ -608,14 +689,12 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @staticmethod
     def _uses_streaming_runner(job, source, reconstructor) -> bool:
-        """Keep every logical time-lapse as one processing unit when possible."""
-        if source is None or reconstructor is None:
-            return False
-        if not getattr(reconstructor, "supports_streaming", False):
-            return False
-        return (
-            job.origin == ProcessingOrigin.AUTO
-            or ProcessingQueueController._source_kind(source) == "time-lapse"
+        """Compatibility helper; origin and lapse shape alone never mean live."""
+        return bool(
+            source is not None and reconstructor is not None
+            and ExecutionRequirement(getattr(job, "execution_requirement", "policy"))
+                == ExecutionRequirement.FOLLOW
+            and supports_streaming_settings(reconstructor, job.params)
         )
 
     @staticmethod
@@ -832,6 +911,42 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error="No readable source units found")
             return
 
+        # A finite lapse is a single logical result, even if its selected
+        # timepoints reside in separate files/groups. Never publish an early
+        # per-timepoint result, and never silently collapse a missing T slot.
+        atomic_lapse = self._source_kind(source) == "time-lapse"
+        if atomic_lapse:
+            try:
+                start_t, stop_t = scope.bounds(self._currentSourceTimepoints)
+            except (IndexError, TypeError, ValueError) as exc:
+                self._release_data_objs(data_objs)
+                self._finish_current(error=f"Invalid timelapse scope: {exc}")
+                return
+            observed = [getattr(obj, "_improcess_timepoint_scope", None)
+                        for obj in data_objs]
+            indices = [int(tp.first) for tp in observed if tp is not None and tp.bounded]
+            if len(indices) != len(data_objs) or len(indices) != len(set(indices)):
+                self._release_data_objs(data_objs)
+                self._finish_current(error="Timelapse has ambiguous or duplicate timepoint identity")
+                return
+            if stop_t is not None and set(indices) != set(range(start_t, stop_t)):
+                missing = sorted(set(range(start_t, stop_t)) - set(indices))
+                self._release_data_objs(data_objs)
+                self._finish_current(error=(
+                    f"Selected timelapse has missing T{missing[0] + 1}; "
+                    "select a completed range for finite processing"
+                    if missing else "Timelapse timepoint selection does not match its scope"
+                ))
+                return
+            data_objs = [obj for _, obj in sorted(zip(indices, data_objs))]
+            if len(data_objs) > 1 and not getattr(reconstructor, "supports_consolidation", False):
+                self._release_data_objs(data_objs)
+                self._finish_current(error=(
+                    f"{getattr(reconstructor, 'name', reconstructor.id)} cannot combine "
+                    "multiple timepoints into one logical result"
+                ))
+                return
+
         budget = self._reconstructorManager._default_memory_budget_bytes()
         worker_jobs = []
         for data_obj in data_objs:
@@ -862,18 +977,23 @@ class ProcessingQueueController(ImProcessWidgetController):
 
         thread = QtCore.QThread()
         self._offlinePendingOutcome = None
+        self._offlineAtomicLapse = atomic_lapse
+        self._offlinePendingResult = None
+        self._offlineReconstructor = reconstructor
         worker = ReconstructionWorker(
             reconstructor,
             worker_jobs,
-            consolidate=False,
-            retain_results=False,
+            consolidate=atomic_lapse and len(worker_jobs) > 1,
+            retain_results=atomic_lapse,
             release_after_each=True,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_offline_progress)
         worker.resultReady.connect(
-            lambda result, _run, r=reconstructor: self._on_offline_result(result, r)
+            lambda result, _run, r=reconstructor: (
+                None if self._offlineAtomicLapse else self._on_offline_result(result, r)
+            )
         )
         worker.finished.connect(self._on_offline_finished)
         worker.failed.connect(self._on_offline_failed)
@@ -1030,10 +1150,24 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
 
     @QtCore.Slot(object)
-    def _on_offline_finished(self, _outcome) -> None:
-        self._offlinePendingOutcome = (
-            "skipped" if self._skipRequested else "completed", ""
-        )
+    def _on_offline_finished(self, outcome) -> None:
+        if self._skipRequested:
+            self._offlinePendingOutcome = ("skipped", "")
+            return
+        if self._offlineAtomicLapse:
+            merged = getattr(outcome, "merged", None)
+            results = getattr(outcome, "results", ())
+            self._offlinePendingResult = (
+                merged if merged is not None
+                else (results[0] if len(results) == 1 else None)
+            )
+            error = getattr(outcome, "consolidation_error", None)
+            if error or self._offlinePendingResult is None:
+                self._offlinePendingOutcome = (
+                    "failed", str(error or "Finite timelapse did not yield one combined result"),
+                )
+                return
+        self._offlinePendingOutcome = ("completed", "")
 
     @QtCore.Slot(object)
     def _on_offline_failed(self, failure: ReconstructionWorkerFailure) -> None:
@@ -1068,12 +1202,38 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineThread = None
         self._offlineWorker = None
         self._offlinePendingOutcome = None
+        atomic_lapse = self._offlineAtomicLapse
+        result = self._offlinePendingResult
+        reconstructor = self._offlineReconstructor
+        self._offlineAtomicLapse = False
+        self._offlinePendingResult = None
+        self._offlineReconstructor = None
 
         state, message = outcome
-        if state == "skipped":
+        if state == "skipped" or self._skipRequested:
             self._finish_current(skipped=True)
         elif state == "failed":
             self._finish_current(error=message)
+        elif atomic_lapse:
+            if result is None:
+                self._finish_current(error="Timelapse completed without a consolidated result")
+                return
+            job = self.queue.current
+            if job is None:
+                return
+            annotate_result_timepoint_scope(
+                result, job.timepoint_scope, total=self._currentSourceTimepoints,
+            )
+            self._claim_current_result(result)
+            try:
+                self._reconstructorManager.publishQueuedResult(
+                    result, getattr(result, "name", job.label), reconstructor=reconstructor,
+                )
+            except Exception as exc:
+                self._logger.exception("Offline timelapse publication failed")
+                self._finish_current(error=f"Result publication failed: {exc}")
+                return
+            self._finish_current()
         else:
             self._finish_current()
 
@@ -1138,6 +1298,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         job = self.queue.current
         if job is None:
             return
+        self._clear_readiness(job.id)
         if skipped:
             self.queue.skip_current()
             self._lastTerminalStatus = {}
@@ -1192,6 +1353,9 @@ class ProcessingQueueController(ImProcessWidgetController):
     def closeEvent(self):
         self._closing = True
         self._retryTimer.stop()
+        self._readinessDue.clear()
+        self._readinessCached.clear()
+        self._readinessInspected.clear()
         self.autoPolicy.enabled = False
         self.queue.clear_waiting()
         self._externalSources.clear()

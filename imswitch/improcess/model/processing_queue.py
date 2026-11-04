@@ -64,6 +64,7 @@ class ProcessingJobView:
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
     timepoint_total: int | None = None
     execution_requirement: ExecutionRequirement = ExecutionRequirement.POLICY
+    readiness_status: str = ""
 
 @dataclass
 class ProcessingJob:
@@ -87,6 +88,7 @@ class ProcessingJob:
     timepoint_scope: TimepointScope = field(default_factory=TimepointScope.all)
     timepoint_total: int | None = None
     execution_requirement: ExecutionRequirement = ExecutionRequirement.POLICY
+    readiness_status: str = ""
 
     def __post_init__(self) -> None:
         self.execution_requirement = ExecutionRequirement(self.execution_requirement)
@@ -112,6 +114,7 @@ class ProcessingJob:
             timepoint_scope=self.timepoint_scope,
             timepoint_total=self.timepoint_total,
             execution_requirement=self.execution_requirement,
+            readiness_status=self.readiness_status,
         )
 
     def view(self) -> ProcessingJobView:
@@ -129,6 +132,7 @@ class ProcessingJob:
             timepoint_scope=self.timepoint_scope,
             timepoint_total=self.timepoint_total,
             execution_requirement=self.execution_requirement,
+            readiness_status=self.readiness_status,
         )
 
 
@@ -218,14 +222,19 @@ class ProcessingQueue:
             added += int(self.enqueue(job, position=position))
         return added
 
-    def take_next(self) -> ProcessingJob | None:
-        if self._paused or self._current is not None or not self._waiting:
+    def take_ready(self, index: int = 0) -> ProcessingJob | None:
+        """Run the first ready item without making older pending jobs block it."""
+        if self._paused or self._current is not None or not 0 <= index < len(self._waiting):
             return None
-        job = self._waiting.pop(0)
+        job = self._waiting.pop(index)
         job.state = ProcessingJobState.RUNNING
+        job.readiness_status = ""
         self._current = job
         self._changed_dataset_ids.add(str(job.dataset_id))
         return job
+
+    def take_next(self) -> ProcessingJob | None:
+        return self.take_ready(0)
 
     def _finish_current(self, state: ProcessingJobState, error: str = "") -> ProcessingJob | None:
         job = self._current
@@ -391,10 +400,9 @@ class AutoProcessPolicy:
         # Inspection-only plugins are views, not automatic processing recipes.
         if str(getattr(reconstructor, "result_role", "derived")) == "inspection":
             return False
-        # Automatic processing is initially limited to reconstructors that can
-        # safely follow a source that may still be growing.  Manual queued jobs
-        # have no such restriction and work for ordinary reconstructors too.
-        return bool(getattr(reconstructor, "supports_streaming", False))
+        # Non-streaming plugins are eligible too. The source-readiness gate
+        # holds their Auto job until explicit writer markers prove it finite.
+        return True
 
 
 __all__ = [

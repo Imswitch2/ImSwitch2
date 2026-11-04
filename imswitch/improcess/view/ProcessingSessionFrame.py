@@ -1641,9 +1641,14 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         for job in jobs:
             state = str(getattr(getattr(job, "state", None), "value", getattr(job, "state", "")))
             origin = str(getattr(getattr(job, "origin", None), "value", getattr(job, "origin", "")))
+            pending = str(getattr(job, "readiness_status", "") or "")
             item = QtWidgets.QTreeWidgetItem([
-                str(getattr(job, "label", "")), state.upper(), origin.upper()
+                str(getattr(job, "label", "")),
+                "WAITING FOR ACQUISITION" if state == "waiting" and pending else state.upper(),
+                origin.upper(),
             ])
+            if pending:
+                item.setToolTip(1, pending)
             self.queueList.addTopLevelItem(item)
         hidden = max(0, waiting_count - len(waiting))
         if hidden:

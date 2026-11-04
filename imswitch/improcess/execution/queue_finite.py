@@ -10,6 +10,7 @@ from __future__ import annotations
 from imswitch.improcess.execution.disk_sources import make_incremental_disk_source
 from imswitch.improcess.live.source_type import LAYOUT_SINGLE_LAPSE_FILE
 from imswitch.improcess.model.processing_queue import ExecutionRequirement
+from .policy import supports_streaming_settings
 from imswitch.improcess.model.timepoint_scope import coerce_timepoint_scope
 
 
@@ -25,7 +26,7 @@ def finite_incremental_eligible(job, source, reconstructor, *, source_kind: str)
         and source_kind == "time-lapse"
         and ExecutionRequirement(getattr(job, "execution_requirement", "policy"))
         == ExecutionRequirement.FINITE
-        and getattr(reconstructor, "supports_streaming", False)
+        and supports_streaming_settings(reconstructor, getattr(job, "params", {}))
         and getattr(reconstructor, "result_role", "derived") != "inspection"
         and getattr(reconstructor, "id", "") != "monalisa-legacy"
     )
