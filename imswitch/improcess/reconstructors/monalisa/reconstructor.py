@@ -75,6 +75,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     description = "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices"
     execution_policy = "worker"
     supports_streaming = True
+    supports_progressive_finite = True
     supports_consolidation = True
     # The fixed unified Gaussian parameter contract replaces the former
     # internal Fast/Legacy method selector. Old v1 dictionaries remain

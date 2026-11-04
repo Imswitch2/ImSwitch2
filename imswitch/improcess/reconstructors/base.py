@@ -214,6 +214,12 @@ class Reconstructor(ABC):
     is the historical MoNaLISA default.
     """
 
+    supports_progressive_finite: bool = False
+    """Opt in when each finite source unit produces one independently
+    meaningful result and its output layers can be assembled semantically.
+    This does not imply support for acquisition-time frame streaming.
+    """
+
     supports_consolidation: bool = False
     """Set ``True`` when :meth:`consolidate` can merge per-item results.
 

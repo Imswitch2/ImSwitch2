@@ -181,6 +181,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
     )
     execution_policy = "worker"
     requires_frame_stacks = True
+    supports_progressive_finite = True
     supports_consolidation = True
 
     def __init__(self):

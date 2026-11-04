@@ -97,6 +97,9 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineAtomicLapse = False
         self._offlinePendingResult = None
         self._offlineReconstructor = None
+        self._offlineProgressive = False
+        self._offlinePublisher = None
+        self._offlinePublishedCount = 0
         # Readiness is throttled and finalized physical partitions are cached
         # per queued job. A pending acquisition never occupies the run slot.
         self._readinessDue: dict[str, float] = {}
@@ -977,9 +980,9 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error="No readable source units found")
             return
 
-        # A finite lapse is a single logical result, even if its selected
-        # timepoints reside in separate files/groups. Never publish an early
-        # per-timepoint result, and never silently collapse a missing T slot.
+        # A finite lapse is one logical result, including when individual
+        # completed timepoints are published progressively. Never renumber
+        # missing logical positions or infer the time axis from image shape.
         atomic_lapse = self._source_kind(source) == "time-lapse"
         if atomic_lapse:
             try:
@@ -1005,7 +1008,9 @@ class ProcessingQueueController(ImProcessWidgetController):
                 ))
                 return
             data_objs = [obj for _, obj in sorted(zip(indices, data_objs))]
-            if len(data_objs) > 1 and not getattr(reconstructor, "supports_consolidation", False):
+            if (len(data_objs) > 1
+                    and not getattr(reconstructor, "supports_consolidation", False)
+                    and not getattr(reconstructor, "supports_progressive_finite", False)):
                 self._release_data_objs(data_objs)
                 self._finish_current(error=(
                     f"{getattr(reconstructor, 'name', reconstructor.id)} cannot combine "
@@ -1041,26 +1046,39 @@ class ProcessingQueueController(ImProcessWidgetController):
                 confirmed_over_budget=confirmed,
             ))
 
+        # Progressive finite processing is a separate capability from
+        # frame-streaming. Other plugins may opt in once their per-item result
+        # and axis semantics have been validated.
+        progressive = bool(
+            atomic_lapse and len(worker_jobs) > 1 and scoped_count is not None
+            and getattr(reconstructor, "supports_progressive_finite", False)
+        )
         thread = QtCore.QThread()
         self._offlinePendingOutcome = None
         self._offlineAtomicLapse = atomic_lapse
         self._offlinePendingResult = None
         self._offlineReconstructor = reconstructor
+        self._offlineProgressive = progressive
+        self._offlinePublishedCount = 0
+        self._offlinePublisher = (
+            self._new_result_publisher(
+                job, scope=scope, total=self._currentSourceTimepoints,
+                relation="timepoint",
+            ) if progressive else None
+        )
         worker = ReconstructionWorker(
             reconstructor,
             worker_jobs,
-            consolidate=atomic_lapse and len(worker_jobs) > 1,
-            retain_results=atomic_lapse,
+            consolidate=atomic_lapse and not progressive and len(worker_jobs) > 1,
+            retain_results=atomic_lapse and not progressive,
             release_after_each=True,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_offline_progress)
-        worker.resultReady.connect(
-            lambda result, _run, r=reconstructor: (
-                None if self._offlineAtomicLapse else self._on_offline_result(result, r)
-            )
-        )
+        # Bound @Slot: the publication handler must run on the GUI thread,
+        # never in ReconstructionWorker's Qt thread.
+        worker.resultReady.connect(self._on_offline_result_ready)
         worker.finished.connect(self._on_offline_finished)
         worker.failed.connect(self._on_offline_failed)
         worker.cancelled.connect(self._on_offline_cancelled)
@@ -1202,11 +1220,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._emit_progress_changed()
 
     def _publish_offline_completed(self, result, reconstructor, *, scope=None):
-        """Conventional (currently atomic) worker publication via common model.
-
-        M2D-C will use the same publication lifecycle for intermediate offline
-        timepoints; here we deliberately preserve the existing final-only path.
-        """
+        """Conventional final-only fallback for non-progressive worker results."""
         job = self.queue.current
         if job is None:
             return
@@ -1218,14 +1232,42 @@ class ProcessingQueueController(ImProcessWidgetController):
         publisher.offline_final(result, reconstructor)
 
     @QtCore.Slot(object, object)
-    def _on_offline_result(self, result, reconstructor) -> None:
-        result_scope = self._offlineResultScopes.pop(0) if self._offlineResultScopes else None
-        self._publish_offline_completed(result, reconstructor, scope=result_scope)
+    def _on_offline_result_ready(self, result, run) -> None:
+        if self._offlineThread is None or self.queue.current is None:
+            return
+        scope = self._offlineResultScopes.pop(0) if self._offlineResultScopes else None
+        if self._offlineAtomicLapse and not self._offlineProgressive:
+            return  # Legacy atomic/consolidated fallback.
+        if not self._offlineProgressive:
+            self._publish_offline_completed(result, self._offlineReconstructor, scope=scope)
+            return
+        if self._offlinePendingOutcome is not None:
+            return
+        try:
+            publisher = self._offlinePublisher
+            if publisher is None or scope is None or not scope.bounded:
+                raise ValueError("Finite output has no exact timepoint identity")
+            ordinal = self._offlinePublishedCount
+            expected = publisher.plan.coordinate_for_ordinal(ordinal)
+            if int(scope.first) != int(expected):
+                raise ValueError(f"Expected source T{expected}, got T{scope.first}")
+            publisher.append_completed(result, ordinal, run=run)
+            self._offlinePublishedCount += 1
+        except Exception as exc:
+            self._logger.exception("Offline progressive publication failed")
+            self._offlinePendingOutcome = ("failed", f"Progressive result assembly failed: {exc}")
+            if self._offlineWorker is not None:
+                self._offlineWorker.request_cancel()
 
     @QtCore.Slot(object)
     def _on_offline_finished(self, outcome) -> None:
         if self._skipRequested:
             self._offlinePendingOutcome = ("skipped", "")
+            return
+        if self._offlinePendingOutcome is not None:
+            return
+        if getattr(self, "_offlineProgressive", False):
+            self._offlinePendingOutcome = ("completed", "")
             return
         if self._offlineAtomicLapse:
             merged = getattr(outcome, "merged", None)
@@ -1244,13 +1286,14 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(object)
     def _on_offline_failed(self, failure: ReconstructionWorkerFailure) -> None:
-        self._offlinePendingOutcome = ("failed", str(failure.message or ""))
+        if self._offlinePendingOutcome is None:
+            self._offlinePendingOutcome = ("failed", str(failure.message or ""))
 
     @QtCore.Slot(str)
     def _on_offline_cancelled(self, message: str) -> None:
         if self._skipRequested:
             self._offlinePendingOutcome = ("skipped", "")
-        else:
+        elif self._offlinePendingOutcome is None:
             self._offlinePendingOutcome = (
                 "failed", str(message or "Reconstruction cancelled")
             )
@@ -1276,6 +1319,11 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineWorker = None
         self._offlinePendingOutcome = None
         atomic_lapse = self._offlineAtomicLapse
+        progressive = getattr(self, "_offlineProgressive", False)
+        publisher = getattr(self, "_offlinePublisher", None)
+        self._offlineProgressive = False
+        self._offlinePublisher = None
+        self._offlinePublishedCount = 0
         result = self._offlinePendingResult
         reconstructor = self._offlineReconstructor
         self._offlineAtomicLapse = False
@@ -1283,10 +1331,32 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineReconstructor = None
 
         state, message = outcome
+        if progressive:
+            try:
+                if publisher is None:
+                    raise RuntimeError("Progressive publisher lost during thread teardown")
+                if state == "completed" and not self._skipRequested:
+                    if publisher.published is None:
+                        raise RuntimeError("Offline processing produced no output")
+                    publisher.finish("complete")
+                else:
+                    publisher.finish("cancelled" if state == "skipped" or self._skipRequested else "failed")
+            except Exception as exc:
+                self._logger.exception("Offline progressive result finalization failed")
+                try:
+                    if publisher is not None:
+                        publisher.finish("failed")  # Retain completed output even on finalization error.
+                except Exception:
+                    self._logger.exception("Could not finalize retained partial result")
+                state, message = "failed", f"Progressive result finalization failed: {exc}"
         if state == "skipped" or self._skipRequested:
             self._finish_current(skipped=True)
         elif state == "failed":
             self._finish_current(error=message)
+        elif progressive:
+            # Progressive output was published in place above. Do not route it
+            # through the obsolete atomic/consolidated completion branch.
+            self._finish_current()
         elif atomic_lapse:
             if result is None:
                 self._finish_current(error="Timelapse completed without a consolidated result")

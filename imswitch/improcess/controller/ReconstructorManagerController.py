@@ -1,8 +1,12 @@
 import copy
 import json
 import os
+import uuid
 
 from qtpy import QtCore
+
+from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
+from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
 
 from .reconstruction_worker import (
     ReconstructionWorker,
@@ -36,6 +40,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionWorker = None
         self._reconstructionWorkerReconstructor = None
         self._reconstructionJobLabels = []
+        self._multiPublication = None
+        self._multiPublicationError = None
+        self._multiPublicationCount = 0
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
         self._localizationThread = None
         self._localizationWorker = None
         self._localizationActiveJob = None
@@ -1128,13 +1137,44 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 confirmed_over_budget=confirmed,
             ))
 
+        # Consolidated Multi Data belongs on Dataset, not T, unless a future
+        # explicit common-lapse identity says otherwise. Progressive assembly
+        # is independent of true acquisition-time streaming.
+        progressive = bool(
+            consolidate and len(jobs) > 1
+            and getattr(reconstructor, "supports_progressive_finite", False)
+        )
+        self._multiPublication = None
+        self._multiPublicationError = None
+        self._multiPublicationCount = 0
+        self._publishWorkerItemsSeparately = not consolidate
+        self._latestWorkerResult = None
+        if progressive:
+            ids = tuple(
+                f"{getattr(job.data_obj, 'dataPath', '')}::"
+                f"{getattr(job.data_obj, 'datasetName', '')}#{index}"
+                for index, job in enumerate(jobs)
+            )
+            plan = ResultAssemblyPlan.for_datasets(
+                uuid.uuid4().hex, "multidata", dataset_ids=ids,
+            )
+            channel = self._commChannel
+            self._multiPublication = ResultPublication(plan, PublicationHooks(
+                preview=channel.sigLiveResultUpdated.emit,
+                finalized=channel.sigResultFinalized.emit,
+                current_changed=channel.sigCurrentResultChanged.emit,
+            ))
+
         thread = QtCore.QThread()
         worker = ReconstructionWorker(
-            reconstructor, jobs, consolidate=consolidate
+            reconstructor, jobs,
+            consolidate=consolidate and not progressive,
+            retain_results=consolidate and not progressive,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.itemProgress.connect(self._on_reconstruction_item_progress)
+        worker.resultReady.connect(self._on_reconstruction_result_ready)
         worker.finished.connect(self._on_reconstruction_finished)
         worker.failed.connect(self._on_reconstruction_failed)
         worker.cancelled.connect(self._on_reconstruction_cancelled)
@@ -1200,9 +1240,87 @@ class ReconstructorManagerController(ImProcessWidgetController):
             item_label=label,
         )
 
+    @QtCore.Slot(object, object)
+    def _on_reconstruction_result_ready(self, result, run) -> None:
+        if self._multiPublicationError is not None:
+            return
+        publisher = self._multiPublication
+        if publisher is not None:
+            try:
+                publisher.append_completed(result, self._multiPublicationCount, run=run)
+                self._multiPublicationCount += 1
+            except Exception as exc:
+                self._multiPublicationError = str(exc)
+                self._logger.exception("Multi Data progressive assembly failed")
+                if self._reconstructionWorker is not None:
+                    self._reconstructionWorker.request_cancel()
+        elif self._publishWorkerItemsSeparately:
+            self._latestWorkerResult = result
+            # Independent data entries can be published immediately; this is
+            # not a consolidated result and never silently shares a T axis.
+            self._publishPluginResult(
+                result, getattr(result, "name", "result"),
+                reconstructor=self._reconstructionWorkerReconstructor,
+            )
+
     @QtCore.Slot(object)
     def _on_reconstruction_finished(self, outcome: ReconstructionWorkerOutcome):
         reconstructor = self._reconstructionWorkerReconstructor
+        if getattr(self, "_multiPublication", None) is not None:
+            publisher = self._multiPublication
+            self._multiPublication = None
+            if self._multiPublicationError:
+                publisher.finish("failed")
+                self._set_reconstruction_job_state(
+                    False, status=f"Multi-data assembly failed: {self._multiPublicationError}"
+                )
+                self._multiPublicationError = None
+                return
+            try:
+                if publisher.published is None:
+                    raise RuntimeError("Multi Data produced no completed output")
+                publisher.finish("complete")
+            except Exception as exc:
+                self._logger.exception("Multi Data finalization failed")
+                try:
+                    publisher.finish("failed")
+                except Exception:
+                    self._logger.exception("Could not finalize retained Multi Data partial")
+                self._set_reconstruction_job_state(False, status=f"Multi-data finalization failed: {exc}")
+                return
+            # Preserve existing MoNaLISA result/widget synchronization.
+            widget = getattr(self, "_previewWidget", None)
+            sync = getattr(widget, "sync_reconstruction_results", None)
+            if callable(sync) and reconstructor is not None and reconstructor.id == "monalisa":
+                sync((publisher.published,))
+            sync_session = getattr(widget, "sync_current_transient", None)
+            if callable(sync_session) and reconstructor is not None and reconstructor.id == "monalisa":
+                try:
+                    sync_session()
+                except Exception as exc:
+                    self._logger.debug("Could not refresh MoNaLISA session calibration: %s", exc)
+            self._set_reconstruction_job_state(False, progress=1.0, status="Reconstruction complete.")
+            return
+        if getattr(self, "_publishWorkerItemsSeparately", False):
+            self._publishWorkerItemsSeparately = False
+            last = self._latestWorkerResult
+            self._latestWorkerResult = None
+            widget = getattr(self, "_previewWidget", None)
+            if reconstructor is not None and reconstructor.id == "monalisa":
+                sync_spot = getattr(widget, "sync_reconstruction_results", None)
+                if callable(sync_spot) and last is not None:
+                    try:
+                        sync_spot((last,))
+                    except Exception as exc:
+                        self._logger.debug("Could not refresh MoNaLISA spot width: %s", exc)
+                sync = getattr(widget, "sync_current_transient", None)
+                if callable(sync):
+                    try:
+                        sync()
+                    except Exception as exc:
+                        self._logger.debug("Could not refresh MoNaLISA calibration: %s", exc)
+            self._set_reconstruction_job_state(False, progress=1.0, status="Reconstruction complete.")
+            return
         if outcome.merged is not None:
             self._publishPluginResult(
                 outcome.merged,
@@ -1250,6 +1368,12 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     @QtCore.Slot(object)
     def _on_reconstruction_failed(self, failure: ReconstructionWorkerFailure):
+        if self._multiPublication is not None:
+            self._multiPublication.finish("failed")
+            self._multiPublication = None
+        self._multiPublicationError = None
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
         self._logger.error(
             f"Reconstruction failed: {failure.message}\n{failure.traceback}"
         )
@@ -1259,6 +1383,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     @QtCore.Slot(str)
     def _on_reconstruction_cancelled(self, message):
+        if self._multiPublication is not None:
+            self._multiPublication.finish("cancelled" if not self._multiPublicationError else "failed")
+            self._multiPublication = None
+        assembly_error = self._multiPublicationError
+        self._multiPublicationError = None
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
+        if assembly_error:
+            self._logger.error("Multi-data assembly failed: %s", assembly_error)
+            self._set_reconstruction_job_state(
+                False, status=f"Multi-data assembly failed: {assembly_error}"
+            )
+            return
         self._logger.info(message or "Reconstruction cancelled")
         self._set_reconstruction_job_state(
             False, status="Reconstruction cancelled."

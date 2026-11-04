@@ -4,17 +4,19 @@ No Qt, viewer, file IO or scientific-result ownership here.  Callbacks are
 injected by ProcessingQueueController; the session/viewer keep their existing
 single-result identity and autosave signal wiring.
 
-M2D-A moves semantic coverage and terminal publication out of the streaming
-controller.  M2D-C will feed independent offline timepoint results to this same
-lifecycle, once result-type-specific assembly adapters are available.
+Semantic coverage, scientific assembly, and terminal publication are shared
+between finite per-item workers and frame-streaming sessions. Only scientific
+outputs already published may survive cancellation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Callable
 
 from .result_assembly import ResultAssemblyPlan, ResultCoverage
+from .progressive_results import ProgressiveResultAssembler
 
 
 @dataclass
@@ -51,6 +53,8 @@ class ResultPublication:
         self.published = None
         self._finalized = False
         self._annotated_ids: set[int] = set()
+        self._assembler = None
+        self._input_provenance = []
 
     def _tag(self, result):
         if result is None:
@@ -79,6 +83,45 @@ class ResultPublication:
         self._tag(result)
         self.published = result
         self.hooks.preview(result)
+
+    def append_completed(self, part, ordinal: int, *, run=None):
+        """Assemble a finished independent T/Dataset step and publish in place.
+
+        The first step creates the viewer entry; each subsequent step writes
+        into the same preallocated data object. A completed step is counted
+        only after every scientific output layer has been copied successfully.
+        """
+        if self._finalized:
+            raise RuntimeError("Cannot append to a finalized result")
+        if self._assembler is None:
+            self._assembler = ProgressiveResultAssembler(self.plan)
+        result = self._assembler.append(part, ordinal)
+        self.coverage.mark_ordinal(ordinal)
+        # The first result's ordinary processing_history describes only its
+        # own source. Preserve every other reconstruction's source/parameters
+        # and calibration, without retaining another full image array.
+        entry = {
+            "ordinal": int(ordinal),
+            "coordinate": self.plan.coordinate_for_ordinal(ordinal),
+        }
+        if run is not None:
+            entry["source"] = deepcopy(getattr(run, "source", {}) or {})
+            entry["params"] = deepcopy(getattr(run, "params", {}) or {})
+            entry["node"] = deepcopy(getattr(run, "node", {}) or {})
+        calibration = (getattr(part, "metadata", None) or {}).get("monalisa_calibration")
+        if calibration:
+            entry["monalisa_calibration"] = deepcopy(calibration)
+        self._input_provenance.append(entry)
+        metadata = getattr(result, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result.metadata = metadata
+        metadata["result_assembly_inputs"] = self._input_provenance
+        self._tag(result)
+        self.snapshot(result)
+        if self.plan.axis == "T":
+            self.hooks.timepoint_done(int(ordinal))
+        return result
 
     def plane(self, index: int, pixels):
         if not self._finalized and self.published is not None and pixels is not None:
@@ -109,18 +152,19 @@ class ResultPublication:
         """
         if self._finalized:
             return None
-        if status == "complete" and result is not None:
+        if status == "complete" and (result is not None or self.published is not None):
             # A finalized executor result proves the requested finite source
             # was consumed even if a queued timepoint notification arrives
             # after the final-result signal. Do not mistake delayed GUI
             # progress signals for an incomplete scientific result.
-            if self.plan.expected_count is not None:
+            if result is not None and self._assembler is None and self.plan.expected_count is not None:
                 self.coverage.mark_completed_count(self.plan.expected_count)
             # A completed processing run with missing raw frames has a valid
             # output but not complete raw coverage; expose that distinction.
             effective = "partial" if self.coverage.missing_frame_ranges else "complete"
             self.coverage.finalize(effective)
-            self.snapshot(result)
+            if result is not None:
+                self.snapshot(result)
         else:
             self.coverage.finalize(status if status in ("cancelled", "failed") else "failed")
         self._finalized = True
@@ -134,8 +178,8 @@ class ResultPublication:
     def offline_final(self, result, reconstructor):
         """Publish a conventional finite result using the same job/scope tag.
 
-        Kept atomic in M2D-A. M2D-C may call `snapshot`/`timepoint_completed`
-        while the offline worker runs, once compatible output assembly exists.
+        Used by one-shot and non-progressive compatibility fallbacks.
+        Independent finite outputs instead use :meth:`append_completed`.
         """
         if self._finalized:
             raise RuntimeError("A result job cannot be published twice")
