@@ -482,3 +482,12 @@ class MonalisaProcessingResult(ProcessingResult):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# M2D-B compatibility: old module/class lookup names remain importable, but
+# new results are produced as one canonical MonalisaResult. The original
+# implementation is retained privately for display/export and old project
+# compatibility until the adapter parity gate is complete.
+_ClassicMonalisaResultAdapter = MonalisaProcessingResult
+from .canonical_result import MonalisaResult  # noqa: E402
+MonalisaProcessingResult = MonalisaResult

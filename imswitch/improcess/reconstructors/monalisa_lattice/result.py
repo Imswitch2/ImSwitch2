@@ -285,3 +285,12 @@ class MonalisaLatticeResult(ProcessingResult):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# M2D-B compatibility: the original flexible result implementation is kept
+# privately as a format adapter. Existing import locations remain valid.
+_FlexibleMonalisaResultAdapter = MonalisaLatticeResult
+from imswitch.improcess.reconstructors.monalisa.canonical_result import (  # noqa: E402
+    MonalisaResult,
+)
+MonalisaLatticeResult = MonalisaResult

@@ -1284,7 +1284,12 @@ class FileIOController(ImProcessWidgetController):
         return receipt
 
     def saveCoefficients(self, reconObj, filePath):
-        coeffs = copy.deepcopy(reconObj.getCoeffs())
+        coeffs = reconObj.getCoeffs()
+        if coeffs is None:
+            raise ValueError(
+                'This reconstruction has no retained MoNaLISA coefficients to export.'
+            )
+        coeffs = copy.deepcopy(coeffs)
         self._logger.debug(f'Shape of coeffs: {coeffs.shape}')
         coeffs = np.swapaxes(coeffs, 1, 2)
         tiff.imwrite(filePath, coeffs,

@@ -44,7 +44,7 @@ from ..monalisa.scan_frame import (
     ORIENTATIONS, orient_recorded_index, orient_step_columns,
 )
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
-from .result import MonalisaLatticeResult
+from imswitch.improcess.reconstructors.monalisa.canonical_result import MonalisaResult
 from .scan import LayoutScan, layout_scan, recorded_scan
 
 if TYPE_CHECKING:
@@ -316,7 +316,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
     def process(
         self, data_obj: "DataObj", params: dict, context=None
-    ) -> MonalisaLatticeResult:
+    ) -> MonalisaResult:
         started = time.perf_counter()
         params = {**DEFAULT_PARAMS, **dict(params or {})}
 
@@ -458,7 +458,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 pinholes = pinholes[0]
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
-        return MonalisaLatticeResult(
+        return MonalisaResult(
             name=f"{data_obj.name}_lattice",
             image=planes(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
@@ -475,7 +475,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
     def _process_recorded(
         self, data_obj, frames, scan: LayoutScan, params, started, report, check_cancelled
-    ) -> MonalisaLatticeResult:
+    ) -> MonalisaResult:
         """Reconstruct a recording whose acquisition layout places its frames.
 
         One stack per Z plane and timepoint, all on the raster of one
@@ -643,7 +643,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             pinholes = planes(lambda result: result.pinholes.images)
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
-        final = MonalisaLatticeResult(
+        final = MonalisaResult(
             name=f"{data_obj.name}_lattice",
             image=planes(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
@@ -682,7 +682,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 )
         return final
 
-    def consolidate(self, results: list) -> MonalisaLatticeResult:
+    def consolidate(self, results: list) -> MonalisaResult:
         """The results of several recordings as one, along a ``T`` axis.
 
         A time lapse recorded one file per timepoint is reconstructed one
@@ -717,7 +717,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics["consolidated"] = f"{len(results)} results: " + ", ".join(
             result.name for result in results
         )
-        return MonalisaLatticeResult(
+        return MonalisaResult(
             name=first.name,
             image=along(lambda result: result.data),
             output_pixel_nm=first.output_pixel_size_nm,
@@ -751,7 +751,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         return [first] + [stack for stack in range(scan.num_stacks) if stack != first]
 
     @staticmethod
-    def update_fast_placement(result: MonalisaLatticeResult, orientation: str) -> MonalisaLatticeResult:
+    def update_fast_placement(result: MonalisaResult, orientation: str) -> MonalisaResult:
         """Re-place a retained Fast result for another scan orientation.
 
         No localization, Gaussian solve or raw-frame processing is repeated.
@@ -799,7 +799,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             placement_residual_px=float(geometry.commensurate_residual),
             update="placement only (retained Fast extraction)",
         )
-        updated = MonalisaLatticeResult(
+        updated = MonalisaResult(
             name=result.name,
             image=_recorded_planes(cache.scan, rebuilt, lambda item: item.amplitude.image),
             output_pixel_nm=output_pixel_nm,

@@ -34,7 +34,7 @@ from .orientation import auto_detect_scan_orientation
 from .scan_frame import ORIENTATIONS
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
-from .result import MonalisaProcessingResult
+from .canonical_result import MonalisaResult
 from .signal_extractor import SignalExtractor
 from .session_registry import MonalisaSessionRegistry, detector_identity
 
@@ -783,7 +783,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     def process(
         self, data_obj: 'DataObj', params: dict, context=None
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """
         Reconstruct MoNaLISA SIM data.
         
@@ -937,7 +937,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         # coefficients.  from_coeffs() reassembles the 6D image, derives the
         # output pixel pitch and auto display levels.
         coeffs_5d = coeffs[np.newaxis, ...]
-        result = MonalisaProcessingResult.from_coeffs(
+        result = MonalisaResult.from_coeffs(
             name=data_obj.name,
             coeffs=coeffs_5d,
             scan_params=scan_params,
@@ -986,8 +986,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         return placement
 
     def consolidate(
-        self, results: list[MonalisaProcessingResult]
-    ) -> MonalisaProcessingResult:
+        self, results: list[MonalisaResult]
+    ) -> MonalisaResult:
         """Merge per-file reconstruction results along the leading Dataset axis.
 
         Equivalent to the legacy consolidated workflow: per-dataset slices are
@@ -1009,13 +1009,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         # the lattice result container.  Consolidate it with the same general
         # geometry-aware rules instead of forcing it through the old fixed-6D
         # Fast-Gauss result contract.
-        try:
-            from imswitch.improcess.reconstructors.monalisa_lattice.result import (
-                MonalisaLatticeResult,
-            )
-        except Exception:
-            MonalisaLatticeResult = ()
-        if isinstance(first, MonalisaLatticeResult):
+        from .canonical_result import is_flexible_monalisa_result
+        if is_flexible_monalisa_result(first):
             from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
                 MonalisaLatticeReconstructor,
             )
@@ -1062,7 +1057,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 float(np.percentile(finite, 99.9)),
             )
 
-        return MonalisaProcessingResult(
+        return MonalisaResult(
             name=first.name,
             data=data,
             scan_params=copy.deepcopy(first.scan_params),
@@ -1123,7 +1118,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         scan_params: dict,
         data_attrs: dict | None = None,
         resolved=None,
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """
         Run the fast-Gauss MoNaLISA path on a complete offline stack.
 
@@ -1215,7 +1210,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         if getattr(session, 'scan_params', None):
             result_scan_params['directions'] = list(session.scan_params['directions'])
             result_scan_params['unidirectional'] = session.scan_params['unidirectional']
-        result = MonalisaProcessingResult(
+        result = MonalisaResult(
             name=name,
             data=live_result.data,
             scan_params=result_scan_params,
@@ -1228,7 +1223,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     def _fast_gauss_by_placement(
         self, name, data, params, placement, resolved, reasons
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """Fast-Gauss extraction with every frame placed by the recorded layout.
 
         The live session scatters contiguous X/Y stacks through a precomputed
@@ -1351,7 +1346,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             display_levels = (
                 float(np.percentile(finite, 1)), float(np.percentile(finite, 99.9))
             )
-        result = MonalisaProcessingResult(
+        result = MonalisaResult(
             name=name,
             data=data6,
             scan_params=scan_params,

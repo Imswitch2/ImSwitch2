@@ -12,7 +12,7 @@ from .gauss_processor import (
 )
 from .localizer import localization_from_pattern, localizer
 from .params import PRESET_LEGACY
-from .result import MonalisaProcessingResult
+from .canonical_result import MonalisaResult
 from .scan_geometry import get_orientation
 from .spot_settings import fwhm_to_sigma_px
 
@@ -1034,12 +1034,12 @@ class MonalisaLiveSession(StreamingSession):
         # straight into the matching slice of its own buffer.
         return index, self.reconstructed[:, :, index:index + 1].copy()
 
-    def result(self) -> MonalisaProcessingResult:
+    def result(self) -> MonalisaResult:
         """
         Return a snapshot of the current reconstruction.
 
         Returns:
-            MonalisaProcessingResult wrapping the current output buffer.
+            MonalisaResult wrapping the current output buffer.
         """
         if self.reconstructed is None:
             raise RuntimeError("Session not initialized; call begin() first")
@@ -1050,7 +1050,7 @@ class MonalisaLiveSession(StreamingSession):
         if self.use_gpu and CUPY_AVAILABLE:
             self._flush_hot_plane()
 
-        result = MonalisaProcessingResult(
+        result = MonalisaResult(
             name=self.name,
             data=self.reconstructed[:, :, :self._logical_output_count].copy(),
             scan_params=self.scan_params,
