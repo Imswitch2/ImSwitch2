@@ -255,7 +255,10 @@ api.imcontrol
 
    .. method:: getLaserActive(laserName: str) -> bool
 
-      Return the current Live ON/OFF state for ``laserName``.
+      Whether the specified laser's emission is switched on: the state the
+      controller last applied (the ``Enabled`` shared attribute), which the
+      laser power LUT procedure records and restores. ``isLaserActive`` reads
+      the Laser widget's toggle instead.
 
       Needs *Laser* in ``availableWidgets``.
 

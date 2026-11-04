@@ -1757,7 +1757,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport()
     def getLaserActive(self, laserName: str) -> bool:
-        """ Whether the specified laser's emission is switched on. """
+        """ Whether the specified laser's emission is switched on: the state the
+        controller last applied (the ``Enabled`` shared attribute), which the
+        laser power LUT procedure records and restores. ``isLaserActive`` reads
+        the Laser widget's toggle instead. """
         return bool(self._commChannel.sharedAttrs[(_attrCategory, laserName, _enabledAttr)])
 
     @APIExport()
@@ -1790,11 +1793,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             if powerDevice is not None and powerDevice not in resolved:
                 resolved.append(powerDevice)
         return tuple(resolved)
-
-    @APIExport(runOnUIThread=True)
-    def getLaserActive(self, laserName: str) -> bool:
-        """Return the current Live ON/OFF state for ``laserName``."""
-        return bool(self._widget.isLaserActive(laserName))
 
     @APIExport(runOnUIThread=True)
     def isLaserActive(self, laserName: str) -> bool:

@@ -26,6 +26,17 @@ Unreleased
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
 
+**Bug Fixes**
+
+- ``api.imcontrol.getLaserActive`` is defined once again. The laser widget
+  rework had added a second definition that read the widget's toggle, and
+  Python kept that later one, so the shared-state getter the laser power LUT
+  procedure records and restores through had been silently replaced since
+  2026-10-10. The one that stays answers with the state the controller last
+  applied (the ``Enabled`` shared attribute, written fail-closed from what
+  the hardware accepted); ``isLaserActive`` still reads the Laser widget's
+  toggle.
+
 v0.4.0 (2026-10-29)
 ===================
 
