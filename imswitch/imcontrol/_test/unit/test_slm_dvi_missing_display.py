@@ -1,8 +1,8 @@
 """A DVI SLM whose display is not connected must not stop ImSwitch from starting.
 
-The offscreen Qt platform has exactly one screen, so monitorIdx 2 is a display
-that does not exist -- the rig case of an SLM meant to be the third monitor on
-a computer with only one connected.
+The tests name the display one past the last connected screen (index 1 under
+the offscreen Qt platform CI uses, which has one) -- the rig case of an SLM
+meant to be the third monitor on a computer with only one connected.
 """
 
 from types import SimpleNamespace
@@ -40,30 +40,35 @@ def manager_factory(qapp):
         manager.SLMQLabel.close()
 
 
-def test_missing_display_reports_device_not_found_instead_of_raising(manager_factory, qapp):
-    assert len(qapp.screens()) == 1
+def _missing(qapp):
+    return len(qapp.screens())
 
-    manager = manager_factory(monitorIdx=2)
+
+def test_missing_display_reports_device_not_found_instead_of_raising(manager_factory, qapp):
+    missing = _missing(qapp)
+
+    manager = manager_factory(monitorIdx=missing)
 
     connection, mode, summary, details, failure = manager.statusSnapshot()
     assert connection is DeviceConnectionState.ERROR
     assert failure is DeviceFailureKind.DEVICE_NOT_FOUND
     assert mode is DeviceRuntimeMode.REAL
     assert summary == 'SLM display not connected'
-    assert 'monitorIdx 2' in details and '1 display(s) connected' in details
+    assert f'monitorIdx {missing}' in details
+    assert f'{missing} display(s) connected' in details
     assert not manager.SLMQLabel.isVisible()
 
 
-def test_patterns_for_a_missing_display_are_dropped_quietly(manager_factory):
-    manager = manager_factory(monitorIdx=2)
+def test_patterns_for_a_missing_display_are_dropped_quietly(manager_factory, qapp):
+    manager = manager_factory(monitorIdx=_missing(qapp))
 
     manager.upload_pattern(np.zeros((64, 48), dtype=np.uint8))
 
     assert manager.SLMQLabel.pixmap() is None or manager.SLMQLabel.pixmap().isNull()
 
 
-def test_mock_mode_without_the_display_keeps_the_mock_status(manager_factory):
-    manager = manager_factory(monitorIdx=2, mockermode=True)
+def test_mock_mode_without_the_display_keeps_the_mock_status(manager_factory, qapp):
+    manager = manager_factory(monitorIdx=_missing(qapp), mockermode=True)
 
     connection, mode, *_ = manager.statusSnapshot()
     assert mode is DeviceRuntimeMode.MOCK

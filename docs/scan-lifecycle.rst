@@ -118,9 +118,8 @@ attribute read).
 Metadata resolution order
 -------------------------
 
-``getDimsScan()``, ``getScanStepSizes()``, ``getNumLineSteps()``,
-``getFramesPerScanPixel()`` and ``getBeadRecScanSource()`` resolve in this
-order:
+``getDimsScan()``, ``getScanStepSizes()``, ``getFramesPerScanPixel()`` and
+``getBeadRecScanSource()`` resolve in this order:
 
 1. **Active scan source** — if it satisfies the ``BeadRecScanSource`` protocol
    (see ``controllers/_beadrec_scan_source.py``) and reports

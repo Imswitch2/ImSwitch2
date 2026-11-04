@@ -15,7 +15,7 @@ from pathlib import Path
 # Running this file directly does not put the repo root on sys.path, and a
 # source checkout need not be pip-installed. An installed ImSwitch already
 # resolves the import and the insert is harmless.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

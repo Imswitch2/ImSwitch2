@@ -874,8 +874,11 @@ features live in the ``Advanced`` panel (see below), which also carries the
 from ``phase_delay`` and ``d3step_delay`` in ``scan.scanDesignerParams``.  A
 setup that still names ``PointScan`` fails to start with a message saying so:
 change ``scanWidgetType`` to ``"Advanced"`` and ``TTLCycleDesigner`` to
-``"AdvancedScanTTLCycleDesigner"``.  The per-device **Line steps** / **Axis**
-pattern (``TTL_sequence``) of the old panel has no equivalent.
+``"AdvancedScanTTLCycleDesigner"`` (and ``"cloak": "SimplePointScan"`` for the
+simpler panel described above).  A setup that names
+``PointScanTTLCycleDesigner`` -- the config editor's old scan default, also
+with ``Base`` -- is refused the same way.  The per-device **Line steps** /
+**Axis** pattern (``TTL_sequence``) of the old panel has no equivalent.
 
 Scripts can set the geometry with ``api.imcontrol.changeScanSize(...)``,
 ``changeScanCenterPos(...)`` and ``changed3StepDelayPar(...)``.
@@ -887,10 +890,12 @@ Retired MoNaLISA variant
 start with a message saying so.  Change it to ``"Base"``, which has the same
 designers (``BetaScanDesigner`` with ``BetaTTLCycleDesigner``), the Start/End
 pulse table in ms and **Cont. Laser Pulses**, or to ``"Advanced"`` (with
-``"AdvancedScanTTLCycleDesigner"``).  The old panel's *Axial Scan* option (an
-XZ and/or YZ section that followed a 2-D XY scan, through a bead centre found
-in the Bead reconstruction tool) has no replacement: run the axial scan as a
-scan of its own.  Saved widget states from a MoNaLISA-panel session still load.
+``"AdvancedScanTTLCycleDesigner"``); for the profile-driven MoNaLISA panel,
+use ``"Advanced"`` with ``"cloak": "SimpleMoNaLISA"`` (see above).  The old
+panel's *Axial Scan* option (an XZ and/or YZ section that followed a 2-D XY
+scan, through a bead centre found in the Bead reconstruction tool) has no
+replacement: run the axial scan as a scan of its own.  Saved widget states
+from a MoNaLISA-panel session still load.
 
 
 Advanced scanning: line steps

@@ -8,6 +8,9 @@ from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
     ScanControllerAdvanced,
 )
 from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
+from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
+    SignalDesignerFactory,
+)
 from imswitch.imcontrol.view.ImConMainView import ImConMainView
 
 
@@ -22,6 +25,12 @@ def test_pointscan_error_names_the_advanced_panel():
     assert '"Advanced"' in str(error)
     assert 'AdvancedScanTTLCycleDesigner' in str(error)
     assert 'SimplePointScan' in str(error)
+
+
+def test_the_removed_ttl_designer_is_refused_with_its_replacement():
+    # The config editor's scan template defaulted to it, also for Base.
+    with pytest.raises(ValueError, match='AdvancedScanTTLCycleDesigner'):
+        SignalDesignerFactory('PointScanTTLCycleDesigner')
 
 
 def test_main_view_refuses_a_pointscan_setup_before_building_widgets():

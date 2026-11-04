@@ -455,7 +455,8 @@ def retiredScanWidgetTypeError(scanWidgetType):
             '(keep "GalvoScanDesigner" as scan.scanDesigner for galvo scans). '
             'The PointScan-only TTL_sequence feature has no replacement in the '
             'Advanced panel. For a simpler panel over Advanced, also set '
-            'scan.cloak to "SimplePointScan". See docs/advanced-scanning.rst.'
+            'scan.cloak to "SimplePointScan". See "Retired point-scan variant" '
+            'in docs/gui.rst.'
         )
     if scanWidgetType == "MoNaLISA":
         return ValueError(
@@ -466,7 +467,7 @@ def retiredScanWidgetTypeError(scanWidgetType):
             'follow-up scans with bead-centre search have no replacement; '
             'record the axial scan as a separate scan. For the profile-driven '
             'MoNaLISA panel, use "Advanced" with scan.cloak "SimpleMoNaLISA". '
-            'See docs/advanced-scanning.rst.'
+            'See "Retired MoNaLISA variant" in docs/gui.rst.'
         )
     return None
 
