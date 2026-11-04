@@ -79,8 +79,11 @@ class ScriptError(RuntimeError):
     because that is what a status label and a workflow error can carry.
     ``line`` is the innermost line of the user's own code the error passed
     through (``None`` for a problem with the outputs as a whole), and
-    ``traceback_text`` is the traceback trimmed to those frames.
+    ``traceback_text`` is the traceback trimmed to those frames. ``stdout`` is
+    what the code printed before it failed (set by :func:`run_script`).
     """
+
+    stdout: str = ""
 
     def __init__(self, message: str, *, line: int | None = None, traceback_text: str = ""):
         self.message = str(message)
@@ -282,9 +285,16 @@ def run_script(
         with routeThisThreadsOutputTo(capture):
             exec(compiled, namespace)  # noqa: S102 - the feature: code runs as typed, like a plugin
     except (Exception, SystemExit) as exc:
-        raise ScriptError.from_exception(exc, code, filename) from exc
-    produced = _collect(namespace, ports)
-    return _build_results(produced, ports, inputs), capture.buffer.getvalue()
+        error = ScriptError.from_exception(exc, code, filename)
+        error.stdout = capture.buffer.getvalue()
+        raise error from exc
+    try:
+        produced = _collect(namespace, ports)
+        results = _build_results(produced, ports, inputs)
+    except ScriptError as error:
+        error.stdout = capture.buffer.getvalue()
+        raise
+    return results, capture.buffer.getvalue()
 
 
 class _Capture:

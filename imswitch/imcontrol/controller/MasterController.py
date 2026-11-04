@@ -1,11 +1,12 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerBase, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
 from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
+from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.model.managers._scan_execution import (
     getSharedScanExecutionCoordinator,
 )
@@ -18,6 +19,17 @@ class MasterController:
     """
 
     def __init__(self, setupInfo, commChannel, moduleCommChannel):
+        try:
+            self._initialize(setupInfo, commChannel, moduleCommChannel)
+        except Exception:
+            # MasterController owns every manager that has been successfully
+            # assigned during initialization. If a later manager fails to
+            # construct, release those already-owned resources before
+            # propagating the original startup error.
+            self._cleanupAfterInitializationFailure()
+            raise
+
+    def _initialize(self, setupInfo, commChannel, moduleCommChannel):
         self.__logger = initLogger(self)
         self.__setupInfo = setupInfo
         self.__commChannel = commChannel
@@ -78,6 +90,14 @@ class MasterController:
             self.__setupInfo.flipMirrors,
             **lowLevelManagers
         )
+        # Measurement instruments; transient ones stay absent until connected.
+        # Simulated instruments may follow simulated devices (the mock PAX
+        # reads the mock waveplate rotators), hence rotatorsManager.
+        self.instrumentsManager = InstrumentsManager(
+            getattr(self.__setupInfo, 'instruments', None),
+            rotatorsManager=self.rotatorsManager,
+            **lowLevelManagers
+        )
 
         self.recordingManager = RecordingManager(self.detectorsManager)
 
@@ -92,17 +112,25 @@ class MasterController:
             retired = retiredScanWidgetTypeError(self.__setupInfo.scan.scanWidgetType)
             if retired is not None:
                 raise retired
-            if self.__setupInfo.scan.scanWidgetType == "Base":
+            # scanWidgetType is always the real scan backend.  A cloak only
+            # changes the frontend selected by the main view/controller.
+            try:
+                scanType = resolve_scan_info(self.__setupInfo.scan).backend_type
+            except ValueError as error:
+                self.__logger.error(str(error))
+                return
+            if scanType == "Base":
                 self.scanManager = ScanManagerBase(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "Advanced":
+            elif scanType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "TriggerScope":
+            elif scanType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
                                                            self.triggerScopeManager)
             else:
+                known = ["Base", "Advanced", "TriggerScope"]
                 self.__logger.error(
-                    'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the following:'
-                    ' ["Base", "Advanced", "TriggerScope"].'
+                    'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the '
+                    f'following: {known}.'
                 )
                 return
 
@@ -136,6 +164,34 @@ class MasterController:
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
 
+    def _cleanupAfterInitializationFailure(self):
+        """Best-effort cleanup without masking the startup exception."""
+        try:
+            cleanupCompleted = self.closeEvent()
+        except Exception:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Unexpected error while cleaning up after '
+                        'MasterController initialization failure.',
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
+            return
+
+        if cleanupCompleted is False:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Hardware cleanup after MasterController '
+                        'initialization failure was incomplete.'
+                    )
+                except Exception:
+                    pass
+
     def memoryRecordingAvailable(self, name, file, filePath, savedToDisk):
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
             data=file, filePath=filePath, savedToDisk=savedToDisk
@@ -161,7 +217,8 @@ class MasterController:
         # finalizers remain pending on the next close attempt.
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
-            'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
+            'rotatorsManager', 'flipMirrorsManager', 'instrumentsManager',
+            'recordingManager',
             'slmsManager', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
             'scanManager',

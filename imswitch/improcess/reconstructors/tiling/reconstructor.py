@@ -385,6 +385,7 @@ class TilingReconstructor(Reconstructor):
 
     name = "Tiling mosaic"
     id = "tiling-mosaic"
+    output_kind = "image"
     file_extensions = ["json", "tiff", "tif", "ome.tiff", "hdf5", "h5", "zarr"]
     description = "Reassemble a saved tiling run into a stitched mosaic"
     default_save_subdir = "mosaic"

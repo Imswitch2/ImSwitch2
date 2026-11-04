@@ -45,7 +45,13 @@ def test_communication_channel_signal_inventory_matches_snapshot():
 def test_communication_channel_exposes_scan_workflow_service():
     source = CHANNEL_PATH.read_text()
 
-    assert 'from .WorkflowServices import ScanWorkflowService' in source
+    imported = {
+        alias.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ImportFrom) and node.module == 'WorkflowServices' and node.level == 1
+        for alias in node.names
+    }
+    assert 'ScanWorkflowService' in imported
     assert 'self.scanWorkflow = ScanWorkflowService(self)' in source
     assert 'def run_scan(self, recalculate_signals: bool,' in (
         (ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'WorkflowServices.py').read_text()

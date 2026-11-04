@@ -391,6 +391,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     legacyStateNames = ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan')
     setupModeCategory = 'scan'
     setupModeApplyPriority = SetupModeApplyPriority.SCAN
+    # Saved-state features this controller can run beyond the common scan
+    # dicts; see _unsupportedStateFeatureRefusal.
+    supportedStateFeatures = frozenset()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -449,8 +452,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.TTLDevices = self._setupInfo.getTTLDevices()
 
         self.scanDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_scans')
-        if not os.path.exists(self.scanDir):
-            os.makedirs(self.scanDir)
+        os.makedirs(self.scanDir, exist_ok=True)
 
         # All NI-DAQ entry points share one global iteration owner. Ownership is
         # recorded on the token, so the broadcast completion signals are acted
@@ -972,6 +974,29 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             for warning in warnings:
                 self._logger.warning(warning)
 
+    @APIExport(runOnUIThread=True)
+    def getScanParameters(self) -> dict:
+        """ Returns the scan the Scan widget holds as a dict, the same
+        content saveScanParamsToFile writes: ``analogParameterDict`` (the
+        scanned devices with ``axis_length``, ``axis_step_size`` and
+        ``axis_centerpos`` per device, in µm, and ``sequence_time`` in s),
+        ``digitalParameterDict`` (the pulsed devices with ``TTL_start`` and
+        ``TTL_end`` in s) and ``positionersScan``. Edit it and give it back
+        with setScanParameters. """
+        return self.getComponentState()
+
+    @APIExport(runOnUIThread=True)
+    def setScanParameters(self, parameters: dict) -> None:
+        """ Puts a dict from getScanParameters, edited or not, into the Scan
+        widget, as loadScanParamsFromFile does with a file. Raises
+        ValueError, naming what could not be applied, when the dict does
+        not fit the setup (a device the setup lacks, say). """
+        warnings = self.applyComponentState(
+            parameters, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+        )
+        if warnings:
+            raise ValueError('; '.join(str(w) for w in warnings))
+
     def _read_scan_file(self, filePath: str):
         """Read a scan file, returning a component state dict.
         
@@ -1038,6 +1063,55 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         if not fileName:
             return
         self.loadScanParamsFromFile(fileName)
+
+    def finishScanRunAfterCurrent(self):
+        """Gracefully make the current scan part the final part of its run.
+
+        This is deliberately different from :meth:`abortScan`: an active
+        NI-DAQ iteration is not marked aborted and completes normally. If the
+        run is retained between sequence parts, its run-level reservation is
+        released immediately without publishing a synthetic extra scan-done
+        iteration.
+        """
+        runToken = getattr(self, '_scanRunToken', None)
+        if runToken is None:
+            return False
+        try:
+            if self._scanCoordinator.runForOwner(self) is not runToken:
+                return False
+        except Exception:
+            return False
+
+        self._repeatPending = False
+        self.doingNonFinalPartOfSequence = False
+        setRepeatEnabled = getattr(self._widget, 'setRepeatEnabled', None)
+        if callable(setRepeatEnabled):
+            try:
+                setRepeatEnabled(False)
+            except Exception:
+                self._logger.error(
+                    'Failed to disable scan repeat while finishing the run',
+                    exc_info=True,
+                )
+
+        if self.isRunning:
+            # scanDone() will now publish this physically completing iteration
+            # as the final successful part and release the run normally.
+            return True
+
+        # A non-final external sequence retains its run reservation between
+        # iterations. There is no next NI-DAQ terminal to release it, so close
+        # only the run-level lifecycle now; the preceding exact part terminal
+        # has already been published.
+        try:
+            self._widget.setScanButtonChecked(False)
+        except Exception:
+            self._logger.error(
+                'Failed to reset the scan widget while finishing the run',
+                exc_info=True,
+            )
+        self._finishScanRun(expectedRunToken=runToken)
+        return True
 
     def abortScan(self):
         """ Abort scan. """
@@ -2119,6 +2193,33 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             'mode': mode,
         }
 
+    def _unsupportedStateFeatureRefusal(self, state: dict) -> str:
+        """Why this controller must not apply ``state``, or ``''``.
+
+        A saved scan state may declare ``requiredFeatures``: a mapping from a
+        feature name to a sentence saying what it needs ("10 T frames"). The
+        SimplePointScan panel declares features the other scan panels cannot
+        run, so that loading such a file elsewhere is refused with the reason
+        instead of quietly running part of it. A state without the key (every
+        file the other panels write) is unaffected.
+        """
+        required = state.get('requiredFeatures') or {}
+        if not isinstance(required, dict):
+            return 'Saved scan state declares its required features in an unreadable form; it was not applied.'
+        unsupported = [
+            str(reason) for feature, reason in required.items()
+            if feature not in self.supportedStateFeatures
+        ]
+        if not unsupported:
+            return ''
+        panel = getattr(
+            getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None
+        ) or type(self).__name__
+        return (
+            f'This scan needs {"; ".join(unsupported)}, which the {panel} scan '
+            f'panel cannot run. Scan state was not applied.'
+        )
+
     def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
         """Apply scan parameter dictionaries from component state.
         
@@ -2140,6 +2241,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         if not isinstance(state, dict):
             return ['Saved scan state is not a dictionary.']
+
+        refusal = self._unsupportedStateFeatureRefusal(state)
+        if refusal:
+            return [refusal]
 
         savedWidgetType = state.get('scanWidgetType')
         currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)

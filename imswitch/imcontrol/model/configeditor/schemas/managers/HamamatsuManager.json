@@ -36,6 +36,15 @@
         "code:required",
         "example:object"
       ]
+    },
+    "mockSample": {
+      "description": "Simulation only (mock camera on a simulated NI-DAQ): the frames show the synthetic sample (cells and beads) under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"latticePeriodUm\": 0.72, \"seed\": 0}``; each axis carries its positioner's ``conversionFactor``. Without it the mock frames are uniform noise.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:object"
+      ]
     }
   },
   "required": [

@@ -956,6 +956,7 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
         _make_full_scan = ScanControllerAdvanced._make_full_scan
         _get_scan_designer = ScanControllerAdvanced._get_scan_designer
         _get_ttl_designer = ScanControllerAdvanced._get_ttl_designer
+        _stage_parameters = ScanControllerAdvanced._stage_parameters
         _copy_positioner_line_program_to_stage_params = (
             ScanControllerAdvanced._copy_positioner_line_program_to_stage_params
         )

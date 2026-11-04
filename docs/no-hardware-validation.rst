@@ -78,6 +78,14 @@ The baseline profile is:
 ``imswitch/_data/user_defaults/imcontrol_setups/example_no_hardware.json``
 
 It uses mock/simulated devices and must remain free of physical IO channels.
+
+``simulation: true`` is intentional software scan simulation, not just a
+startup fallback. A setup with ``simulation: false`` can still open when
+``nidaqmx`` is missing, but its NI-DAQ backend is marked unavailable and
+NI-DAQ scans and writes are refused. Hardware-free validation profiles should
+therefore keep ``simulation: true`` when they need simulated scan timing or
+detector data.
+
 The corresponding validation entry point is:
 
 ``imswitch/test_no_hardware_profile.py``

@@ -1,6 +1,7 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .DetectorManager import DetectorManager, DetectorAction, DetectorNumberParameter
 
 
@@ -25,7 +26,16 @@ class PiCamManager(DetectorManager):
 
         host = detectorInfo.managerProperties['cameraHost']
         port = detectorInfo.managerProperties['cameraPort']
-        self._camera = self._getPiCamObj(host, port)
+        self._installBackend(
+            lambda: self._getPiCamObj(host, port),
+            self._getMockPiCamObj,
+            label=f'Pi camera {host}',
+            configured_mock=str(host).strip().lower().startswith('mock'),
+            # A detector needs its sensor size at construction: an absent
+            # camera keeps a mock until a reconnect replaces it.
+            use_mock_on_failure=bool(
+                detectorInfo.managerProperties.get('useMockOnFailure', True)),
+        )
 
         model = self._camera.model
         self._running = False
@@ -157,28 +167,24 @@ class PiCamManager(DetectorManager):
     def openPropertiesDialog(self):
         self._camera.openPropertiesGUI()
 
-    def _getPiCamObj(self, host, port):
-        try:
-            from imswitch.imcontrol.model.interfaces.picamera import CameraPiCam
-            self.__logger.debug(f'Trying to initialize PiCamera {host}')
-            camera = CameraPiCam(host, port)
-            self._setConnected("Pi camera initialized")
-        except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize PiCamera {e}, loading TIS mocker',
-                exc_info=True
-            )
-            from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
-            camera = MockCameraTIS()
-            if str(host).strip().lower().startswith("mock"):
-                self._setMockActive("Mock camera configured")
-            else:
-                self._setConnectionError(
-                    e,
-                    summary="Pi camera initialization failed; mock fallback active",
-                    mock_active=True,
-                )
+    #: The camera client, read from the backend holder: a reconnect replaces it.
+    _camera = backend_attribute()
 
+    @staticmethod
+    def _getMockPiCamObj():
+        from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
+        return MockCameraTIS()
+
+    def _getPiCamObj(self, host, port):
+        """Open the real camera (or the mock for a ``mock`` host); raises
+        when it cannot be reached."""
+        if str(host).strip().lower().startswith('mock'):
+            camera = self._getMockPiCamObj()
+            self.__logger.info(f'Initialized mock camera, model: {camera.model}')
+            return camera
+        from imswitch.imcontrol.model.interfaces.picamera import CameraPiCam
+        self.__logger.debug(f'Trying to initialize PiCamera {host}')
+        camera = CameraPiCam(host, port)
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera
 

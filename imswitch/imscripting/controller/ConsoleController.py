@@ -8,6 +8,16 @@ class ConsoleController(ImScrWidgetController):
         super().__init__(*args, **kwargs)
         self._widget.setScriptScope(self._scriptScope)
 
+    def attachExecutor(self, executor):
+        """ Works in the executor's session from now on, and is disabled
+        while it runs a script. """
+        self._widget.setNamespace(executor.session.namespace)
+        executor.sigExecutionStarted.connect(lambda _result: self._widget.setRunning(True))
+        executor.sigExecutionFinished.connect(
+            lambda _result: self._widget.setRunning(executor.isBusy())
+        )
+        executor.sigSessionReset.connect(self._widget.sessionReset)
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

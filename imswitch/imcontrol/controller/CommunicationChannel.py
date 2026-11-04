@@ -4,7 +4,9 @@ import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
-from .WorkflowServices import ScanWorkflowService
+from .WorkflowServices import (
+    LiveScreeningWorkflowService, RecordingWorkflowService, ScanWorkflowService,
+)
 
 if TYPE_CHECKING:
     from .controllers._beadrec_scan_source import BeadRecScanSource
@@ -98,11 +100,15 @@ class CommunicationChannel(SignalInterface):
     sigAcquisitionStopped = Signal()
     sigAdjustFrame = Signal(object)  # (shape)
     sigDetectorSwitched = Signal(str, str)  # (newDetectorName, oldDetectorName)
+    sigDetectorParametersChanged = Signal(str)  # (detectorName)
     sigNewFrame = Signal()
 
     # View-layer overlay and viewer item events.
     sigAddItemToVb = Signal(object)  # (item)
     sigRemoveItemFromVb = Signal(object)  # (item)
+    # (detectorName, DisplayedScanGeometry or None): the scan geometry of what
+    # the detector's live layer now shows, emitted when it changes.
+    sigScanGeometryShown = Signal(str, object)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
     sigSetConfig = Signal(str)  # (configName) — Snouty setup switching
 
@@ -178,6 +184,8 @@ class CommunicationChannel(SignalInterface):
         self._activeScanSource = None
         self._focusLock = None
         self.scanWorkflow = ScanWorkflowService(self)
+        self.liveScreeningWorkflow = LiveScreeningWorkflowService(self)
+        self.recordingWorkflow = RecordingWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
 
     def controllerRegistry(self) -> Mapping:
@@ -535,6 +543,11 @@ class CommunicationChannel(SignalInterface):
 
     @APIExport(runOnUIThread=True)
     def acquireImage(self) -> None:
+        """ Legacy, kept for old scripts: appends the live view's current
+        image to a list that a script the Watcher widget runs gets, and that
+        nothing reads. Outside such a script it keeps only the latest image.
+        To get images, use snapImage(True), getLiveFrame or recordFramesToMemory,
+        which return them. """
         image = self.get_image()
         if self._scriptExecution:
             self.output.append(image)

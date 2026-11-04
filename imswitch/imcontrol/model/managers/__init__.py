@@ -1,6 +1,7 @@
 from .DetectorsManager import (DetectorsManager, DetectorFaultedError,
                                LeasePurpose, NoDetectorsError)
 from .FlipMirrorsManager import FlipMirrorsManager
+from .InstrumentsManager import InstrumentsManager
 from .LasersManager import LasersManager
 from .MultiManager import MultiManager
 from .NidaqManager import NidaqManager
@@ -18,6 +19,7 @@ __all__ = [
     'DetectorsManager', 'DetectorFaultedError', 'LeasePurpose',
     'NoDetectorsError',
     'FlipMirrorsManager',
+    'InstrumentsManager',
     'LasersManager',
     'MultiManager',
     'NidaqManager',

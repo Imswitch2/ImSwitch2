@@ -37,6 +37,8 @@ _CONTROLLER_MODULES = {
     "RotatorController": "RotatorController",
     "ScanControllerAdvanced": "ScanControllerAdvanced",
     "ScanControllerBase": "ScanControllerBase",
+    "ScanControllerSimplePointScan": "ScanControllerSimplePointScan",
+    "ScanControllerSimpleMoNaLISA": "ScanControllerSimpleMoNaLISA",
     "SettingsController": "SettingsController",
     "SetupStatusController": "SetupStatusController",
     "SetupModesController": "SetupModesController",
@@ -53,6 +55,8 @@ _CONTROLLER_MODULES = {
     "ViewerToolsController": "ViewerToolsController",
     "WatcherController": "WatcherController",
     "WorkflowFacadeController": "WorkflowFacadeController",
+    "ReservationController": "ReservationController",
+    "InstrumentsController": "InstrumentsController",
 }
 
 

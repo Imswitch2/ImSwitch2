@@ -194,10 +194,7 @@ class ScanControllerAdvanced(SuperScanController):
         ttl_des = self._get_ttl_designer()
 
         # --- stage / analog ---
-        stage_param = copy.deepcopy(getattr(self._setupInfo.scan, "scanDesignerParams", {}))
-        stage_param.update(scanParameters)
-        stage_param["n_linesteps"] = int(TTLParameters.get("n_linesteps", 1))
-        self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
+        stage_param = self._stage_parameters(scanParameters, TTLParameters)
 
         # optional guard (like Base)
         if hasattr(scan_des, "signalLengthRefusal"):
@@ -404,13 +401,36 @@ class ScanControllerAdvanced(SuperScanController):
 
         return out
 
-    def _make_scan_only(self, scanParameters, TTLParameters):
-        scan_des = self._get_scan_designer()
+    def _stage_parameters(self, scanParameters, TTLParameters):
+        """What the scan designer receives: the setup's designer params, the
+        analog scan parameters, the line-step count and the positioner line
+        program. Building, plotting and estimating a scan all start here."""
         stage_param = copy.deepcopy(getattr(self._setupInfo.scan, "scanDesignerParams", {}))
         stage_param.update(scanParameters)
         stage_param["n_linesteps"] = int((TTLParameters or {}).get("n_linesteps", 1))
         self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
+        return stage_param
+
+    def _make_scan_only(self, scanParameters, TTLParameters):
+        scan_des = self._get_scan_designer()
+        stage_param = self._stage_parameters(scanParameters, TTLParameters)
         return scan_des.make_signal(stage_param, self._setupInfo)
+
+    def estimateScanTimeS(self):
+        """Seconds one frame of the current scan takes, from the scan
+        designer's estimate, or ``None`` when the designer cannot estimate.
+
+        Nothing is built at full size and no hardware is touched, so this is
+        cheap enough to follow a slider. Raises ScanDesignRefusedError, with
+        the reason, for a design the designer would refuse.
+        """
+        self.getParameters()
+        return self._get_scan_designer().estimateScanTime(
+            self._stage_parameters(
+                self._analogParameterDict, self._digitalParameterDict
+            ),
+            self._setupInfo,
+        )
 
     def plotScanCurves(self):
         """Build and plot analog scan curves without starting hardware tasks."""
@@ -437,9 +457,14 @@ class ScanControllerAdvanced(SuperScanController):
                     scanSignalsDict = signalDict.get("scanSignalsDict", {})
                     ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
                 else:
-                    scanSignalsDict, _, scanInfoDict = self._make_scan_only(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
+                    # The speed rule (P0) can refuse the scan-only design too.
+                    try:
+                        scanSignalsDict, _, scanInfoDict = self._make_scan_only(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
             if not scanSignalsDict:
                 self._logger.warning("No scan curves to plot")
                 return
@@ -644,6 +669,12 @@ class ScanControllerAdvanced(SuperScanController):
                 for condition in range(conditionCount)
             )
         return counts
+
+    def getNumScanPositions(self):
+        """Scan positions of the current parameters (a recording asks this
+        before anything else has rebuilt the dicts from the widget or cloak)."""
+        self.getParameters()
+        return super().getNumScanPositions()
 
     def getNumCamTTL(self):
         """Return the exact uniform detector-frame multiplier when expressible."""
@@ -1134,10 +1165,14 @@ class ScanControllerAdvanced(SuperScanController):
 
     @APIExport(runOnUIThread=True)
     def changeScanCenterPos(self, positionerName, positionerScanCenterPos):
+        """ Sets the centre of the scan along a positioner, in µm (the Scan
+        widget's *Center*). """
         self._widget.setScanCenterPos(positionerName, positionerScanCenterPos)
 
     @APIExport(runOnUIThread=True)
     def changeScanSize(self, positioner: str, size: float):
+        """ Sets the size of the scan along a positioner, in µm (the Scan
+        widget's *Size*). """
         self._widget.setScanSize(positioner, size)
 
     # ------------------------------------------------------------------

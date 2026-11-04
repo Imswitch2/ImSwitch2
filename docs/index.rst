@@ -156,6 +156,7 @@ start-up, managers, signal buses, the recording path — see
     devices/positioners
     devices/rotators
     devices/stands
+    devices/instruments
     Hdf5datafile
 
 .. toctree::

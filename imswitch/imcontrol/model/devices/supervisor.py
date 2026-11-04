@@ -37,6 +37,7 @@ _MULTI_MANAGER_SOURCES = (
     ("positioner", "positionersManager"),
     ("rotator", "rotatorsManager"),
     ("flip_mirror", "flipMirrorsManager"),
+    ("instrument", "instrumentsManager"),
     ("rs232", "rs232sManager"),
     ("slm", "slmsManager"),
 )
@@ -428,6 +429,8 @@ class DeviceSupervisor:
         configured = set(getattr(manager, "configuredDeviceNames", ()) or ())
         detected = set(getattr(manager, "detectedDeviceNames", ()) or ())
         error = getattr(manager, "deviceEnumerationError", None)
+        backend_available = bool(getattr(manager, "backendAvailable", True))
+        backend_error = getattr(manager, "backendError", None)
         simulating = bool(getattr(manager, "simulating", False))
 
         names = sorted(configured | detected, key=str.casefold)
@@ -455,6 +458,20 @@ class DeviceSupervisor:
                     connection=DeviceConnectionState.NOT_APPLICABLE,
                     mode=DeviceRuntimeMode.MOCK,
                     summary="NI-DAQ simulation configured",
+                )
+            elif not backend_available:
+                status = DeviceStatus(
+                    source_id,
+                    type(manager).__name__,
+                    connection=DeviceConnectionState.ERROR,
+                    mode=DeviceRuntimeMode.REAL,
+                    summary="NI-DAQmx backend unavailable",
+                    details=(
+                        str(backend_error)
+                        if backend_error is not None
+                        else "NI-DAQmx is not available"
+                    ),
+                    failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
                 )
             elif error is not None:
                 status = DeviceStatus(

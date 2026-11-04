@@ -19,6 +19,7 @@ class ProjectionProcessor(Processor):
     id = "projection"
     category = "Dimensions and channels"
     kinds = ("image", "composite")
+    output_kind = "image"
 
     @classmethod
     def default_params(cls) -> dict:

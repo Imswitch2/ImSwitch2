@@ -400,6 +400,11 @@ bases), registered under widget key ``'Scan'`` as
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key
+   * - ``ScanControllerSimplePointScan`` (a cloak over Advanced:
+       ``ScanCloakController`` + ``ScanControllerAdvanced``)
+     - ``SimplePointScan``
+     - as Advanced; from the simple page, Live drives Advanced's Repeat box
+       and an external start (recording, script) always runs one iteration
 
 **TriggerScope family and standalone** — inherit
 ``TriggerScopeScanLifecycleMixin`` alongside ``ImConWidgetController``,

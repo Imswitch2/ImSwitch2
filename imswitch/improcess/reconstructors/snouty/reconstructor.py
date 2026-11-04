@@ -32,6 +32,7 @@ class SnoutyReconstructor(Reconstructor):
     
     name = "SNOUTY deskew"
     id = "snouty"
+    output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Lightsheet deskew for SNOUTY/OPM/MS-RESOLFT data"
     

@@ -32,6 +32,15 @@
       ],
       "x-imswitch-widget": "text"
     },
+    "connectOnStartup": {
+      "default": false,
+      "description": "For a transient device: still try to connect at startup; a failure leaves it absent with the error shown, never in mock.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.connectOnStartup: bool"
+      ]
+    },
     "digitalLine": {
       "default": null,
       "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
@@ -153,6 +162,15 @@
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
         "dataclass:PositionerInfo.shortcutModifier: Optional[str]"
+      ]
+    },
+    "transient": {
+      "default": false,
+      "description": "Declared but not required at startup: left absent (not an error, no mock) until connected from the Hardware status window or a script. For devices that are plugged in only when needed.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.transient: bool"
       ]
     }
   },
