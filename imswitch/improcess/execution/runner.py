@@ -1,7 +1,7 @@
 """Qt lifecycle wrapper for a single independently testable incremental job.
 
-Not wired to Session yet: M2 will adapt queue/job/result ownership. Never waits
-for a QThread synchronously on the GUI thread, including on cancel/shutdown.
+Session/Queue owns publication and result lifecycle; this runner only emits
+preview/terminal events. Never waits on a QThread on the GUI thread.
 """
 
 from __future__ import annotations
@@ -101,7 +101,9 @@ class QtIncrementalRunner(QtCore.QObject):
             self.sigPause.emit(bool(paused))
 
     def cancel(self):
-        """Cancel and discard unfinished output. Returns immediately."""
+        """Stop processing without blocking. Already published previews are owned
+        by the queue/viewer and remain intact; this runner never deletes them.
+        """
         if not self._started or self._cancelled:
             return
         self._cancelled = True

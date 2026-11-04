@@ -90,57 +90,117 @@ def test_finite_reader_receives_snapped_scope_and_physical_origin(monkeypatch):
     assert calls[-1][1]["timepoint_stop"] == 3
 
 
-def test_skip_never_publishes_provisional_result(monkeypatch):
+class _Signal:
+    def __init__(self, name, log):
+        self.name = name
+        self.log = log
+
+    def emit(self, *args):
+        self.log.append((self.name, *args))
+
+
+def _queue_controller_stub():
     from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+
     queue = ProcessingQueue()
     queue.enqueue(_job())
     queue.take_next()
-    outcome = []
-    fake = SimpleNamespace(
-        _incrementalRunner=object(), _incrementalReconstructor=None,
-        _incrementalResult=SimpleNamespace(name="partial"),
-        _incrementalError="", _skipRequested=True, queue=queue,
-        _finish_current=lambda **kw: outcome.append(kw),
-    )
-    ProcessingQueueController._on_incremental_finished(fake, True)
-    assert outcome == [{"skipped": True}]
-    assert fake._incrementalResult is None
-    assert fake._incrementalRunner is None
-
-
-def test_completed_result_published_once_after_runner_has_stopped(monkeypatch):
-    import imswitch.improcess.controller.ProcessingQueueController as module
-    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
-    queue = ProcessingQueue()
-    queue.enqueue(_job())
-    queue.take_next()
-    result = SimpleNamespace(name="result")
     events = []
-    plugin = SimpleNamespace(id="monalisa")
-    monkeypatch.setattr(module, "get_registry", lambda: SimpleNamespace(
-        get_reconstructor=lambda *_a, **_k: plugin
-    ))
-    monkeypatch.setattr(module, "annotate_result_timepoint_scope", lambda res, scope, total: (
-        events.append(("scope", scope, total)) or True
-    ))
-    fake = SimpleNamespace(
-        _incrementalRunner=object(), _incrementalReconstructor=plugin,
-        _incrementalResult=result,
-        _incrementalError="", _incrementalMissingRanges=(),
-        _skipRequested=False, queue=queue, _currentSourceTimepoints=5,
-        _claim_current_result=lambda r: events.append(("claim", r)),
-        _reconstructorManager=SimpleNamespace(publishQueuedResult=lambda r, label, reconstructor: (
-            events.append(("publish", r, label, reconstructor))
-        )),
-        _finish_current=lambda **kw: events.append(("finish", kw)),
+    channel = SimpleNamespace(**{
+        name: _Signal(name, events)
+        for name in ("sigLiveResultUpdated", "sigLiveTimepointUpdated",
+                     "sigLiveTimepointDone", "sigResultFinalized",
+                     "sigCurrentResultChanged", "sigResultProduced")
+    })
+    stub = SimpleNamespace(
+        _incrementalRunner=object(), _incrementalReconstructor=object(),
+        _incrementalResult=None, _incrementalError="",
+        _incrementalMissingRanges=(), _incrementalPublishedResult=None,
+        _incrementalCompletedTimepoints=0,
+        _currentPlannedTimepoints=2, _currentSourceTimepoints=5,
+        _skipRequested=False, queue=queue, _commChannel=channel,
+        _claim_current_result=lambda result: setattr(result, "_claimed", True),
+        _finish_current=lambda **kwargs: events.append(("finish", kwargs)),
         _logger=SimpleNamespace(exception=lambda *args: None),
     )
-    ProcessingQueueController._on_incremental_finished(fake, True)
-    assert [e[0] for e in events] == ["scope", "claim", "publish", "finish"]
-    assert events[0][1] == TimepointScope.range(2, 3)
-    assert events[0][2] == 5
-    assert events[2][1] is result
-    assert fake._incrementalRunner is None
+    for name in ("_tag_incremental_result", "_on_incremental_preview",
+                 "_finalize_incremental_publication"):
+        setattr(stub, name, getattr(ProcessingQueueController, name).__get__(stub))
+    return stub, events
+
+
+def test_incremental_preview_and_skip_preserve_published_data(monkeypatch):
+    import numpy as np
+    import imswitch.improcess.controller.ProcessingQueueController as module
+    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+
+    monkeypatch.setattr(module, "annotate_result_timepoint_scope", lambda *a, **k: True)
+    controller, events = _queue_controller_stub()
+    result = SimpleNamespace(name="lapse", axis_labels=["T"], data=np.zeros((2, 2)))
+
+    controller._on_incremental_preview(result, None)
+    assert result._claimed
+    assert result._improcess_queue_job_id == controller.queue.current.id
+    assert result.metadata["incremental_completion"]["status"] == "partial"
+    assert events[0] == ("sigLiveResultUpdated", result)
+
+    controller._on_incremental_preview(None, (0, np.ones((1, 2))))
+    assert events[-1][0] == "sigLiveTimepointUpdated"
+    controller._incrementalCompletedTimepoints = 1
+    controller._skipRequested = True
+    ProcessingQueueController._on_incremental_finished(controller, False)
+
+    assert events[-3][0] == "sigResultFinalized"
+    assert events[-3][1] is result
+    assert events[-2][0] == "sigCurrentResultChanged"
+    assert events[-1] == ("finish", {"skipped": True})
+    assert result.metadata["incremental_completion"] == {
+        "status": "partial", "completed_timepoints": 1, "requested_timepoints": 2,
+    }
+    assert not any(event[0] == "sigResultProduced" for event in events)
+
+
+def test_skip_before_any_preview_creates_no_result():
+    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+    controller, events = _queue_controller_stub()
+    controller._skipRequested = True
+    ProcessingQueueController._on_incremental_finished(controller, False)
+    assert events == [("finish", {"skipped": True})]
+
+
+def test_completed_incremental_result_uses_existing_live_entry(monkeypatch):
+    import imswitch.improcess.controller.ProcessingQueueController as module
+    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+    monkeypatch.setattr(module, "annotate_result_timepoint_scope", lambda *a, **k: True)
+    controller, events = _queue_controller_stub()
+    preview = SimpleNamespace(name="lapse")
+    final = SimpleNamespace(name="lapse")
+    controller._on_incremental_preview(preview, None)
+    controller._incrementalCompletedTimepoints = 2
+    controller._incrementalResult = final
+    ProcessingQueueController._on_incremental_finished(controller, True)
+    assert [event[0] for event in events] == [
+        "sigLiveResultUpdated", "sigLiveResultUpdated", "sigResultFinalized",
+        "sigCurrentResultChanged", "finish",
+    ]
+    assert final._improcess_queue_job_id == preview._improcess_queue_job_id
+    assert final.metadata["incremental_completion"]["status"] == "complete"
+    assert events[2][1] is final
+    assert events[-1] == ("finish", {})
+
+
+def test_failed_incremental_run_retains_partial_without_success_label(monkeypatch):
+    import imswitch.improcess.controller.ProcessingQueueController as module
+    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+    monkeypatch.setattr(module, "annotate_result_timepoint_scope", lambda *a, **k: True)
+    controller, events = _queue_controller_stub()
+    preview = SimpleNamespace(name="lapse")
+    controller._on_incremental_preview(preview, None)
+    controller._incrementalError = "source failed"
+    ProcessingQueueController._on_incremental_finished(controller, False)
+    assert events[-1] == ("finish", {"error": "source failed"})
+    assert preview.metadata["incremental_completion"]["status"] == "partial"
+    assert [event[0] for event in events].count("sigResultFinalized") == 1
 
 
 def test_lapse_detector_inspection_uses_selected_scan_group(tmp_path):

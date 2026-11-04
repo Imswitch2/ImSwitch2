@@ -71,6 +71,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         # data object even if the user selects a different entry mid-run.
         self._liveItem = None
         self._liveName = None
+        self._liveQueueJobId = None
 
         self._transposeOrder = [0, 1, 2, 3, 4, 5]
         self._axisStep = (0, 0, 0, 0, 0, 0)
@@ -1386,9 +1387,15 @@ class ReconstructionViewController(ImProcessWidgetController):
         keeping only the newest would silently drop reconstructed data. Only
         the redraw is coalesced, which is the expensive part.
         """
-        if not self._liveItemIsAlive():
+        # Whole-result previews render on a deferred GUI turn. A timepoint
+        # update may arrive before that render: apply it to the pending
+        # snapshot, not to a previous job's still-selected viewer entry.
+        if self._pendingLiveResult is not None:
+            result = self._pendingLiveResult
+        elif self._liveItemIsAlive():
+            result = self._liveItem.data(1)
+        else:
             return
-        result = self._liveItem.data(1)
         if result is None or plane is None:
             return
 
@@ -1431,11 +1438,10 @@ class ReconstructionViewController(ImProcessWidgetController):
     def _renderPendingLiveResult(self):
         """Render the newest live result into the data object owned by its job.
 
-        Every job follows the same two-step sequence: its first result creates
-        one data object named after the job, and every later result updates
-        that same object. The job is identified by the result's name (the
-        timelapse folder), which is unique per job -- so no de-duplicating
-        suffix is needed and none is added.
+        Each run's first snapshot creates a result entry; later snapshots
+        replace that entry in place. For queued incremental jobs a stable job
+        id distinguishes repeated reconstructions with the same display name.
+        Legacy live runs retain their existing name-based identity.
         """
         self._liveRenderScheduled = False
         result = self._pendingLiveResult
@@ -1444,9 +1450,13 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
 
         name = getattr(result, 'name', '') or 'Live'
-        if not self._liveItemIsAlive() or self._liveName != name:
+        queue_job_id = getattr(result, "_improcess_queue_job_id", None)
+        if (not self._liveItemIsAlive() or self._liveName != name
+                or (queue_job_id != self._liveQueueJobId
+                    and (queue_job_id is not None or self._liveQueueJobId is not None))):
             self._liveItem = self._widget.addNamedData(result, name)
             self._liveName = name
+            self._liveQueueJobId = queue_job_id
             self._liveEstablished = False
             self._liveLatestTimepoint = None
             return

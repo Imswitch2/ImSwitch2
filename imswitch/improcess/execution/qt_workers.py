@@ -131,6 +131,9 @@ class StreamProcessWorker(QtCore.QObject):
         self._dataset_name = dataset_name
         self._session = None
         self._info = None
+        self._stream_init = None
+        self._contract = None
+        self._frames_processed = 0
         self._last_preview = 0.0
         self._preview_sent = False
         self._preview_interval_s = float(preview_interval_s)
@@ -143,6 +146,8 @@ class StreamProcessWorker(QtCore.QObject):
             return
         try:
             self._info = info
+            self._contract = contract
+            self._frames_processed = len(init_frames)
             attrs = dict(info.attrs)
             attrs.update(info.metadata)
             if info.T is not None:
@@ -155,19 +160,19 @@ class StreamProcessWorker(QtCore.QObject):
                 stack_info, frames_per_stack=info.frames_per_timepoint,
                 planned_timepoints=info.T or stack_info.planned_timepoints,
             )
-            self._session = self._reconstructor.make_session()
-            self._session.begin(
-                StreamInit(name=self._name,
-                           dataset_name=self._dataset_name or info.detector_name or "raw",
-                           data=init_frames, attrs=attrs,
-                           source_path=info.source_path, stack_info=effective_stack),
-                contract.params,
+            self._stream_init = StreamInit(
+                name=self._name,
+                dataset_name=self._dataset_name or info.detector_name or "raw",
+                data=init_frames, attrs=attrs,
+                source_path=info.source_path, stack_info=effective_stack,
             )
+            self._session = self._reconstructor.make_session()
+            self._session.begin(self._stream_init, contract.params)
+            self._preview(force=True)
             if len(init_frames) % info.frames_per_timepoint == 0:
                 self.sigTimepoint.emit(
                     generation, len(init_frames) // info.frames_per_timepoint,
                 )
-            self._preview(force=True)
         except Exception as exc:
             self._fail(exc)
             return
@@ -181,11 +186,12 @@ class StreamProcessWorker(QtCore.QObject):
             if self._session is None:
                 raise RuntimeError("push received without begin")
             self._session.push(frames, start, end)
+            self._frames_processed = end
             per_timepoint = self._info.frames_per_timepoint
             done = end // per_timepoint
+            self._preview(force=(end % per_timepoint == 0 and per_timepoint > 1))
             if end % per_timepoint == 0:
                 self.sigTimepoint.emit(generation, done)
-            self._preview(force=(end % per_timepoint == 0 and per_timepoint > 1))
         except Exception as exc:
             self._fail(exc)
             return
@@ -199,6 +205,7 @@ class StreamProcessWorker(QtCore.QObject):
             if self._session is None:
                 raise RuntimeError("finish received without begin")
             result = self._session.finish()
+            self._record_snapshot(result, "complete")
             self.sigResult.emit(generation, result)
         except Exception as exc:
             self._fail(exc)
@@ -212,6 +219,21 @@ class StreamProcessWorker(QtCore.QObject):
     def cancel(self):
         self._stop()
 
+    def _record_snapshot(self, result, status: str):
+        # Match the existing live reconstruction provenance path, including
+        # partial/complete status and a stable reconstruction node per session.
+        from imswitch.improcess.reconstructors.run import record_snapshot
+
+        expected = (
+            self._info.T * self._info.frames_per_timepoint
+            if self._info is not None and self._info.T is not None else None
+        )
+        record_snapshot(
+            result, self._reconstructor, self._contract.params,
+            self._stream_init, session=self._session, status=status,
+            frames_committed=self._frames_processed, expected_frames=expected,
+        )
+
     def _preview(self, *, force: bool = False):
         if self._session is None or not self._enable_preview:
             return
@@ -223,7 +245,9 @@ class StreamProcessWorker(QtCore.QObject):
             # live_plane() contract says the ndarray is already copied.
             self.sigPreview.emit(self._generation, None, plane)
         else:
-            self.sigPreview.emit(self._generation, self._session.result(), None)
+            result = self._session.result()
+            self._record_snapshot(result, "partial")
+            self.sigPreview.emit(self._generation, result, None)
             self._preview_sent = True
         self._last_preview = now
 

@@ -105,6 +105,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._incrementalResult = None
         self._incrementalError = ""
         self._incrementalMissingRanges = ()
+        self._incrementalPublishedResult = None
+        self._incrementalCompletedTimepoints = 0
         self._closing = False
         self._live = LiveReconstructionController(self._commChannel)
         self._live.sigFinalResult.connect(self._on_live_final_result)
@@ -705,12 +707,11 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
 
     def _start_finite_incremental(self, job, source, reconstructor, *, prepared) -> bool:
-        """Launch one completed logical lapse through M1's bounded executor.
+        """Run finite acquisition incrementally, publishing snapshots in place.
 
-        The queue owns the only finalization decision. Preview snapshots are
-        deliberately not published as completed Session results: Skip must
-        discard provisional work, and existing Session autosave only sees the
-        result when both worker threads have actually stopped.
+        A preview is a real, retained viewer result. The Session finalization
+        event is separate and emitted after the worker threads have stopped,
+        including after Skip when timepoints were already published.
         """
         if prepared is None:
             return False
@@ -743,24 +744,27 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._incrementalResult = None
         self._incrementalError = ""
         self._incrementalMissingRanges = ()
+        self._incrementalPublishedResult = None
+        self._incrementalCompletedTimepoints = 0
         budget = self._reconstructorManager._default_memory_budget_bytes()
         runner = QtIncrementalRunner(
             reconstructor, disk_source, copy.deepcopy(job.params),
             name=job.label, path=prepared.seed_path,
             dataset_name="time-lapse",
             max_buffer_bytes=max(1, min(256 * 1024 * 1024, int(budget) // 3)),
-            enable_preview=False,
+            enable_preview=True,
         )
         self._incrementalRunner = runner
         self._incrementalReconstructor = reconstructor
+        runner.sigPreview.connect(self._on_incremental_preview)
         runner.sigTimepoint.connect(self._on_incremental_timepoint)
         runner.sigCoverage.connect(self._on_incremental_coverage)
         runner.sigResult.connect(self._on_incremental_result)
         runner.sigFailed.connect(self._on_incremental_failed)
         runner.sigFinished.connect(self._on_incremental_finished)
-        # Progressive queue/timepoint status is safe. Do not create a viewer
-        # result before finalization: cancellation must not leave an apparently
-        # completed result, and the normal result publisher owns autosave.
+        # The existing live viewer keeps one entry per job. Session ownership
+        # is claimed on the first snapshot; finalization/autosave is deferred
+        # until successful completion or cancellation of published work.
         try:
             runner.start()
         except Exception as exc:
@@ -770,12 +774,81 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error=f"Incremental executor startup failed: {exc}")
         return True
 
+    def _tag_incremental_result(self, result, *, status: str) -> None:
+        """Label partial results before they reach the viewer or Session save.
+
+        The selected scope is the *requested* input extent. The number of
+        completed output timepoints is separately recorded, so cancelling an
+        All-T job cannot make a partly-filled output appear complete.
+        """
+        job = self.queue.current
+        if result is None or job is None:
+            return
+        result._improcess_queue_job_id = str(job.id)
+        scope = coerce_timepoint_scope(job.timepoint_scope)
+        annotate_result_timepoint_scope(
+            result, scope, total=self._currentSourceTimepoints,
+        )
+        metadata = getattr(result, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result.metadata = metadata
+        metadata["incremental_completion"] = {
+            "status": str(status),
+            "completed_timepoints": int(self._incrementalCompletedTimepoints),
+            "requested_timepoints": self._currentPlannedTimepoints,
+        }
+        self._claim_current_result(result)
+
+    @QtCore.Slot(object, object)
+    def _on_incremental_preview(self, result, plane) -> None:
+        """Publish a new snapshot or one copied plane to the live viewer.
+
+        Plane messages update the viewer-owned result on the GUI thread; they
+        are not separate Session results and are never autosaved individually.
+        """
+        if self._incrementalRunner is None or self.queue.current is None:
+            return
+        if result is not None:
+            self._tag_incremental_result(result, status="partial")
+            self._incrementalPublishedResult = result
+            self._commChannel.sigLiveResultUpdated.emit(result)
+        elif plane is not None and self._incrementalPublishedResult is not None:
+            index, pixels = plane
+            self._commChannel.sigLiveTimepointUpdated.emit(int(index), pixels)
+
+    def _finalize_incremental_publication(self, result, *, status: str) -> None:
+        """Finalize the existing live entry, without appending another one.
+
+        A skipped job with a published preview is intentionally retained and
+        marked partial; a skipped job without a preview creates no result.
+        """
+        job = self.queue.current
+        if result is None or job is None:
+            return
+        self._tag_incremental_result(result, status=status)
+        if status == "complete":
+            self._commChannel.sigLiveResultUpdated.emit(result)
+        self._commChannel.sigResultFinalized.emit(
+            result, getattr(result, "name", job.label),
+        )
+        self._commChannel.sigCurrentResultChanged.emit(result)
+
     @QtCore.Slot(int)
     def _on_incremental_timepoint(self, completed: int) -> None:
         if self._incrementalRunner is None or self.queue.current is None:
             return
         total = int(self._currentPlannedTimepoints or 0)
         completed = max(0, int(completed))
+        self._incrementalCompletedTimepoints = max(
+            self._incrementalCompletedTimepoints, completed,
+        )
+        if self._incrementalPublishedResult is not None:
+            self._tag_incremental_result(
+                self._incrementalPublishedResult, status="partial",
+            )
+            if completed:
+                self._commChannel.sigLiveTimepointDone.emit(completed - 1)
         self._currentProgress = {
             "fraction": min(1., completed / total) if total else None,
             "status": f"Timepoint {completed}/{total}" if total else f"Timepoint {completed}",
@@ -796,35 +869,31 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(bool)
     def _on_incremental_finished(self, success: bool) -> None:
-        """Only publish after both QThreads stopped and Skip was ruled out."""
+        """Finalize after both threads stop, retaining published data on Skip."""
         if self._incrementalRunner is None:
             return
         self._incrementalRunner = None
-        reconstructor = self._incrementalReconstructor
-        self._incrementalReconstructor = None
         result = self._incrementalResult
         error = self._incrementalError
+        published = self._incrementalPublishedResult
+        self._incrementalReconstructor = None
         self._incrementalResult = None
         self._incrementalError = ""
+        self._incrementalPublishedResult = None
         if self._skipRequested:
+            if published is not None:
+                self._finalize_incremental_publication(published, status="partial")
             self._finish_current(skipped=True)
             return
         if not success or result is None:
+            # A failed stream is not a successful result. Preserve the last
+            # visible snapshot (if any) but mark it incomplete for the user.
+            if published is not None:
+                self._finalize_incremental_publication(published, status="partial")
             self._finish_current(error=error or "Incremental processing stopped without a result")
             return
-        job = self.queue.current
-        if job is None:
-            return
-        scope = coerce_timepoint_scope(job.timepoint_scope)
-        annotate_result_timepoint_scope(result, scope, total=self._currentSourceTimepoints)
-        # Missing raw-frame ranges refer to the *selected* scope's frame space.
-        # In the first queue integration they are diagnostic only. Do not
-        # misrepresent them as global timepoint indices in provenance.
-        self._claim_current_result(result)
         try:
-            self._reconstructorManager.publishQueuedResult(
-                result, getattr(result, "name", job.label), reconstructor=reconstructor,
-            )
+            self._finalize_incremental_publication(result, status="complete")
         except Exception as exc:
             self._logger.exception("Incremental result publication failed")
             self._finish_current(error=f"Result publication failed: {exc}")
