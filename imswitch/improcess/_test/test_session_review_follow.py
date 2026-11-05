@@ -40,6 +40,10 @@ class _FakeWatcher:
         self.deleted = False
         self.__class__.instances.append(self)
 
+    @property
+    def running(self):
+        return self.started
+
     def scan_once(self):
         return ["/tmp/old.zarr", "/tmp/unreadable.h5"]
 
@@ -77,6 +81,7 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         _watchPendingPaths=set(),
         _watchUnresolvedPaths=set(),
         _watchNeedsFullReconcile=False,
+        _watchAutoArrivals={}, _watchLapseChildren={},
         _watchReconcileTimer=SimpleNamespace(stop=lambda: None),
         _pathBelongsToResults=lambda path: False,
         _sessionKnowsRootEntry=lambda path: path == "/tmp/old.zarr",
@@ -85,6 +90,8 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         sigDatasetsAdded=_Signal(),
         _logger=SimpleNamespace(exception=lambda *args: None),
         _disableSessionAuto=lambda: events.append("auto-off"),
+        _sync_auto_availability=lambda: events.append("auto-available"),
+        _admit_resolved_arrivals=lambda paths: None,
     )
     fake._stopDirectoryWatcher = lambda: ProcessingSessionController._stopDirectoryWatcher(fake)
     fake._startDirectoryWatcher = lambda session: ProcessingSessionController._startDirectoryWatcher(fake, session)
@@ -126,32 +133,44 @@ def test_review_ignores_stale_queued_watcher_events():
     assert fake._watchPendingPaths == set()
 
 
-def test_auto_control_remains_disarmed_until_m3b():
-    messages = []
+def test_auto_toggle_is_available_only_while_watching():
+    calls = []
+    queue = SimpleNamespace(
+        autoPolicy=SimpleNamespace(enabled=False),
+        setAutoEnabled=lambda enabled: calls.append(("auto", enabled)),
+        setProcessWhileAcquiring=lambda enabled: calls.append(("while", enabled)),
+    )
     fake = SimpleNamespace(
-        _disableSessionAuto=lambda: messages.append("disabled"),
-        _widget=SimpleNamespace(setStatus=lambda status: messages.append(status)),
+        _session=object(), _sessionMode="review", _queue_controller=lambda: queue,
+        _sync_auto_availability=lambda: None,
     )
     ProcessingSessionController.setAutoProcessingEnabled(fake, True)
-    assert messages[0] == "disabled"
-    assert "M3B" in messages[1]
+    assert calls == [("auto", False), ("while", False)]
+    calls.clear()
+    fake._sessionMode = "follow"
+    ProcessingSessionController.setAutoProcessingEnabled(fake, True)
+    assert calls == [("auto", True)]
 
 
-def test_session_header_mode_selector_is_runtime_only(qtbot):
+def test_session_watching_toggle_and_refresh_visibility(qtbot):
     frame = ProcessingSessionFrame()
     qtbot.addWidget(frame)
-    assert frame.sessionModeCombo.currentData() == "review"
-    assert not frame.sessionModeCombo.isEnabled()
+    assert not frame.watchToggle.isEnabled()
     frame.setSessionActive(True, "example")
+    assert not frame.refreshBtn.isHidden()
     seen = []
     frame.sigSessionModeChanged.connect(seen.append)
-    frame.sessionModeCombo.setCurrentIndex(frame.sessionModeCombo.findData("follow"))
+    frame.watchToggle.setChecked(True)
     assert seen == ["follow"]
+    frame.setSessionMode("follow")
+    assert frame.watchToggle.isChecked()
+    assert frame.refreshBtn.isHidden()
     frame.setSessionMode("review")
-    assert frame.sessionModeCombo.currentData() == "review"
-    assert seen == ["follow"]  # controller updates must not re-emit
+    assert not frame.watchToggle.isChecked()
+    assert not frame.refreshBtn.isHidden()
+    assert seen == ["follow"]  # controller update does not re-emit
     frame.setSessionActive(False)
-    assert not frame.sessionModeCombo.isEnabled()
+    assert not frame.watchToggle.isEnabled()
 
 
 def test_opening_session_resets_follow_without_persisting(monkeypatch, tmp_path):
@@ -167,8 +186,10 @@ def test_opening_session_resets_follow_without_persisting(monkeypatch, tmp_path)
     session = SimpleNamespace(raw_root=tmp_path, results_root=tmp_path / "results", datasets=[])
     fake = SimpleNamespace(
         _sessionMode="follow", _session=object(), _saveFormat="tiff",
+        _watchAutoArrivals={}, _watchLapseChildren={},
         _widget=widget, _stopDirectoryWatcher=lambda: observed.append(("stop",)),
         _disableSessionAuto=lambda: observed.append(("auto-off",)),
+        _sync_auto_availability=lambda: observed.append(("auto-available",)),
         _loaded_result_signature=lambda: (), _rebuild_loaded_result_index=lambda: None,
         _main=SimpleNamespace(_currentDataObj=None),
         _sync_current_dataset=lambda _obj: None, _render=lambda: None,

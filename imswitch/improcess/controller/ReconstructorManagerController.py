@@ -506,7 +506,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             streaming = bool(getattr(reconstructor, 'supports_streaming', False))
             derived = str(getattr(reconstructor, 'result_role', 'derived')) != 'inspection'
-            auto_available = streaming and derived
+            # Auto after explicit finite readiness works for offline-only
+            # reconstructors too. Only true acquisition-time following needs
+            # a StreamingSession.
+            session_controller = getattr(self._main, 'processingSessionController', None)
+            auto_available = bool(
+                derived and session_controller is not None
+                and getattr(session_controller, 'session', None) is not None
+                and getattr(session_controller, 'sessionMode', 'review') == 'follow'
+            )
             self._widget.setDirectoryWatcherAvailable(streaming)
             self._widget.processingSessionFrame.setProcessingAvailable(derived)
             self._widget.setBatchProcessingAvailable(derived)

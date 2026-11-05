@@ -81,6 +81,7 @@ class ProcessingQueueController(ImProcessWidgetController):
 
         self.queue = ProcessingQueue()
         self.autoPolicy = AutoProcessPolicy()
+        self._processWhileAcquiring = False  # session-runtime only
         # Runtime-only ad-hoc sources queued from Quick Load. The queue model
         # keeps only a stable logical id; this registry keeps the lightweight
         # DataObj reference needed to materialize the source lazily at execution.
@@ -134,15 +135,18 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._retryTimer.start()
 
         if self._sessionController is not None:
-            added_signal = getattr(self._sessionController, "sigDatasetsAdded", None)
-            if added_signal is not None:
-                added_signal.connect(self._datasets_added)
+            arrival_signal = getattr(
+                self._sessionController, "sigAutoAcquisitionsAdmitted", None
+            )
+            if arrival_signal is not None:
+                arrival_signal.connect(self.enqueueAutoArrivals)
 
     # ------------------------------------------------------------------ public API
 
     def queueSnapshot(self):
         snapshot = self.queue.view_snapshot(waiting_limit=100)
         snapshot["auto_enabled"] = bool(self.autoPolicy.enabled)
+        snapshot["process_while_acquiring"] = bool(self._processWhileAcquiring)
         snapshot["current_progress"] = dict(self._currentProgress or {})
         snapshot["last_terminal_status"] = dict(self._lastTerminalStatus or {})
         return snapshot
@@ -151,48 +155,74 @@ class ProcessingQueueController(ImProcessWidgetController):
         return self.queue.dataset_states()
 
     def setAutoEnabled(self, enabled: bool) -> None:
-        """Enable/disable automatic submission; discovery itself is unaffected."""
+        """Arm future *new arrivals*, never backfill existing catalog entries."""
         self.autoPolicy.enabled = bool(enabled)
-        if self.autoPolicy.enabled:
-            self.enqueueAutoEligible()
+        if not enabled:
+            self._processWhileAcquiring = False
         self._emit_changed()
 
-    def enqueueAutoEligible(self, dataset_ids=None) -> int:
-        session = getattr(self._sessionController, "session", None)
+    def setProcessWhileAcquiring(self, enabled: bool) -> None:
+        """Control admission policy only, never mutate already submitted jobs."""
+        self._processWhileAcquiring = bool(enabled and self.autoPolicy.enabled)
+        self._emit_changed()
+
+    def captureAutoRecipe(self) -> dict | None:
+        """Freeze a new arrival's reconstructor and parameters at first sight."""
         reconstructor = getattr(self._main, "_activeReconstructor", None)
-        if session is None or reconstructor is None or not self.autoPolicy.enabled:
+        if (reconstructor is None or not self.autoPolicy.enabled
+                or str(getattr(reconstructor, "result_role", "derived")) == "inspection"):
+            return None
+        return {
+            "reconstructor_id": str(reconstructor.id),
+            "params": self._snapshot_params(reconstructor),
+            "execution_requirement": (
+                ExecutionRequirement.FOLLOW.value if self._processWhileAcquiring
+                else ExecutionRequirement.FINITE.value
+            ),
+        }
+
+    def enqueueAutoArrivals(self, dataset_ids, recipe: dict) -> int:
+        """Submit only entries explicitly admitted by the Session observer.
+
+        Arrival tokens are granted when Watching+Auto were enabled, and may
+        resolve later even after Auto is switched off. Never consult the
+        current UI params or the current Auto toggle when consuming a token.
+        """
+        session = getattr(self._sessionController, "session", None)
+        if session is None or not isinstance(recipe, dict):
             return 0
-        params = self._snapshot_params(reconstructor)
-        if dataset_ids is None:
-            datasets = list(session.datasets)
-        else:
-            datasets = [
-                dataset
-                for dataset_id in dataset_ids
-                if (dataset := session.dataset_by_id(str(dataset_id))) is not None
-            ]
+        reconstructor_id = str(recipe.get("reconstructor_id", ""))
+        reconstructor = get_registry().get_reconstructor(
+            reconstructor_id, raise_on_missing=False,
+        )
+        if (reconstructor is None or
+                str(getattr(reconstructor, "result_role", "derived")) == "inspection"):
+            return 0
         jobs = []
-        for dataset in datasets:
-            processed = bool(self._sessionController.isDatasetProcessed(dataset.id))
-            if not self.autoPolicy.eligible(
-                dataset,
-                queue=self.queue,
-                reconstructor=reconstructor,
-                processed=processed,
-            ):
+        for dataset_id in dict.fromkeys(str(item) for item in dataset_ids):
+            dataset = session.dataset_by_id(dataset_id)
+            if (dataset is None or getattr(dataset, "raw_deleted", False)
+                    or self.queue.contains_dataset(dataset_id)
+                    or self._sessionController.isDatasetProcessed(dataset_id)):
                 continue
-            jobs.append(self._job_for_dataset(
-                dataset,
-                reconstructor,
-                params,
+            job = self._job_for_dataset(
+                dataset, reconstructor, recipe.get("params", {}),
                 origin=ProcessingOrigin.AUTO,
                 timepoint_scope=TimepointScope.all(),
-            ))
+            )
+            job.execution_requirement = ExecutionRequirement(
+                recipe.get("execution_requirement", ExecutionRequirement.FINITE.value)
+            )
+            jobs.append(job)
         added = self.queue.enqueue_many(jobs, position="end")
         if added:
             self._emit_changed()
             self._process_next()
         return added
+
+    def enqueueAutoEligible(self, dataset_ids=None) -> int:
+        """Retired historical-backfill entry point (M3B)."""
+        return 0
 
     def enqueueSessionDatasets(
         self,
@@ -362,6 +392,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     def sessionClosed(self) -> None:
         """Discard Session-owned waiting work without disturbing Loaded jobs."""
         self.autoPolicy.enabled = False
+        self._processWhileAcquiring = False
         session_job_ids = [
             job.id for job in self.queue.waiting
             if str(getattr(job, "source", "session")) == "session"
@@ -428,8 +459,8 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(object)
     def _datasets_added(self, dataset_ids) -> None:
-        if self.autoPolicy.enabled:
-            self.enqueueAutoEligible(dataset_ids or ())
+        # Legacy signal is catalog reconciliation, NOT an Auto arrival.
+        return
 
     def _snapshot_params(self, reconstructor) -> dict:
         getter = getattr(self._reconstructorManager, "snapshotProcessingParams", None)

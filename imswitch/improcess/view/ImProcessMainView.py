@@ -1699,17 +1699,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         return reply == QtWidgets.QMessageBox.Yes
 
     def setSessionAutoProcessingAvailable(self, available: bool) -> None:
-        # M3A intentionally disarms the previous backfill-based Auto policy.
-        # M3B replaces it with admission of *new Follow arrivals* and makes
-        # this control available for finite and streaming-capable plugins.
         tooltip = (
-            'Auto for new Follow arrivals will be available in M3B. '
-            'Review always uses manual reconstruction.'
+            'Automatically reconstruct only new acquisitions observed while '
+            'Watching and Auto are enabled. Existing recordings are never backfilled.'
+            if available else 'Enable Watching to use Auto-reconstruction.'
         )
-        self.processingSessionFrame.setAutoProcessingAvailable(False, tooltip)
-        btnFrame = getattr(self, '_btnFrame', None)
-        if btnFrame is not None:
-            btnFrame.setAutoProcessingAvailable(False, tooltip)
+        self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)
+        footer = getattr(self, '_btnFrame', None)
+        if footer is not None:
+            footer.setAutoProcessingAvailable(available, tooltip)
 
     def setDirectoryWatcherAvailable(self, available: bool) -> None:
         """Show the Directory watcher only for reconstructors that stream.
@@ -2394,6 +2392,7 @@ class BtnFrame(QtWidgets.QFrame):
     sigProcessSelectedRequested = QtCore.Signal(str, str)  # context, next/end
     sigAddSelectedToMultiDataRequested = QtCore.Signal(str)
     sigAutoProcessingChanged = QtCore.Signal(bool)
+    sigProcessWhileAcquiringChanged = QtCore.Signal(bool)
     sigQueuePauseResumeRequested = QtCore.Signal()
     sigQueueSkipCurrentRequested = QtCore.Signal()
     sigQueueRemoveSelectedRequested = QtCore.Signal()
@@ -2418,6 +2417,7 @@ class BtnFrame(QtWidgets.QFrame):
         self._queueSelectionState = (False, False, False)
         self._autoProcessingAvailable = False
         self._sessionActive = False
+        self._processWhileAcquiring = False
         self._autoProcessingTooltip = ''
         self._directItemIndex = None
         self._directItemTotal = None
@@ -2455,7 +2455,15 @@ class BtnFrame(QtWidgets.QFrame):
             lambda: self.sigAddSelectedToMultiDataRequested.emit(self._context)
         )
         self.autoProcessCheck = QtWidgets.QCheckBox('Auto-reconstruct')
-        self.autoProcessCheck.toggled.connect(self.sigAutoProcessingChanged)
+        self.autoProcessCheck.toggled.connect(self._autoProcessingToggled)
+        self.processWhileAcquiringCheck = QtWidgets.QCheckBox('Process while acquiring')
+        self.processWhileAcquiringCheck.setToolTip(
+            'Reconstruct committed frames during acquisition when the source '
+            'and reconstructor support it; otherwise wait until completion.'
+        )
+        self.processWhileAcquiringCheck.toggled.connect(
+            self.sigProcessWhileAcquiringChanged
+        )
 
         self.reconMultiBtn = QtWidgets.QToolButton()
         self.reconMultiBtn.setSizePolicy(
@@ -2529,6 +2537,7 @@ class BtnFrame(QtWidgets.QFrame):
             action_layout.addWidget(widget)
         action_layout.addStretch(1)
         action_layout.addWidget(self.autoProcessCheck)
+        action_layout.addWidget(self.processWhileAcquiringCheck)
 
         self.progressRow = QtWidgets.QWidget()
         progress_layout = QtWidgets.QHBoxLayout(self.progressRow)
@@ -2728,6 +2737,10 @@ class BtnFrame(QtWidgets.QFrame):
         # MoNaLISA Scanning controls where its availability can be exact.
         return
 
+    def _autoProcessingToggled(self, checked: bool) -> None:
+        self.sigAutoProcessingChanged.emit(bool(checked))
+        self._syncContextVisibility()
+
     def setSessionActive(self, active: bool) -> None:
         self._sessionActive = bool(active)
         self._syncProcessingEnabled()
@@ -2736,6 +2749,9 @@ class BtnFrame(QtWidgets.QFrame):
         self._autoProcessingAvailable = bool(available)
         self._autoProcessingTooltip = str(tooltip or '')
         self.autoProcessCheck.setToolTip(self._autoProcessingTooltip)
+        self._syncContextVisibility()
+        # Availability changes when Watching is toggled, independently of
+        # dataset selection. Do not wait for a selection change to enable Auto.
         self._syncProcessingEnabled()
 
     def setQueueSelectionState(self, has_selection: bool, can_up: bool, can_down: bool) -> None:
@@ -2750,7 +2766,13 @@ class BtnFrame(QtWidgets.QFrame):
         self.reconCurrBtn.setVisible(False)
         self.processSelectedBtn.setVisible(data_context)
         self.addToMultiDataBtn.setVisible(data_context)
-        self.autoProcessCheck.setVisible(self._context == 'session')
+        self.autoProcessCheck.setVisible(
+            self._context == 'session' and self._autoProcessingAvailable
+        )
+        self.processWhileAcquiringCheck.setVisible(
+            self._context == 'session' and self._autoProcessingAvailable
+            and self.autoProcessCheck.isChecked()
+        )
         self.reconMultiBtn.setVisible(multi_context and self._featureReconstructMulti)
         for widget in (
             self.queuePauseResumeBtn, self.queueRemoveBtn,
@@ -2788,6 +2810,10 @@ class BtnFrame(QtWidgets.QFrame):
         )
         self.addToMultiDataBtn.setEnabled(bool(count > 0))
         self.autoProcessCheck.setEnabled(bool(self._autoProcessingAvailable and self._sessionActive))
+        self.processWhileAcquiringCheck.setEnabled(bool(
+            self._autoProcessingAvailable and self._sessionActive
+            and self.autoProcessCheck.isChecked()
+        ))
         self.reconMultiBtn.setEnabled(bool(direct_available and self._multiDataCount > 0))
 
         paused = bool(snapshot.get('paused', False))
@@ -2813,7 +2839,12 @@ class BtnFrame(QtWidgets.QFrame):
         self.autoProcessCheck.blockSignals(True)
         self.autoProcessCheck.setChecked(auto_enabled)
         self.autoProcessCheck.blockSignals(False)
-        self._syncProcessingEnabled()
+        self.processWhileAcquiringCheck.blockSignals(True)
+        self.processWhileAcquiringCheck.setChecked(bool(
+            snapshot.get('process_while_acquiring', False)
+        ))
+        self.processWhileAcquiringCheck.blockSignals(False)
+        self._syncContextVisibility()
         if not self._reconstructionRunning:
             self._showQueueStatus()
 

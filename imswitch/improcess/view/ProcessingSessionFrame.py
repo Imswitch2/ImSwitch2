@@ -10,26 +10,6 @@ _FAVORITE_COL_W = 24
 _ACQUISITION_COL_W = 118
 _STATUS_COL_W = 80
 _RESULT_ICON_COL_W = 16
-_AUTO_ICON_COL_W = 16
-
-
-def _auto_ignore_icon(widget) -> QtGui.QIcon:
-    """Small font-independent circle-with-slash marker for Auto exclusion."""
-    size = 12
-    pixmap = QtGui.QPixmap(size, size)
-    pixmap.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(pixmap)
-    try:
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        color = widget.palette().color(QtGui.QPalette.Mid)
-        pen = QtGui.QPen(color, 1.5)
-        painter.setPen(pen)
-        rect = QtCore.QRectF(1.5, 1.5, size - 3.0, size - 3.0)
-        painter.drawEllipse(rect)
-        painter.drawLine(QtCore.QPointF(2.4, size - 2.4), QtCore.QPointF(size - 2.4, 2.4))
-    finally:
-        painter.end()
-    return QtGui.QIcon(pixmap)
 
 
 class _ElidingLabel(QtWidgets.QLabel):
@@ -74,6 +54,49 @@ class _ElidingLabel(QtWidgets.QLabel):
             max(0, self.contentsRect().width()),
         )
         super().setText(shown)
+
+
+class _WatchingSwitch(QtWidgets.QAbstractButton):
+    """Compact, accessible Qt toggle for the Session directory observer.
+
+    The status dot and text are separate widgets: only this switch is the
+    interaction target, and its visual state follows the controller.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setAccessibleName("Monitor session folder")
+        self.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        return QtCore.QSize(40, 22)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setPen(QtCore.Qt.NoPen)
+        track = QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if not self.isEnabled():
+            color = self.palette().color(QtGui.QPalette.Mid)
+        elif self.isChecked():
+            color = QtGui.QColor("#27865d")
+        else:
+            color = self.palette().color(QtGui.QPalette.Mid)
+        painter.setBrush(color)
+        painter.drawRoundedRect(track, track.height() / 2, track.height() / 2)
+        diameter = track.height() - 4
+        x = track.right() - diameter - 2 if self.isChecked() else track.left() + 2
+        thumb = QtCore.QRectF(x, track.top() + 2, diameter, diameter)
+        painter.setBrush(self.palette().color(QtGui.QPalette.Base))
+        painter.drawEllipse(thumb)
+        if self.hasFocus():
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.setPen(QtGui.QPen(self.palette().color(QtGui.QPalette.Highlight), 1))
+            painter.drawRoundedRect(track.adjusted(-0.5, -0.5, 0.5, 0.5),
+                                    track.height() / 2, track.height() / 2)
 
 
 class _CollapsibleSection(QtWidgets.QWidget):
@@ -140,7 +163,7 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(6)
+        self.setColumnCount(5)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(False)
         self.setItemsExpandable(False)
@@ -162,12 +185,10 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
-        header.setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)
         header.resizeSection(0, _FAVORITE_COL_W)
         header.resizeSection(2, _ACQUISITION_COL_W)
         header.resizeSection(3, _STATUS_COL_W)
         header.resizeSection(4, _RESULT_ICON_COL_W)
-        header.resizeSection(5, _AUTO_ICON_COL_W)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
     def fitAuxiliaryColumns(self) -> None:
@@ -191,16 +212,9 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
             bool(self.topLevelItem(index).text(4))
             for index in range(self.topLevelItemCount())
         )
-        has_auto_ignore = any(
-            not self.topLevelItem(index).icon(5).isNull()
-            for index in range(self.topLevelItemCount())
-        )
         self.setColumnHidden(4, not has_panel_link)
-        self.setColumnHidden(5, not has_auto_ignore)
         if has_panel_link:
             header.resizeSection(4, _RESULT_ICON_COL_W)
-        if has_auto_ignore:
-            header.resizeSection(5, _AUTO_ICON_COL_W)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
@@ -247,7 +261,7 @@ class _DatasetFilterBar(QtWidgets.QWidget):
             (favorite_widget, (0,)),
             (name_widget, (1,)),
             (acquisition_widget, (2,)),
-            (status_widget, (3, 4, 5)),
+            (status_widget, (3, 4)),
         )
         for widget, _columns in self._bindings:
             widget.setParent(self)
@@ -778,18 +792,20 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.refreshBtn.setToolTip("Rescan Session folder")
         self.refreshBtn.setAutoRaise(True)
         self.refreshBtn.hide()
-        self.sessionModeCombo = QtWidgets.QComboBox()
-        self.sessionModeCombo.addItem("Review", "review")
-        self.sessionModeCombo.addItem("Follow", "follow")
-        self.sessionModeCombo.setToolTip(
-            "Review: snapshot and manual Refresh. Follow: observe new recordings."
-        )
-        self.sessionModeCombo.setSizeAdjustPolicy(
-            QtWidgets.QComboBox.AdjustToContents
-        )
-        self.sessionModeCombo.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
-        )
+        # Status and interaction are distinct: the dot describes the actual
+        # observer state, the switch activates/deactivates Watching.
+        self.watchingControls = QtWidgets.QWidget()
+        watching_layout = QtWidgets.QHBoxLayout(self.watchingControls)
+        watching_layout.setContentsMargins(0, 0, 0, 0)
+        watching_layout.setSpacing(5)
+        self.watchStatusDot = QtWidgets.QLabel("●")
+        self.watchStatusDot.setStyleSheet("font-size: 9px; color: palette(mid);")
+        self.watchStatusLabel = QtWidgets.QLabel("Monitor")
+        self.watchToggle = _WatchingSwitch(self.watchingControls)
+        self.watchToggle.setToolTip("Start monitoring for new recordings")
+        watching_layout.addWidget(self.watchStatusDot)
+        watching_layout.addWidget(self.watchStatusLabel)
+        watching_layout.addWidget(self.watchToggle)
         self.actionsBtn = QtWidgets.QToolButton()
         self.actionsBtn.setText("Actions")
         self.actionsBtn.setToolTip("Session actions")
@@ -827,7 +843,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         header.addWidget(self.statusLabel)
         header.addWidget(self.sessionNameLabel, 1)
         header.addWidget(self.startSessionBtn)
-        header.addWidget(self.sessionModeCombo)
+        header.addWidget(self.watchingControls)
+        header.addWidget(self.refreshBtn)
         header.addWidget(self.actionsBtn)
         header.addWidget(self.settingsBtn)
         root.addLayout(header)
@@ -1062,7 +1079,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         auto_row.setContentsMargins(0, 0, 0, 0)
         self.autoProcessCheck = QtWidgets.QCheckBox("Auto-reconstruct")
         self.autoProcessCheck.setToolTip(
-            "Queue existing unreconstructed Session datasets and new arrivals automatically"
+            "Automatically reconstruct new recordings while Watching"
         )
         self.queueSummaryLabel = _ElidingLabel("Queue idle")
         self.queueSummaryLabel.setStyleSheet('color: palette(mid);')
@@ -1110,7 +1127,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         self.startSessionBtn.clicked.connect(self.sigStartSessionRequested)
         self.refreshBtn.clicked.connect(self.sigRefresh)
-        self.sessionModeCombo.currentIndexChanged.connect(self._mode_changed)
+        self.watchToggle.toggled.connect(self._mode_changed)
         self.rescanFolderAction.triggered.connect(self.sigRefresh)
         self.settingsBtn.clicked.connect(self.sigSettingsRequested)
         self.cancelAddingBtn.clicked.connect(self.sigCancelAddingRequested)
@@ -1358,26 +1375,36 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             return "cancel"
         return "cancel"
 
-    def _mode_changed(self, _index: int) -> None:
+    def _mode_changed(self, checked: bool) -> None:
         if self._sessionActive:
-            self.sigSessionModeChanged.emit(str(self.sessionModeCombo.currentData()))
+            self.sigSessionModeChanged.emit("follow" if checked else "review")
 
     def setSessionMode(self, mode: str) -> None:
-        """Reflect controller-owned mode without emitting a new mode change."""
+        """Reflect the runtime watching state without re-emitting its signal."""
         mode = str(mode or "review").lower()
         self._sessionMode = mode
-        index = self.sessionModeCombo.findData(mode)
-        self.sessionModeCombo.blockSignals(True)
+        self.watchToggle.blockSignals(True)
         try:
-            self.sessionModeCombo.setCurrentIndex(index if index >= 0 else 0)
+            self.watchToggle.setChecked(mode == "follow")
         finally:
-            self.sessionModeCombo.blockSignals(False)
-        self.refreshBtn.setToolTip(
-            "Refresh Review snapshot" if mode == "review"
-            else "Rescan Follow catalog"
+            self.watchToggle.blockSignals(False)
+        # Do not show a green status merely because Follow was requested:
+        # the controller reports success after the observer actually starts.
+        self.setWatchingActive(False)
+        self.rescanFolderAction.setText("Refresh folder")
+        self.refreshBtn.setVisible(self._sessionActive and mode != "follow")
+
+    def setWatchingActive(self, running: bool) -> None:
+        """Green status means the directory observer is actually running."""
+        active = bool(running and self._sessionMode == "follow")
+        self.watchStatusDot.setStyleSheet(
+            "font-size: 9px; color: #27865d;" if active
+            else "font-size: 9px; color: palette(mid);"
         )
-        self.rescanFolderAction.setText(
-            "Refresh folder" if mode == "review" else "Rescan folder"
+        # Keep the label fixed; the status dot and switch communicate state.
+        self.watchToggle.setToolTip(
+            "Stop monitoring the folder (queued jobs continue)" if active
+            else "Start monitoring for new recordings"
         )
 
     def setSessionActive(self, active: bool, name: str = "") -> None:
@@ -1391,11 +1418,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.sessionNameLabel.setText(str(name or ""))
         self.sessionNameLabel.setVisible(bool(active))
         self.startSessionBtn.setVisible(not active)
-        # The compact mode selector replaces the old always-on Watching label.
-        # Refresh lives under Actions in both modes.
-        self.refreshBtn.setVisible(False)
-        self.sessionModeCombo.setEnabled(bool(active))
-        for widget in (self.sessionModeCombo, self.actionsBtn, self.settingsBtn):
+        self.refreshBtn.setVisible(bool(active and self._sessionMode == "review"))
+        self.watchToggle.setEnabled(bool(active))
+        for widget in (self.watchingControls, self.actionsBtn, self.settingsBtn):
             widget.setVisible(bool(active))
         self.datasetList.setEnabled(bool(active))
         self.datasetSearchEdit.setEnabled(bool(active))
@@ -1487,7 +1512,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def _dataset_double_clicked(self, item, column):
         if (
             item is None
-            or int(column) in {0, 5}
+            or int(column) == 0
             or bool(item.data(0, QtCore.Qt.UserRole + 2))
         ):
             return
@@ -1528,22 +1553,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             )
             unfavorite.triggered.connect(
                 lambda _checked=False: self.sigSetSelectedFavoriteRequested.emit(False)
-            )
-        if any(not bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
-            ignore_auto = menu.addAction(
-                "Ignore selected in auto-reconstruction"
-                if len(selected_items) > 1 else "Ignore in auto-reconstruction"
-            )
-            ignore_auto.triggered.connect(
-                lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(True)
-            )
-        if any(bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
-            include_auto = menu.addAction(
-                "Include selected in auto-reconstruction"
-                if len(selected_items) > 1 else "Include in auto-reconstruction"
-            )
-            include_auto.triggered.connect(
-                lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(False)
             )
         if selected_entries:
             reconstruct_next = menu.addAction(
@@ -1661,7 +1670,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._autoProcessingAvailable = bool(available)
         self.autoProcessCheck.setEnabled(bool(available and self._sessionActive))
         self.autoProcessCheck.setToolTip(str(tooltip or (
-            "Queue existing unreconstructed Session datasets and new arrivals automatically"
+            "Automatically reconstruct new recordings while Watching"
         )))
 
     def _populateQueueList(self, snapshot: dict | None) -> None:
@@ -1982,27 +1991,15 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 str(entry.get("info", "")),
                 str(entry.get("status", "")),
                 "●" if entry.get("panel_link") else "",
-                "",
             ])
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
             item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
             item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
-            item.setIcon(
-                5, _auto_ignore_icon(self) if entry.get("auto_process_ignored") else QtGui.QIcon()
-            )
             item.setToolTip(0, "Remove from favorites" if favorite else "Mark this acquisition as favorite")
             item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
             item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
             item.setToolTip(3, str(entry.get("status", "")))
-            if entry.get("auto_process_ignored"):
-                item.setToolTip(
-                    5,
-                    "Ignored by Session auto-reconstruction. Manual reconstruction remains available.",
-                )
-            else:
-                item.setToolTip(5, "")
             item.setTextAlignment(0, QtCore.Qt.AlignCenter)
-            item.setTextAlignment(5, QtCore.Qt.AlignCenter)
             panel_count = int(entry.get("panel_count", 0) or 0)
             if panel_count:
                 item.setToolTip(
@@ -2045,8 +2042,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         item.setText(2, str(entry.get("info", "")))
         item.setText(3, str(entry.get("status", "")))
         item.setText(4, "●" if entry.get("panel_link") else "")
-        item.setText(5, "")
-        item.setIcon(5, _auto_ignore_icon(self) if entry.get("auto_process_ignored") else QtGui.QIcon())
         item.setData(0, QtCore.Qt.UserRole, dataset_id)
         item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
         item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
@@ -2054,15 +2049,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
         item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
         item.setToolTip(3, str(entry.get("status", "")))
-        if entry.get("auto_process_ignored"):
-            item.setToolTip(
-                5,
-                "Ignored by Session auto-reconstruction. Manual reconstruction remains available.",
-            )
-        else:
-            item.setToolTip(5, "")
         item.setTextAlignment(0, QtCore.Qt.AlignCenter)
-        item.setTextAlignment(5, QtCore.Qt.AlignCenter)
         panel_count = int(entry.get("panel_count", 0) or 0)
         if panel_count:
             item.setToolTip(

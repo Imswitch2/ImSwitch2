@@ -270,7 +270,7 @@ def test_queue_change_updates_only_changed_session_rows():
     ]
 
 
-def test_dataset_added_event_is_the_steady_state_auto_trigger():
+def test_catalog_added_event_no_longer_triggers_historical_auto_backfill():
     seen = []
     fake = SimpleNamespace(
         autoPolicy=SimpleNamespace(enabled=True),
@@ -279,7 +279,7 @@ def test_dataset_added_event_is_the_steady_state_auto_trigger():
 
     ProcessingQueueController._datasets_added(fake, ("new-a", "new-b"))
 
-    assert seen == [("new-a", "new-b")]
+    assert seen == []
 
 
 def test_session_save_worker_delegates_save_without_session_catalog_work():

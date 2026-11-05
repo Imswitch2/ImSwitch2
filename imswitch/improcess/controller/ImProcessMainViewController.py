@@ -113,6 +113,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
             footer.sigAutoProcessingChanged.connect(
                 self.processingSessionController.setAutoProcessingEnabled
             )
+            footer.sigProcessWhileAcquiringChanged.connect(
+                self.processingSessionController.setProcessWhileAcquiring
+            )
             footer.sigQueuePauseResumeRequested.connect(
                 self._queuePauseResumeFromFooter
             )
