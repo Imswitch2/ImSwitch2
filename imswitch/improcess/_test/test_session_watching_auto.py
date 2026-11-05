@@ -42,6 +42,8 @@ def test_only_new_paths_while_auto_on_are_admitted(tmp_path):
     fake = SimpleNamespace(
         _sessionMode="follow", _session=session,
         _watchAutoArrivals={}, _watchUnresolvedPaths=set(), _watchPendingPaths=set(),
+        _watchRetrySchedule=SimpleNamespace(track=lambda _path: None),
+        _syncWatchRetryTimer=lambda: None,
         _queue_controller=lambda: queue,
         _pathBelongsToResults=lambda path: False,
         _sessionKnowsRootEntry=lambda path: False,
@@ -169,3 +171,143 @@ def test_watching_status_and_switch_are_separate(qtbot):
     assert "palette(mid)" in frame.watchStatusDot.styleSheet()
     assert not frame.watchToggle.isChecked()
     assert not frame.refreshBtn.isHidden()
+
+
+class _TestTimer:
+    def __init__(self):
+        self.active = False
+        self.starts = 0
+
+    def isActive(self):
+        return self.active
+
+    def start(self):
+        self.active = True
+        self.starts += 1
+
+    def stop(self):
+        self.active = False
+
+
+
+def _fake_watch_controller(tmp_path, *, auto_enabled=True):
+    """Exercise real Session slots without creating the complete ImSwitch GUI."""
+    from imswitch.improcess.live.discovery_retry import UnresolvedDiscoveryRetry
+
+    emitted = Signal()
+    queue = SimpleNamespace(
+        autoPolicy=SimpleNamespace(enabled=auto_enabled),
+        captureAutoRecipe=lambda: {"reconstructor_id": "monalisa", "params": {"x": 1}},
+    )
+    session = SimpleNamespace(datasets=[])
+    def reconcile_path(path, *, reconcile_saved_results=False):
+        # A nested metadata file appears later; the top-level .zarr directory
+        # need not change its stat signature when that happens.
+        if not (tmp_path / "delayed.zarr" / "nested" / ".zattrs").exists():
+            return False
+        if not session.datasets:
+            session.datasets.append(SimpleNamespace(
+                id="ready", primary_path=str(path), source_refs=[],
+            ))
+        return True
+    session.reconcile_path = reconcile_path
+    session.reconcile_all = lambda: None
+
+    fake = SimpleNamespace(
+        _sessionMode="follow", _session=session,
+        _directoryWatcher=object(), _watchAutoArrivals={},
+        _watchUnresolvedPaths=set(), _watchPendingPaths=set(),
+        _watchLapseChildren={}, _watchNeedsFullReconcile=False,
+        _watchRetrySchedule=UnresolvedDiscoveryRetry(),
+        _watchRetryTimer=_TestTimer(), _watchReconcileTimer=_TestTimer(),
+        _queue_controller=lambda: queue,
+        _pathBelongsToResults=lambda _path: False,
+        _sessionKnowsRootEntry=lambda path: any(
+            str(dataset.primary_path) == str(path) for dataset in session.datasets
+        ),
+        _render=lambda: None,
+        _logger=SimpleNamespace(exception=lambda *_args: None),
+        _widget=SimpleNamespace(setStatus=lambda _message: None),
+        sigCatalogChanged=Signal(), sigDatasetsAdded=Signal(),
+        sigAutoAcquisitionsAdmitted=emitted,
+    )
+    fake._syncWatchRetryTimer = lambda: ProcessingSessionController._syncWatchRetryTimer(fake)
+    fake._sessionPathRemoved = lambda path: ProcessingSessionController._sessionPathRemoved(fake, path)
+    fake._admit_resolved_arrivals = lambda paths: ProcessingSessionController._admit_resolved_arrivals(fake, paths)
+    return fake, queue, session, emitted
+
+
+def test_nested_zarr_becomes_visible_without_root_stat_change(tmp_path):
+    import os
+
+    store = tmp_path / "delayed.zarr"
+    nested = store / "nested"
+    nested.mkdir(parents=True)
+    root_stat = store.stat()
+    fake, _queue, session, emitted = _fake_watch_controller(tmp_path)
+    ProcessingSessionController._sessionPathFound(fake, str(store))
+    assert fake._watchRetryTimer.active
+    ProcessingSessionController._flushWatcherReconcile(fake)
+    assert not session.datasets
+    assert str(store) in fake._watchUnresolvedPaths
+    assert str(store) in fake._watchAutoArrivals
+
+    (nested / ".zattrs").write_text("{}")
+    # The update is nested, not an observable top-level .zarr stat change.
+    os.utime(store, ns=(root_stat.st_atime_ns, root_stat.st_mtime_ns))
+    assert store.stat().st_mtime_ns == root_stat.st_mtime_ns
+    fake._watchRetrySchedule.track(str(store), now=0)  # already tracked; idempotent
+    fake._watchRetrySchedule._entries[str(store)] = (0, 3.0)
+    ProcessingSessionController._retryUnresolvedPaths(fake)
+    assert str(store) in fake._watchPendingPaths
+    ProcessingSessionController._flushWatcherReconcile(fake)
+
+    assert [dataset.id for dataset in session.datasets] == ["ready"]
+    assert fake.sigDatasetsAdded.calls == [(("ready",),)]
+    assert len(emitted.calls) == 1
+    assert emitted.calls[0][0] == ("ready",)
+    assert str(store) not in fake._watchUnresolvedPaths
+    assert not fake._watchRetrySchedule
+    assert not fake._watchRetryTimer.active
+    ProcessingSessionController._retryUnresolvedPaths(fake)
+    assert len(emitted.calls) == 1
+
+
+def test_retry_never_backfills_recording_discovered_before_auto_on(tmp_path):
+    store = tmp_path / "delayed.zarr"
+    (store / "nested").mkdir(parents=True)
+    fake, queue, _session, emitted = _fake_watch_controller(tmp_path, auto_enabled=False)
+    ProcessingSessionController._sessionPathFound(fake, str(store))
+    queue.autoPolicy.enabled = True
+    (store / "nested" / ".zattrs").write_text("{}")
+    fake._watchRetrySchedule._entries[str(store)] = (0, 3.0)
+    ProcessingSessionController._retryUnresolvedPaths(fake)
+    ProcessingSessionController._flushWatcherReconcile(fake)
+    assert not emitted.calls
+
+
+def test_full_reconcile_does_not_drop_other_unresolved_zarr(tmp_path):
+    store = tmp_path / "delayed.zarr"
+    (store / "nested").mkdir(parents=True)
+    fake, _queue, _session, _emitted = _fake_watch_controller(tmp_path)
+    ProcessingSessionController._sessionPathFound(fake, str(store))
+    assert str(store) in fake._watchAutoArrivals
+    fake._watchNeedsFullReconcile = True  # another entry was removed
+    ProcessingSessionController._flushWatcherReconcile(fake)
+    assert str(store) in fake._watchUnresolvedPaths
+    assert str(store) in fake._watchAutoArrivals
+    assert fake._watchRetrySchedule
+    assert fake._watchRetryTimer.active
+
+
+def test_stopping_monitor_cancels_all_discovery_retries(tmp_path):
+    store = tmp_path / "delayed.zarr"
+    store.mkdir()
+    fake, _queue, _session, _emitted = _fake_watch_controller(tmp_path)
+    ProcessingSessionController._sessionPathFound(fake, str(store))
+    fake._directoryWatcher = SimpleNamespace(stop=lambda: None, deleteLater=lambda: None)
+    fake._widget.setWatchingActive = lambda _active: None
+    ProcessingSessionController._stopDirectoryWatcher(fake)
+    assert not fake._watchRetryTimer.active
+    assert not fake._watchRetrySchedule
+    assert not fake._watchUnresolvedPaths

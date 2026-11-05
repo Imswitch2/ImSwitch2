@@ -9,6 +9,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from imswitch.improcess.controller.basecontrollers import ImProcessWidgetController
 from imswitch.improcess.controller.session_save_worker import SessionSaveWorker
 from imswitch.improcess.live.discovery import DirectoryWatcher
+from imswitch.improcess.live.discovery_retry import UnresolvedDiscoveryRetry
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
@@ -82,11 +83,14 @@ class ProcessingSessionController(ImProcessWidgetController):
         # stop Session catalog synchronization.
         self._directoryWatcher: DirectoryWatcher | None = None
         self._watchPendingPaths: set[str] = set()
-        # Root entries that exist but have not yet resolved to a logical Session
-        # dataset. Only these entries are retried on mtime/size changes. Once an
-        # entry is catalogued, normal acquisition growth belongs to LiveSource
-        # and must not reopen/rebuild the Session on every timepoint.
+        # Only unrecognized root entries are eligible for bounded retries.
+        # Once catalogued, ordinary acquisition growth belongs to LiveSource;
+        # never repeatedly reopen recognized Zarr/HDF5 stores.
         self._watchUnresolvedPaths: set[str] = set()
+        self._watchRetrySchedule = UnresolvedDiscoveryRetry()
+        self._watchRetryTimer = QtCore.QTimer(self)
+        self._watchRetryTimer.setInterval(3000)
+        self._watchRetryTimer.timeout.connect(self._retryUnresolvedPaths)
         self._watchNeedsFullReconcile = False
         # Arrival tokens are granted only when Watching + Auto were enabled
         # when the *root entry first appeared*. They survive later Auto/mode
@@ -440,14 +444,16 @@ class ProcessingSessionController(ImProcessWidgetController):
             self.sigCatalogChanged.emit()
             # Existing entries are catalogued but are not Auto arrivals.
             self.sigDatasetsAdded.emit(added_ids)
-        # Entries not yet recognizable remain unresolved until their next
-        # cheap stat change; never reopen known growing data on every tick.
+        # Entries that are not recognizable yet need a slow retry even if
+        # their root mtime remains unchanged while nested Zarr data appears.
         self._watchUnresolvedPaths = {
             str(path)
             for path in initial_entries
             if not self._pathBelongsToResults(path)
             and not self._sessionKnowsRootEntry(path)
         }
+        for path in self._watchUnresolvedPaths:
+            self._watchRetrySchedule.track(path)
         self._admit_resolved_arrivals(initial_entries)
         watcher.sigEntryFound.connect(self._sessionPathFound)
         watcher.sigEntryChanged.connect(self._sessionPathChanged)
@@ -466,8 +472,43 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Could not start watching: {exc}")
             return
         self._sync_auto_availability()
+        self._syncWatchRetryTimer()
         if hasattr(self._widget, "setWatchingActive"):
             self._widget.setWatchingActive(True)
+
+    def _syncWatchRetryTimer(self) -> None:
+        # No periodic work at all when the unresolved set is empty or Monitor
+        # is off. The regular DirectoryWatcher has its own independent timer.
+        active = bool(
+            self._sessionMode == "follow"
+            and self._directoryWatcher is not None
+            and self._watchRetrySchedule
+        )
+        if active and not self._watchRetryTimer.isActive():
+            self._watchRetryTimer.start()
+        elif not active:
+            self._watchRetryTimer.stop()
+
+    @QtCore.Slot()
+    def _retryUnresolvedPaths(self) -> None:
+        """Retry a bounded batch through existing reconciliation, never arrival."""
+        if self._session is None or self._sessionMode != "follow" or self._directoryWatcher is None:
+            return
+        for path in self._watchRetrySchedule.due():
+            if path not in self._watchUnresolvedPaths:
+                self._watchRetrySchedule.discard(path)
+            elif not Path(path).exists():
+                self._sessionPathRemoved(path)
+            elif self._sessionKnowsRootEntry(path):
+                # A manual/full refresh may already have resolved it.
+                self._watchUnresolvedPaths.discard(path)
+                self._watchRetrySchedule.discard(path)
+                self._admit_resolved_arrivals((path,))
+            else:
+                self._watchPendingPaths.add(path)
+        if self._watchPendingPaths or self._watchNeedsFullReconcile:
+            self._watchReconcileTimer.start()
+        self._syncWatchRetryTimer()
 
     def _stopDirectoryWatcher(self) -> None:
         watcher, self._directoryWatcher = self._directoryWatcher, None
@@ -476,6 +517,8 @@ class ProcessingSessionController(ImProcessWidgetController):
             watcher.deleteLater()
         self._watchPendingPaths.clear()
         self._watchUnresolvedPaths.clear()
+        self._watchRetrySchedule.clear()
+        self._watchRetryTimer.stop()
         self._watchNeedsFullReconcile = False
         self._watchReconcileTimer.stop()
         if hasattr(self._widget, "setWatchingActive"):
@@ -574,8 +617,10 @@ class ProcessingSessionController(ImProcessWidgetController):
             if recipe is not None:
                 self._watchAutoArrivals[path] = recipe
         self._watchUnresolvedPaths.add(path)
+        self._watchRetrySchedule.track(path)
         self._watchPendingPaths.add(path)
         self._watchReconcileTimer.start()
+        self._syncWatchRetryTimer()
 
     @QtCore.Slot(str)
     def _sessionPathChanged(self, path: str) -> None:
@@ -613,6 +658,8 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
             return
         self._watchUnresolvedPaths.discard(str(path))
+        self._watchRetrySchedule.discard(str(path))
+        self._syncWatchRetryTimer()
         self._watchAutoArrivals.pop(str(path), None)
         self._watchLapseChildren.pop(str(path), None)
         # A removed physical member may belong to a logical lapse spanning
@@ -628,10 +675,22 @@ class ProcessingSessionController(ImProcessWidgetController):
         before_ids = {str(dataset.id) for dataset in session.datasets}
         changed = False
         pending = sorted(self._watchPendingPaths)
+        admitted = set(pending)
         try:
             if self._watchNeedsFullReconcile:
                 session.reconcile_all()
-                self._watchUnresolvedPaths.clear()
+                # Do not discard *other* unresolved paths when an unrelated
+                # entry disappears: they must retain their retry schedule and
+                # original Auto-arrival token until they actually resolve.
+                for path in tuple(self._watchUnresolvedPaths):
+                    if not Path(path).exists():
+                        self._watchUnresolvedPaths.discard(path)
+                        self._watchRetrySchedule.discard(path)
+                        self._watchAutoArrivals.pop(path, None)
+                    elif self._sessionKnowsRootEntry(path):
+                        self._watchUnresolvedPaths.discard(path)
+                        self._watchRetrySchedule.discard(path)
+                        admitted.add(path)
                 changed = True
             else:
                 for path in pending:
@@ -641,12 +700,14 @@ class ProcessingSessionController(ImProcessWidgetController):
                     changed = reconciled or changed
                     if reconciled:
                         self._watchUnresolvedPaths.discard(path)
+                        self._watchRetrySchedule.discard(path)
         except Exception:
             self._logger.exception("Could not reconcile Session filesystem update")
             return
         finally:
             self._watchPendingPaths.clear()
             self._watchNeedsFullReconcile = False
+            self._syncWatchRetryTimer()
         if changed:
             added_ids = tuple(
                 str(dataset.id) for dataset in session.datasets
@@ -656,7 +717,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             self.sigCatalogChanged.emit()
             if added_ids:
                 self.sigDatasetsAdded.emit(added_ids)
-        self._admit_resolved_arrivals(pending)
+        self._admit_resolved_arrivals(sorted(admitted))
 
     def openSession(self, raw_root, results_root) -> bool:
         # Build/refresh the candidate before touching the active Session. A bad

@@ -508,7 +508,8 @@ class ProcessingSession:
         The watcher deals in physical root entries; this method resolves that hint
         back into logical datasets (including a whole time lapse).  If an entry is
         temporarily unreadable while being written, the existing catalog is left
-        untouched and a later watcher change/manual refresh can retry safely.
+        untouched; a watcher change, Session retry, or manual refresh can safely
+        retry discovery later.
 
         Returns ``True`` when the catalog was updated.
         """

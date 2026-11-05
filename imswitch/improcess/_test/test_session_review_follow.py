@@ -80,6 +80,8 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         ),
         _watchPendingPaths=set(),
         _watchUnresolvedPaths=set(),
+        _watchRetrySchedule=SimpleNamespace(track=lambda _path: None, clear=lambda: None),
+        _watchRetryTimer=SimpleNamespace(stop=lambda: None),
         _watchNeedsFullReconcile=False,
         _watchAutoArrivals={}, _watchLapseChildren={},
         _watchReconcileTimer=SimpleNamespace(stop=lambda: None),
@@ -92,6 +94,7 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         _disableSessionAuto=lambda: events.append("auto-off"),
         _sync_auto_availability=lambda: events.append("auto-available"),
         _admit_resolved_arrivals=lambda paths: None,
+        _syncWatchRetryTimer=lambda: None,
     )
     fake._stopDirectoryWatcher = lambda: ProcessingSessionController._stopDirectoryWatcher(fake)
     fake._startDirectoryWatcher = lambda session: ProcessingSessionController._startDirectoryWatcher(fake, session)
