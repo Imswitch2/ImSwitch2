@@ -93,6 +93,21 @@ def test_mode_is_not_inferred_from_reader_stack_fallback():
     assert _ScanReconstructor.contract(scan, {}).init_frames == 576
 
 
+def test_replayed_scanlapse_keeps_declared_timepoint_count():
+    """Recorder mode must describe the *replayed lapse*, not the input scan."""
+    info = SimpleNamespace(
+        frame_shape=(456, 452), dtype=np.dtype("uint16"),
+        frames_per_stack=242, expected_frames=5 * 242, planned_timepoints=5,
+        attrs={"recording:mode": "ScanLapse", "Rec:Mode": "ScanLapse",
+               "recording:num_timepoints": 5, "recording:frames_per_stack": 242},
+        detector_name="CAM", source_format="ZARR", acquisition_layout=None,
+    )
+    raw = raw_info_from_stack(info)
+    assert raw.mode == "ScanLapse"
+    assert raw.T == raw.planned_timepoints == 5
+    assert raw.frames_per_timepoint == 242
+
+
 def test_finish_finite_once_and_never_push_begin_frames():
     frames = np.arange(7 * 2 * 2, dtype=np.uint16).reshape(7, 2, 2)
     src = _Source(frames, available=len(frames), chunk=2, fps=3)

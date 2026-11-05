@@ -157,6 +157,34 @@ def test_unsafe_time_layout_fails_closed_before_processing():
         timepoint_layout(layout)
 
 
+def test_conflicting_scanonce_lapse_metadata_rejected_before_first_frame():
+    # A replay of a ScanOnce recording may create scan0..scan4 and correctly
+    # declare T=5, but mistakenly retain the input Rec:Mode=ScanOnce. The raw
+    # descriptor then says T=1 while the lapse source still says planned=5.
+    # Report the metadata discrepancy explicitly rather than failing after T0.
+    from imswitch.improcess.reconstructors.monalisa.unified_fast_session import (
+        timepoint_stream_contract,
+    )
+
+    inconsistent = RawInfo(
+        T=1, S=(20,), frame_shape=(64, 64), dtype=np.dtype("uint16"),
+        mode="ScanOnce", planned_timepoints=5,
+        attrs={"Rec:Mode": "ScanOnce", "recording:num_timepoints": 5},
+        acquisition_layout=_resolved(),
+    )
+    with pytest.raises(Incompatible, match="ScanOnce.*5 timepoints"):
+        timepoint_stream_contract(inconsistent, _params())
+
+    corrected = RawInfo(
+        T=5, S=(20,), frame_shape=(64, 64), dtype=np.dtype("uint16"),
+        mode="ScanLapse", planned_timepoints=5,
+        attrs={"Rec:Mode": "ScanLapse", "recording:num_timepoints": 5},
+        acquisition_layout=_resolved(),
+    )
+    per_timepoint, chunk = timepoint_stream_contract(corrected, _params())
+    assert per_timepoint == 20 and 20 % chunk == 0
+
+
 def test_capability_contract_never_changes_the_selected_preset():
     plugin = MonalisaReconstructor()
     info = RawInfo(T=2, S=(20,), frame_shape=(64, 64), dtype=np.dtype("uint16"),

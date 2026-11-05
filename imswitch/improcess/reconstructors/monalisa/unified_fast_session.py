@@ -75,6 +75,13 @@ def timepoint_stream_contract(info, params):
         "scanonce", "scanlapse",
     ):
         raise Incompatible("MoNaLISA live reconstruction requires ScanOnce or ScanLapse frames")
+    if (str(info.mode or "").strip().lower() == "scanonce"
+            and (info.planned_timepoints or 1) > 1):
+        raise Incompatible(
+            "Inconsistent acquisition metadata: Rec:Mode is ScanOnce, but "
+            f"recording declares {info.planned_timepoints} timepoints; "
+            "a timelapse must declare ScanLapse"
+        )
     timepoint_layout(info.acquisition_layout)
     # A divisible chunk is important: a scan of e.g. 242 frames must be
     # published at frame 242, not delayed until 256 or recording finalization.

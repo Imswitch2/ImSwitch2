@@ -9,6 +9,7 @@ at most one processing item in flight; each is acknowledged after processing.
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 import time
 
 from qtpy import QtCore
@@ -16,6 +17,9 @@ from qtpy import QtCore
 from imswitch.improcess.reconstructors.base import StreamInit
 
 from .reader import IncrementalReader
+
+
+_logger = logging.getLogger(__name__)
 
 
 class StreamReaderWorker(QtCore.QObject):
@@ -95,6 +99,10 @@ class StreamReaderWorker(QtCore.QObject):
         self._stop()
 
     def _fail(self, exc):
+        _logger.error(
+            "Incremental reader failed (generation=%s)",
+            self._generation, exc_info=(type(exc), exc, exc.__traceback__),
+        )
         self.sigFailed.emit(self._generation, f"{type(exc).__name__}: {exc}")
         self._stop()
 
@@ -261,6 +269,10 @@ class StreamProcessWorker(QtCore.QObject):
         self._last_preview_revision = revision
 
     def _fail(self, exc):
+        _logger.error(
+            "Incremental processor failed (generation=%s)",
+            self._generation, exc_info=(type(exc), exc, exc.__traceback__),
+        )
         self.sigFailed.emit(self._generation, f"{type(exc).__name__}: {exc}")
         self._stop()
 

@@ -944,6 +944,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     @QtCore.Slot(str)
     def _on_incremental_failed(self, message: str) -> None:
         self._incrementalError = str(message or "Incremental processing failed")
+        self._logger.error("Incremental reconstruction failed: %s", self._incrementalError)
 
     @QtCore.Slot(bool)
     def _on_incremental_finished(self, success: bool) -> None:
@@ -1366,6 +1367,10 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(object)
     def _on_offline_failed(self, failure: ReconstructionWorkerFailure) -> None:
+        self._logger.error(
+            "Offline reconstruction failed: %s\n%s",
+            str(failure.message or ""), str(failure.traceback or ""),
+        )
         if self._offlinePendingOutcome is None:
             self._offlinePendingOutcome = ("failed", str(failure.message or ""))
 
