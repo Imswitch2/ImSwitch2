@@ -273,6 +273,27 @@ class MonalisaReconstructor(StreamingReconstructor):
         raise ValueError(f"Unknown localization mode {mode!r}")
 
     @staticmethod
+    def finite_timepoint_reuse_overrides(first_result, params: dict) -> dict:
+        """Reuse only this *logical acquisition's* first Auto localization.
+
+        The finite worker calls this inside a single timelapse job. It never
+        shares calibration between queue entries, independent Multi Data
+        items, reconstructor instances, or Session changes. The first result's
+        resolved values (not a widget/cache snapshot) are authoritative.
+        """
+        if str((params or {}).get("localization_mode", LOCALIZATION_AUTO)) != LOCALIZATION_AUTO:
+            return {}
+        metadata = getattr(first_result, "metadata", None) or {}
+        calibration = metadata.get("monalisa_calibration") or {}
+        resolved = calibration.get("resolved_localization")
+        if not isinstance(resolved, dict) or not resolved:
+            # Historical results may not expose a resolved calibration. Do
+            # not turn a valid finite reconstruction into a failed job; let
+            # subsequent timepoints localize themselves in that case.
+            return {}
+        return {"auto_localization": copy.deepcopy(resolved)}
+
+    @staticmethod
     def _spot_sigma_for_params(params: dict) -> float | None:
         if str(params.get("spot_width_mode", SPOT_MANUAL)) != SPOT_MANUAL:
             return None

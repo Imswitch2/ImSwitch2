@@ -42,11 +42,11 @@ def _evidence(*, fmt="zarr", writing=None, committed=None, complete=None,
     ), size)
 
 
-def test_full_robust_params_choose_finite_offline_even_if_plugin_streams():
+def test_completed_timelapse_uses_finite_worker_for_fast_and_full():
     job = _job(origin=ProcessingOrigin.MANUAL, mode=ExecutionRequirement.FINITE,
                params={"preset": "Full", "reassignment": "auto"})
     assert choose_execution(job, "time-lapse", _plugin(compatible=False)).path == ExecutionPath.OFFLINE_FINITE
-    assert choose_execution(job, "time-lapse", _plugin(compatible=True)).path == ExecutionPath.INCREMENTAL_FINITE
+    assert choose_execution(job, "time-lapse", _plugin(compatible=True)).path == ExecutionPath.OFFLINE_FINITE
     assert not supports_streaming_settings(_plugin(streaming=False), job.params)
 
 

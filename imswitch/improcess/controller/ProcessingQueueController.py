@@ -105,8 +105,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._readinessDue: dict[str, float] = {}
         self._readinessCached: dict[str, Readiness] = {}
         self._readinessInspected: dict[str, dict] = {}
-        # New M1 executor: finite manual timelapses only until M2 readiness.
-        # Kept separate so old Auto/one-shot paths remain available.
+        # M1 executor remains available for genuine growing-source Follow
+        # work. Finite manual/Auto jobs now use offline per-timepoint execution.
         self._incrementalRunner = None
         self._incrementalReconstructor = None
         self._incrementalResult = None
@@ -434,7 +434,14 @@ class ProcessingQueueController(ImProcessWidgetController):
     def _snapshot_params(self, reconstructor) -> dict:
         getter = getattr(self._reconstructorManager, "snapshotProcessingParams", None)
         if callable(getter):
-            return copy.deepcopy(getter(reconstructor))
+            params = copy.deepcopy(getter(reconstructor))
+            # UI Auto localization is a transient value for the *currently*
+            # viewed data, not a reusable calibration for arbitrary queue jobs.
+            # Each independent acquisition must resolve its own Auto value.
+            from imswitch.improcess.execution.localization_scope import (
+                fresh_acquisition_params,
+            )
+            return fresh_acquisition_params(reconstructor, params)
         return {}
 
     @staticmethod
@@ -1072,6 +1079,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             consolidate=atomic_lapse and not progressive and len(worker_jobs) > 1,
             retain_results=atomic_lapse and not progressive,
             release_after_each=True,
+            reuse_timepoint_calibration=atomic_lapse,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)

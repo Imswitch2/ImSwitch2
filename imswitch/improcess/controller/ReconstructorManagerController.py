@@ -663,7 +663,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             return bool(self._widget.multiDataFrame.relocalizeEachDataItem())
         except Exception:
-            return False
+            return True  # Independent datasets require independent Auto calibration.
 
     def reuseMonalisaCalibration(
         self, snapshot: dict, *, mode: str = "both", source_label: str = "reconstruction"

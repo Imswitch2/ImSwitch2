@@ -33,9 +33,10 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.dataLoadedStatus.setStyleSheet('color: palette(mid); font-size: 9pt;')
 
         self.relocalizeEachDataItemCheck = QtWidgets.QCheckBox('Relocalize each data item')
-        self.relocalizeEachDataItemCheck.setChecked(False)
+        self.relocalizeEachDataItemCheck.setChecked(True)
         self.relocalizeEachDataItemCheck.setToolTip(
-            'MoNaLISA Multi-data only. Off reuses one Auto localization across all data items.'
+            'Localize each independent MoNaLISA acquisition (recommended). '
+            'Uncheck to explicitly reuse the first Auto localization per detector.'
         )
         self.relocalizeEachDataItemCheck.setVisible(False)
 

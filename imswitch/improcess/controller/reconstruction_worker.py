@@ -51,7 +51,8 @@ class ReconstructionWorker(QtCore.QObject):
 
     def __init__(
         self, reconstructor, jobs, *, consolidate=False, retain_results=True,
-        release_after_each=False, parent=None
+        release_after_each=False, reuse_timepoint_calibration=False,
+        parent=None
     ):
         super().__init__(parent)
         self._reconstructor = reconstructor
@@ -59,6 +60,9 @@ class ReconstructionWorker(QtCore.QObject):
         self._consolidate = bool(consolidate)
         self._retain_results = bool(retain_results) or self._consolidate
         self._release_after_each = bool(release_after_each)
+        # Only one *logical timelapse* may reuse a first timepoint's resolved
+        # calibration. Independent Multi Data acquisitions are never coupled.
+        self._reuse_timepoint_calibration = bool(reuse_timepoint_calibration)
         self._token = CancellationToken()
 
     def request_cancel(self) -> None:
@@ -80,6 +84,7 @@ class ReconstructionWorker(QtCore.QObject):
     def run(self) -> None:
         results = []
         runs = []
+        reuse_overrides = {}
         try:
             self._token.check()
             for index, job in enumerate(self._jobs):
@@ -95,10 +100,22 @@ class ReconstructionWorker(QtCore.QObject):
                         memory_budget_bytes=job.memory_budget_bytes,
                         confirmed_over_budget=job.confirmed_over_budget,
                     )
+                    params = dict(job.params)
+                    if index and reuse_overrides:
+                        params.update(reuse_overrides)
                     run = run_reconstruction(
-                        self._reconstructor, job.data_obj, dict(job.params), context=context
+                        self._reconstructor, job.data_obj, params, context=context
                     )
                     context.check_cancelled()
+                    if (index == 0 and self._reuse_timepoint_calibration
+                            and len(self._jobs) > 1):
+                        capture = getattr(
+                            self._reconstructor, "finite_timepoint_reuse_overrides", None
+                        )
+                        if callable(capture):
+                            # Keep only calibration parameters, never an entire
+                            # first-timepoint result/array for the whole lapse.
+                            reuse_overrides = dict(capture(run.result, params) or {})
                     self.resultReady.emit(run.result, run)
                     if self._retain_results:
                         results.append(run.result)

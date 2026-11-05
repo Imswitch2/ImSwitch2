@@ -38,16 +38,16 @@ def supports_streaming_settings(reconstructor, params: dict) -> bool:
 def choose_execution(job, source_kind: str, reconstructor, *, growing: bool = False,
                      live_reader: bool = False) -> ExecutionChoice:
     """Choose the supported engine; never infer live from AUTO or time-lapse."""
-    streaming = supports_streaming_settings(reconstructor, job.params)
     requirement = ExecutionRequirement(job.execution_requirement)
     if growing:
-        if requirement == ExecutionRequirement.FOLLOW and streaming and live_reader:
+        if (requirement == ExecutionRequirement.FOLLOW and live_reader
+                and supports_streaming_settings(reconstructor, job.params)):
             return ExecutionChoice(ExecutionPath.INCREMENTAL_FOLLOW)
         return ExecutionChoice(ExecutionPath.WAIT_FINITE,
                                "Waiting for acquisition to finish")
-    if source_kind == "time-lapse" and streaming and requirement != ExecutionRequirement.FOLLOW:
-        return ExecutionChoice(ExecutionPath.INCREMENTAL_FINITE)
-    if source_kind == "time-lapse" and streaming and requirement == ExecutionRequirement.FOLLOW:
-        # A finished source is finite, irrespective of the user's live preference.
-        return ExecutionChoice(ExecutionPath.INCREMENTAL_FINITE)
+    # A finished acquisition never needs the frame-following executor merely
+    # because the plugin supports streaming. Finite timepoint-independent jobs
+    # use ReconstructionWorker and publish their completed outputs progressively.
+    # In particular, MANUAL and completed AUTO jobs must not start a file watcher
+    # or inherit a previous stream's state.
     return ExecutionChoice(ExecutionPath.OFFLINE_FINITE)
