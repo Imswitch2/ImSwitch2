@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from imswitch.imcommon.model import initLogger
 from ..errors import IncompatibilityError, ScanDesignRefusedError
 from ..signaldesigners import SignalDesignerFactory
+from ..beta_scan_timing import beta_timing_config_warning
 
 
 class ScanManagerFactory:
@@ -26,6 +27,10 @@ class SuperScanManager(ABC):
         if setupInfo.scan:
             self._scanDesigner = SignalDesignerFactory(setupInfo.scan.scanDesigner)
             self._TTLCycleDesigner = SignalDesignerFactory(setupInfo.scan.TTLCycleDesigner)
+            if setupInfo.scan.scanDesigner == 'BetaScanDesigner':
+                warning = beta_timing_config_warning(setupInfo.scan.scanDesignerParams)
+                if warning:
+                    self._logger.warning(warning)
         else:
             self._scanDesigner = None
             self._TTLCycleDesigner = None

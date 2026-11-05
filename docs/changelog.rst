@@ -26,6 +26,19 @@ Unreleased
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
 
+**Bug Fixes**
+
+- The Beta stage designer drives rigs with one or two scanning stages. It
+  refused anything but three ``forScanning`` positioners, although the 1D and
+  2D scans it designs never need a third axis; four or more are refused with
+  the reason.
+- The Beta stage designer's move and settle times are declared in every
+  shipped setup that uses it (``move_time``/``settle_time`` in
+  ``scan.scanDesignerParams``, 2 ms each, unchanged). The 2 ms are the values
+  the MoNaLISA stage was tuned to in ImSwitch 1 (upstream keeps 1 ms each), so
+  a setup that does not declare them now gets a warning naming the keys
+  instead of silently scanning with another rig's timing.
+
 v0.4.0 (2026-10-29)
 ===================
 

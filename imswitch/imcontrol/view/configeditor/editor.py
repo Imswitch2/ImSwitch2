@@ -947,6 +947,25 @@ def _diagnostic_message_to_html(diag) -> str:
     return msg
 
 
+def _beta_timing_editor_issues(data: dict) -> list[tuple[str, str]]:
+    """Warn without migrating old hardware setups or seeding fallback values."""
+    scan = data.get("scan") or {}
+    if scan.get("scanDesigner") != "BetaScanDesigner":
+        return []
+    params = scan.get("scanDesignerParams") or {}
+    if not isinstance(params, dict):
+        return []
+    from imswitch.imcontrol.model.beta_scan_timing import missing_beta_timing_keys
+    missing = missing_beta_timing_keys(params)
+    if not missing:
+        return []
+    return [("warning",
+             "Beta scan stage timing is not configured ("
+             + ", ".join(missing)
+             + "); the 2 ms stage defaults will be used. "
+             "<a href='fixsection:scan'>Configure…</a>")]
+
+
 def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
     """Collect cross-reference diagnostics as ``(severity, html_message)`` pairs.
 
@@ -970,11 +989,12 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
             build_default_registry(discover=True),
             context=context,
         )
-        return [
+        issues = [
             (diag.severity, _diagnostic_message_to_html(diag))
             for diag in report.diagnostics
             if diag.code.startswith(("xref.", "widget.", "legacy."))
         ]
+        return issues + _beta_timing_editor_issues(data)
     except Exception:
         issues = []
         widgets = data.get("availableWidgets") or []
@@ -985,7 +1005,7 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
                     f"Widget '{widget}' is enabled but no '{section_key}' section is configured. "
                     f"<a href='fixsection:{section_key}'>Configure…</a>",
                 ))
-        return issues
+        return issues + _beta_timing_editor_issues(data)
 
 
 # =============================================================================
@@ -2337,7 +2357,14 @@ class FieldWidget(QWidget):
             # constraint -- the schema deliberately emits none -- so what is
             # typed stays as typed, and Apply reads it as a number when it is
             # one and warns when it is not.
-            self._w = QLineEdit("" if value is None else str(value))
+            scale = float(self._def.get("display_scale", 1))
+            shown = value
+            if value is not None and scale != 1:
+                try:
+                    shown = f"{float(value) * scale:g}"
+                except (ValueError, TypeError):
+                    pass
+            self._w = QLineEdit("" if shown is None else str(shown))
         elif tp == "float_pair":
             # Two related numeric values stored as one two-element JSON list.
             # This is intentionally a small generic widget rather than a scan-
@@ -2496,7 +2523,11 @@ class FieldWidget(QWidget):
         if tp == "bool_auto":
             return self._w.currentData()  # None (Automatic) / True / False
         if tp in ("int", "float"):
-            return _parse_number(self._w.text())
+            value = _parse_number(self._w.text())
+            scale = float(self._def.get("display_scale", 1))
+            if value is not None and isinstance(value, (int, float)) and scale != 1:
+                return value / scale
+            return value
         if tp == "float_pair":
             return [_parse_number(edit.text()) for edit in self._pair_edits]
         if tp == "select":
@@ -4026,6 +4057,24 @@ class SectionEditorDialog(QDialog):
                         fw.sig_edited.connect(self._update_conditional_tabs)
         self._update_conditional_tabs()
 
+        # A scan configuration is not migrated by opening or applying it.
+        # Show missing Beta stage timing without supplying values implicitly.
+        self._beta_timing_notice = None
+        if self._key == "scan":
+            self._beta_timing_notice = QLabel()
+            self._beta_timing_notice.setStyleSheet("color:#C0801C; font-size:9pt;")
+            self._beta_timing_notice.setWordWrap(True)
+            lay.addWidget(self._beta_timing_notice)
+            for field_key in ("scanDesigner", "scanDesignerParams"):
+                fw = self._field_widgets.get(("field", field_key))
+                if fw is not None:
+                    fw.sig_edited.connect(self._update_beta_timing_notice)
+            for key in ("return_time", "move_time", "settle_time"):
+                fw = self._field_widgets.get(("nested:scanDesignerParams", key))
+                if fw is not None:
+                    fw.sig_edited.connect(self._update_beta_timing_notice)
+            self._update_beta_timing_notice()
+
         # ── Custom tab: keys the schema does not define ──
         if self._allow_custom:
             scroll = QScrollArea()
@@ -4113,6 +4162,43 @@ class SectionEditorDialog(QDialog):
             )
             self._tab_widget.setTabVisible(index, shown)
 
+    def _beta_timing_edited_params(self):
+        """Preview the effective explicit keys, never the designer fallbacks."""
+        raw = self._field_widgets.get(("field", "scanDesignerParams"))
+        params = (raw.get_value() if raw is not None and raw.is_touched()
+                  else self._current.get("scanDesignerParams"))
+        params = copy.deepcopy(params) if isinstance(params, dict) else {}
+        for key in ("return_time", "move_time", "settle_time"):
+            field = self._field_widgets.get(("nested:scanDesignerParams", key))
+            if field is not None and field.is_touched():
+                value = field.get_value()
+                if value is None:
+                    params.pop(key, None)
+                else:
+                    params[key] = value
+        return params
+
+    def _update_beta_timing_notice(self):
+        if self._beta_timing_notice is None:
+            return
+        if self._form_value("scanDesigner") != "BetaScanDesigner":
+            self._beta_timing_notice.hide()
+            return
+        from imswitch.imcontrol.model.beta_scan_timing import missing_beta_timing_keys
+        params = self._beta_timing_edited_params()
+        missing = missing_beta_timing_keys(params)
+        if "return_time" not in params:
+            missing = ("return_time",) + missing
+        if missing:
+            self._beta_timing_notice.setText(
+                "Beta stage timing not configured: " + ", ".join(missing)
+                + ". Empty fields stay absent until you edit and save them. "
+                "Missing move/settle use the designer's 2 ms fallback."
+            )
+            self._beta_timing_notice.show()
+        else:
+            self._beta_timing_notice.hide()
+
     def _try_apply(self):
         # Start from the file's section, not a blank dict.  This is what makes
         # a curated section form safe for plugin/future keys it does not know.
@@ -4137,7 +4223,10 @@ class SectionEditorDialog(QDialog):
         # retained by modifying a copy of the original container in place.
         for nest_key, nest_fields in self._schema.get("nested", {}).items():
             original_container = self._current.get(nest_key)
-            container = copy.deepcopy(original_container) if isinstance(original_container, dict) else None
+            # Begin from the direct/raw JSON field if the operator edited it;
+            # typed timing fields override only their own keys.
+            source = out.get(nest_key, original_container)
+            container = copy.deepcopy(source) if isinstance(source, dict) else None
             touched_any = False
             for f in nest_fields:
                 fw = self._field_widgets.get((f"nested:{nest_key}", f["key"]))
@@ -4149,11 +4238,23 @@ class SectionEditorDialog(QDialog):
                 val = fw.get_value()
                 if f.get("req") and (val is None or val == "" or val == []):
                     missing.append(f["label"])
+                if (nest_key == "scanDesignerParams"
+                        and self._form_value("scanDesigner") == "BetaScanDesigner"):
+                    if val is None:
+                        if container is not None:
+                            container.pop(f["key"], None)
+                        continue
+                    if (not isinstance(val, (int, float)) or not math.isfinite(val)
+                            or val < 0):
+                        self._err_lbl.setText(
+                            f"{f['label']} must be a finite, nonnegative number."
+                        )
+                        return
                 if container is None:
                     container = {}
                 container[f["key"]] = val
             if touched_any:
-                out[nest_key] = container
+                out[nest_key] = container if container is not None else {}
 
         if missing:
             self._err_lbl.setText(
