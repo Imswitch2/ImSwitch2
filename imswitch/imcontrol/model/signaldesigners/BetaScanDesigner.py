@@ -5,14 +5,10 @@ from .basesignaldesigners import (
 )
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
+from ..beta_scan_timing import (
+    DEFAULT_MOVE_TIME_S, DEFAULT_SETTLE_TIME_S, beta_timing_config_warning,
+)
 
-#: Fast-axis ramp and settle inside each pixel dwell, in seconds, for a setup
-#: that does not declare ``move_time``/``settle_time`` in
-#: ``scanDesignerParams``. They are the values the MoNaLISA stage was tuned to
-#: (ImSwitch 1, 2024; upstream keeps 1 ms each), not a property of stages in
-#: general, so the designer says when it falls back to them.
-DEFAULT_MOVE_TIME_S = 0.002
-DEFAULT_SETTLE_TIME_S = 0.002
 
 
 class BetaScanDesigner(ScanDesigner):
@@ -264,17 +260,10 @@ class BetaScanDesigner(ScanDesigner):
             slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
-        undeclared = [key for key in ('move_time', 'settle_time')
-                      if key not in parameterDict]
-        if undeclared and not self._warnedUndeclaredTiming:
-            # Once per designer: it is made at every parameter change.
+        timing_warning = beta_timing_config_warning(parameterDict)
+        if timing_warning and not self._warnedUndeclaredTiming:
             self._warnedUndeclaredTiming = True
-            self._logger.warning(
-                f'scan.scanDesignerParams does not declare {"/".join(undeclared)}; '
-                f'using {DEFAULT_MOVE_TIME_S * 1e3:g} ms move and '
-                f'{DEFAULT_SETTLE_TIME_S * 1e3:g} ms settle, the MoNaLISA stage\'s '
-                f'values. Declare the times your stage needs in the setup file.'
-            )
+            self._logger.warning(timing_warning)
         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
         settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
         dwell = float(parameterDict['sequence_time'])
