@@ -136,6 +136,7 @@ class StreamProcessWorker(QtCore.QObject):
         self._frames_processed = 0
         self._last_preview = 0.0
         self._preview_sent = False
+        self._last_preview_revision = None
         self._preview_interval_s = float(preview_interval_s)
         self._enable_preview = bool(enable_preview)
         self._stopped = False
@@ -240,6 +241,13 @@ class StreamProcessWorker(QtCore.QObject):
         now = time.monotonic()
         if not force and now - self._last_preview < self._preview_interval_s:
             return
+        # Sessions with atomic scientific outputs (unified MoNaLISA Fast)
+        # need not emit an unchanged full-volume snapshot on every raw chunk.
+        # Older per-frame sessions have no revision hook and are unchanged.
+        revision_getter = getattr(self._session, "preview_revision", None)
+        revision = revision_getter() if callable(revision_getter) else None
+        if revision is not None and revision == self._last_preview_revision:
+            return
         plane = self._session.live_plane() if self._preview_sent else None
         if plane is not None:
             # live_plane() contract says the ndarray is already copied.
@@ -250,6 +258,7 @@ class StreamProcessWorker(QtCore.QObject):
             self.sigPreview.emit(self._generation, result, None)
             self._preview_sent = True
         self._last_preview = now
+        self._last_preview_revision = revision
 
     def _fail(self, exc):
         self.sigFailed.emit(self._generation, f"{type(exc).__name__}: {exc}")

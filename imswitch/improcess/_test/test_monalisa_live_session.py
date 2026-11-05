@@ -8,6 +8,7 @@ from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 from imswitch.improcess.live import InMemoryStackWrapper, ZarrLiveSource
 from imswitch.improcess.reconstructors.base import StackInfo, StreamInit, StreamingSession
 from imswitch.improcess.reconstructors.monalisa import MonalisaReconstructor
+from imswitch.improcess.reconstructors.monalisa.live_session import MonalisaLiveSession
 from imswitch.improcess._test._monalisa_synthetic import make_scan
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     CUPY_AVAILABLE,
@@ -100,10 +101,14 @@ def test_monalisa_reconstructor_supports_streaming():
 
 
 def test_make_session_returns_streaming_session():
-    """Test that make_session returns a StreamingSession instance."""
+    """Unified Fast jobs now use a distinct, algorithm-equivalent session."""
     reconstructor = MonalisaReconstructor()
     session = reconstructor.make_session()
     assert isinstance(session, StreamingSession)
+    from imswitch.improcess.reconstructors.monalisa.unified_fast_session import (
+        UnifiedFastStreamingSession,
+    )
+    assert isinstance(session, UnifiedFastStreamingSession)
 
 
 def test_live_session_deinterleaves_per_line_conditions():
@@ -116,7 +121,7 @@ def test_live_session_deinterleaves_per_line_conditions():
         def process_chunk(chunk):
             return np.asarray(chunk)
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.processor = _IdentityProcessor()
     session.nx_s = 3
     session.ny_s = 2
@@ -172,7 +177,7 @@ def test_live_session_begin(synthetic_stack):
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     plan = session.begin(init_obj, params={"use_gpu": False})
 
@@ -238,7 +243,7 @@ def test_live_session_prefers_the_recorded_layout_over_stage_extents(synthetic_s
         stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert (session.nx_s, session.ny_s) == (5, 20)
@@ -284,7 +289,7 @@ def test_live_session_refuses_conditions_laid_out_per_image(synthetic_stack):
         stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     with pytest.raises(ValueError, match="not interleaved per line"):
         session.begin(init_obj, params={"use_gpu": False})
 
@@ -303,7 +308,7 @@ def test_live_session_treats_null_lapse_metadata_as_missing(synthetic_stack):
         attrs=attrs,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[2] == 1
@@ -329,7 +334,7 @@ def test_live_session_uses_expected_frames_when_timepoints_are_missing(synthetic
         stack_info=stack_info,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[2] == 3
@@ -355,7 +360,7 @@ def test_live_session_prefers_stack_info_logical_time_extent(synthetic_stack):
         stack_info=stack_info,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[2] == 4
@@ -382,7 +387,7 @@ def test_live_session_grows_short_timepoint_plan_without_dropping_data(synthetic
         stack_info=stack_info,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
     assert plan.out_shape[2] == 1
 
@@ -421,7 +426,7 @@ def test_live_session_converts_scan_stage_micrometer_steps_to_result_scale(synth
         attrs=attrs,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
     result = session.result()
 
@@ -448,7 +453,7 @@ def test_live_session_prefers_scan_ttl_grid_counts(synthetic_stack):
         attrs=attrs,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={"use_gpu": False})
 
     assert session.nx_s == nx_s
@@ -476,7 +481,7 @@ def test_live_session_accepts_scan_size_geometry_with_stack_frame_count(syntheti
         stack_info=stack_info,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={"use_gpu": False})
 
     assert session.nx_s == nx_s
@@ -515,7 +520,7 @@ def test_live_session_from_zarr_live_source(tmp_path, synthetic_stack):
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
     result = session.result()
 
@@ -542,7 +547,7 @@ def test_live_session_push_and_result(synthetic_stack):
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     plan = session.begin(init_obj, params={"use_gpu": False})
 
@@ -569,7 +574,7 @@ def test_live_session_multi_timepoint_global_indices(synthetic_stack):
     init_obj = StreamInit(
         name="lapse_stack", dataset_name="detector_0", data=stack, attrs=attrs,
     )
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     # begin() already scattered timepoint 0. Push the same stack as timepoint 1
@@ -607,7 +612,7 @@ def test_live_session_begin_splits_oversized_initial_chunk(synthetic_stack):
         stack_info=stack_info,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[2] == 2
@@ -625,7 +630,7 @@ def test_live_session_bleaching_correction_uses_first_frame_energy(synthetic_sta
     chunk = stack[:3].astype(np.float32)
     chunk *= np.array([1.0, 0.8, 0.6], dtype=np.float32)[:, np.newaxis, np.newaxis]
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     corrected = session._apply_bleaching_correction(chunk)
 
     energies = np.sum(chunk, axis=(1, 2), dtype=np.float64)
@@ -646,7 +651,7 @@ def test_live_session_begin_honors_bleaching_correction_param(synthetic_stack):
         attrs=attrs,
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={"use_gpu": False, "bleaching_correction": True})
 
     expected_reference = np.sum(stack[0].astype(np.float32), dtype=np.float64)
@@ -909,7 +914,7 @@ def test_fast_gauss_measures_the_spot_width_on_the_frames():
         "ScanStage:axis_step_size_unit": "um",
     }
     init_obj = StreamInit(name="s", dataset_name="d", data=scan.frames, attrs=attrs)
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={
         "use_gpu": False,
         "psf_fwhm_nm": 220.0, "pixel_size_nm": 77.0,       # would be 1.21 px
@@ -929,7 +934,7 @@ def test_fast_gauss_no_background_uses_matched_filter(synthetic_stack):
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
     init_obj = StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs)
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={"use_gpu": False, "bg_modelling": "No background"})
 
     assert session.processor.fit_background is False
@@ -1029,7 +1034,7 @@ def test_live_session_finish(synthetic_stack):
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     plan = session.begin(init_obj, params={"use_gpu": False})
 
@@ -1054,7 +1059,7 @@ def test_live_session_close(synthetic_stack):
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     session.begin(init_obj, params={"use_gpu": False})
 
@@ -1080,13 +1085,13 @@ def test_live_session_gpu_matches_cpu(synthetic_stack):
         name="s", dataset_name="d", data=stack, attrs=attrs
     )
 
-    cpu = MonalisaReconstructor().make_session()
+    cpu = MonalisaLiveSession()
     cpu.begin(init_obj, params={"use_gpu": False})
     cpu.push(stack[50:], 50, 100)
     cpu_data = cpu.result().data
     cpu.close()
 
-    gpu = MonalisaReconstructor().make_session()
+    gpu = MonalisaLiveSession()
     gpu.begin(init_obj, params={"use_gpu": True})
     gpu.push(stack[50:], 50, 100)
     gpu_data = gpu.result().data
@@ -1106,7 +1111,7 @@ def test_live_session_gpu_defers_d2h_until_result(synthetic_stack):
         name="s", dataset_name="d", data=stack, attrs=attrs
     )
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(init_obj, params={"use_gpu": True})  # pushes timepoint 0
 
     # begin() scattered the init stack into the device plane but did not copy
@@ -1127,7 +1132,7 @@ def test_live_session_gpu_defers_d2h_until_result(synthetic_stack):
 
 def test_live_plane_is_a_copy_not_a_view(synthetic_stack):
     stack, attrs, *_ = synthetic_stack
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
@@ -1141,13 +1146,13 @@ def test_live_plane_is_a_copy_not_a_view(synthetic_stack):
 
 def test_live_plane_before_begin_returns_none():
     """Nothing to hand over until the output buffer exists."""
-    assert MonalisaReconstructor().make_session().live_plane() is None
+    assert MonalisaLiveSession().live_plane() is None
 
 
 def test_planes_assemble_into_the_same_volume_as_result(synthetic_stack):
     """Writing each plane into a viewer-side buffer reproduces result() exactly."""
     stack, attrs, *_ = synthetic_stack
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
@@ -1177,7 +1182,7 @@ def test_saved_tiff_is_a_conformant_imagej_hyperstack(synthetic_stack, tmp_path)
     import tifffile
 
     stack, attrs, *_ = synthetic_stack
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
@@ -1199,7 +1204,7 @@ def test_saved_tiff_is_a_conformant_imagej_hyperstack(synthetic_stack, tmp_path)
 
 def test_save_rejects_unsupported_formats(synthetic_stack, tmp_path):
     stack, attrs, *_ = synthetic_stack
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
@@ -1222,7 +1227,7 @@ def test_live_session_missing_scan_geometry():
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     with pytest.raises(ValueError, match="Missing ScanStage"):
         session.begin(init_obj, params={})
@@ -1247,7 +1252,7 @@ def test_live_session_invalid_data_shape():
     )
 
     reconstructor = MonalisaReconstructor()
-    session = reconstructor.make_session()
+    session = MonalisaLiveSession()
 
     with pytest.raises(ValueError, match="Expected 3D data"):
         session.begin(init_obj, params={})
@@ -1307,7 +1312,7 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
         attrs=attrs,
         stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
     )
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     warnings = []
     session._logger.warning = lambda message, *args, **kwargs: warnings.append(str(message))
 
@@ -1326,7 +1331,7 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
 def test_unified_fast_live_accepts_fast_settings_and_rejects_unimplemented_full_options():
     from imswitch.improcess.reconstructors.monalisa.params import PRESET_FULL, apply_preset, default_params
 
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     fast = default_params()
     session._validate_unified_live_params(fast)
 
@@ -1336,7 +1341,7 @@ def test_unified_fast_live_accepts_fast_settings_and_rejects_unimplemented_full_
 
 
 def test_unified_fast_live_manual_spot_width_uses_new_fwhm_units():
-    session = MonalisaReconstructor().make_session()
+    session = MonalisaLiveSession()
     sigma = session._resolve_gaussian_sigma_px({
         "spot_width_mode": "Manual/default",
         "spot_fwhm": 220.0,

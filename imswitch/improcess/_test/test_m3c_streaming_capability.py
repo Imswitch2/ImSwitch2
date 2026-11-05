@@ -54,12 +54,11 @@ def test_no_unannounced_fallback_to_live_or_other_algorithm():
 
 
 @pytest.mark.parametrize("preset,reason_fragment", [
-    ("Fast", "unified"),
     ("Full", "Robust"),
     ("Legacy DLL", "Legacy DLL"),
     ("Custom", "Custom"),
 ])
-def test_monalisa_never_routes_unified_mode_to_unverified_rectangular_stream(preset, reason_fragment):
+def test_monalisa_unsupported_modes_remain_finite(preset, reason_fragment):
     from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
     from imswitch.improcess.execution.contracts import Incompatible
 
@@ -68,9 +67,25 @@ def test_monalisa_never_routes_unified_mode_to_unverified_rectangular_stream(pre
     supported, reason = reconstructor.streaming_capability(params)
     assert not supported and reason_fragment.lower() in reason.lower()
     assert not reconstructor.supports_streaming_params(params)
-    assert not streaming_capability(reconstructor, params).supported
     with pytest.raises(Incompatible):
         reconstructor.contract(SimpleNamespace(S=(12,), frames_per_timepoint=12), params)
+
+
+def test_monalisa_unified_fast_is_streamable_and_source_gated():
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    from imswitch.improcess.execution.contracts import Incompatible
+    reconstructor = MonalisaReconstructor()
+    supported, reason = reconstructor.streaming_capability({"preset": "Fast"})
+    assert supported and "unified" in reason.lower()
+    assert reconstructor.supports_streaming_params({"preset": "Fast"})
+    info = SimpleNamespace(S=(12,), T=2, mode="ScanLapse",
+                           frames_per_timepoint=12, acquisition_layout=None)
+    contract = reconstructor.contract(info, {"preset": "Fast"})
+    assert contract.init_frames == 12
+    assert 12 % contract.chunk_frames == 0
+    with pytest.raises(Incompatible):
+        reconstructor.contract(SimpleNamespace(S=(), T=2, mode="SpecFrames",
+            frames_per_timepoint=1, acquisition_layout=None), {"preset": "Fast"})
 
 
 def test_auto_recipe_snapshots_finite_when_streaming_unavailable():

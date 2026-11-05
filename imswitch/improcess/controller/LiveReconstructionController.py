@@ -449,7 +449,21 @@ class LiveReconstructionController(QtCore.QObject):
         """
         self._logger.debug("Starting streaming reconstruction path")
 
-        self._session = self._reconstructor.make_session()
+        # The historical live controller predates the unified Gaussian Fast
+        # contract and still uses legacy frame-by-frame output conventions.
+        # Preserve that explicit compatibility route for old parameter sets,
+        # but never silently substitute it for a requested unified preset.
+        legacy_factory = getattr(self._reconstructor, "make_legacy_live_session", None)
+        if callable(legacy_factory):
+            if "preset" in self._params and "reconstruction_method" not in self._params:
+                self._logger.error(
+                    "Unified MoNaLISA Fast requires the generalized Session Live "
+                    "executor; the legacy direct-live controller cannot run it"
+                )
+                return False
+            self._session = legacy_factory()
+        else:
+            self._session = self._reconstructor.make_session()
 
         # The process worker is built later, in _on_init_stack_ready, once the
         # stack shape is known (it needs the RawDataBuffer + frames_per_stack, both

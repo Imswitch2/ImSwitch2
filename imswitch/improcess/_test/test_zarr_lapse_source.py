@@ -501,3 +501,117 @@ def test_zarr_nonzero_origin_scope_not_complete_between_bounded_polls(
         ]
     finally:
         source.close()
+
+
+def test_zarr_lapse_waits_for_next_scan_data_array(tmp_zarr_path):
+    """A writer publishes scanN/CAM before scanN/CAM/data exists.
+
+    The following poll must wait instead of terminating with ValueError, and
+    must not jump past that unfinished scan to an even later group.
+    """
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    scan0 = root.create_group("scan0").create_group("CAM")
+    data0 = np.ones((4, 2, 3), dtype=np.uint16)
+    array0 = ZarrStorer._create_array(scan0, "data", data=data0, chunks=(2, 2, 3))
+    array0.attrs.update({
+        "writing": False,
+        "recording:frames_committed": 4,
+        "recording:frames_per_stack": 4,
+        "recording:num_timepoints": 3,
+        "recording:dataset_path": "/scan0/CAM/data",
+    })
+
+    reader = ZarrLapseSource(detector_name="CAM", chunk_size=2)
+    reader.open(tmp_zarr_path)
+    try:
+        first = reader.poll()
+        assert sum(chunk.end - chunk.start for chunk in first) == 4
+
+        # The next timepoint's group exists, but its detector does not.
+        scan1 = root.create_group("scan1")
+        assert reader.poll() == []
+        assert reader._current_group_index == 0
+
+        # Detector metadata appears before the array. An even later scan
+        # shell must not cause the reader to skip this incomplete scan1.
+        detector1 = scan1.create_group("CAM")
+        root.create_group("scan2").create_group("CAM")
+        assert reader.poll() == []
+        assert reader._current_group_index == 0
+        assert reader.skipped_frame_ranges == []
+
+        # The array is created but has zero committed frames initially.
+        array1 = detector1.create_array(
+            "data", shape=(0, 2, 3), dtype="uint16", chunks=(2, 2, 3),
+        )
+        array1.attrs.update({
+            "writing": True,
+            "recording:frames_committed": 0,
+            "recording:frames_per_stack": 4,
+            "recording:num_timepoints": 3,
+        })
+        assert reader.poll() == []
+        assert reader._current_group_index == 1
+
+        array1.resize((4, 2, 3))
+        array1[:] = 2
+        array1.attrs["recording:frames_committed"] = 4
+        # Even when all frames are committed, the writer has not finalized.
+        assert sum(c.end - c.start for c in reader.poll()) == 4
+        assert reader.poll() == []
+        assert reader._current_group_index == 1
+        array1.attrs["writing"] = False
+
+        # Now scan2 has its array, and the stream can continue normally.
+        scan2 = root["scan2"]["CAM"]
+        array2 = ZarrStorer._create_array(
+            scan2, "data", data=np.full((4, 2, 3), 3, dtype=np.uint16),
+            chunks=(2, 2, 3),
+        )
+        array2.attrs.update({
+            "writing": False,
+            "recording:frames_committed": 4,
+            "recording:frames_per_stack": 4,
+            "recording:num_timepoints": 3,
+        })
+        final = reader.poll()
+        assert sum(c.end - c.start for c in final) == 4
+        assert all(np.all(c.data == 3) for c in final)
+        assert reader.skipped_frame_ranges == []
+        assert reader.is_complete()
+    finally:
+        reader.close()
+
+
+def test_zarr_lapse_does_not_advance_from_still_writing_scan(tmp_zarr_path):
+    """Pre-created next scan must not make a writing current scan complete."""
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    for index in range(2):
+        det = root.create_group(f"scan{index}").create_group("CAM")
+        array = ZarrStorer._create_array(
+            det, "data", data=np.full((4, 2, 3), index + 1, dtype=np.uint16),
+            chunks=(2, 2, 3),
+        )
+        array.attrs.update({
+            "writing": index == 0,
+            "recording:frames_committed": 4,
+            "recording:frames_per_stack": 4,
+            "recording:num_timepoints": 2,
+        })
+
+    reader = ZarrLapseSource(detector_name="CAM", chunk_size=2)
+    reader.open(tmp_zarr_path)
+    try:
+        first = reader.poll()
+        assert sum(c.end - c.start for c in first) == 4
+        assert reader._current_group_index == 0
+        assert reader.poll() == []
+        assert not reader.is_complete()
+
+        root["scan0"]["CAM"]["data"].attrs["writing"] = False
+        second = reader.poll()
+        assert sum(c.end - c.start for c in second) == 4
+        assert reader._current_group_index == 1
+        assert reader.is_complete()
+    finally:
+        reader.close()

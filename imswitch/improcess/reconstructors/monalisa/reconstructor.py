@@ -1092,13 +1092,10 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     @classmethod
     def streaming_capability(cls, params: dict) -> tuple[bool, str]:
-        """Fail closed until unified Fast streaming has verified scientific parity.
+        """True only when a streaming session runs the selected Fast method.
 
-        ``MonalisaLiveSession`` is an older rectangular Fast implementation,
-        not an incremental form of ``_process_fast_gauss_offline``. Even when
-        its parameter validator accepts a setting, it does not implement the
-        unified hex/stagger/Locked calibration and placement contract. No
-        source-independent test can establish parity here; M3C-2 replaces it.
+        Source-specific layout, timepoint cardinality and committed-frame
+        checks occur separately in contract() and the generic queue reader.
         """
         preset = str((params or {}).get("preset", PRESET_FAST))
         if preset == PRESET_FULL:
@@ -1109,10 +1106,11 @@ class MonalisaReconstructor(StreamingReconstructor):
             return False, "MoNaLISA Custom settings have no verified streaming implementation."
         if preset != PRESET_FAST:
             return False, f"Unknown MoNaLISA mode {preset!r} is not streamable."
-        return False, (
-            "Unified MoNaLISA Fast streaming is pending M3C-2 validation; "
-            "the older live processor does not preserve the selected lattice, "
-            "calibration and placement. Auto-reconstruct will use Fast after completion."
+        if "reconstruction_method" in (params or {}):
+            return False, "Legacy MoNaLISA parameter dictionaries require finite processing."
+        return True, (
+            "Unified MoNaLISA Fast; first complete scan initializes calibration, "
+            "then each committed scan timepoint is published."
         )
 
     @classmethod
@@ -1121,25 +1119,30 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     @classmethod
     def contract(cls, info: RawInfo, params: dict) -> Contract:
-        """Orientation detection needs one *complete scan stack*, not a frame.
+        """Stream only scan timepoints the unified Fast pipeline can place."""
+        from .unified_fast_session import timepoint_stream_contract
 
-        The next frames must not re-enter push() after begin() has consumed
-        them. Reject camera-series modes rather than interpreting their T as S.
-        """
         supported, reason = cls.streaming_capability(params)
         if not supported:
             raise Incompatible(reason)
-        if not info.S or info.frames_per_timepoint < 2:
-            raise Incompatible("MoNaLISA requires a multi-frame scan timepoint")
-        return Contract(init_frames=info.frames_per_timepoint,
-                        chunk_frames=1, params=dict(params or {}))
+        init_frames, chunk_frames = timepoint_stream_contract(info, params)
+        return Contract(init_frames=init_frames, chunk_frames=chunk_frames,
+                        params=dict(params or {}))
 
-    def make_session(self) -> MonalisaLiveSession:
+    def make_session(self):
+        """Run the actual unified Gaussian Fast implementation in the stream.
+
+        The historical rectangular-only session is never silently selected
+        by a new unified Fast job.
         """
-        Create a fresh streaming session for live reconstruction.
-        
-        Returns:
-            MonalisaLiveSession instance.
+        from .unified_fast_session import UnifiedFastStreamingSession
+        return UnifiedFastStreamingSession(self)
+
+    def make_legacy_live_session(self):
+        """Explicit compatibility factory for the older direct-live controller.
+
+        That controller has not yet migrated to the generalized executor.
+        It must not quietly substitute this algorithm for a unified preset.
         """
         return MonalisaLiveSession()
 
@@ -1192,7 +1195,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 geometry = metadata_geometry
                 frames_per_stack = geometry['frames_per_stack']
 
-        session = self.make_session()
+        session = MonalisaLiveSession()
         try:
             first_stack = data[:frames_per_stack]
             session_params = self._fast_gauss_session_params(params)
@@ -1280,7 +1283,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             f'positions, {placement.slices} Z plane(s), {placement.n_time} '
             f'timepoint(s), {placement.n_conditions} condition(s).'
         )
-        session = self.make_session()
+        session = MonalisaLiveSession()
         session_params = self._fast_gauss_session_params(params)
         working = data
         if params.get('bleaching_correction', False):
@@ -1638,7 +1641,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             if axis_startpos.size < 2 or axis_length.size < 2 or axis_step_size.size < 2:
                 return None
 
-            session = self.make_session()
+            session = MonalisaLiveSession()
             ttl_steps = session._scan_steps_from_ttl(attrs)
             candidates = []
             if ttl_steps is not None:

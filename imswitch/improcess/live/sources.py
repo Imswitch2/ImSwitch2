@@ -1194,29 +1194,42 @@ class ZarrLapseSource(LiveSource):
                 readable_length = min(readable_length, max(0, committed or 0))
 
             if self._local_cursor >= readable_length:
-                # Current group is fully read, try to advance to next
+                # A new scan group can appear before its detector/data array,
+                # and may even be pre-created while the current scan is still
+                # writing. Neither case is evidence that this timepoint ended.
+                # Keep polling its committed-frame barrier until finalized.
+                if _optional_bool(_meta_lookup(attrs, 'writing')) is True:
+                    break
+
                 nxt = next_scan_index(
                     self._scan_groups, self._current_group_index, self._scope_stop,
                 )
-                if nxt is not None:
-                    # A later physical scan group is evidence of an absent or
-                    # short earlier group; keep true T positions and record
-                    # exactly which raw-frame indices lack measurements.
-                    next_start = (nxt - self._scope_start) * self._frames_per_stack
-                    if next_start > self._global_cursor:
-                        self.skipped_frame_ranges.append((self._global_cursor, next_start))
-                    self._current_group_index = nxt
-                    self._local_cursor = 0
-                    next_group_name = f"scan{nxt}"
-                    next_group = self._root[next_group_name]
-                    self._current_array, _ = self._open_detector_array(
-                        next_group, self._resolved_detector_name,
-                    )
-                    self._current_array_path = (next_group_name, self._resolved_detector_name, 'data')
-                    continue
-                else:
-                    # No more groups expected
+                if nxt is None:
                     break
+
+                next_group_name = f"scan{nxt}"
+                next_group = self._root[next_group_name]
+                detector = self._resolved_detector_name
+                # A Zarr writer creates scanN, then CAM, then CAM/data.
+                # Seeing scanN alone must not terminate live reconstruction.
+                # Do not skip this incomplete group to a later scan either.
+                if detector not in next_group:
+                    break
+                next_detector = next_group[detector]
+                if not _is_zarr_group(next_detector) or 'data' not in next_detector:
+                    break
+
+                # Only commit the advance after the array is actually present.
+                # Retain physical scan numbering (including genuine gaps).
+                next_array, _ = self._open_detector_array(next_group, detector)
+                next_start = (nxt - self._scope_start) * self._frames_per_stack
+                if next_start > self._global_cursor:
+                    self.skipped_frame_ranges.append((self._global_cursor, next_start))
+                self._current_group_index = nxt
+                self._local_cursor = 0
+                self._current_array = next_array
+                self._current_array_path = (next_group_name, detector, 'data')
+                continue
             
             # Read chunks from current group
             start_local = self._local_cursor
