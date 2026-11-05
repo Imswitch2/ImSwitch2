@@ -908,6 +908,14 @@ class ProcessingQueueController(ImProcessWidgetController):
         if publisher is None:
             return
         if result is not None:
+            if ((getattr(result, "metadata", None) or {}).get("monalisa_streaming")
+                    or {}).get("provisional_preview"):
+                # The existing workflow-preview display is ephemeral: it does
+                # not claim a Session result, autosave, or count a timepoint.
+                self._commChannel.sigWorkflowPreview.emit(
+                    result, f"MoNaLISA Live T{self._incrementalCompletedTimepoints}"
+                )
+                return
             publisher.snapshot(result)
             self._incrementalPublishedResult = publisher.published
         elif plane is not None:

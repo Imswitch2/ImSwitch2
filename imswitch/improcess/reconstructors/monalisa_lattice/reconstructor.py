@@ -162,6 +162,47 @@ def pipeline_params(params: dict) -> PipelineParams:
     )
 
 
+def recorded_geometry_inputs(scan: LayoutScan, params: dict):
+    """Recorded layout, camera-space step, optional metric aspect and pixel size.
+
+    Shared by finite reconstruction and the incremental Fast session so scan
+    overrides and unknown pixel-size inference follow exactly the same path.
+    """
+    typed_step = float(params["scan_step_nm"])
+    if typed_step > 0:
+        # What the panel says outranks what the recording says, as on
+        # the attribute path: one step for every scanned axis.
+        scan = replace(
+            scan,
+            step_nm=tuple(
+                typed_step if count > 1 else None for count in scan.counts
+            ),
+            source="acquisition layout, step from the panel",
+        )
+    pixel_nm = float(params["pixel_size_nm"])
+    step = None
+    step_aspect = None
+    if pixel_nm > 0:
+        if not any(scan.step_nm):
+            raise ValueError(
+                "A camera pixel size is set but the recording does not "
+                "say the size of its scan steps: set the step, or leave "
+                "the pixel size at 0"
+            )
+        # An axis the recording does not step, or whose step it does not
+        # say, is left to the lattice (a NaN column).
+        step = np.full((2, 2), np.nan)
+        for axis, step_nm in enumerate(scan.step_nm):
+            if step_nm:
+                step[:, axis] = 0.0
+                step[axis, axis] = step_nm / pixel_nm
+    elif all(scan.step_nm):
+        # No pixel size, but the recording says both steps: their ratio
+        # is known even if their size in pixels is not.
+        step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
+    return scan, step, step_aspect, pixel_nm
+
+
 class MonalisaLatticeReconstructor(Reconstructor):
     """MoNaLISA reconstruction for any illumination lattice, read from the data.
 
@@ -485,39 +526,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
         focus would read them badly on its own. The stack with the most
         modulation goes first and measures the shift factor for the rest.
         """
-        typed_step = float(params["scan_step_nm"])
-        if typed_step > 0:
-            # What the panel says outranks what the recording says, as on
-            # the attribute path: one step for every scanned axis.
-            scan = replace(
-                scan,
-                step_nm=tuple(
-                    typed_step if count > 1 else None for count in scan.counts
-                ),
-                source="acquisition layout, step from the panel",
-            )
+        scan, step, step_aspect, pixel_nm = recorded_geometry_inputs(scan, params)
         self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
-        pixel_nm = float(params["pixel_size_nm"])
-        step = None
-        step_aspect = None
-        if pixel_nm > 0:
-            if not any(scan.step_nm):
-                raise ValueError(
-                    "A camera pixel size is set but the recording does not "
-                    "say the size of its scan steps: set the step, or leave "
-                    "the pixel size at 0"
-                )
-            # An axis the recording does not step, or whose step it does not
-            # say, is left to the lattice (a NaN column).
-            step = np.full((2, 2), np.nan)
-            for axis, step_nm in enumerate(scan.step_nm):
-                if step_nm:
-                    step[:, axis] = 0.0
-                    step[axis, axis] = step_nm / pixel_nm
-        elif all(scan.step_nm):
-            # No pixel size, but the recording says both steps: their ratio
-            # is known even if their size in pixels is not.
-            step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
         settings = pipeline_params(params)
         supplied_localization = params.get("_pattern_localization")
         if isinstance(supplied_localization, dict):

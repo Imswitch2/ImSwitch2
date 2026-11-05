@@ -85,14 +85,14 @@ def _source(frames, layout):
     )
 
 
-def _start(reconstructor, frames, params, layout, nt=1):
+def _start(reconstructor, frames, params, layout, nt=1, frames_per_timepoint=None):
     session = reconstructor.make_session()
     init = StreamInit(
         name="recording", dataset_name="CAM", data=frames,
         attrs={"recording:detector_name": "CAM"}, source_path="recording.zarr",
         stack_info=StackInfo(
             frame_shape=frames.shape[1:], dtype=frames.dtype,
-            frames_per_stack=len(frames), planned_timepoints=nt,
+            frames_per_stack=frames_per_timepoint or len(frames), planned_timepoints=nt,
             acquisition_layout=layout,
         ),
     )
@@ -126,12 +126,19 @@ def test_multi_timepoint_first_preview_and_commit_boundaries():
     assert first.data.shape[0] == 3
     assert session.preview_revision() == 1
     assert np.isnan(first.data[1:]).all()   # never mark missing TP as reconstructed
-    # Partial second timepoint must not create fake preview or output.
+    # Partial second timepoint is display-only: it changes the preview,
+    # but cannot mark T1 complete or modify the previously published T0.
     session.push(frames[:7], len(frames), len(frames) + 7)
-    assert session.preview_revision() == 1
-    assert session.live_plane() is None
+    assert session.preview_revision() > 1
+    partial = session.provisional_preview()
+    assert partial is not None
+    assert partial.metadata["monalisa_streaming"]["provisional_preview"] is True
+    assert partial.metadata["monalisa_streaming"]["timepoint"] == 1
+    assert partial.metadata["monalisa_streaming"]["received_frames"] == 7
+    assert session.result().metadata["monalisa_streaming"]["completed_timepoints"] == 1
+    assert np.isnan(session.result().data[1:]).all()
     session.push(frames[7:], len(frames) + 7, len(frames) * 2)
-    assert session.preview_revision() == 2
+    assert session.provisional_preview() is None
     index, plane = session.live_plane()
     assert index == 1 and plane.shape[0] == 1
     np.testing.assert_allclose(plane[0], first.data[0], rtol=1e-5, atol=1e-5)
@@ -182,7 +189,7 @@ def test_conflicting_scanonce_lapse_metadata_rejected_before_first_frame():
         acquisition_layout=_resolved(),
     )
     per_timepoint, chunk = timepoint_stream_contract(corrected, _params())
-    assert per_timepoint == 20 and 20 % chunk == 0
+    assert per_timepoint == 1 and chunk == 1
 
 
 def test_capability_contract_never_changes_the_selected_preset():
@@ -190,8 +197,8 @@ def test_capability_contract_never_changes_the_selected_preset():
     info = RawInfo(T=2, S=(20,), frame_shape=(64, 64), dtype=np.dtype("uint16"),
                    mode="ScanLapse", acquisition_layout=_resolved(nt=2))
     contract = plugin.contract(info, _params())
-    assert contract.init_frames == 20
-    assert 20 % contract.chunk_frames == 0
+    assert contract.init_frames == 1
+    assert contract.chunk_frames == 1
     assert contract.params["preset"] == "Fast"
     for preset in ("Full", "Legacy DLL", "Custom"):
         with pytest.raises(Incompatible):
@@ -208,5 +215,161 @@ def test_incomplete_timepoint_never_finalizes_as_complete():
     session.push(frames[:4], len(frames), len(frames) + 4)
     with pytest.raises(ValueError, match="unprocessed frames"):
         session.finish()
-    assert session.preview_revision() == 1
+    assert session.preview_revision() > 1
+    assert session.provisional_preview() is not None
+    assert session.result().metadata["monalisa_streaming"]["completed_timepoints"] == 1
     session.close()
+
+
+@pytest.mark.parametrize("stagger", [False, True], ids=["rectangular", "hexagonal-stagger"])
+def test_explicit_calibration_starts_at_first_frame_and_keeps_partial_out_of_results(stagger):
+    frames, layout, params = _scan(stagger=stagger), _resolved(stagger=stagger), _params(stagger=stagger)
+    plugin = MonalisaReconstructor()
+    offline = plugin.process(_source(frames, layout), params)
+    session, plan = _start(
+        plugin, frames[:1], params, layout,
+        frames_per_timepoint=len(frames),
+    )
+    assert plan.axis_labels == ["T", "Y", "X"]
+    assert plan.out_shape == (1, *offline.data.shape[-2:])
+    assert session.preview_revision() == 1
+    assert not session.has_completed_timepoint
+    with pytest.raises(RuntimeError, match="No complete"):
+        session.result()
+    preview = session.provisional_preview()
+    assert preview is not None
+    assert preview.data.shape == offline.data.shape[-2:]
+    assert preview.metadata["monalisa_streaming"]["received_frames"] == 1
+    assert preview.metadata["monalisa_streaming"]["provisional_preview"]
+    session.push(frames[1:8], 1, 8)
+    assert session.provisional_preview().metadata["monalisa_streaming"]["received_frames"] == 8
+    assert not session.has_completed_timepoint
+    session.push(frames[8:], 8, len(frames))
+    assert session.provisional_preview() is None
+    assert session.has_completed_timepoint
+    final = session.finish()
+    np.testing.assert_allclose(final.data[0], offline.data, rtol=1e-5, atol=1e-5)
+    session.close()
+
+
+def test_auto_requires_full_t0_before_starting_partial_t1():
+    from imswitch.improcess.reconstructors.monalisa.unified_fast_session import (
+        timepoint_stream_contract,
+    )
+    params = _params()
+    params["orientation_mode"] = "Auto"
+    info = RawInfo(
+        T=3, S=(20,), frame_shape=(64, 64), dtype=np.dtype("float32"),
+        mode="ScanLapse", planned_timepoints=3,
+        acquisition_layout=_resolved(nt=3),
+    )
+    init_frames, chunk = timepoint_stream_contract(info, params)
+    assert init_frames == 20
+    assert 20 % chunk == 0
+    params = _params()
+    params["localization_mode"] = "Auto"
+    assert timepoint_stream_contract(info, params)[0] == 20
+
+
+def test_live_rejects_correction_settings_instead_of_silently_ignoring_them():
+    plugin = MonalisaReconstructor()
+    defaults = _params()
+    for patch in ({"intensity_correction": True}, {"cell_offsets": True},
+                  {"reassignment": "fixed"}, {"variance_weighting": True},
+                  {"sharpen": True}, {"pinhole_stack": True},
+                  {"spot_width_mode": "Auto"}, {"background": "auto"}):
+        settings = {**defaults, **patch}
+        supported, reason = plugin.streaming_capability(settings)
+        assert not supported and reason
+        with pytest.raises(Incompatible):
+            plugin.contract(RawInfo(
+                T=1, S=(20,), frame_shape=(64, 64), dtype=np.dtype("float32"),
+                mode="ScanOnce", acquisition_layout=_resolved(),
+            ), settings)
+
+
+def test_provisional_preview_bypasses_session_publication():
+    """A mid-scan viewer update is never a saved/completed Session result."""
+    from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
+
+    class Signal:
+        def __init__(self):
+            self.calls = []
+
+        def emit(self, *args):
+            self.calls.append(args)
+
+    class Publisher:
+        def __init__(self):
+            self.published = False
+            self.snapshots = []
+
+        def snapshot(self, result):
+            self.published = True
+            self.snapshots.append(result)
+
+    publisher = Publisher()
+    signal = Signal()
+    stub = SimpleNamespace(
+        _incrementalRunner=object(),
+        queue=SimpleNamespace(current=object()),
+        _resultPublisher=publisher,
+        _commChannel=SimpleNamespace(sigWorkflowPreview=signal),
+        _incrementalCompletedTimepoints=0,
+    )
+    partial = SimpleNamespace(metadata={"monalisa_streaming": {"provisional_preview": True}})
+    ProcessingQueueController._on_incremental_preview(stub, partial, None)
+    assert signal.calls == [(partial, "MoNaLISA Live T0")]
+    assert not publisher.snapshots
+    assert not publisher.published
+
+    full = SimpleNamespace(metadata={"monalisa_streaming": {"completed_timepoints": 1}})
+    ProcessingQueueController._on_incremental_preview(stub, full, None)
+    assert publisher.snapshots == [full]
+    assert stub._incrementalPublishedResult is True
+
+
+@pytest.mark.parametrize("stagger", [False, True], ids=["rectangular", "hexagonal-stagger"])
+@pytest.mark.parametrize("placement_mode", ["auto", "interpolate"])
+def test_partial_unified_extraction_placement_matches_complete_fast(stagger, placement_mode):
+    """Streaming chunks use the exact unified extraction and placement math."""
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.pipeline import (
+        PipelineParams, prepare_geometry, reconstruct_stack,
+    )
+    from imswitch.improcess.reconstructors.monalisa.scan_frame import raster_scan_index
+    from imswitch.improcess.reconstructors.monalisa.incremental_fast import (
+        IncrementalFastGeometry, IncrementalFastAccumulator,
+    )
+
+    frames = _scan(stagger=stagger)
+    index = raster_scan_index(4, 5)
+    localization = PatternLocalization.manual_grid(
+        10., 8.66 if stagger else 10., 3.2, 4.5,
+        stagger_axis="x" if stagger else None,
+        stagger=0.5 if stagger else 0.,
+    )
+    settings = PipelineParams(
+        spot_sigma_px=1.7, background="constant", device="CPU",
+        reassignment="off", frame_gain="off", cell_offsets="off",
+        variance_weighting=False, placement_mode=placement_mode,
+        sharpen_sigma_px=None,
+    )
+    step = np.diag([2.5, 8.66 / 5 if stagger else 2.])
+    geometry = prepare_geometry(
+        frames[0], step, index, settings, localization=localization,
+    )
+    calibration = IncrementalFastGeometry(
+        geometry, SimpleNamespace(scanned_axes=("x", "y")),
+        "+x+y", 77., index,
+    )
+    incremental = IncrementalFastAccumulator(calibration)
+    incremental.push(frames[:1])
+    first = incremental.image()
+    if placement_mode == "auto":
+        assert first is not None and np.isfinite(first).any()
+    incremental.push(frames[1:7])
+    incremental.push(frames[7:])
+    result = incremental.image()
+    reference = reconstruct_stack(frames, geometry, index).amplitude.image
+    np.testing.assert_allclose(result, reference, atol=1e-4, rtol=1e-4, equal_nan=True)

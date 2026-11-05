@@ -80,9 +80,11 @@ def test_monalisa_unified_fast_is_streamable_and_source_gated():
     assert reconstructor.supports_streaming_params({"preset": "Fast"})
     info = SimpleNamespace(S=(12,), T=2, mode="ScanLapse",
                            frames_per_timepoint=12, acquisition_layout=None)
-    contract = reconstructor.contract(info, {"preset": "Fast"})
-    assert contract.init_frames == 12
-    assert 12 % contract.chunk_frames == 0
+    # A bare frame count is insufficient for *correct* lattice placement.
+    # The Session may still queue an Auto job, but source-specific Follow
+    # capability must fail closed without recorded scan indices.
+    with pytest.raises(Incompatible, match="recorded"):
+        reconstructor.contract(info, {"preset": "Fast"})
     with pytest.raises(Incompatible):
         reconstructor.contract(SimpleNamespace(S=(), T=2, mode="SpecFrames",
             frames_per_timepoint=1, acquisition_layout=None), {"preset": "Fast"})

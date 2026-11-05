@@ -1,11 +1,9 @@
 """Acquisition-following adapter for the *unified* MoNaLISA Fast algorithm.
 
-A complete scan timepoint is the atomic scientific output for this checkpoint:
-raw frames are buffered only until their timepoint is committed, then handed
-unaltered to the same ``MonalisaReconstructor.process`` implementation used
-for finite data. This is deliberately NOT the older rectangular Fast-Gauss
-live processor. First-frame updates with explicit calibration are a separate
-initialization/performance milestone.
+The unified Fast extraction operator now processes arriving frame batches.
+Provisional images use its recorded lattice geometry and placement; complete
+timepoints still use the canonical offline Fast finalization for numerical
+parity. No legacy rectangular Gauss or correction substitution is allowed.
 
 The generic reader enforces the committed-frame barrier and back-pressure;
 this class owns only processing and its timepoint output buffer. The existing
@@ -28,8 +26,10 @@ from imswitch.improcess.reconstructors.base import (
     Incompatible, StreamPlan, StreamingSession,
 )
 from .params import (
-    LOCALIZATION_AUTO, ORIENTATION_AUTO, ORIENTATION_LOCKED, PRESET_FAST,
+    LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
+    ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, PRESET_FAST,
 )
+from .incremental_fast import IncrementalFastAccumulator, IncrementalFastGeometry
 
 
 ALGORITHM_ID = "unified-monalisa-fast-gaussian"
@@ -82,19 +82,35 @@ def timepoint_stream_contract(info, params):
             f"recording declares {info.planned_timepoints} timepoints; "
             "a timelapse must declare ScanLapse"
         )
-    timepoint_layout(info.acquisition_layout)
-    # A divisible chunk is important: a scan of e.g. 242 frames must be
-    # published at frame 242, not delayed until 256 or recording finalization.
     per_timepoint = int(info.frames_per_timepoint)
+    resolved = timepoint_layout(info.acquisition_layout)
+    from imswitch.improcess.reconstructors.monalisa_lattice.scan import layout_scan
+    scan = layout_scan(resolved, per_timepoint)
+    if scan is None or scan.num_stacks != 1 or scan.frames_per_stack != per_timepoint:
+        raise Incompatible(
+            "Live Fast needs a recorded, contiguous, single-plane scan layout; "
+            "this source can use finite reconstruction after completion"
+        )
+    # Explicit calibration and orientation can begin at the first committed
+    # frame. Use single-frame chunks to preserve the first-scan boundary; a
+    # larger fixed chunk would cross it when init_frames=1 (e.g. 1+2*N).
+    immediate = (
+        str(params.get("localization_mode", LOCALIZATION_AUTO)) in
+        (LOCALIZATION_LOCKED, LOCALIZATION_MANUAL)
+        and str(params.get("orientation_mode", ORIENTATION_AUTO)) in
+        (ORIENTATION_LOCKED, ORIENTATION_MANUAL)
+    )
+    if immediate:
+        return 1, 1
     return per_timepoint, max(1, math.gcd(per_timepoint, 32))
 
 
 class UnifiedFastStreamingSession(StreamingSession):
-    """Incremental *timepoint* processing with finite Fast numerical parity.
+    """Frame-progressive previews and completed-timepoint Fast publication.
 
-    The first timepoint is required for calibration/orientation, as agreed for
-    M3C-2. Once ready, each later complete timepoint is processed using the
-    same finite Fast method, with Auto calibration resolved only on T0.
+    A provisional partial scan never becomes a completed Session timepoint.
+    Explicit Manual/Locked settings initialize on the first frame. Auto
+    localization/orientation initialize using a complete first timepoint.
     """
 
     def __init__(self, reconstructor):
@@ -116,6 +132,8 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._calibration = None
         self._completed = 0
         self._previewed = 0
+        self._preview_revision = 0
+        self._incremental = None
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         if self._assembled is not None:
@@ -123,13 +141,18 @@ class UnifiedFastStreamingSession(StreamingSession):
         if (str((params or {}).get("preset", PRESET_FAST)) != PRESET_FAST
                 or "reconstruction_method" in (params or {})):
             raise Incompatible("Only the unified MoNaLISA Fast parameter contract can stream")
+        capability = getattr(self._reconstructor, "streaming_capability", None)
+        if callable(capability):
+            supported, reason = capability(params)
+            if not supported:
+                raise Incompatible(reason)
         stack_info = init_obj.stack_info
         if stack_info is None or not stack_info.frames_per_stack:
             raise Incompatible("MoNaLISA streaming requires scan-frame metadata")
         frames = np.asarray(init_obj.data)
         per_timepoint = int(stack_info.frames_per_stack)
-        if frames.ndim != 3 or frames.shape[0] != per_timepoint:
-            raise Incompatible("Initialization must contain exactly one complete scan timepoint")
+        if frames.ndim != 3 or frames.shape[0] not in (1, per_timepoint):
+            raise Incompatible("Live initialization must contain the first frame or one complete scan")
         planned = stack_info.planned_timepoints
         if planned is None or int(planned) < 1:
             raise Incompatible("A declared timepoint count is required for unified Fast streaming")
@@ -140,7 +163,7 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._original_params = deepcopy(dict(params or {}))
         self._effective_params = deepcopy(self._original_params)
         self._per_timepoint = per_timepoint
-        self._next_frame = per_timepoint
+        self._next_frame = int(frames.shape[0])
         self._planned = int(planned)
         self._frame_shape = tuple(frames.shape[1:])
         self._layout = timepoint_layout(stack_info.acquisition_layout)
@@ -155,15 +178,50 @@ class UnifiedFastStreamingSession(StreamingSession):
             total=self._planned,
         )
         self._assembled = ProgressiveResultAssembler(plan)
-        self._process_timepoint(frames)
+        if len(frames) == per_timepoint:
+            # Auto (or another non-immediate configuration) calibrated from
+            # the *complete* first T before partial previews become possible.
+            self._process_timepoint(frames)
+            self._initialize_incremental(first_frame=frames[0])
+            self._preview_revision += 1
+            template = self._assembled.result
+            return StreamPlan(
+                out_shape=tuple(template.data.shape),
+                axis_labels=list(template.axis_labels),
+                view_modes=list(template.view_modes or ()),
+                dtype=np.dtype(template.data.dtype),
+                scale_unit=str(template.scale_unit),
+                axis_scales=list(template.axis_scales),
+            )
+        # Fully explicit calibration: first committed frame is already enough
+        # to allocate the complete output raster, without fitting it from a
+        # partial sample of the scan.
+        self._initialize_incremental(first_frame=frames[0])
+        self._incremental.push(frames)
+        self._chunks = [frames.copy()]
+        self._buffered = len(frames)
+        self._preview_revision += 1
+        provisional = self.provisional_preview()
         return StreamPlan(
-            out_shape=tuple(self._assembled.result.data.shape),
-            axis_labels=list(self._assembled.result.axis_labels),
-            view_modes=list(self._assembled.result.view_modes or ()),
-            dtype=np.dtype(self._assembled.result.data.dtype),
-            scale_unit=str(self._assembled.result.scale_unit),
-            axis_scales=list(self._assembled.result.axis_scales),
+            out_shape=(self._planned, *self._incremental.shape),
+            axis_labels=["T", "Y", "X"],
+            view_modes=[], dtype=np.dtype("float32"),
+            scale_unit=str(provisional.scale_unit),
+            axis_scales=[1., *list(provisional.axis_scales)],
         )
+
+    def _initialize_incremental(self, *, first_frame):
+        if self._completed:
+            calibrated = IncrementalFastGeometry.from_calibrated(
+                self._reconstructor, self._effective_params, self._layout,
+                self._per_timepoint, first_frame, self._calibration,
+            )
+        else:
+            calibrated = IncrementalFastGeometry.from_locked(
+                self._reconstructor, self._effective_params, self._layout,
+                first_frame, self._per_timepoint,
+            )
+        self._incremental = IncrementalFastAccumulator(calibrated)
 
     def _process_timepoint(self, frames: np.ndarray):
         if self._completed >= self._planned:
@@ -227,20 +285,60 @@ class UnifiedFastStreamingSession(StreamingSession):
             raise ValueError("Raw frame geometry changed during streaming")
         if int(start) != self._next_frame or end - start != frames.shape[0]:
             raise ValueError("Noncontiguous MoNaLISA stream: frames cannot be silently dropped")
+        if self._buffered + len(frames) > self._per_timepoint:
+            raise ValueError("Streaming chunk crosses the declared timepoint boundary")
+        self._incremental.push(frames)
         self._next_frame = int(end)
         self._chunks.append(frames.copy())
         self._buffered += int(frames.shape[0])
-        if self._buffered > self._per_timepoint:
-            raise ValueError("Streaming chunk crosses the declared timepoint boundary")
+        self._preview_revision += 1
         if self._buffered == self._per_timepoint:
             assembled = np.concatenate(self._chunks, axis=0)
             self._chunks.clear()
             self._buffered = 0
             self._process_timepoint(assembled)
+            self._incremental.reset()
+            self._preview_revision += 1
+
+    @property
+    def has_completed_timepoint(self) -> bool:
+        return self._completed > 0
+
+    @property
+    def has_incomplete_preview(self) -> bool:
+        return self._buffered > 0
 
     def preview_revision(self) -> int:
-        """A new preview is meaningful only after another complete timepoint."""
-        return self._completed
+        """Every committed-frame chunk can produce another provisional image."""
+        return self._preview_revision
+
+    def provisional_preview(self):
+        """Detached, display-only image, never a Session-owned result.
+
+        Workflows can render it without claiming/autosaving it. Cancelling
+        before T0 leaves no result; cancelling in T1 retains only T0.
+        """
+        if not self._buffered or self._incremental is None:
+            return None
+        from .canonical_result import MonalisaResult
+        calibrated = self._incremental.calibrated
+        pixels = self._incremental.image()
+        if pixels is None:
+            return None
+        image = MonalisaResult(
+            name=f"{self._name}_monalisa_preview",
+            image=pixels, output_pixel_nm=calibrated.output_pixel_nm,
+            params=deepcopy(self._original_params),
+            diagnostics={"placement": self._incremental._placement.method},
+            axis_labels=["Y", "X"], scanned_axes=calibrated.scan.scanned_axes,
+        )
+        image.metadata["monalisa_streaming"] = {
+            "algorithm": ALGORITHM_ID, "provisional_preview": True,
+            "timepoint": self._completed,
+            "received_frames": self._buffered,
+            "frames_per_timepoint": self._per_timepoint,
+        }
+        return image
 
     def live_plane(self):
         if self._assembled is None or self._completed <= self._previewed:
@@ -287,4 +385,5 @@ class UnifiedFastStreamingSession(StreamingSession):
     def close(self):
         self._chunks.clear()
         self._buffered = 0
+        self._incremental = None
         self._reconstructor = None

@@ -610,35 +610,24 @@ class MonalisaReconstructor(StreamingReconstructor):
         result.metadata = metadata
         return result
 
-    def _process_unified_gaussian(self, data_obj, params: dict, context=None):
-        """Run the experimental/general lattice orchestration as the one Gaussian plugin.
+    def unified_lattice_params(self, params: dict) -> dict:
+        """Translate unified settings once for finite *and* live Fast geometry.
 
-        ``MonalisaLatticeReconstructor`` is retained as a compatibility wrapper
-        during Patch 2; the mathematical pipeline it calls already lives under
-        ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
-        settings have a migration path.
+        The extraction/placement math remains in the MoNaLISA lattice pipeline.
         """
         from imswitch.improcess.reconstructors.monalisa_lattice.params_widget import AUTO
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
             MonalisaLatticeReconstructor,
         )
-
         merged = unified_default_params()
         merged.update(dict(params or {}))
         localization = self._resolved_localization(merged)
         orientation = self._orientation_literal(merged)
-
         spot_sigma_px = self._spot_sigma_for_params(merged)
-
         placement = str(merged.get("placement_mode", PLACEMENT_AUTO)).lower()
-        if placement == "interpolate":
-            placement = "interpolate"
-        elif placement == "direct":
-            placement = "direct"
-        else:
+        if placement not in ("direct", "interpolate"):
             placement = "auto"
-
-        lattice_params = {
+        return {
             **MonalisaLatticeReconstructor.default_params(),
             "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
             "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
@@ -676,6 +665,26 @@ class MonalisaReconstructor(StreamingReconstructor):
                 None if localization is None else localization.to_dict()
             ),
         }
+
+    def _process_unified_gaussian(self, data_obj, params: dict, context=None):
+        """Run the experimental/general lattice orchestration as the one Gaussian plugin.
+
+        ``MonalisaLatticeReconstructor`` is retained as a compatibility wrapper
+        during Patch 2; the mathematical pipeline it calls already lives under
+        ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
+        settings have a migration path.
+        """
+        from imswitch.improcess.reconstructors.monalisa_lattice.params_widget import AUTO
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor,
+        )
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        localization = self._resolved_localization(merged)
+        orientation = self._orientation_literal(merged)
+        spot_sigma_px = self._spot_sigma_for_params(merged)
+        lattice_params = self.unified_lattice_params(merged)
         result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
         result.name = f"{data_obj.name}_monalisa"
 
@@ -1108,9 +1117,31 @@ class MonalisaReconstructor(StreamingReconstructor):
             return False, f"Unknown MoNaLISA mode {preset!r} is not streamable."
         if "reconstruction_method" in (params or {}):
             return False, "Legacy MoNaLISA parameter dictionaries require finite processing."
+        from .params import default_params as fast_defaults
+        merged = fast_defaults()
+        merged.update(dict(params or {}))
+        corrections = (
+            ("intensity_correction", bool(merged["intensity_correction"])),
+            ("cell_offsets", bool(merged["cell_offsets"])),
+            ("reassignment", str(merged["reassignment"]) != "off"),
+            ("variance_weighting", bool(merged["variance_weighting"])),
+            ("sharpen", bool(merged["sharpen"])),
+            ("pinhole_stack", bool(merged["pinhole_stack"])),
+        )
+        unsupported = [name for name, enabled in corrections if enabled]
+        if unsupported:
+            return False, ("Live Fast does not yet finalize corrections: "
+                           + ", ".join(unsupported) + ". Use finite reconstruction.")
+        if str(merged.get("background", "constant")) not in ("constant", "none"):
+            return False, "Live Fast requires fixed background extraction, not Auto background estimation."
+        from .params import SPOT_MANUAL
+        if str(merged.get("spot_width_mode")) != SPOT_MANUAL:
+            return False, "Live Fast needs a fixed spot width; use finite reconstruction for Auto spot width."
+        if int(merged.get("scan_steps_fast", 0)) or int(merged.get("scan_steps_slow", 0)):
+            return False, "Live Fast requires recorded scan geometry; scan-step overrides need finite reconstruction."
         return True, (
-            "Unified MoNaLISA Fast; first complete scan initializes calibration, "
-            "then each committed scan timepoint is published."
+            "Unified MoNaLISA Fast: explicit calibration starts at the first frame; "
+            "Auto calibration waits for T0, then shows live frame previews."
         )
 
     @classmethod

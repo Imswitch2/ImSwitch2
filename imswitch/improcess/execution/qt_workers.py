@@ -256,15 +256,28 @@ class StreamProcessWorker(QtCore.QObject):
         revision = revision_getter() if callable(revision_getter) else None
         if revision is not None and revision == self._last_preview_revision:
             return
-        plane = self._session.live_plane() if self._preview_sent else None
-        if plane is not None:
-            # live_plane() contract says the ndarray is already copied.
-            self.sigPreview.emit(self._generation, None, plane)
+        provisional_getter = getattr(self._session, "provisional_preview", None)
+        provisional = provisional_getter() if callable(provisional_getter) else None
+        if provisional is not None:
+            # Provisional camera-frame previews must never acquire result
+            # provenance or completed-timepoint coverage.
+            self.sigPreview.emit(self._generation, provisional, None)
+        elif (callable(provisional_getter)
+              and getattr(self._session, "has_incomplete_preview", False)):
+            # Interpolation on a partial T may not yet have enough samples
+            # to solve. Do not republish completed T0 or mark partial T1
+            # complete just because its provisional grid was underdetermined.
+            return
         else:
-            result = self._session.result()
-            self._record_snapshot(result, "partial")
-            self.sigPreview.emit(self._generation, result, None)
-            self._preview_sent = True
+            plane = self._session.live_plane() if self._preview_sent else None
+            if plane is not None:
+                # live_plane() contract says the ndarray is already copied.
+                self.sigPreview.emit(self._generation, None, plane)
+            else:
+                result = self._session.result()
+                self._record_snapshot(result, "partial")
+                self.sigPreview.emit(self._generation, result, None)
+                self._preview_sent = True
         self._last_preview = now
         self._last_preview_revision = revision
 

@@ -309,7 +309,7 @@ class CommunicationChannel(SignalInterface):
     -- replaces it. ``ReconstructionViewController`` draws an image; the
     ``GraphController`` plots a curve (where its *Push to table* works on it).
 
-    Emitters: WorkflowController
+    Emitters: ProcessingQueueController, WorkflowController
     Listeners: ReconstructionViewController, GraphController
     """
 
