@@ -288,45 +288,77 @@ def test_live_rejects_correction_settings_instead_of_silently_ignoring_them():
             ), settings)
 
 
-def test_provisional_preview_bypasses_session_publication():
-    """A mid-scan viewer update is never a saved/completed Session result."""
+def test_provisional_timepoint_updates_are_viewer_only():
+    """The queue must not use workflow preview or claim incomplete pixels."""
     from imswitch.improcess.controller.ProcessingQueueController import ProcessingQueueController
-
-    class Signal:
-        def __init__(self):
-            self.calls = []
-
-        def emit(self, *args):
-            self.calls.append(args)
 
     class Publisher:
         def __init__(self):
-            self.published = False
+            self.published = None
             self.snapshots = []
+            self.provisionals = []
+            self.planes = []
+
+        def provisional_snapshot(self, result):
+            self.provisionals.append(result)
+
+        def provisional_plane(self, index, pixels):
+            self.planes.append((index, pixels))
 
         def snapshot(self, result):
-            self.published = True
+            self.published = result
             self.snapshots.append(result)
 
     publisher = Publisher()
-    signal = Signal()
     stub = SimpleNamespace(
         _incrementalRunner=object(),
         queue=SimpleNamespace(current=object()),
         _resultPublisher=publisher,
-        _commChannel=SimpleNamespace(sigWorkflowPreview=signal),
-        _incrementalCompletedTimepoints=0,
     )
     partial = SimpleNamespace(metadata={"monalisa_streaming": {"provisional_preview": True}})
     ProcessingQueueController._on_incremental_preview(stub, partial, None)
-    assert signal.calls == [(partial, "MoNaLISA Live T0")]
+    assert publisher.provisionals == [partial]
     assert not publisher.snapshots
-    assert not publisher.published
+    assert publisher.published is None
+
+    plane = np.ones((1, 2, 3))
+    ProcessingQueueController._on_incremental_preview(
+        stub, None, ("provisional", 1, plane)
+    )
+    assert publisher.planes[0][0] == 1
+    assert publisher.planes[0][1] is plane
+    assert not publisher.snapshots
 
     full = SimpleNamespace(metadata={"monalisa_streaming": {"completed_timepoints": 1}})
     ProcessingQueueController._on_incremental_preview(stub, full, None)
     assert publisher.snapshots == [full]
-    assert stub._incrementalPublishedResult is True
+    assert stub._incrementalPublishedResult is full
+
+
+def test_provisional_volume_uses_real_t_axis_and_never_mutates_complete_data():
+    frames, params, layout = _scan(), _params(), _resolved(nt=2)
+    plugin = MonalisaReconstructor()
+    init = StreamInit(
+        name="recording", dataset_name="CAM", data=frames[:1],
+        attrs={"recording:detector_name": "CAM"}, source_path="recording.zarr",
+        stack_info=StackInfo(
+            frame_shape=frames.shape[1:], dtype=frames.dtype,
+            frames_per_stack=len(frames), planned_timepoints=2,
+            acquisition_layout=layout,
+        ),
+    )
+    session = plugin.make_session()
+    session.begin(init, params)
+    preview = session.provisional_preview()
+    volume = session.provisional_volume(preview)
+    assert volume.name == "recording_monalisa"
+    assert volume.axis_labels == ["T", "Y", "X"]
+    assert volume.data.shape[0] == 2
+    np.testing.assert_allclose(volume.data[0], preview.data, equal_nan=True)
+    assert np.isnan(volume.data[1]).all()
+    assert volume.metadata["monalisa_streaming"]["provisional_preview"] is True
+    assert session.has_completed_timepoint is False
+    session.close()
 
 
 @pytest.mark.parametrize("stagger", [False, True], ids=["rectangular", "hexagonal-stagger"])

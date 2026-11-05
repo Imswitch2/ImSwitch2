@@ -58,14 +58,18 @@ class ReconstructionViewController(ImProcessWidgetController):
         # faster than a full napari redraw completes. Keep only the newest and
         # render it once the event loop is free, so the GUI never falls behind.
         self._pendingLiveResult = None
+        self._liveOverlayResult = None
+        self._liveOverlayCompletedCount = 0
         self._liveRenderScheduled = False
         # Set once the current live result has had one full render (which
         # establishes the layers); subsequent updates take the fast in-place
         # data-swap path unless the layer structure changes.
         self._liveEstablished = False
-        # Newest completed timepoint from the streaming session; the slider is
-        # advanced to it inside the coalesced render.
+        # Most recently active T (in-progress or completed); follow it until
+        # the user manually selects another timepoint.
         self._liveLatestTimepoint = None
+        self._liveFollowLatest = True
+        self._liveProgrammaticStep = False
         # The list entry owned by the live run currently streaming, and its
         # name. Held by reference so a job's updates keep landing in its own
         # data object even if the user selects a different entry mid-run.
@@ -85,8 +89,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigResultReplaced.connect(self.resultReplaced)
         self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
+        self._commChannel.sigLiveTimepointProvisional.connect(self.liveTimepointProvisional)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
         self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
+        self._commChannel.sigDiscardLiveProvisional.connect(self.discardLiveProvisional)
         self._commChannel.sigWorkflowPreview.connect(self.showWorkflowPreview)
         # A workflow-editor preview on screen instead of the list's entry.
         self._previewing = None
@@ -1044,6 +1050,25 @@ class ReconstructionViewController(ImProcessWidgetController):
         return None
 
     def axisStepChanged(self, newAxisStep):
+        # A user moving T away from the currently acquired timepoint is
+        # inspecting history: future live frames must not pull the slider back.
+        # Programmatic follow-latest moves are excluded explicitly.
+        labels = self.__dict__.get("_displayedAxisLabels", ())
+        item = self.__dict__.get("_liveItem")
+        if (item is not None and self.__dict__.get("_liveEstablished", False)
+                and not self.__dict__.get("_liveProgrammaticStep", False)
+                and self._widget.reconList.currentItem() is item):
+            for axis_name in ("T", "Timepoints", "Time"):
+                if axis_name in labels:
+                    t_axis = labels.index(axis_name)
+                    latest = self.__dict__.get("_liveLatestTimepoint")
+                    if latest is not None and t_axis < len(newAxisStep):
+                        if int(newAxisStep[t_axis]) != int(latest):
+                            self._liveFollowLatest = False
+                        else:
+                            # Choosing the actively acquiring T resumes follow.
+                            self._liveFollowLatest = True
+                    break
         baseAxisIndex = self._baseAxisIndex()
         if baseAxisIndex is not None and baseAxisIndex < len(newAxisStep):
             newBase = newAxisStep[baseAxisIndex]
@@ -1337,6 +1362,25 @@ class ReconstructionViewController(ImProcessWidgetController):
         if uid:
             self._liveResultUids.add(uid)
 
+        # Keep one GUI-private raster across the acquisition: transfer only
+        # newly completed T slices from scientific snapshots, rather than
+        # copying the growing full volume on every timepoint. Never mutate
+        # the published result with provisional pixels.
+        overlay = self._liveOverlayResult
+        streaming = (getattr(result, "metadata", None) or {}).get("monalisa_streaming", {})
+        terminal = (getattr(result, "metadata", None) or {}).get("result_assembly", {}).get("status")
+        if (overlay is not None and streaming and terminal not in ("complete", "cancelled", "failed")
+                and getattr(overlay, "_improcess_queue_job_id", None) ==
+                    getattr(result, "_improcess_queue_job_id", None)
+                and tuple(overlay.data.shape) == tuple(result.data.shape)):
+            completed = int(streaming.get("completed_timepoints", 0))
+            first = min(self._liveOverlayCompletedCount, completed)
+            if completed > first:
+                overlay.data[first:completed] = result.data[first:completed]
+                self._liveOverlayCompletedCount = completed
+        else:
+            self._liveOverlayResult = None
+            self._liveOverlayCompletedCount = 0
         self._pendingLiveResult = result
         if not self._liveRenderScheduled:
             self._liveRenderScheduled = True
@@ -1373,6 +1417,83 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._logger.error("Could not save %r to %s: %s", name, path, exc)
             return
         self._logger.info("Saved %s", path)
+
+    @QtCore.Slot(int, object)
+    def liveTimepointProvisional(self, index: int, plane) -> None:
+        """Render the active T without writing partial pixels into Session data.
+
+        The viewer keeps a private overlay image while T is acquiring. Its
+        scientific list entry remains the *completed* result. Before T0 there
+        is only a transient display-only entry, discarded on early Cancel.
+        """
+        if plane is None:
+            return
+        if self._pendingLiveResult is not None:
+            source = self._pendingLiveResult
+        elif self._liveItemIsAlive():
+            source = self._liveItem.data(1)
+        else:
+            return
+        if source is None:
+            return
+        overlay = self._liveOverlayResult
+        if (overlay is None or
+                getattr(overlay, "_improcess_queue_job_id", None) !=
+                getattr(source, "_improcess_queue_job_id", None)):
+            if ((getattr(source, "metadata", None) or {})
+                    .get("monalisa_streaming", {}).get("provisional_preview")):
+                # Before T0 completion no scientific result exists to protect.
+                overlay = source
+            else:
+                from copy import copy
+                overlay = copy(source)
+                overlay.data = np.asarray(source.data).copy()
+                self._liveOverlayCompletedCount = int(
+                    (getattr(source, "metadata", None) or {})
+                    .get("monalisa_streaming", {}).get("completed_timepoints", 0)
+                )
+            self._liveOverlayResult = overlay
+        try:
+            axis = list(overlay.axis_labels).index("T")
+            target = [slice(None)] * overlay.data.ndim
+            target[axis] = slice(int(index), int(index) + 1)
+            overlay.data[tuple(target)] = plane
+        except (AttributeError, ValueError, IndexError) as exc:
+            self._logger.debug("Cannot display provisional T%s: %s", index, exc)
+            return
+        self._liveLatestTimepoint = int(index)
+        if not self._liveRenderScheduled:
+            self._liveRenderScheduled = True
+            QtCore.QTimer.singleShot(0, self._renderPendingLiveResult)
+
+    @QtCore.Slot(str)
+    def discardLiveProvisional(self, job_id: str) -> None:
+        """Remove the viewer-only scan if its job ended without a complete T.
+
+        An already published result is never removed by this path. Match the
+        queue job identity, not the display name (which can be repeated).
+        """
+        pending = self._pendingLiveResult
+        if (pending is not None
+                and getattr(pending, "_improcess_queue_job_id", None) == job_id
+                and ((getattr(pending, "metadata", None) or {})
+                     .get("monalisa_streaming", {}).get("provisional_preview"))):
+            self._pendingLiveResult = None
+        if not self._liveItemIsAlive():
+            return
+        result = self._liveItem.data(1)
+        if (getattr(result, "_improcess_queue_job_id", None) != job_id
+                or not ((getattr(result, "metadata", None) or {})
+                        .get("monalisa_streaming", {}).get("provisional_preview"))):
+            return
+        if self._widget.removeData(result):
+            self._liveOverlayResult = None
+            self._liveOverlayCompletedCount = 0
+            self._liveItem = None
+            self._liveName = None
+            self._liveQueueJobId = None
+            self._liveEstablished = False
+            self._resultsChanged()
 
     @QtCore.Slot(int, object)
     def liveTimepointUpdated(self, index: int, plane) -> None:
@@ -1416,6 +1537,9 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
 
         self._pendingLiveResult = result
+        # The active T changes as soon as it receives a provisional frame,
+        # not only after it is complete. Other results remain freely browsable.
+        self._liveLatestTimepoint = int(index)
         if not self._liveRenderScheduled:
             self._liveRenderScheduled = True
             QtCore.QTimer.singleShot(0, self._renderPendingLiveResult)
@@ -1447,6 +1571,17 @@ class ReconstructionViewController(ImProcessWidgetController):
         result = self._pendingLiveResult
         self._pendingLiveResult = None
         if result is None:
+            # Incomplete camera frames update only a viewer-private overlay;
+            # no Session result replacement, list selection or zoom reset.
+            overlay = self._liveOverlayResult
+            if (overlay is not None and self._liveItemIsAlive()
+                    and self._widget.reconList.currentItem() is self._liveItem):
+                if not (self._liveEstablished and
+                        self._widget.tryFastLiveUpdate(overlay, self._transposeOrder)):
+                    self.fullUpdate(levels=None)
+                    self._liveEstablished = True
+                    self._widget.tryFastLiveUpdate(overlay, self._transposeOrder)
+                self._advanceLiveTimeSlider()
             return
 
         name = getattr(result, 'name', '') or 'Live'
@@ -1459,6 +1594,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._liveQueueJobId = queue_job_id
             self._liveEstablished = False
             self._liveLatestTimepoint = None
+            self._liveFollowLatest = True
             return
 
         # Update this job's own entry, not whatever is selected -- otherwise a
@@ -1473,9 +1609,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         # is just an in-place pixel swap -- no layer rebuild. Calling
         # tryFastLiveUpdate IS the update; it reports False (having changed
         # nothing) if the layer structure no longer matches, and we rebuild.
+        display_result = self._liveOverlayResult or result
         rendered = (
             self._liveEstablished
-            and self._widget.tryFastLiveUpdate(result, self._transposeOrder)
+            and self._widget.tryFastLiveUpdate(display_result, self._transposeOrder)
         )
         if rendered:
             self._advanceLiveTimeSlider()
@@ -1483,6 +1620,8 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self.fullUpdate(levels=None)
         self._liveEstablished = True
+        if self._liveOverlayResult is not None:
+            self._widget.tryFastLiveUpdate(self._liveOverlayResult, self._transposeOrder)
         self._advanceLiveTimeSlider()
 
     @QtCore.Slot(int)
@@ -1490,14 +1629,18 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._liveLatestTimepoint = timepoint
 
     def _advanceLiveTimeSlider(self) -> None:
-        """Move the viewer's timepoint slider to the newest completed stack."""
+        """Follow the acquiring T only until the user navigates elsewhere."""
         t = self._liveLatestTimepoint
-        if t is None:
+        if t is None or not self.__dict__.get("_liveFollowLatest", True):
             return
         labels = self._displayedAxisLabels
         for name in ("T", "Timepoints", "Time"):
             if name in labels:
-                self._widget.moveDimStep(labels.index(name), t)
+                self._liveProgrammaticStep = True
+                try:
+                    self._widget.moveDimStep(labels.index(name), t)
+                finally:
+                    self._liveProgrammaticStep = False
                 return
 
 # Copyright (C) 2020-2021 ImSwitch developers

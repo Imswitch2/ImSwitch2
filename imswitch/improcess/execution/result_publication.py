@@ -29,6 +29,8 @@ class PublicationHooks:
     )
     preview: Callable[[object], None] = lambda result: None
     plane: Callable[[int, object], None] = lambda index, pixels: None
+    provisional_plane: Callable[[int, object], None] = lambda index, pixels: None
+    discard_provisional: Callable[[str], None] = lambda job_id: None
     timepoint_done: Callable[[int], None] = lambda index: None
     finalized: Callable[[object, str], None] = lambda result, name: None
     current_changed: Callable[[object], None] = lambda result: None
@@ -55,6 +57,8 @@ class ResultPublication:
         self._annotated_ids: set[int] = set()
         self._assembler = None
         self._input_provenance = []
+        self._provisional_view = None
+        self._had_provisional = False
 
     def _tag(self, result):
         if result is None:
@@ -80,9 +84,36 @@ class ResultPublication:
     def snapshot(self, result):
         if result is None or self._finalized:
             return
+        # The worker can emit a completed scientific snapshot just before its
+        # separate timepoint-progress event. Capture the completed coverage
+        # from this snapshot *now*, so an immediate Cancel cannot misclassify
+        # an already published T as unfinished. Provisional pixels never enter
+        # snapshot(), so they cannot inflate scientific coverage.
+        streaming = (getattr(result, "metadata", None) or {}).get("monalisa_streaming", {})
+        if (self.plan.axis == "T" and "completed_timepoints" in streaming):
+            self.coverage.mark_completed_count(int(streaming["completed_timepoints"]))
         self._tag(result)
         self.published = result
+        # The completed scientific result is also the Session-owned viewer
+        # entry. Provisional pixel overlays must not modify this object.
+        self._provisional_view = None
         self.hooks.preview(result)
+
+    def provisional_snapshot(self, result):
+        """Show a temporary full-T buffer before the first completed scan."""
+        if self._finalized or self.published is not None:
+            raise RuntimeError("A provisional initial volume must precede completed output")
+        result._improcess_queue_job_id = self.plan.job_id
+        self._provisional_view = result
+        self._had_provisional = True
+        self.hooks.preview(result)
+
+    def provisional_plane(self, index: int, pixels):
+        """Display an unfinished T without changing Session-owned result data."""
+        if not self._finalized and pixels is not None and (
+                self.published is not None or self._provisional_view is not None):
+            self._had_provisional = True
+            self.hooks.provisional_plane(int(index), pixels)
 
     def append_completed(self, part, ordinal: int, *, run=None):
         """Assemble a finished independent T/Dataset step and publish in place.
@@ -169,8 +200,15 @@ class ResultPublication:
             self.coverage.finalize(status if status in ("cancelled", "failed") else "failed")
         self._finalized = True
         if self.published is None:
+            if self._provisional_view is not None:
+                self.hooks.discard_provisional(self.plan.job_id)
+                self._provisional_view = None
             return None
         self._tag(self.published)
+        # Remove a GUI-only overlay of the unfinished timepoint. The viewer
+        # switches back to the Session-owned completed scientific object.
+        if status != "complete" and self._had_provisional:
+            self.hooks.preview(self.published)
         self.hooks.finalized(self.published, getattr(self.published, "name", "result"))
         self.hooks.current_changed(self.published)
         return self.published

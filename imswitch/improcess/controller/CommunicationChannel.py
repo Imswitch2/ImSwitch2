@@ -276,6 +276,12 @@ class CommunicationChannel(SignalInterface):
     Listeners: ReconstructionViewController
     """
 
+    sigLiveTimepointProvisional = Signal(int, object)
+    """Update an incomplete timepoint in the viewer only, without scientific ownership."""
+
+    sigDiscardLiveProvisional = Signal(str)
+    """Remove a job's viewer-only raster if it stopped before its first complete T."""
+
     sigLiveTimepointDone = Signal(int)
     """0-based index of a scan stack (timepoint) that just finished streaming.
 

@@ -99,6 +99,10 @@ def _controller():
     stub = _Stub()
     stub._widget = _Widget()
     stub._pendingLiveResult = None
+    stub._liveOverlayResult = None
+    stub._liveOverlayCompletedCount = 0
+    stub._liveFollowLatest = True
+    stub._liveProgrammaticStep = False
     stub._liveRenderScheduled = False
     stub._liveEstablished = False
     stub._liveLatestTimepoint = None

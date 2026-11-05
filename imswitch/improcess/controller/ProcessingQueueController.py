@@ -889,6 +889,8 @@ class ProcessingQueueController(ImProcessWidgetController):
             ),
             preview=channel.sigLiveResultUpdated.emit,
             plane=channel.sigLiveTimepointUpdated.emit,
+            provisional_plane=channel.sigLiveTimepointProvisional.emit,
+            discard_provisional=channel.sigDiscardLiveProvisional.emit,
             timepoint_done=channel.sigLiveTimepointDone.emit,
             finalized=lambda result, name: channel.sigResultFinalized.emit(result, name),
             current_changed=channel.sigCurrentResultChanged.emit,
@@ -910,17 +912,17 @@ class ProcessingQueueController(ImProcessWidgetController):
         if result is not None:
             if ((getattr(result, "metadata", None) or {}).get("monalisa_streaming")
                     or {}).get("provisional_preview"):
-                # The existing workflow-preview display is ephemeral: it does
-                # not claim a Session result, autosave, or count a timepoint.
-                self._commChannel.sigWorkflowPreview.emit(
-                    result, f"MoNaLISA Live T{self._incrementalCompletedTimepoints}"
-                )
+                publisher.provisional_snapshot(result)
                 return
             publisher.snapshot(result)
             self._incrementalPublishedResult = publisher.published
         elif plane is not None:
-            index, pixels = plane
-            publisher.plane(index, pixels)
+            if isinstance(plane, tuple) and len(plane) == 3 and plane[0] == "provisional":
+                _, index, pixels = plane
+                publisher.provisional_plane(index, pixels)
+            else:
+                index, pixels = plane
+                publisher.plane(index, pixels)
 
     @QtCore.Slot(int)
     def _on_incremental_timepoint(self, completed: int) -> None:

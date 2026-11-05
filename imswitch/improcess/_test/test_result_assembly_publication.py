@@ -232,3 +232,50 @@ def test_long_contiguous_lapse_has_compact_coverage_payload():
     payload = coverage.to_dict()
     assert payload["published_t_ranges"] == [[0, 9999]]
     assert len(str(payload)) < 500
+
+
+def test_provisional_t0_never_claimed_and_removed_on_early_cancel():
+    events = []
+    hooks = PublicationHooks(
+        claim=lambda result: events.append(("claim", result)),
+        preview=lambda result: events.append(("preview", result)),
+        provisional_plane=lambda t, pixels: events.append(("provisional", t, pixels)),
+        discard_provisional=lambda job_id: events.append(("discard", job_id)),
+        finalized=lambda result, name: events.append(("finalized", result)),
+    )
+    publisher = ResultPublication(
+        ResultAssemblyPlan.for_timepoints("job-4", "lapse", total=3), hooks,
+    )
+    transient = _result(shape=(3, 8, 8), axes=["T", "Y", "X"])
+    publisher.provisional_snapshot(transient)
+    publisher.provisional_plane(0, np.ones((1, 8, 8), dtype=np.float32))
+    assert publisher.published is None
+    assert not any(e[0] == "claim" for e in events)
+    assert publisher.finish("cancelled") is None
+    assert events[-1] == ("discard", "job-4")
+    assert not any(e[0] == "finalized" for e in events)
+
+
+def test_provisional_t1_keeps_committed_session_array_unchanged_after_cancel():
+    events = []
+    hooks = PublicationHooks(
+        claim=lambda result: events.append(("claim", result)),
+        preview=lambda result: events.append(("preview", result)),
+        provisional_plane=lambda t, pixels: events.append(("provisional", t, pixels)),
+        finalized=lambda result, name: events.append(("finalized", result)),
+    )
+    publisher = ResultPublication(
+        ResultAssemblyPlan.for_timepoints("job-5", "lapse", total=3), hooks,
+    )
+    committed = _result(shape=(3, 8, 8), axes=["T", "Y", "X"])
+    committed.data[1:] = np.nan
+    publisher.snapshot(committed)
+    publisher.timepoint_completed(1)
+    plane = np.ones((1, 8, 8), dtype=np.float32)
+    publisher.provisional_plane(1, plane)
+    assert np.isnan(committed.data[1:]).all()
+    assert [e[0] for e in events].count("claim") == 1
+    assert publisher.finish("cancelled") is committed
+    assert events[-2][0] == "preview" and events[-2][1] is committed
+    assert events[-1][0] == "finalized" and events[-1][1] is committed
+    assert committed.metadata["result_assembly"]["status"] == "cancelled"

@@ -11,13 +11,13 @@ from __future__ import annotations
 from dataclasses import replace
 import logging
 import time
+import numpy as np
 
 from qtpy import QtCore
 
 from imswitch.improcess.reconstructors.base import StreamInit
 
 from .reader import IncrementalReader
-
 
 _logger = logging.getLogger(__name__)
 
@@ -145,6 +145,7 @@ class StreamProcessWorker(QtCore.QObject):
         self._last_preview = 0.0
         self._preview_sent = False
         self._last_preview_revision = None
+        self._last_published_timepoint_count = 0
         self._preview_interval_s = float(preview_interval_s)
         self._enable_preview = bool(enable_preview)
         self._stopped = False
@@ -257,21 +258,38 @@ class StreamProcessWorker(QtCore.QObject):
         if revision is not None and revision == self._last_preview_revision:
             return
         provisional_getter = getattr(self._session, "provisional_preview", None)
-        provisional = provisional_getter() if callable(provisional_getter) else None
-        if provisional is not None:
-            # Provisional camera-frame previews must never acquire result
-            # provenance or completed-timepoint coverage.
-            self.sigPreview.emit(self._generation, provisional, None)
-        elif (callable(provisional_getter)
-              and getattr(self._session, "has_incomplete_preview", False)):
-            # Interpolation on a partial T may not yet have enough samples
-            # to solve. Do not republish completed T0 or mark partial T1
-            # complete just because its provisional grid was underdetermined.
-            return
+        if callable(provisional_getter):
+            # MoNaLISA Fast: scientific completion and frame-progressive display
+            # are separate events. A full *completed* snapshot always replaces
+            # any provisional pixels before the coverage signal can mark T done.
+            completed = int(getattr(self._session, "_completed", 0))
+            if completed > self._last_published_timepoint_count:
+                result = self._session.result()
+                self._record_snapshot(result, "partial")
+                self.sigPreview.emit(self._generation, result, None)
+                self._preview_sent = True
+                self._last_published_timepoint_count = completed
+            else:
+                provisional = provisional_getter()
+                if provisional is None:
+                    if getattr(self._session, "has_incomplete_preview", False):
+                        # The early partial lattice is not yet solvable.
+                        return
+                elif not self._preview_sent:
+                    # The first incomplete T needs a T,Y,X viewer buffer.
+                    # It is *not* a Session-owned scientific result.
+                    volume = self._session.provisional_volume(provisional)
+                    self.sigPreview.emit(self._generation, volume, None)
+                    self._preview_sent = True
+                else:
+                    index = int(provisional.metadata["monalisa_streaming"]["timepoint"])
+                    plane = np.asarray(provisional.data)[np.newaxis, ...].copy()
+                    # Tagged payload: provisional pixels, not a completed T.
+                    self.sigPreview.emit(self._generation, None, ("provisional", index, plane))
         else:
+            # Compatibility for the other streaming plugin implementations.
             plane = self._session.live_plane() if self._preview_sent else None
             if plane is not None:
-                # live_plane() contract says the ndarray is already copied.
                 self.sigPreview.emit(self._generation, None, plane)
             else:
                 result = self._session.result()

@@ -340,6 +340,31 @@ class UnifiedFastStreamingSession(StreamingSession):
         }
         return image
 
+    def provisional_volume(self, preview):
+        """Create a viewer-only T,Y,X buffer from the first incomplete scan.
+
+        This is never the scientific Session result: no completion coverage or
+        provenance is claimed until the first full timepoint is reconstructed.
+        Subsequent raw chunks transfer just one T slice, not the entire volume.
+        """
+        from .canonical_result import MonalisaResult
+
+        t = int(preview.metadata["monalisa_streaming"]["timepoint"])
+        data = np.full((self._planned, *preview.data.shape), np.nan, dtype=np.float32)
+        data[t] = preview.data
+        result = MonalisaResult(
+            name=f"{self._name}_monalisa", image=data,
+            output_pixel_nm=preview.output_pixel_size_nm,
+            params=deepcopy(self._original_params),
+            diagnostics={"placement": self._incremental._placement.method},
+            axis_labels=["T", "Y", "X"],
+            scanned_axes=self._incremental.calibrated.scan.scanned_axes,
+        )
+        result.metadata["monalisa_streaming"] = {
+            **preview.metadata["monalisa_streaming"], "provisional_preview": True,
+        }
+        return result
+
     def live_plane(self):
         if self._assembled is None or self._completed <= self._previewed:
             return None
