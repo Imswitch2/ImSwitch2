@@ -256,19 +256,25 @@ class LiveModeController(ImProcessWidgetController):
         self._directory_watcher = None
         self._owns_directory_watcher = True
 
-    def _session_watcher_for(self, folder_path: str):
+    def _root_has_processing_session(self, folder_path: str) -> bool:
+        """Session owns saving for its raw root, regardless of Review/Follow."""
         controller = getattr(self, "_session_controller", None)
         session = getattr(controller, "session", None) if controller is not None else None
-        watcher = getattr(controller, "directoryWatcher", None) if controller is not None else None
-        if session is None or watcher is None:
-            return None
+        if session is None:
+            return False
         try:
-            same_root = os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
-                os.path.abspath(str(session.raw_root))
-            )
-        except Exception:
-            same_root = False
-        return watcher if same_root else None
+            return Path(folder_path).resolve() == Path(session.raw_root).resolve()
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _session_watcher_for(self, folder_path: str):
+        """Legacy Live must own its watcher independently of Session modes.
+
+        Review deliberately tears the Session watcher down. Borrowing that
+        QObject would leave legacy Live with a deleted/stopped observer when
+        switching Follow -> Review. This legacy path is retired in M4.
+        """
+        return None
 
     def _connect_watcher(self) -> None:
         if self._directory_watcher is None or getattr(self, "_watcher_signal_connected", False):
@@ -440,7 +446,7 @@ class LiveModeController(ImProcessWidgetController):
         # old <root>_recon save as well would duplicate the same live result and
         # ignore the Session's own auto-save policy. Outside Session, preserve
         # the legacy watcher save behavior during migration.
-        if self._session_watcher_for(self._watched_folder) is not None:
+        if self._root_has_processing_session(self._watched_folder):
             return
         if not getattr(self._widget, "saveCheck", None) or not self._widget.saveCheck.isChecked():
             return

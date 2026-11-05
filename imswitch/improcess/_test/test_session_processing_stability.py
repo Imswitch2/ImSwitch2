@@ -36,6 +36,7 @@ def test_known_session_entry_change_does_not_schedule_reconcile():
     path = "/tmp/timelapse.hdf5"
     fake = SimpleNamespace(
         _session=object(),
+        _sessionMode="follow",
         _watchUnresolvedPaths=set(),
         _watchPendingPaths=set(),
         _watchReconcileTimer=_Timer(),
@@ -53,6 +54,7 @@ def test_unresolved_new_entry_is_retried_when_its_stat_changes():
     path = "/tmp/new_scan.hdf5"
     fake = SimpleNamespace(
         _session=object(),
+        _sessionMode="follow",
         _watchUnresolvedPaths={path},
         _watchPendingPaths=set(),
         _watchReconcileTimer=_Timer(),

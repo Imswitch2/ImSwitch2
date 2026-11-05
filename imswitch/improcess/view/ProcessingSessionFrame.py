@@ -714,6 +714,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigProcessSelectedRequested = QtCore.Signal(str)
     sigSelectionCountChanged = QtCore.Signal(int)
     sigSessionActiveChanged = QtCore.Signal(bool)
+    sigSessionModeChanged = QtCore.Signal(str)
     sigAutoProcessingChanged = QtCore.Signal(bool)
     sigPauseProcessingRequested = QtCore.Signal()
     sigResumeProcessingRequested = QtCore.Signal()
@@ -747,6 +748,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         self._datasetEntries: list[dict] = []
         self._sessionActive = False
+        self._sessionMode = "review"
         self._processingAvailable = True
         self._autoProcessingAvailable = False
         self._lastQueueSnapshot: dict = {}
@@ -770,18 +772,24 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._statusGeneration = 0
         self.sessionNameLabel = _ElidingLabel("")
         self.startSessionBtn = QtWidgets.QPushButton("Start session…")
-        # Manual rescan remains available as an exceptional Session action,
-        # not a normal header control while the folder watcher is healthy.
+        # Review has no folder watcher, so Refresh remains a manual snapshot.
         self.refreshBtn = QtWidgets.QToolButton()
         self.refreshBtn.setText("↻")
         self.refreshBtn.setToolTip("Rescan Session folder")
         self.refreshBtn.setAutoRaise(True)
         self.refreshBtn.hide()
-        # Watching is Session state, not an action. The old disabled
-        # "● Watching" tool button looked actionable while doing nothing.
-        self.livePlaceholderBtn = QtWidgets.QLabel("● Watching")
-        self.livePlaceholderBtn.setToolTip("Session folder monitoring is active")
-        self.livePlaceholderBtn.setStyleSheet("color: #2e9b50; font-weight: 600;")
+        self.sessionModeCombo = QtWidgets.QComboBox()
+        self.sessionModeCombo.addItem("Review", "review")
+        self.sessionModeCombo.addItem("Follow", "follow")
+        self.sessionModeCombo.setToolTip(
+            "Review: snapshot and manual Refresh. Follow: observe new recordings."
+        )
+        self.sessionModeCombo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToContents
+        )
+        self.sessionModeCombo.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+        )
         self.actionsBtn = QtWidgets.QToolButton()
         self.actionsBtn.setText("Actions")
         self.actionsBtn.setToolTip("Session actions")
@@ -819,7 +827,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         header.addWidget(self.statusLabel)
         header.addWidget(self.sessionNameLabel, 1)
         header.addWidget(self.startSessionBtn)
-        header.addWidget(self.livePlaceholderBtn)
+        header.addWidget(self.sessionModeCombo)
         header.addWidget(self.actionsBtn)
         header.addWidget(self.settingsBtn)
         root.addLayout(header)
@@ -1102,6 +1110,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         self.startSessionBtn.clicked.connect(self.sigStartSessionRequested)
         self.refreshBtn.clicked.connect(self.sigRefresh)
+        self.sessionModeCombo.currentIndexChanged.connect(self._mode_changed)
         self.rescanFolderAction.triggered.connect(self.sigRefresh)
         self.settingsBtn.clicked.connect(self.sigSettingsRequested)
         self.cancelAddingBtn.clicked.connect(self.sigCancelAddingRequested)
@@ -1349,6 +1358,28 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             return "cancel"
         return "cancel"
 
+    def _mode_changed(self, _index: int) -> None:
+        if self._sessionActive:
+            self.sigSessionModeChanged.emit(str(self.sessionModeCombo.currentData()))
+
+    def setSessionMode(self, mode: str) -> None:
+        """Reflect controller-owned mode without emitting a new mode change."""
+        mode = str(mode or "review").lower()
+        self._sessionMode = mode
+        index = self.sessionModeCombo.findData(mode)
+        self.sessionModeCombo.blockSignals(True)
+        try:
+            self.sessionModeCombo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.sessionModeCombo.blockSignals(False)
+        self.refreshBtn.setToolTip(
+            "Refresh Review snapshot" if mode == "review"
+            else "Rescan Follow catalog"
+        )
+        self.rescanFolderAction.setText(
+            "Refresh folder" if mode == "review" else "Rescan folder"
+        )
+
     def setSessionActive(self, active: bool, name: str = "") -> None:
         self._sessionActive = bool(active)
         self._statusGeneration += 1
@@ -1360,9 +1391,11 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.sessionNameLabel.setText(str(name or ""))
         self.sessionNameLabel.setVisible(bool(active))
         self.startSessionBtn.setVisible(not active)
-        # Folder monitoring is automatic; manual rescan lives under Actions.
+        # The compact mode selector replaces the old always-on Watching label.
+        # Refresh lives under Actions in both modes.
         self.refreshBtn.setVisible(False)
-        for widget in (self.livePlaceholderBtn, self.actionsBtn, self.settingsBtn):
+        self.sessionModeCombo.setEnabled(bool(active))
+        for widget in (self.sessionModeCombo, self.actionsBtn, self.settingsBtn):
             widget.setVisible(bool(active))
         self.datasetList.setEnabled(bool(active))
         self.datasetSearchEdit.setEnabled(bool(active))

@@ -1699,15 +1699,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         return reply == QtWidgets.QMessageBox.Yes
 
     def setSessionAutoProcessingAvailable(self, available: bool) -> None:
+        # M3A intentionally disarms the previous backfill-based Auto policy.
+        # M3B replaces it with admission of *new Follow arrivals* and makes
+        # this control available for finite and streaming-capable plugins.
         tooltip = (
-            'Automatically reconstruct existing unprocessed Session data and new arrivals.'
-            if available else
-            'Auto-reconstruct is currently available only for streaming-capable reconstructors.'
+            'Auto for new Follow arrivals will be available in M3B. '
+            'Review always uses manual reconstruction.'
         )
-        self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)
+        self.processingSessionFrame.setAutoProcessingAvailable(False, tooltip)
         btnFrame = getattr(self, '_btnFrame', None)
         if btnFrame is not None:
-            btnFrame.setAutoProcessingAvailable(available, tooltip)
+            btnFrame.setAutoProcessingAvailable(False, tooltip)
 
     def setDirectoryWatcherAvailable(self, available: bool) -> None:
         """Show the Directory watcher only for reconstructors that stream.

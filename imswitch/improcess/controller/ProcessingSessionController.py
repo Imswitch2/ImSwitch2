@@ -51,6 +51,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._fileIO = fileIOController
         self._reconstruction = reconstructionController
         self._session: ProcessingSession | None = None
+        # A Session always opens in passive Review. This runtime-only mode is
+        # deliberately absent from ProcessingSession's persisted manifest.
+        self._sessionMode = "review"
         self._selectedDatasetId: str | None = None
         self._selectedReconKey: str | None = None
         self._currentDatasetId: str | None = None
@@ -103,6 +106,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigStartSessionRequested.connect(self.startSession)
         self._widget.sigSettingsRequested.connect(self.editSessionSettings)
         self._widget.sigRefresh.connect(self.refresh)
+        self._widget.sigSessionModeChanged.connect(self.setSessionMode)
         self._widget.sigDatasetSelectionChanged.connect(self.datasetSelected)
         self._widget.sigSavedSelectionChanged.connect(self.reconstructionSelected)
         self._widget.sigLoadRawRequested.connect(self.loadSelectedRaw)
@@ -163,8 +167,47 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     @property
     def directoryWatcher(self) -> DirectoryWatcher | None:
-        """Session-owned watcher, exposed for the legacy live controller bridge."""
+        """Observer owned by the Session, available only in Follow mode."""
         return self._directoryWatcher
+
+    @property
+    def sessionMode(self) -> str:
+        """Non-persisted directory-observation policy (review / follow)."""
+        return self._sessionMode
+
+    def _disableSessionAuto(self) -> None:
+        """Keep old backfill-based Auto disarmed until M3B arrival admission.
+
+        The existing queue still has a historical enqueueAutoEligible() path;
+        exposing that path under Follow would silently backfill old recordings.
+        M3B replaces its submission policy and enables the Auto control.
+        """
+        queue = self._processingQueueController or getattr(
+            self._main, "processingQueueController", None
+        )
+        if queue is not None and getattr(queue.autoPolicy, "enabled", False):
+            queue.setAutoEnabled(False)
+
+    def setSessionMode(self, mode: str) -> None:
+        """Switch only filesystem observation; existing processing jobs live on.
+
+        Entering Follow seeds a new observer from a snapshot of all current
+        root entries. Old or still-unreadable entries are not new arrivals.
+        """
+        mode = str(mode).strip().lower()
+        if mode not in {"review", "follow"}:
+            raise ValueError(f"Unknown Session mode: {mode!r}")
+        if self._session is None:
+            mode = "review"
+        if mode == self._sessionMode:
+            self._widget.setSessionMode(mode)
+            return
+        self._stopDirectoryWatcher()
+        self._sessionMode = mode
+        self._widget.setSessionMode(mode)
+        self._disableSessionAuto()
+        if mode == "follow" and self._session is not None:
+            self._startDirectoryWatcher(self._session)
 
     @staticmethod
     def _session_origin_id(session) -> str | None:
@@ -227,6 +270,8 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     def _deactivate_session(self, *, status: str | None = None) -> None:
         self._stopDirectoryWatcher()
+        self._sessionMode = "review"
+        self._widget.setSessionMode("review")
         self._reset_add_queue()
         self._session = None
         self._resultStore = None
@@ -314,9 +359,14 @@ class ProcessingSessionController(ImProcessWidgetController):
         return session
 
     def _activate_session(self, session: ProcessingSession) -> None:
+        # Even reopening the same Session is a fresh Review opening. Mode and
+        # Auto are ephemeral, not properties of the saved Session manifest.
+        self._stopDirectoryWatcher()
+        self._sessionMode = "review"
+        self._widget.setSessionMode("review")
+        self._disableSessionAuto()
         self._session = session
         self._resultStore = SessionResultStore(session, save_format=self._saveFormat)
-        self._startDirectoryWatcher(session)
         self._loadedResultSignature = self._loaded_result_signature()
         self._rebuild_loaded_result_index()
         self._selectedDatasetId = None
@@ -334,13 +384,36 @@ class ProcessingSessionController(ImProcessWidgetController):
     # ------------------------------------------------------ Session directory watch
 
     def _startDirectoryWatcher(self, session: ProcessingSession) -> None:
+        if self._sessionMode != "follow" or session is not self._session:
+            return
         self._stopDirectoryWatcher()
         watcher = DirectoryWatcher(str(session.raw_root), parent=self)
-        # Prime discovery without emitting every pre-existing entry back through
-        # a Session that was just fully reconciled on open. Existing entries that
-        # did not resolve during that reconcile are kept as readiness candidates;
-        # their next cheap stat change retries discovery.
+        # Establish the baseline *before* reconciling: an entry already in
+        # Review must never become a new Follow arrival just because it was
+        # previously unreadable. A fresh arrival during reconcile will still
+        # be discovered by start()'s subsequent snapshot.
         initial_entries = watcher.scan_once()
+        before_ids = {str(dataset.id) for dataset in session.datasets}
+        try:
+            session.reconcile_all()
+        except Exception as exc:
+            self._logger.exception("Could not reconcile Session while enabling Follow")
+            watcher.deleteLater()
+            self._widget.setStatus(f"Could not start Follow: {exc}")
+            self._sessionMode = "review"
+            self._widget.setSessionMode("review")
+            return
+        added_ids = tuple(
+            str(dataset.id) for dataset in session.datasets
+            if str(dataset.id) not in before_ids
+        )
+        if added_ids:
+            self._render()
+            self.sigCatalogChanged.emit()
+            # Existing entries are catalogued but are not Auto arrivals.
+            self.sigDatasetsAdded.emit(added_ids)
+        # Entries not yet recognizable remain unresolved until their next
+        # cheap stat change; never reopen known growing data on every tick.
         self._watchUnresolvedPaths = {
             str(path)
             for path in initial_entries
@@ -402,9 +475,11 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     @QtCore.Slot(str)
     def _sessionPathFound(self, path: str) -> None:
-        if self._session is None or self._pathBelongsToResults(path):
+        if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
             return
         path = str(path)
+        if self._sessionKnowsRootEntry(path):
+            return
         self._watchUnresolvedPaths.add(path)
         self._watchPendingPaths.add(path)
         self._watchReconcileTimer.start()
@@ -413,7 +488,8 @@ class ProcessingSessionController(ImProcessWidgetController):
     def _sessionPathChanged(self, path: str) -> None:
         path = str(path)
         if (
-            self._session is None
+            self._sessionMode != "follow"
+            or self._session is None
             or self._pathBelongsToResults(path)
             or path not in self._watchUnresolvedPaths
         ):
@@ -427,7 +503,7 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     @QtCore.Slot(str)
     def _sessionPathRemoved(self, path: str) -> None:
-        if self._session is None or self._pathBelongsToResults(path):
+        if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
             return
         self._watchUnresolvedPaths.discard(str(path))
         # A removed physical member may belong to a logical lapse spanning
@@ -438,7 +514,7 @@ class ProcessingSessionController(ImProcessWidgetController):
     @QtCore.Slot()
     def _flushWatcherReconcile(self) -> None:
         session = self._session
-        if session is None:
+        if session is None or self._sessionMode != "follow":
             return
         before_ids = {str(dataset.id) for dataset in session.datasets}
         changed = False
@@ -2249,9 +2325,11 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
 
     def setAutoProcessingEnabled(self, enabled: bool) -> None:
-        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
-        if controller is not None:
-            controller.setAutoEnabled(enabled)
+        # M3A does not implement arrival-based Auto yet. Disallow the old
+        # historical-backfill policy even if triggered by an external UI slot.
+        self._disableSessionAuto()
+        if enabled:
+            self._widget.setStatus("Auto for new Follow arrivals is coming in M3B")
 
     def pauseProcessingQueue(self) -> None:
         controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
