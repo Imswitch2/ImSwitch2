@@ -161,11 +161,11 @@ def test_bounded_probe_caches_completed_references(tmp_path):
     assert len(cache) == 3
 
 
-def test_monalisa_full_params_are_not_fast_streaming_params():
+def test_unified_monalisa_modes_are_not_streamed_by_legacy_fast_engine():
     from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
     from imswitch.improcess.reconstructors.monalisa.params import apply_preset, default_params
 
-    assert MonalisaReconstructor.supports_streaming_params(
+    assert not MonalisaReconstructor.supports_streaming_params(
         apply_preset(default_params(), "Fast"))
     assert not MonalisaReconstructor.supports_streaming_params(
         apply_preset(default_params(), "Full"))

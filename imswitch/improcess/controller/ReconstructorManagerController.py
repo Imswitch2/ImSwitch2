@@ -429,6 +429,12 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return False
         return True
 
+    def _refreshSessionStreamingCapability(self, *_unused) -> None:
+        session = getattr(self._main, "processingSessionController", None)
+        sync = getattr(session, "_sync_streaming_capability", None)
+        if callable(sync):
+            sync()
+
     def _install_reconstructor_params(self, reconstructor):
         # Multi-data relocalization is orchestration state, not a MoNaLISA
         # reconstruction parameter. Keep it beside the list it governs and
@@ -541,9 +547,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._widget.setLegacyMonalisaParameterWidget()
             except Exception:
                 pass
+            self._refreshSessionStreamingCapability()
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        for signal_name in (
+            "sigModeChanged", "sigDetectionParamsChanged", "sigUpdateEligibilityChanged",
+            "sigLocalizationModeChanged", "sigParamsChanged", "sigParametersChanged",
+        ):
+            signal = getattr(widget, signal_name, None)
+            if signal is not None and hasattr(signal, "connect"):
+                signal.connect(self._refreshSessionStreamingCapability)
+        self._refreshSessionStreamingCapability()
         # The widget exists now, on the GUI thread: the one safe place to
         # compare it with the plugin's headless declaration. A mismatch is
         # remembered on the class, so this reconstructor's results record

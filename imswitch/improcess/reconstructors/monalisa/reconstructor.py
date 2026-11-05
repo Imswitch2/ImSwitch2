@@ -25,7 +25,8 @@ from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
-    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE, PRESET_LEGACY, PRESETS,
+    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
+    PRESET_FAST, PRESET_FULL, PRESET_LEGACY, PRESET_CUSTOM, PRESETS,
     SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
@@ -1090,26 +1091,33 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
 
     @classmethod
-    def supports_streaming_params(cls, params: dict) -> bool:
-        """Only Fast-compatible settings can use the present live session.
+    def streaming_capability(cls, params: dict) -> tuple[bool, str]:
+        """Fail closed until unified Fast streaming has verified scientific parity.
 
-        Full/Robust, ISM, corrections, manual stagger, etc. still run through
-        the complete offline Gaussian implementation for finite recordings.
-        This is a capability test, not a mutation or downgrade of parameters.
+        ``MonalisaLiveSession`` is an older rectangular Fast implementation,
+        not an incremental form of ``_process_fast_gauss_offline``. Even when
+        its parameter validator accepts a setting, it does not implement the
+        unified hex/stagger/Locked calibration and placement contract. No
+        source-independent test can establish parity here; M3C-2 replaces it.
         """
-        from .live_session import MonalisaLiveSession
-        from .params import PRESET_FULL
+        preset = str((params or {}).get("preset", PRESET_FAST))
+        if preset == PRESET_FULL:
+            return False, "MoNaLISA Robust requires completed data (no streaming implementation)."
+        if preset == PRESET_LEGACY:
+            return False, "MoNaLISA Legacy DLL has no streaming implementation."
+        if preset == PRESET_CUSTOM:
+            return False, "MoNaLISA Custom settings have no verified streaming implementation."
+        if preset != PRESET_FAST:
+            return False, f"Unknown MoNaLISA mode {preset!r} is not streamable."
+        return False, (
+            "Unified MoNaLISA Fast streaming is pending M3C-2 validation; "
+            "the older live processor does not preserve the selected lattice, "
+            "calibration and placement. Auto-reconstruct will use Fast after completion."
+        )
 
-        if str(params.get("preset", "")) in (PRESET_FULL, PRESET_LEGACY):
-            return False
-        if ("reconstruction_method" in params
-                and str(params["reconstruction_method"]) != "Fast Gauss MoNaLISA"):
-            return False
-        try:
-            MonalisaLiveSession._validate_unified_live_params(dict(params or {}))
-        except (ValueError, TypeError, KeyError):
-            return False
-        return True
+    @classmethod
+    def supports_streaming_params(cls, params: dict) -> bool:
+        return cls.streaming_capability(params)[0]
 
     @classmethod
     def contract(cls, info: RawInfo, params: dict) -> Contract:
@@ -1118,6 +1126,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         The next frames must not re-enter push() after begin() has consumed
         them. Reject camera-series modes rather than interpreting their T as S.
         """
+        supported, reason = cls.streaming_capability(params)
+        if not supported:
+            raise Incompatible(reason)
         if not info.S or info.frames_per_timepoint < 2:
             raise Incompatible("MoNaLISA requires a multi-frame scan timepoint")
         return Contract(init_frames=info.frames_per_timepoint,

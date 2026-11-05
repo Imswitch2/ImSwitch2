@@ -49,7 +49,7 @@ from imswitch.improcess.execution.queue_finite import (
 )
 from imswitch.improcess.execution.runner import QtIncrementalRunner
 from imswitch.improcess.execution.policy import (
-    ExecutionPath, choose_execution, supports_streaming_settings,
+    ExecutionPath, choose_execution, streaming_capability, supports_streaming_settings,
 )
 from imswitch.improcess.execution.readiness import (
     Readiness, ReadinessState, probe_scope,
@@ -155,15 +155,37 @@ class ProcessingQueueController(ImProcessWidgetController):
         return self.queue.dataset_states()
 
     def setAutoEnabled(self, enabled: bool) -> None:
-        """Arm future *new arrivals*, never backfill existing catalog entries."""
+        """Arm future arrivals; default to Live when first enabled and capable.
+
+        The operator may subsequently turn Live off explicitly. Repeated
+        availability/Auto synchronizations must not override that choice;
+        toggling Auto off and on again restores the capability-based default.
+        """
+        was_enabled = bool(self.autoPolicy.enabled)
         self.autoPolicy.enabled = bool(enabled)
         if not enabled:
             self._processWhileAcquiring = False
+        elif not was_enabled:
+            reconstructor = getattr(self._main, '_activeReconstructor', None)
+            capable = False
+            if reconstructor is not None:
+                try:
+                    params = self._snapshot_params(reconstructor)
+                    capable = streaming_capability(reconstructor, params).supported
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    pass
+            self._processWhileAcquiring = bool(capable)
         self._emit_changed()
 
     def setProcessWhileAcquiring(self, enabled: bool) -> None:
         """Control admission policy only, never mutate already submitted jobs."""
-        self._processWhileAcquiring = bool(enabled and self.autoPolicy.enabled)
+        capable = False
+        if enabled and self.autoPolicy.enabled:
+            reconstructor = getattr(self._main, "_activeReconstructor", None)
+            if reconstructor is not None:
+                params = self._snapshot_params(reconstructor)
+                capable = streaming_capability(reconstructor, params).supported
+        self._processWhileAcquiring = bool(capable)
         self._emit_changed()
 
     def captureAutoRecipe(self) -> dict | None:
@@ -172,11 +194,13 @@ class ProcessingQueueController(ImProcessWidgetController):
         if (reconstructor is None or not self.autoPolicy.enabled
                 or str(getattr(reconstructor, "result_role", "derived")) == "inspection"):
             return None
+        params = self._snapshot_params(reconstructor)
+        capable = streaming_capability(reconstructor, params).supported
         return {
             "reconstructor_id": str(reconstructor.id),
-            "params": self._snapshot_params(reconstructor),
+            "params": params,
             "execution_requirement": (
-                ExecutionRequirement.FOLLOW.value if self._processWhileAcquiring
+                ExecutionRequirement.FOLLOW.value if self._processWhileAcquiring and capable
                 else ExecutionRequirement.FINITE.value
             ),
         }
@@ -581,7 +605,8 @@ class ProcessingQueueController(ImProcessWidgetController):
                         growing=growing, live_reader=readiness.live_readable,
                     )
                     if choice.path != ExecutionPath.INCREMENTAL_FOLLOW:
-                        status = readiness.reason or "Waiting for acquisition"
+                        status = (choice.reason if choice.reason and growing
+                                  else readiness.reason or choice.reason or "Waiting for acquisition")
                         if candidate.readiness_status != status:
                             candidate.readiness_status = status
                             self._emit_changed()
@@ -600,12 +625,21 @@ class ProcessingQueueController(ImProcessWidgetController):
                 path = self._streaming_job_path(source)
                 if not path:
                     if candidate.origin == ProcessingOrigin.AUTO:
+                        status = "Waiting for completion — streaming source path unavailable"
+                        if candidate.readiness_status != status:
+                            candidate.readiness_status = status
+                            self._emit_changed()
                         continue
                     choice = choose_execution(candidate, "scan", reconstructor)
                 else:
                     resolution = prepare_entry_job(path, reconstructor)
                     if resolution.state == LiveJobState.PENDING:
                         if candidate.origin == ProcessingOrigin.AUTO:
+                            status = ("Waiting for committed frames — "
+                                      + str(resolution.reason or "stream not initialized"))
+                            if candidate.readiness_status != status:
+                                candidate.readiness_status = status
+                                self._emit_changed()
                             continue
                         # Explicit finite/manual jobs can still use the
                         # conventional file reader where compatible.
@@ -613,6 +647,13 @@ class ProcessingQueueController(ImProcessWidgetController):
                     elif resolution.state == LiveJobState.READY:
                         prepared_live_job = resolution.prepared
                     elif resolution.state == LiveJobState.UNSUPPORTED:
+                        if candidate.origin == ProcessingOrigin.AUTO:
+                            status = ("Waiting for completion — streaming source unsupported: "
+                                      + str(resolution.reason or "no compatible reader"))
+                            if candidate.readiness_status != status:
+                                candidate.readiness_status = status
+                                self._emit_changed()
+                            continue
                         choice = choose_execution(candidate, "scan", reconstructor)
                     elif resolution.state == LiveJobState.FAILED:
                         # Preserve explicit HDF5 conflict diagnostics.

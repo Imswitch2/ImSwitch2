@@ -75,6 +75,7 @@ def test_enabling_auto_does_not_enqueue_existing_catalog():
     fake = SimpleNamespace(
         autoPolicy=SimpleNamespace(enabled=False),
         _processWhileAcquiring=False,
+        _main=SimpleNamespace(_activeReconstructor=None),
         enqueueAutoEligible=lambda *args: seen.append("BACKFILL"),
         _emit_changed=lambda: seen.append("refresh"),
     )

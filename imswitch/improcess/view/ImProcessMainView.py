@@ -1698,6 +1698,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         return reply == QtWidgets.QMessageBox.Yes
 
+    def setSessionStreamingCapability(self, label: str, supported: bool, reason: str) -> None:
+        footer = getattr(self, '_btnFrame', None)
+        if footer is not None:
+            footer.setSessionStreamingCapability(label, supported, reason)
+
     def setSessionAutoProcessingAvailable(self, available: bool) -> None:
         tooltip = (
             'Automatically reconstruct only new acquisitions observed while '
@@ -2380,6 +2385,48 @@ class ReconParTree(ParameterTree):
         }
 
 
+class _ElidedMethodLabel(QtWidgets.QLabel):
+    """Read-only reconstruction name; give way to the action controls."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fullText = '—'
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(180)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed
+        )
+        self.setForegroundRole(QtGui.QPalette.Mid)
+        self.setMethod('—')
+
+    def setMethod(self, name: str) -> None:
+        self._fullText = str(name or '—')
+        self.setToolTip(
+            f'Selected reconstruction: {self._fullText}\n'
+            'Change the method in the Parameters dock.'
+        )
+        self.updateGeometry()
+        self._refreshText()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        # Layout width follows the actual method, not the shortened text
+        # currently displayed after a previous narrow resize.
+        text_width = self.fontMetrics().horizontalAdvance(self._fullText) + 8
+        hint.setWidth(min(self.maximumWidth(), text_width))
+        return hint
+
+    def _refreshText(self) -> None:
+        available = max(0, self.contentsRect().width())
+        self.setText(self.fontMetrics().elidedText(
+            self._fullText, QtCore.Qt.ElideRight, available
+        ))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refreshText()
+
+
 class BtnFrame(QtWidgets.QFrame):
     """Compact contextual action/progress footer for the DATA workspace."""
 
@@ -2419,6 +2466,8 @@ class BtnFrame(QtWidgets.QFrame):
         self._sessionActive = False
         self._processWhileAcquiring = False
         self._autoProcessingTooltip = ''
+        self._streamingCapable = False
+        self._streamingReason = 'No streaming reconstructor selected.'
         self._directItemIndex = None
         self._directItemTotal = None
         self._directItemLabel = ''
@@ -2454,9 +2503,10 @@ class BtnFrame(QtWidgets.QFrame):
         self.addToMultiDataBtn.clicked.connect(
             lambda: self.sigAddSelectedToMultiDataRequested.emit(self._context)
         )
-        self.autoProcessCheck = QtWidgets.QCheckBox('Auto-reconstruct')
+        self.selectedReconstructionLabel = _ElidedMethodLabel()
+        self.autoProcessCheck = QtWidgets.QCheckBox('Auto')
         self.autoProcessCheck.toggled.connect(self._autoProcessingToggled)
-        self.processWhileAcquiringCheck = QtWidgets.QCheckBox('Process while acquiring')
+        self.processWhileAcquiringCheck = QtWidgets.QCheckBox('Live')
         self.processWhileAcquiringCheck.setToolTip(
             'Reconstruct committed frames during acquisition when the source '
             'and reconstructor support it; otherwise wait until completion.'
@@ -2535,6 +2585,9 @@ class BtnFrame(QtWidgets.QFrame):
             self.queueMoveUpBtn, self.queueMoveDownBtn,
         ):
             action_layout.addWidget(widget)
+        # One row in Session: Reconstruct / + Multi-data / method ... Auto / Live.
+        # The method label elides first if the Data dock becomes narrow.
+        action_layout.addWidget(self.selectedReconstructionLabel)
         action_layout.addStretch(1)
         action_layout.addWidget(self.autoProcessCheck)
         action_layout.addWidget(self.processWhileAcquiringCheck)
@@ -2754,6 +2807,17 @@ class BtnFrame(QtWidgets.QFrame):
         # dataset selection. Do not wait for a selection change to enable Auto.
         self._syncProcessingEnabled()
 
+    def setSessionStreamingCapability(self, label: str, supported: bool, reason: str) -> None:
+        """Show the active Parameters selection without introducing a selector."""
+        self.selectedReconstructionLabel.setMethod(str(label or '—'))
+        self._streamingCapable = bool(supported)
+        self._streamingReason = str(reason or (
+            'The selected reconstruction supports acquisition-time streaming.'
+            if supported else 'This reconstruction has no streaming implementation.'
+        ))
+        self.processWhileAcquiringCheck.setToolTip(self._streamingReason)
+        self._syncProcessingEnabled()
+
     def setQueueSelectionState(self, has_selection: bool, can_up: bool, can_down: bool) -> None:
         self._queueSelectionState = (bool(has_selection), bool(can_up), bool(can_down))
         self._syncProcessingEnabled()
@@ -2769,6 +2833,7 @@ class BtnFrame(QtWidgets.QFrame):
         self.autoProcessCheck.setVisible(
             self._context == 'session' and self._autoProcessingAvailable
         )
+        self.selectedReconstructionLabel.setVisible(self._context == 'session')
         self.processWhileAcquiringCheck.setVisible(
             self._context == 'session' and self._autoProcessingAvailable
             and self.autoProcessCheck.isChecked()
@@ -2812,7 +2877,7 @@ class BtnFrame(QtWidgets.QFrame):
         self.autoProcessCheck.setEnabled(bool(self._autoProcessingAvailable and self._sessionActive))
         self.processWhileAcquiringCheck.setEnabled(bool(
             self._autoProcessingAvailable and self._sessionActive
-            and self.autoProcessCheck.isChecked()
+            and self.autoProcessCheck.isChecked() and self._streamingCapable
         ))
         self.reconMultiBtn.setEnabled(bool(direct_available and self._multiDataCount > 0))
 

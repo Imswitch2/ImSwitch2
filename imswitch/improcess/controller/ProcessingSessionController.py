@@ -199,6 +199,41 @@ class ProcessingSessionController(ImProcessWidgetController):
             queue.setProcessWhileAcquiring(False)
         self._sync_auto_availability()
 
+    def _sync_streaming_capability(self) -> None:
+        from imswitch.improcess.execution.policy import streaming_capability
+
+        reconstructor = getattr(self._main, "_activeReconstructor", None)
+        params = {}
+        error = ""
+        if reconstructor is not None:
+            try:
+                getter = getattr(self._main._widget, "getReconstructionParams", None)
+                if not callable(getter):
+                    raise ValueError("Reconstruction parameter widget unavailable")
+                params = dict(getter() or {})
+            except (TypeError, ValueError, AttributeError, KeyError) as exc:
+                error = f"Cannot inspect selected settings: {exc}"
+        capability = (
+            streaming_capability(reconstructor, params)
+            if not error else None
+        )
+        supported = bool(capability and capability.supported)
+        reason = error or (capability.reason if capability else "No selected reconstructor")
+        if not supported:
+            queue = self._queue_controller()
+            if queue is not None and getattr(queue, "_processWhileAcquiring", False):
+                queue.setProcessWhileAcquiring(False)
+        name = str(getattr(reconstructor, "name", "—") or "—")
+        if str(getattr(reconstructor, "id", "")) == "monalisa":
+            name = "MoNaLISA"
+            mode = str(params.get("preset", "") or "")
+            if mode:
+                name += " · " + ("Robust" if mode == "Full" else mode)
+        view = getattr(self._main, "_widget", None)
+        setter = getattr(view, "setSessionStreamingCapability", None)
+        if callable(setter):
+            setter(name, supported, reason)
+
     def _sync_auto_availability(self):
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         available = bool(
@@ -211,6 +246,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             view.setSessionAutoProcessingAvailable(available)
         elif hasattr(self._widget, "setAutoProcessingAvailable"):
             self._widget.setAutoProcessingAvailable(available)
+        self._sync_streaming_capability()
 
     def setSessionMode(self, mode: str) -> None:
         """Switch only filesystem observation; existing processing jobs live on.
@@ -2483,10 +2519,20 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._sync_auto_availability()
 
     def setProcessWhileAcquiring(self, enabled: bool) -> None:
+        from imswitch.improcess.execution.policy import streaming_capability
+
         queue = self._queue_controller()
+        reconstructor = getattr(self._main, "_activeReconstructor", None)
+        capable = False
+        if enabled and reconstructor is not None:
+            try:
+                params = self._main._widget.getReconstructionParams()
+                capable = streaming_capability(reconstructor, params).supported
+            except (ValueError, TypeError, AttributeError, KeyError):
+                pass
         if queue is not None:
             queue.setProcessWhileAcquiring(bool(
-                enabled and self._session is not None
+                enabled and capable and self._session is not None
                 and self._sessionMode == "follow"
                 and queue.autoPolicy.enabled
             ))

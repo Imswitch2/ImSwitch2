@@ -27,12 +27,42 @@ class ExecutionChoice:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class StreamingCapability:
+    """Whether the *actual* streaming implementation honors these settings."""
+
+    supported: bool
+    reason: str = ""
+
+
+def streaming_capability(reconstructor, params: dict) -> StreamingCapability:
+    """Ask the plugin for an explicit reason; unknown plugins use legacy checks.
+
+    This query is deliberately independent of source format. The queue also
+    checks the committed-frame reader at admission/execution time.
+    """
+    if reconstructor is None or not getattr(reconstructor, "supports_streaming", False):
+        return StreamingCapability(False, "This reconstructor has no streaming implementation.")
+    probe = getattr(reconstructor, "streaming_capability", None)
+    try:
+        if callable(probe):
+            capability = probe(dict(params or {}))
+            if isinstance(capability, StreamingCapability):
+                return capability
+            if isinstance(capability, tuple) and len(capability) == 2:
+                return StreamingCapability(bool(capability[0]), str(capability[1] or ""))
+            raise TypeError("streaming_capability must return (supported, reason)")
+        legacy_probe = getattr(reconstructor, "supports_streaming_params", None)
+        if callable(legacy_probe) and not legacy_probe(dict(params or {})):
+            return StreamingCapability(False, "Selected reconstruction settings do not support streaming.")
+    except (TypeError, ValueError, KeyError) as exc:
+        return StreamingCapability(False, f"Cannot validate streaming settings: {exc}")
+    return StreamingCapability(True)
+
+
 def supports_streaming_settings(reconstructor, params: dict) -> bool:
-    """A plugin's broad streaming flag is not proof of parameter compatibility."""
-    if not bool(getattr(reconstructor, "supports_streaming", False)):
-        return False
-    probe = getattr(reconstructor, "supports_streaming_params", None)
-    return bool(probe(dict(params or {}))) if callable(probe) else True
+    """Backwards-compatible boolean form for existing callers."""
+    return streaming_capability(reconstructor, params).supported
 
 
 def choose_execution(job, source_kind: str, reconstructor, *, growing: bool = False,
@@ -40,9 +70,16 @@ def choose_execution(job, source_kind: str, reconstructor, *, growing: bool = Fa
     """Choose the supported engine; never infer live from AUTO or time-lapse."""
     requirement = ExecutionRequirement(job.execution_requirement)
     if growing:
-        if (requirement == ExecutionRequirement.FOLLOW and live_reader
-                and supports_streaming_settings(reconstructor, job.params)):
+        capability = (streaming_capability(reconstructor, job.params)
+                      if requirement == ExecutionRequirement.FOLLOW else None)
+        if capability is not None and capability.supported and live_reader:
             return ExecutionChoice(ExecutionPath.INCREMENTAL_FOLLOW)
+        if capability is not None and not capability.supported:
+            return ExecutionChoice(ExecutionPath.WAIT_FINITE,
+                                   f"Waiting for completion — {capability.reason}")
+        if requirement == ExecutionRequirement.FOLLOW and not live_reader:
+            return ExecutionChoice(ExecutionPath.WAIT_FINITE,
+                                   "Waiting for completion — no safe committed-frame reader")
         return ExecutionChoice(ExecutionPath.WAIT_FINITE,
                                "Waiting for acquisition to finish")
     # A finished acquisition never needs the frame-following executor merely
