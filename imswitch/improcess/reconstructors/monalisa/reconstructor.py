@@ -674,20 +674,29 @@ class MonalisaReconstructor(StreamingReconstructor):
         ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
         settings have a migration path.
         """
-        from imswitch.improcess.reconstructors.monalisa_lattice.params_widget import AUTO
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
             MonalisaLatticeReconstructor,
         )
 
         merged = unified_default_params()
         merged.update(dict(params or {}))
+        lattice_params = self.unified_lattice_params(merged)
+        result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
+        return self._stamp_unified_gaussian_result(result, data_obj, merged)
+
+    def _stamp_unified_gaussian_result(self, result, data_obj, params: dict):
+        """Shared finite/streaming scientific calibration and provenance.
+
+        Both paths use this method *after* creating the canonical MoNaLISA
+        scientific output. In particular a streamed timepoint must not lose
+        the resolved orientation, localization, spot width or requested modes.
+        """
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
         localization = self._resolved_localization(merged)
         orientation = self._orientation_literal(merged)
         spot_sigma_px = self._spot_sigma_for_params(merged)
-        lattice_params = self.unified_lattice_params(merged)
-        result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
         result.name = f"{data_obj.name}_monalisa"
-
         diagnostics = dict(getattr(result, "diagnostics", {}) or {})
         resolved_localization = PatternLocalization.from_dict(
             diagnostics.get("resolved_localization")

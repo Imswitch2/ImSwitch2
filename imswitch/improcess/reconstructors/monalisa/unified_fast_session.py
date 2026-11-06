@@ -2,8 +2,9 @@
 
 The unified Fast extraction operator now processes arriving frame batches.
 Provisional images use its recorded lattice geometry and placement; complete
-timepoints still use the canonical offline Fast finalization for numerical
-parity. No legacy rectangular Gauss or correction substitution is allowed.
+timepoints reuse the already fitted Gaussian coefficients for canonical final
+placement, background and provenance. No second Gaussian solve or legacy
+rectangular Gauss substitution is allowed.
 
 The generic reader enforces the committed-frame barrier and back-pressure;
 this class owns only processing and its timepoint output buffer. The existing
@@ -16,6 +17,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 import math
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -125,7 +127,6 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._per_timepoint = None
         self._planned = None
         self._frame_shape = None
-        self._chunks = []
         self._buffered = 0
         self._next_frame = 0
         self._assembled = None
@@ -134,6 +135,7 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._previewed = 0
         self._preview_revision = 0
         self._incremental = None
+        self._timepoint_started = None
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         if self._assembled is not None:
@@ -198,7 +200,6 @@ class UnifiedFastStreamingSession(StreamingSession):
         # partial sample of the scan.
         self._initialize_incremental(first_frame=frames[0])
         self._incremental.push(frames)
-        self._chunks = [frames.copy()]
         self._buffered = len(frames)
         self._preview_revision += 1
         provisional = self.provisional_preview()
@@ -222,23 +223,88 @@ class UnifiedFastStreamingSession(StreamingSession):
                 first_frame, self._per_timepoint,
             )
         self._incremental = IncrementalFastAccumulator(calibrated)
+        self._timepoint_started = time.perf_counter()
 
-    def _process_timepoint(self, frames: np.ndarray):
+    def _source_descriptor(self, frames=None):
+        # Data are required only for Auto T0's initial calibration. The
+        # coefficient-based path never reassembles or stores camera frames.
+        return SimpleNamespace(
+            name=self._name, datasetName=self._detector,
+            dataPath=self._source_path, data=frames, dataLoaded=frames is not None,
+            attrs=self._attrs, acquisition_layout=self._layout,
+        )
+
+    def _finalize_extracted_timepoint(self):
+        """Build a normal unified Fast result without refitting any frames."""
+        from .canonical_result import MonalisaResult
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor, _recorded_output_scale,
+        )
+
+        incremental = self._incremental
+        calibrated = incremental.calibrated
+        scan_result = incremental.finalize_stack()
+        # reconstruct_scan() normally adds acquisition orientation to the
+        # stack diagnostics. It is already locked/resolved in this session.
+        complete_diagnostics = {
+            **scan_result.diagnostics,
+            "orientation": calibrated.orientation,
+            "frames_placed_by": "acquisition layout",
+        }
+        scan_result = replace(scan_result, diagnostics=complete_diagnostics)
+        camera_pixel_nm, output_pixel_nm = _recorded_output_scale(
+            calibrated.scan, scan_result.geometry, calibrated.orientation,
+            float(self._effective_params.get("pixel_size_nm", 0.) or 0.),
+        )
+        diagnostics = MonalisaLatticeReconstructor._diagnostics(
+            calibrated.scan, scan_result, camera_pixel_nm, output_pixel_nm,
+            time.perf_counter() - self._timepoint_started,
+        )
+        diagnostics.update({
+            "localization": f"from this recording ({self._name})",
+            "resolved_localization": scan_result.geometry.localization.to_dict(),
+            "resolved_orientation": calibrated.orientation,
+            "resolved_spot_sigma_px": float(scan_result.geometry.spot_model.shared_sigma),
+            "placement_method": str(scan_result.diagnostics.get("placement", "")),
+            "placement_residual_px": float(scan_result.geometry.commensurate_residual),
+        })
+        part = MonalisaResult(
+            name=f"{self._name}_monalisa",
+            image=np.nan_to_num(scan_result.amplitude.image).astype(np.float32),
+            output_pixel_nm=output_pixel_nm,
+            params=deepcopy(self._original_params),
+            diagnostics=diagnostics,
+            background=(
+                None if scan_result.background is None else
+                np.nan_to_num(scan_result.background.image).astype(np.float32)
+            ),
+            axis_labels=["Y", "X"],
+            scanned_axes=calibrated.scan.scanned_axes,
+        )
+        # Use the same provenance builder as the canonical finite pipeline.
+        # ``_effective_params`` may contain internally locked Auto values;
+        # only the user-requested modes belong to this public snapshot.
+        return self._reconstructor._stamp_unified_gaussian_result(
+            part, self._source_descriptor(), self._original_params,
+        )
+
+    def _process_timepoint(self, frames: np.ndarray | None = None):
         if self._completed >= self._planned:
             raise ValueError("More completed timepoints than acquisition metadata declares")
-        # The same method and settings as offline, using an owned in-memory
-        # data object. The StreamInit's resolved layout is retained rather
-        # than re-inferring hex/stagger geometry from filenames or Nx/Ny.
-        data_obj = SimpleNamespace(
-            name=self._name,
-            datasetName=self._detector,
-            dataPath=self._source_path,
-            data=np.asarray(frames),
-            dataLoaded=True,
-            attrs=self._attrs,
-            acquisition_layout=self._layout,
-        )
-        part = self._reconstructor.process(data_obj, deepcopy(self._effective_params))
+        if self._incremental is None:
+            # Auto/undefined T0: one full-data reconstruction is necessary to
+            # resolve unknown geometry. T0 is not separately pushed through
+            # the incremental operator, so it is still extracted only once.
+            if frames is None:
+                raise RuntimeError("Auto T0 requires its complete camera scan")
+            part = self._reconstructor.process(
+                self._source_descriptor(np.asarray(frames)),
+                deepcopy(self._effective_params),
+            )
+        else:
+            if frames is not None:
+                raise RuntimeError("Incremental Fast must finalize its retained coefficients")
+            part = self._finalize_extracted_timepoint()
         if getattr(part, "monalisa_representation", None) != "flexible_image":
             raise Incompatible("Unified Fast streaming received a non-Gaussian MoNaLISA result")
         calibration = deepcopy((getattr(part, "metadata", {}) or {}).get("monalisa_calibration") or {})
@@ -289,15 +355,13 @@ class UnifiedFastStreamingSession(StreamingSession):
             raise ValueError("Streaming chunk crosses the declared timepoint boundary")
         self._incremental.push(frames)
         self._next_frame = int(end)
-        self._chunks.append(frames.copy())
         self._buffered += int(frames.shape[0])
         self._preview_revision += 1
         if self._buffered == self._per_timepoint:
-            assembled = np.concatenate(self._chunks, axis=0)
-            self._chunks.clear()
             self._buffered = 0
-            self._process_timepoint(assembled)
+            self._process_timepoint()
             self._incremental.reset()
+            self._timepoint_started = time.perf_counter()
             self._preview_revision += 1
 
     @property
@@ -408,7 +472,7 @@ class UnifiedFastStreamingSession(StreamingSession):
         return self.result()
 
     def close(self):
-        self._chunks.clear()
         self._buffered = 0
         self._incremental = None
+        self._timepoint_started = None
         self._reconstructor = None

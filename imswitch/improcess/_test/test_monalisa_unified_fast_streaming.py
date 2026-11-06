@@ -405,3 +405,75 @@ def test_partial_unified_extraction_placement_matches_complete_fast(stagger, pla
     result = incremental.image()
     reference = reconstruct_stack(frames, geometry, index).amplitude.image
     np.testing.assert_allclose(result, reference, atol=1e-4, rtol=1e-4, equal_nan=True)
+
+
+@pytest.mark.parametrize("stagger", [False, True], ids=["rectangular", "hexagonal-stagger"])
+@pytest.mark.parametrize("placement_mode", ["Auto", "Interpolate"])
+def test_m4b_explicit_fast_finalizes_retained_extraction_without_process(
+    monkeypatch, stagger, placement_mode,
+):
+    """Each raw frame is fitted exactly once, including the final frame."""
+    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
+
+    frames = _scan(stagger=stagger)
+    layout = _resolved(stagger=stagger)
+    params = _params(stagger=stagger)
+    params["placement_mode"] = placement_mode
+    plugin = MonalisaReconstructor()
+    offline = plugin.process(_source(frames, layout), params)
+
+    calls = []
+    original_apply = ExtractionOperator.apply_device
+
+    def tracked_apply(self, batch, device="CPU", chunk=64):
+        calls.append(len(batch))
+        return original_apply(self, batch, device, chunk)
+
+    def unexpected_process(*args, **kwargs):
+        pytest.fail("M4B completed a locked/manual timepoint by repeating process()")
+
+    monkeypatch.setattr(ExtractionOperator, "apply_device", tracked_apply)
+    monkeypatch.setattr(plugin, "process", unexpected_process)
+    session, _ = _start(
+        plugin, frames[:1], params, layout, frames_per_timepoint=len(frames),
+    )
+    session.push(frames[1:7], 1, 7)
+    session.push(frames[7:], 7, len(frames))
+    assert sum(calls) == len(frames)
+    assert len(calls) == 3  # initial frame, two bounded chunks
+    assert not hasattr(session, "_chunks")  # no duplicate raw-camera buffer
+    final = session.finish()
+    np.testing.assert_allclose(final.data[0], offline.data, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(final.background[0], offline.background,
+                               rtol=1e-5, atol=1e-5)
+    assert final.metadata["monalisa_calibration"]["resolved_orientation"] == params["orientation"]
+    assert final.metadata["monalisa_calibration"]["localization_source"] == "Manual"
+    assert final.metadata["monalisa_streaming"]["completed_timepoints"] == 1
+    session.close()
+
+
+def test_m4b_auto_t0_calibrates_once_and_following_timepoints_reuse_extraction(monkeypatch):
+    """Auto still needs acquired T0, not a second fit on T1 or T2."""
+    frames, layout, params = _scan(), _resolved(nt=3), _params()
+    params["orientation_mode"] = "Auto"
+    plugin = MonalisaReconstructor()
+    original_process = plugin.process
+    process_calls = []
+
+    def counted_process(*args, **kwargs):
+        process_calls.append(True)
+        return original_process(*args, **kwargs)
+
+    monkeypatch.setattr(plugin, "process", counted_process)
+    session, _ = _start(plugin, frames, params, layout, nt=3)
+    assert len(process_calls) == 1  # complete T0 for orientation detection
+    session.push(frames[:8], len(frames), len(frames) + 8)
+    session.push(frames[8:], len(frames) + 8, 2 * len(frames))
+    session.push(frames, 2 * len(frames), 3 * len(frames))
+    assert len(process_calls) == 1  # no repeat process() after T0
+    final = session.finish()
+    assert final.metadata["monalisa_streaming"]["completed_timepoints"] == 3
+    assert final.metadata["monalisa_calibration"]["orientation_source"] == "Auto"
+    np.testing.assert_allclose(final.data[0], final.data[1], rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(final.data[1], final.data[2], rtol=1e-4, atol=1e-4)
+    session.close()
