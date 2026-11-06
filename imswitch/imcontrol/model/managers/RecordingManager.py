@@ -2193,6 +2193,7 @@ class RecordingManager(SignalInterface):
         self.__scanExpectedCompletionTime = None
         self.__scanCompletionGeneration = None
         self.__scanCompletionTime = None
+        self.__scanIdleS = 0.0
         self.__recordingWorker = None
         self.__thread = None
         self.__prepareRecordingThread()
@@ -2650,6 +2651,7 @@ class RecordingManager(SignalInterface):
             self.__scanExpectedCompletionTime = None
             self.__scanCompletionGeneration = None
             self.__scanCompletionTime = None
+            self.__scanIdleS = 0.0
         self.__recordingWorker.recordingGeneration = recordingGeneration
         # Held until the worker has physically ended (its run() finally):
         # no device reconnect can overlap the recording.
@@ -2919,7 +2921,23 @@ class RecordingManager(SignalInterface):
                 return False
             self.__scanExpectedCompletionGeneration = generation
             self.__scanExpectedCompletionTime = time.time() + duration
+            # The scan's own idle stretches (a time-lapse wait, a long move):
+            # a camera it triggers has no frame in them.
+            try:
+                idle = float(scanInfoDict.get('scan_longest_idle_s') or 0.0)
+            except (TypeError, ValueError):
+                idle = 0.0
+            self.__scanIdleS = idle if np.isfinite(idle) and idle > 0 else 0.0
             return True
+
+    def scanIdleAllowance(self, generation):
+        """The longest stretch, in s, the scan of ``generation`` holds
+        without a step (0 when it declared none): a scan-triggered camera
+        may go that much longer without a frame."""
+        with self.__recordingSignalLock:
+            if self.__scanExpectedCompletionGeneration == generation:
+                return self.__scanIdleS
+            return 0.0
 
     def scanCompletionTime(self, generation):
         """Return observed or expected scan completion time for ``generation``."""
@@ -4247,6 +4265,17 @@ class RecordingWorker(Worker):
             return floor
         return max(floor, STALL_FRAME_INTERVALS * float(interval))
 
+    def _scanIdleAllowance(self) -> float:
+        """The scan's own longest stretch without a step, which a camera it
+        triggers spends without a frame (0 when unknown)."""
+        allowance = getattr(self.__recordingManager, 'scanIdleAllowance', None)
+        if not callable(allowance):
+            return 0.0
+        try:
+            return float(allowance(getattr(self, 'recordingGeneration', None)))
+        except Exception:
+            return 0.0
+
     def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
         """Return when no-frame timing may begin, or ``None`` while scanning."""
         if (
@@ -4557,6 +4586,9 @@ class RecordingWorker(Worker):
 
                         elapsed = now - referenceTime
                         allowed = stallAllowance[detectorName]
+                        if (self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
+                                and not self._isScanDrivenDetector(detectorName)):
+                            allowed += self._scanIdleAllowance()
                         if elapsed > allowed:
                             if self._isScanDrivenDetector(detectorName):
                                 message = (

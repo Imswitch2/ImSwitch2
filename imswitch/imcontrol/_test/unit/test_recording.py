@@ -5610,6 +5610,71 @@ def test_a_slow_camera_that_declares_nothing_keeps_the_floor(qtbot, tmp_path):
     assert 'exposure' in failures[0]
 
 
+class _WaitingCamera(_PacedCamera):
+    """A scan-triggered camera whose first frame comes only after the scan's
+    own wait (a time-lapse interval before the first timepoint)."""
+
+    def __init__(self, wait, period):
+        super().__init__(period, declare=False)
+        self._wait = wait
+
+    def readChunk(self, _key):
+        if self._t0 is None or time.time() - self._t0 < self._wait:
+            return []
+        due = 1 + int((time.time() - self._t0 - self._wait) // self._period)
+        if due > self._delivered:
+            self._delivered += 1
+            return [np.zeros(self.shape, dtype=self.dtype)]
+        return []
+
+
+def _record_scan_with_a_wait(qtbot, tmp_path, idle_s):
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        RecMode, RecordingManager, SaveFormat, SaveMode,
+    )
+
+    manager = RecordingManager(_OneCamera(_WaitingCamera(wait=0.8, period=0.05)))
+    failures, ended = [], []
+    manager.sigRecordingFailed.connect(failures.append)
+    manager.sigRecordingEndedDetailed.connect(ended.append)
+    manager.startRecording(
+        detectorNames=['Cam'], recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'waiting'), saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5, attrs={'Cam': {}},
+        recFrames=3, numCamTTL={'Cam': 1}, stallTimeout=0.3,
+    )
+    try:
+        assert manager.waitForAcquisitionStarted(2.0)
+        info = {'scan_samples_total': 100, 'scan_time_step': 0.01}
+        if idle_s is not None:
+            info['scan_longest_idle_s'] = idle_s
+        assert manager.markScanStarted(info, manager.recordingGeneration)
+        try:
+            qtbot.waitUntil(lambda: bool(failures or ended), timeout=6000)
+        except Exception:
+            pass
+    finally:
+        manager.endRecording(emitSignal=False, wait=True)
+    return failures, ended
+
+
+def test_a_scan_wait_before_the_first_frame_is_not_a_camera_stall(qtbot, tmp_path):
+    """A scan that waits (here 0.8 s, on the rig a 27 s time-lapse interval)
+    before its first frame says so in its scan info; the watchdog allows the
+    camera that long on top of its floor instead of failing the recording at
+    frame zero with a message about camera triggering."""
+    failures, ended = _record_scan_with_a_wait(qtbot, tmp_path, idle_s=0.8)
+    assert not failures, failures
+    assert ended
+
+
+def test_a_scan_that_declares_no_wait_keeps_the_camera_floor(qtbot, tmp_path):
+    """The control: the same camera, the scan declaring no idle stretch, is
+    a stall after the floor, as before."""
+    failures, _ended = _record_scan_with_a_wait(qtbot, tmp_path, idle_s=None)
+    assert failures and 'stalled' in failures[0]
+
+
 # ----------------------------------------------------------------------
 # Frames reach disk on time, not only on count
 # ----------------------------------------------------------------------
