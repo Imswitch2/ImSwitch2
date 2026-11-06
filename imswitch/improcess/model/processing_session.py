@@ -665,8 +665,10 @@ class ProcessingSession:
             )
 
             fallback = str(display_name or getattr(result, "name", "") or filename_display_name(path))
+            metadata = getattr(result, "metadata", None) or {}
+            assembly = metadata.get("result_assembly") if isinstance(metadata, dict) else None
             session_name, object_name, tooltip = reconstruction_presentation(
-                graph, fallback_name=fallback
+                graph, artifact={"result_assembly": assembly}, fallback_name=fallback
             )
             recipe_ids = recipe_ids_from_graph(graph)
         else:

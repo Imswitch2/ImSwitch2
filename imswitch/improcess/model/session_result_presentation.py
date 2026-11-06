@@ -27,6 +27,67 @@ def filename_display_name(path: Path) -> str:
     return path.stem
 
 
+def _timepoint_coverage(graph: dict | None, assembly: dict | None) -> tuple[str, str]:
+    """(compact suffix, tooltip detail) for *published* logical timepoints.
+
+    Assembly ranges are half-open, zero-based and authoritative. Requested
+    scope is only a fallback for older, successfully saved scoped results.
+    Never display a requested range as though an interrupted job published it.
+    """
+    from imswitch.improcess.model.timepoint_scope import (
+        coerce_timepoint_scope, scope_payload_from_graph,
+    )
+
+    scope_payload = scope_payload_from_graph(graph)
+    assembly = assembly if isinstance(assembly, dict) and (
+        assembly.get("relation") == "timepoint" and assembly.get("axis") == "T"
+    ) else None
+    requested = (assembly or {}).get("requested_scope") or scope_payload
+    if not isinstance(requested, dict):
+        return "", ""
+    try:
+        total = int(requested["total"]) if requested.get("total") is not None else None
+        if total is not None and total < 1:
+            total = None
+        if assembly is not None:
+            # Actual coverage is essential for interrupted live results.
+            published = assembly.get("published_t_ranges")
+            if not isinstance(published, list):
+                return "", ""
+            ranges = [(int(start), int(stop)) for start, stop in published]
+        else:
+            scope = coerce_timepoint_scope(requested)
+            if not scope.bounded:
+                return "", ""
+            first, stop = scope.bounds(total)
+            ranges = [(first, stop)]
+        if not ranges or any(
+            start < 0 or stop <= start or (total is not None and stop > total)
+            for start, stop in ranges
+        ):
+            return "", ""
+    except (KeyError, TypeError, ValueError, IndexError):
+        return "", ""
+
+    # Join adjacent/overlapping ranges without losing gaps between timepoints.
+    merged: list[list[int]] = []
+    for start, stop in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], stop)
+        else:
+            merged.append([start, stop])
+    missing_frames = bool((assembly or {}).get("missing_frame_ranges"))
+    if total is not None and merged == [[0, total]] and not missing_frames:
+        return "", f"All {total} timepoints"
+
+    def fmt(start: int, stop: int) -> str:
+        first = f"T{start + 1}"
+        return first if stop == start + 1 else f"{first}\N{EN DASH}T{stop}"
+
+    covered = ", ".join(fmt(start, stop) for start, stop in merged)
+    detail = f"{covered} / {total}" if total is not None else covered
+    return f" · {detail}", detail
+
 def reconstruction_presentation(
     graph: dict | None, *, artifact: dict | None = None, fallback_name: str = ""
 ) -> tuple[str, str, str]:
@@ -49,27 +110,22 @@ def reconstruction_presentation(
     if plugin_label and preset:
         session_label = f"{plugin_label} - {preset}"
 
-    scope_label = ""
-    if graph is not None:
-        from imswitch.improcess.model.timepoint_scope import (
-            coerce_timepoint_scope,
-            scope_payload_from_graph,
-        )
-        payload = scope_payload_from_graph(graph)
-        if payload is not None:
-            try:
-                scope = coerce_timepoint_scope(payload)
-                scope_label = scope.label(payload.get("total"))
-            except (KeyError, TypeError, ValueError, IndexError):
-                scope_label = ""
-    if scope_label:
-        session_label = f"{session_label} · {scope_label}"
+    assembly = artifact.get("result_assembly")
+    suffix, coverage_detail = _timepoint_coverage(graph, assembly)
+    session_label += suffix
 
     object_name = str(artifact.get("result_name") or fallback_name or session_label)
 
     lines = [session_label]
-    if scope_label:
-        lines.append(f"Timepoints: {scope_label}")
+    if coverage_detail:
+        lines.append(f"Timepoints: {coverage_detail}")
+    if isinstance(assembly, dict):
+        outcome = {"complete": "Succeeded", "failed": "Failed",
+                   "cancelled": "Cancelled", "partial": "Partial"}.get(assembly.get("status"))
+        if outcome:
+            lines.append(f"Processing: {outcome}")
+        if assembly.get("missing_frame_ranges"):
+            lines.append(f"Missing raw-frame ranges: {len(assembly['missing_frame_ranges'])}")
     if plugin_label:
         lines.append(f"Reconstructor: {plugin_label}")
     if preset:

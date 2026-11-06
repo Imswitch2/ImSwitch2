@@ -142,6 +142,9 @@ def load_saved_result(
         raise ValueError(f"Could not open image data in {path.name}")
 
     metadata = read_saved_result_metadata(path, backing)
+    assembly = (document.artifact or {}).get("result_assembly")
+    if isinstance(assembly, dict):
+        metadata["result_assembly"] = assembly
     if document.graph is not None:
         metadata[PROVENANCE_KEY] = document.graph
     result = ArrayProcessingResult(

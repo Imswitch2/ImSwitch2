@@ -1420,10 +1420,28 @@ class ProcessingSessionController(ImProcessWidgetController):
         dataset_id = str(owner.id)
         rid = id(result)
         existing_owner = self._loadedResultOwners.get(rid)
-        if existing_owner == dataset_id:
-            return dataset_id
-        if existing_owner is not None:
+        if existing_owner is not None and existing_owner != dataset_id:
             self._unindex_loaded_result(rid)
+
+        # Incremental workers publish immutable snapshots (a new Python object
+        # per completed T), whereas the viewer replaces one entry per queue
+        # job. Session can have indexed the first snapshot via a selection
+        # signal before the final snapshot arrives. Retire the previous object
+        # for *this job only*, rather than displaying it alongside the final
+        # (possibly auto-saved) result. Distinct queue jobs remain distinct.
+        job_id = getattr(result, "_improcess_queue_job_id", None)
+        if job_id is not None:
+            obsolete = [
+                id(previous)
+                for _name, previous in self._loadedResultsByDatasetId.get(dataset_id, ())
+                if previous is not result
+                and getattr(previous, "_improcess_queue_job_id", None) == job_id
+            ]
+            for previous_id in obsolete:
+                self._unindex_loaded_result(previous_id)
+
+        if self._loadedResultOwners.get(rid) == dataset_id:
+            return dataset_id
         self._loadedResultOwners[rid] = dataset_id
         self._loadedResultsByDatasetId.setdefault(dataset_id, []).append(
             (str(display_name or getattr(result, "name", "reconstruction")), result)
@@ -1517,8 +1535,11 @@ class ProcessingSessionController(ImProcessWidgetController):
             if id(result) in represented_loaded:
                 continue
             graph = graph_of(result)
+            metadata = getattr(result, "metadata", None) or {}
+            assembly = metadata.get("result_assembly") if isinstance(metadata, dict) else None
             session_name, _object_name, tooltip = reconstruction_presentation(
-                graph, fallback_name=str(display_name or getattr(result, "name", "reconstruction"))
+                graph, artifact={"result_assembly": assembly},
+                fallback_name=str(display_name or getattr(result, "name", "reconstruction")),
             )
             entries.append({
                 "key": self._loaded_key(result),

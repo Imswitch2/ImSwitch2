@@ -237,7 +237,7 @@ def artifact_record(plan: SavePlan, result) -> dict:
     """The ``artifact`` entry for a file written from ``plan``."""
     graph = graph_of(result)
     node, port = output_of(graph) if graph else ("", "")
-    return {
+    artifact = {
         "node": node,
         "port": port,
         "fmt": plan.fmt,
@@ -251,6 +251,12 @@ def artifact_record(plan: SavePlan, result) -> dict:
         # Reconstruction objects list.
         "result_name": str(getattr(result, "name", "") or ""),
     }
+    # Keep the actual completed T coverage with saved provenance. Requested
+    # scope alone would mislabel a saved result from an interrupted live run.
+    assembly = (getattr(result, "metadata", None) or {}).get("result_assembly")
+    if isinstance(assembly, dict) and assembly.get("relation") == "timepoint":
+        artifact["result_assembly"] = assembly
+    return artifact
 
 
 def document_for(result, plan: SavePlan) -> ProvenanceDocument:
