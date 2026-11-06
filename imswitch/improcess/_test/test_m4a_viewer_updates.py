@@ -45,6 +45,9 @@ class _View:
         self.reconList = _List()
         self.renders = []
         self.steps = []
+        self.current_t = 0
+        self.controller = None
+        self.jump_on_swap = None
         self.resetView = Mock()
         self.removeData = Mock(return_value=True)
 
@@ -56,10 +59,27 @@ class _View:
 
     def tryFastLiveUpdate(self, result, _order):
         self.renders.append(np.array(result.data, copy=True))
+        # Replacing napari image-layer data can reset its current_step and
+        # synchronously emit a dims event. This is not a manual slider change.
+        if self.jump_on_swap is not None:
+            self.current_t = self.jump_on_swap
+            self.controller.axisStepChanged((self.current_t, 0, 0))
         return True
 
     def moveDimStep(self, axis, step):
         self.steps.append((axis, step))
+        self.current_t = int(step)
+        self.controller.axisStepChanged((self.current_t, 0, 0))
+
+    def getDimensionStepState(self):
+        return {"T": self.current_t, "Y": 0, "X": 0}
+
+    def userSelectTimepoint(self, timepoint):
+        # A genuine Qt slider input is recognized *before* it changes napari's
+        # Dims model. Internal layer-data updates never emit this signal.
+        self.controller._liveUserDimsInteracted()
+        self.current_t = int(timepoint)
+        self.controller.axisStepChanged((self.current_t, 0, 0))
 
     def getCurrentItemData(self):
         entry = self.reconList.selected
@@ -71,13 +91,19 @@ class _Controller:
     liveTimepointProvisional = ReconstructionViewController.liveTimepointProvisional
     _liveItemIsAlive = ReconstructionViewController._liveItemIsAlive
     _renderPendingLiveResult = ReconstructionViewController._renderPendingLiveResult
+    _displayLiveUpdate = ReconstructionViewController._displayLiveUpdate
     _advanceLiveTimeSlider = ReconstructionViewController._advanceLiveTimeSlider
+    _liveTimepointAxis = ReconstructionViewController._liveTimepointAxis
+    _liveUserDimsInteracted = ReconstructionViewController._liveUserDimsInteracted
+    _finishLiveUserDimsInteraction = ReconstructionViewController._finishLiveUserDimsInteraction
     _onLiveTimepointDone = ReconstructionViewController._onLiveTimepointDone
     axisStepChanged = ReconstructionViewController.axisStepChanged
     discardLiveProvisional = ReconstructionViewController.discardLiveProvisional
 
     def __init__(self):
         self._widget = _View()
+        self._widget.controller = self
+        self._widget.userDimsGestureTracking = True
         self._logger = Mock()
         self._pendingLiveResult = None
         self._liveOverlayResult = None
@@ -86,7 +112,9 @@ class _Controller:
         self._liveEstablished = False
         self._liveLatestTimepoint = None
         self._liveFollowLatest = True
+        self._livePinnedTimepoint = None
         self._liveProgrammaticStep = False
+        self._liveUserGesturePending = False
         self._liveItem = None
         self._liveName = None
         self._liveQueueJobId = None
@@ -131,7 +159,7 @@ def test_live_provisional_plane_preserves_scientific_result_and_navigation():
     np.testing.assert_allclose(ctl._widget.renders[-1][1], 8.)
     assert ctl._widget.steps[-1] == (0, 1)
 
-    ctl.axisStepChanged((0, 0, 0))  # the user manually browses T0
+    ctl._widget.userSelectTimepoint(0)  # the user manually browses T0
     assert not ctl._liveFollowLatest
     step_count = len(ctl._widget.steps)
     ctl.liveTimepointProvisional(1, np.full((1, 4, 5), 9., np.float32))
@@ -169,6 +197,103 @@ def test_early_cancel_only_removes_the_unpublished_t0_entry():
     ctl.discardLiveProvisional("job1")
     assert ctl._liveItem is None
     ctl._widget.removeData.assert_called_once_with(transient)
+
+
+def test_user_slider_selection_survives_napari_data_swap_and_new_timepoints():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 1  # Follow latest initially.
+
+    # Once T0 is selected, no later image update may change the selection.
+    ctl._widget.userSelectTimepoint(0)
+    assert not ctl._liveFollowLatest
+    assert ctl._livePinnedTimepoint == 0
+    ctl._widget.jump_on_swap = 1  # Simulate napari resetting T during repaint.
+    ctl.liveTimepointProvisional(1, np.full((1, 4, 5), 2., np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 0
+    assert ctl._livePinnedTimepoint == 0
+    assert not ctl._liveFollowLatest
+
+    ctl._widget.jump_on_swap = 2
+    ctl.liveTimepointProvisional(2, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 0
+    assert not ctl._liveFollowLatest
+
+    # Manually selecting the currently acquiring T is still user control:
+    # a later completed/new timepoint must not resume automatic following.
+    ctl._widget.userSelectTimepoint(2)
+    assert ctl._livePinnedTimepoint == 2
+    assert not ctl._liveFollowLatest
+    ctl._widget.jump_on_swap = 0
+    ctl.liveResultUpdated(_result(2))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 2
+    assert not ctl._liveFollowLatest
+
+
+def test_full_redraw_restores_manual_timepoint_after_dims_reset():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    ctl._widget.userSelectTimepoint(0)
+    ctl._liveEstablished = False  # Force the fullUpdate fallback.
+
+    def redraw(**_kwargs):
+        ctl._widget.current_t = 1
+        ctl.axisStepChanged((1, 0, 0))  # napari emits during full redraw
+
+    ctl.fullUpdate.side_effect = redraw
+    ctl.liveTimepointProvisional(1, np.full((1, 4, 5), 3., np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl.fullUpdate.call_count == 1
+    assert ctl._widget.current_t == 0
+    assert ctl._livePinnedTimepoint == 0
+    assert not ctl._liveFollowLatest
+
+
+def test_new_live_job_resets_follow_latest_after_manual_scrubbing():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    ctl._widget.userSelectTimepoint(0)
+    assert not ctl._liveFollowLatest
+
+    newer = _result(0)
+    newer._improcess_queue_job_id = "new-job"
+    ctl.liveResultUpdated(newer)
+    ctl._renderPendingLiveResult()
+    assert ctl._liveFollowLatest
+    assert ctl._livePinnedTimepoint is None
+
+
+def test_other_result_selection_is_not_moved_by_streaming():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    other = _Entry(_result(1))
+    ctl._widget.reconList.items.append(other)
+    ctl._widget.reconList.selected = other
+    ctl._widget.userSelectTimepoint(0)
+    ctl._widget.steps.clear()
+    ctl.liveTimepointProvisional(2, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 0
+    assert ctl._widget.steps == []
 
 
 def test_worker_partial_plane_protocol_and_completed_snapshot():
@@ -215,3 +340,59 @@ def test_worker_partial_plane_protocol_and_completed_snapshot():
     StreamProcessWorker._preview(worker, force=True)
     assert emitted[-1][1] is session.complete
     assert emitted[-1][2] is None
+
+
+def test_delayed_internal_dims_event_does_not_override_user_pin():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    ctl._widget.userSelectTimepoint(0)
+    assert ctl._livePinnedTimepoint == 0
+    # Emulate delivery of a late napari current_step event after the live
+    # update's programmatic guard has ended. The model jumped to active T1.
+    ctl._finishLiveUserDimsInteraction()
+    ctl._widget.current_t = 1
+    ctl.axisStepChanged((1, 0, 0))
+    assert not ctl._liveFollowLatest
+    assert ctl._livePinnedTimepoint == 0
+    # No user intent: live render restores the pinned T0.
+    ctl.liveTimepointProvisional(1, np.full((1, 4, 5), 3., np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 0
+    assert not ctl._liveFollowLatest
+
+
+def test_explicit_user_gesture_can_pin_the_current_live_timepoint():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    # Even clicking the CURRENT slider position is user input and disables
+    # following of future timepoints.
+    ctl._widget.userSelectTimepoint(1)
+    ctl._finishLiveUserDimsInteraction()
+    assert ctl._livePinnedTimepoint == 1
+    assert not ctl._liveFollowLatest
+    ctl.liveTimepointProvisional(2, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 1
+
+
+def test_model_only_dims_change_does_not_disarm_auto_follow():
+    ctl = _Controller()
+    ctl.liveResultUpdated(_result(1))
+    ctl._renderPendingLiveResult()
+    ctl._liveEstablished = True
+    ctl.liveTimepointProvisional(1, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    ctl._widget.current_t = 0
+    ctl.axisStepChanged((0, 0, 0))  # programmatic, not a Qt gesture
+    assert ctl._liveFollowLatest
+    ctl.liveTimepointProvisional(2, np.ones((1, 4, 5), np.float32))
+    ctl._renderPendingLiveResult()
+    assert ctl._widget.current_t == 2

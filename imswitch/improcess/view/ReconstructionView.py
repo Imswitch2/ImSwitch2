@@ -71,6 +71,7 @@ class ReconstructionView(QtWidgets.QFrame):
     sigSelectionChanged = QtCore.Signal()
     sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
+    sigUserDimsInteracted = QtCore.Signal()
     sigViewChanged = QtCore.Signal()
     sigLockSlicePerResultChanged = QtCore.Signal(bool)
     sigLockZoomPerResultChanged = QtCore.Signal(bool)
@@ -93,6 +94,19 @@ class ReconstructionView(QtWidgets.QFrame):
         naparitools.addNapariGrayclipColormap()
         self.napariViewer = naparitools.EmbeddedNapari()
         self.napariViewer.dims.events.connect(self.dimsChanged)
+        # `dims.events.current_step` is NOT an input-intent event: napari also
+        # emits it when live image layers swap their data or change extent.
+        # Catch real Qt gestures in the embedded napari dimension controls.
+        # QApplication filters remain attached when napari rebuilds a slider
+        # (for example after a result changes its dimensionality).
+        self._qtDimsControls = getattr(
+            getattr(self.napariViewer.window, "_qt_viewer", None), "dims", None
+        )
+        self.userDimsGestureTracking = False
+        app = QtWidgets.QApplication.instance()
+        if app is not None and self._qtDimsControls is not None:
+            app.installEventFilter(self)
+            self.userDimsGestureTracking = True
         naparitools.NapariUpdateLevelsWidget.addToViewer(self.napariViewer)
 
         self.imgLayer = self.napariViewer.add_image(
@@ -260,6 +274,41 @@ class ReconstructionView(QtWidgets.QFrame):
     def isReconListPaneCollapsed(self) -> bool:
         sizes = self._reconSplitter.sizes()
         return len(sizes) >= 2 and sizes[1] == 0
+
+    def eventFilter(self, watched, event):
+        """Tell the controller about *actual* napari slider gestures.
+
+        Qt current_step changes alone cannot distinguish a mouse/keyboard
+        action from layer.data-induced dimension resets. Tracking the input
+        also covers Napari's dynamically recreated QtDimSliderWidget sliders
+        without depending on their private names or axis-index map.
+        """
+        if self.userDimsGestureTracking and event.type() in (
+            QtCore.QEvent.MouseButtonPress,
+            QtCore.QEvent.MouseButtonDblClick,
+            QtCore.QEvent.MouseButtonRelease,
+            QtCore.QEvent.MouseMove,
+            QtCore.QEvent.Wheel,
+            QtCore.QEvent.KeyPress,
+        ) and isinstance(watched, QtWidgets.QWidget):
+            # A drag may continue long after the mouse-press event's deferred
+            # capture: listen to each button-held move so its final selected
+            # T, not the old press location, remains pinned.
+            if (event.type() == QtCore.QEvent.MouseMove and
+                    not event.buttons()):
+                return super().eventFilter(watched, event)
+            dims = self._qtDimsControls
+            if dims is not None and (watched is dims or dims.isAncestorOf(watched)):
+                widget = watched
+                while widget is not None and widget is not dims:
+                    if isinstance(widget, (
+                        QtWidgets.QAbstractSlider, QtWidgets.QAbstractSpinBox,
+                        QtWidgets.QLineEdit,
+                    )):
+                        self.sigUserDimsInteracted.emit()
+                        break
+                    widget = widget.parentWidget()
+        return super().eventFilter(watched, event)
 
     def dimsChanged(self, event):
         if event.type == 'current_step':
@@ -603,7 +652,24 @@ class ReconstructionView(QtWidgets.QFrame):
 
         for layer, arr in pairs:
             try:
-                layer.data = arr
+                # The live GUI's provisional raster is updated IN PLACE. If
+                # napari already points at that exact array view, only refresh
+                # pixels: reassigning `layer.data` on every frame needlessly
+                # recomputes dims.current_step and moves the timepoint slider.
+                # Shape AND pointer/strides must match; sharing part of a
+                # buffer is insufficient (it may be another channel/slice).
+                current = layer.data
+                same_view = current is arr or (
+                    isinstance(current, np.ndarray) and
+                    isinstance(arr, np.ndarray) and
+                    current.shape == arr.shape and
+                    current.dtype == arr.dtype and
+                    current.strides == arr.strides and
+                    current.__array_interface__["data"][0] ==
+                        arr.__array_interface__["data"][0]
+                )
+                if not same_view:
+                    layer.data = arr
                 layer.refresh()
             except Exception as exc:
                 self._logger.debug("tryFastLiveUpdate: layer.data swap failed (%s)", exc)

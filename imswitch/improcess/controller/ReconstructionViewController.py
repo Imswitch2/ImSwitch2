@@ -69,7 +69,12 @@ class ReconstructionViewController(ImProcessWidgetController):
         # the user manually selects another timepoint.
         self._liveLatestTimepoint = None
         self._liveFollowLatest = True
+        # Once the user scrubs T, keep that slice selected until the next run.
+        # Repaints and napari's layer.data swaps can emit their own step events;
+        # those must not silently re-enable follow-latest.
+        self._livePinnedTimepoint = None
         self._liveProgrammaticStep = False
+        self._liveUserGesturePending = False
         # The list entry owned by the live run currently streaming, and its
         # name. Held by reference so a job's updates keep landing in its own
         # data object even if the user selects a different entry mid-run.
@@ -113,6 +118,8 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
+        if hasattr(self._widget, "sigUserDimsInteracted"):
+            self._widget.sigUserDimsInteracted.connect(self._liveUserDimsInteracted)
         if hasattr(self._widget, "sigImageLevelsChanged"):
             self._widget.sigImageLevelsChanged.connect(self.imageLevelsChanged)
         self._widget.sigViewChanged.connect(self._viewChanged)
@@ -1049,26 +1056,64 @@ class ReconstructionViewController(ImProcessWidgetController):
             return labels.index("Base")
         return None
 
-    def axisStepChanged(self, newAxisStep):
-        # A user moving T away from the currently acquired timepoint is
-        # inspecting history: future live frames must not pull the slider back.
-        # Programmatic follow-latest moves are excluded explicitly.
+    def _liveTimepointAxis(self):
+        """Locate T in the *actual displayed* axes, not in scan order."""
         labels = self.__dict__.get("_displayedAxisLabels", ())
+        for name in ("T", "Timepoints", "Time"):
+            if name in labels:
+                return name, labels.index(name)
+        return None, None
+
+    def _liveUserDimsInteracted(self):
+        """Suspend follow-latest on genuine Qt slider input, not dims events.
+
+        `current_step` is also emitted by napari when data is replaced. At
+        mouse press the slider may not yet have updated, so capture the new T
+        both in axisStepChanged and after the Qt event has been dispatched.
+        """
+        if (not self._liveItemIsAlive() or
+                self._widget.reconList.currentItem() is not self._liveItem):
+            return
+        name, axis = self._liveTimepointAxis()
+        if axis is None:
+            return
+        self._liveFollowLatest = False
+        self._liveUserGesturePending = True
+        state = self._widget.getDimensionStepState()
+        if name in state:
+            self._livePinnedTimepoint = int(state[name])
+        QtCore.QTimer.singleShot(0, self._finishLiveUserDimsInteraction)
+
+    def _finishLiveUserDimsInteraction(self):
+        """Capture the T *after* Qt has applied the user's slider gesture."""
+        if self.__dict__.get("_liveUserGesturePending", False):
+            name, _ = self._liveTimepointAxis()
+            getter = getattr(self._widget, "getDimensionStepState", None)
+            state = getter() if callable(getter) else {}
+            if name in state:
+                self._livePinnedTimepoint = int(state[name])
+            self._liveUserGesturePending = False
+
+    def axisStepChanged(self, newAxisStep):
+        # Model events can be emitted by either user input OR programmatic
+        # layer.data updates. On real napari use the explicit Qt gesture marker
+        # so delayed redraw events cannot masquerade as manual navigation.
+        name, t_axis = self._liveTimepointAxis()
         item = self.__dict__.get("_liveItem")
-        if (item is not None and self.__dict__.get("_liveEstablished", False)
+        if (t_axis is not None and item is not None
+                and self.__dict__.get("_liveEstablished", False)
                 and not self.__dict__.get("_liveProgrammaticStep", False)
                 and self._widget.reconList.currentItem() is item):
-            for axis_name in ("T", "Timepoints", "Time"):
-                if axis_name in labels:
-                    t_axis = labels.index(axis_name)
-                    latest = self.__dict__.get("_liveLatestTimepoint")
-                    if latest is not None and t_axis < len(newAxisStep):
-                        if int(newAxisStep[t_axis]) != int(latest):
-                            self._liveFollowLatest = False
-                        else:
-                            # Choosing the actively acquiring T resumes follow.
-                            self._liveFollowLatest = True
-                    break
+            previous = self.__dict__.get("_axisStep", ())
+            if (t_axis < len(newAxisStep) and t_axis < len(previous)
+                    and int(newAxisStep[t_axis]) != int(previous[t_axis])):
+                # Backward-compatible inference for callers without the Qt
+                # gesture filter (and headless viewers); real napari ignores
+                # unsolicited current_step changes unless a gesture is active.
+                tracking = getattr(self._widget, "userDimsGestureTracking", False)
+                if not tracking or self.__dict__.get("_liveUserGesturePending", False):
+                    self._liveFollowLatest = False
+                    self._livePinnedTimepoint = int(newAxisStep[t_axis])
         baseAxisIndex = self._baseAxisIndex()
         if baseAxisIndex is not None and baseAxisIndex < len(newAxisStep):
             newBase = newAxisStep[baseAxisIndex]
@@ -1559,6 +1604,30 @@ class ReconstructionViewController(ImProcessWidgetController):
         except RuntimeError:  # underlying C++ item already deleted
             return False
 
+    def _displayLiveUpdate(self, display_result) -> None:
+        """Update live pixels without interpreting napari repaint events as input.
+
+        Replacing an image layer's data may update napari's dimension ranges
+        and current_step. Restore the user-selected T after the swap, and keep
+        the whole redraw/restore sequence marked as programmatic.
+        """
+        self._liveProgrammaticStep = True
+        try:
+            rendered = (
+                self._liveEstablished
+                and self._widget.tryFastLiveUpdate(display_result, self._transposeOrder)
+            )
+            if not rendered:
+                self.fullUpdate(levels=None)
+                self._liveEstablished = True
+                # The full redraw uses the scientific Session result; if a
+                # provisional overlay is active, swap its pixels in afterward.
+                if self._liveOverlayResult is not None:
+                    self._widget.tryFastLiveUpdate(display_result, self._transposeOrder)
+            self._advanceLiveTimeSlider()
+        finally:
+            self._liveProgrammaticStep = False
+
     def _renderPendingLiveResult(self):
         """Render the newest live result into the data object owned by its job.
 
@@ -1576,12 +1645,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             overlay = self._liveOverlayResult
             if (overlay is not None and self._liveItemIsAlive()
                     and self._widget.reconList.currentItem() is self._liveItem):
-                if not (self._liveEstablished and
-                        self._widget.tryFastLiveUpdate(overlay, self._transposeOrder)):
-                    self.fullUpdate(levels=None)
-                    self._liveEstablished = True
-                    self._widget.tryFastLiveUpdate(overlay, self._transposeOrder)
-                self._advanceLiveTimeSlider()
+                self._displayLiveUpdate(overlay)
             return
 
         name = getattr(result, 'name', '') or 'Live'
@@ -1595,6 +1659,8 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._liveEstablished = False
             self._liveLatestTimepoint = None
             self._liveFollowLatest = True
+            self._livePinnedTimepoint = None
+            self._liveUserGesturePending = False
             return
 
         # Update this job's own entry, not whatever is selected -- otherwise a
@@ -1605,42 +1671,41 @@ class ReconstructionViewController(ImProcessWidgetController):
             # Re-selecting the live entry redraws it via sigItemSelected.
             return
 
-        # Fast path: after the first full render the layers exist, so an update
-        # is just an in-place pixel swap -- no layer rebuild. Calling
-        # tryFastLiveUpdate IS the update; it reports False (having changed
-        # nothing) if the layer structure no longer matches, and we rebuild.
-        display_result = self._liveOverlayResult or result
-        rendered = (
-            self._liveEstablished
-            and self._widget.tryFastLiveUpdate(display_result, self._transposeOrder)
-        )
-        if rendered:
-            self._advanceLiveTimeSlider()
-            return
-
-        self.fullUpdate(levels=None)
-        self._liveEstablished = True
-        if self._liveOverlayResult is not None:
-            self._widget.tryFastLiveUpdate(self._liveOverlayResult, self._transposeOrder)
-        self._advanceLiveTimeSlider()
+        self._displayLiveUpdate(self._liveOverlayResult or result)
 
     @QtCore.Slot(int)
     def _onLiveTimepointDone(self, timepoint: int) -> None:
         self._liveLatestTimepoint = timepoint
 
     def _advanceLiveTimeSlider(self) -> None:
-        """Follow the acquiring T only until the user navigates elsewhere."""
-        t = self._liveLatestTimepoint
-        if t is None or not self.__dict__.get("_liveFollowLatest", True):
+        """Follow new T until a manual scrub; then protect the pinned T.
+
+        Restoring an explicitly selected T is necessary even with auto-follow
+        disabled: napari can reset current_step while an image's data changes.
+        The selected value is changed only by real axis-step events outside
+        the live renderer, and is reset only for a new streaming job.
+        """
+        follow = self.__dict__.get("_liveFollowLatest", True)
+        t = (self._liveLatestTimepoint if follow
+             else self.__dict__.get("_livePinnedTimepoint"))
+        if t is None:
             return
         labels = self._displayedAxisLabels
         for name in ("T", "Timepoints", "Time"):
             if name in labels:
+                # Avoid repeatedly moving the slider when a live frame only
+                # changes pixel data at the currently selected timepoint.
+                getter = getattr(self._widget, "getDimensionStepState", None)
+                if callable(getter):
+                    current = getter().get(name)
+                    if current is not None and int(current) == int(t):
+                        return
+                previous_guard = self._liveProgrammaticStep
                 self._liveProgrammaticStep = True
                 try:
                     self._widget.moveDimStep(labels.index(name), t)
                 finally:
-                    self._liveProgrammaticStep = False
+                    self._liveProgrammaticStep = previous_guard
                 return
 
 # Copyright (C) 2020-2021 ImSwitch developers
