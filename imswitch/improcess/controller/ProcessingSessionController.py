@@ -192,6 +192,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         # when the *root entry first appeared*. They survive later Auto/mode
         # changes until that entry resolves, without retroactive admission.
         self._watchAutoArrivals: dict[str, dict] = {}
+        # One transient calibration update per job, after its first scientific
+        # timepoint. Provisional live frames are not resolved calibrations.
+        self._autoCalibrationSeenJobs: set[str] = set()
         self._watchLapseChildren: dict[str, frozenset[str]] = {}
         self._watchReconcileTimer = QtCore.QTimer(self)
         self._watchReconcileTimer.setSingleShot(True)
@@ -261,6 +264,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigRevealResultsFolderRequested.connect(self.revealResultsFolder)
 
         self._commChannel.sigResultFinalized.connect(self._resultFinalized)
+        self._commChannel.sigLiveResultUpdated.connect(self._autoCalibrationPreviewPublished)
         self._commChannel.sigResultsChanged.connect(self._loadedResultsChanged)
         if hasattr(self._commChannel, "sigResultSaved"):
             self._commChannel.sigResultSaved.connect(self._resultSaved)
@@ -538,6 +542,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         getattr(self, "_acquisitionProbeInFlight", set()).clear()
         self._sessionMode = "review"
         self._watchAutoArrivals.clear()
+        self._autoCalibrationSeenJobs.clear()
         self._watchLapseChildren.clear()
         self._widget.setSessionMode("review")
         self._disableSessionAuto()
@@ -622,6 +627,15 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Could not start watching: {exc}")
             return
         self._sync_auto_availability()
+        # Monitor is a one-click start: arm Auto after the observer has
+        # successfully started and its pre-existing entries are baselined.
+        # The shared queue already defaults Live on when streaming is capable.
+        queue_getter = getattr(self, "_queue_controller", None)
+        queue = queue_getter() if callable(queue_getter) else None
+        reconstructor = getattr(getattr(self, "_main", None), "_activeReconstructor", None)
+        if (queue is not None and reconstructor is not None
+                and str(getattr(reconstructor, "result_role", "derived")) != "inspection"):
+            queue.setAutoEnabled(True)
         update_details = getattr(self, "_update_watcher_detail_paths", None)
         if callable(update_details):
             update_details()
@@ -3189,6 +3203,34 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._saveActiveRequest = None
         self._startNextAutoSave()
 
+    def _autoCalibrationPreviewPublished(self, result) -> None:
+        """Make the first completed Auto calibration lockable during a live T series.
+
+        A provisional first-frame preview cannot establish a valid calibration.
+        The shared result publisher marks scientific completion in result_assembly.
+        """
+        if self._session is None or result is None:
+            return
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        if (metadata.get("monalisa_streaming") or {}).get("provisional_preview"):
+            return
+        if int((metadata.get("result_assembly") or {}).get("published_steps") or 0) < 1:
+            return
+        job_id = str(getattr(result, "_improcess_queue_job_id", "") or "")
+        if not job_id or job_id in self._autoCalibrationSeenJobs:
+            return
+        dataset = self._session.dataset_for_result(result)
+        if dataset is None:
+            return
+        manager = getattr(self._main, "reconstructorManager", None)
+        remember = getattr(manager, "rememberMonalisaAutoCalibration", None)
+        if callable(remember):
+            try:
+                if remember(result, source_label=str(getattr(dataset, "name", "") or result.name)):
+                    self._autoCalibrationSeenJobs.add(job_id)
+            except Exception as exc:
+                self._logger.warning("Could not expose streamed Auto calibration: %s", exc)
+
     def _resultFinalized(self, result, _display_name: str) -> None:
         if self._session is None or result is None:
             return
@@ -3201,6 +3243,17 @@ class ProcessingSessionController(ImProcessWidgetController):
         dataset = self._session.dataset_for_result(result)
         if dataset is None:
             return
+
+        # The queued reconstructor can resolve Auto localization without ever
+        # loading raw data into the Parameters panel. Publish only the resolved
+        # snapshot as a transient Lock-current candidate, not as Auto job input.
+        manager = getattr(self._main, "reconstructorManager", None)
+        remember = getattr(manager, "rememberMonalisaAutoCalibration", None)
+        if callable(remember):
+            try:
+                remember(result, source_label=str(getattr(dataset, "name", "") or _display_name))
+            except Exception as exc:
+                self._logger.warning("Could not expose resolved Auto calibration: %s", exc)
 
         # Live viewer updates deliberately do not broadcast sigResultsChanged
         # on every frame. Finalization is the one stable membership event: index

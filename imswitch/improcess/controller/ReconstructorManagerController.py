@@ -55,6 +55,25 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if current_result_changed is not None:
             current_result_changed.connect(lambda _result: self.refreshUpdateReconstructionAvailability())
 
+    def rememberMonalisaAutoCalibration(self, result, *, source_label: str = "") -> bool:
+        """Expose a completed queued Auto calibration for explicit Lock-current.
+
+        This does not set the widget's auto_localization input or change the
+        selected reconstruction settings: future Auto jobs still localize anew.
+        """
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        snapshot = metadata.get("monalisa_calibration")
+        if not isinstance(snapshot, dict):
+            snapshot = dict(getattr(result, "params", {}) or {}).get("calibration_snapshot")
+        if not isinstance(snapshot, dict) or "per_data_item" in snapshot:
+            return False
+        active = getattr(self._main, "_activeReconstructor", None)
+        widget = getattr(self, "_previewWidget", None)
+        if getattr(active, "id", "") != "monalisa":
+            return False
+        remember = getattr(widget, "remember_auto_reconstruction", None)
+        return bool(remember(snapshot, source_label=source_label)) if callable(remember) else False
+
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
         by the coordinator after all subsidiary controllers exist."""

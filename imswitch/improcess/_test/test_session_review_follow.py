@@ -93,6 +93,10 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         _logger=SimpleNamespace(exception=lambda *args: None),
         _disableSessionAuto=lambda: events.append("auto-off"),
         _sync_auto_availability=lambda: events.append("auto-available"),
+        _main=SimpleNamespace(_activeReconstructor=SimpleNamespace(result_role="derived")),
+        _queue_controller=lambda: SimpleNamespace(
+            setAutoEnabled=lambda enabled: events.append(("auto", enabled)),
+        ),
         _admit_resolved_arrivals=lambda paths: None,
         _syncWatchRetryTimer=lambda: None,
     )
@@ -109,6 +113,8 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
     assert fake._watchUnresolvedPaths == {"/tmp/unreadable.h5"}
     assert fake.sigDatasetsAdded.calls == [(('new-from-review',),)]
     assert "auto-off" in events
+    assert ("auto", True) in events  # Monitoring now arms future Auto arrivals.
+    assert not fake._watchAutoArrivals  # Nothing from the baseline is backfilled.
 
     # A repeated Follow selection neither restarts nor repeats reconciliation.
     ProcessingSessionController.setSessionMode(fake, "follow")
@@ -190,6 +196,7 @@ def test_opening_session_resets_follow_without_persisting(monkeypatch, tmp_path)
     fake = SimpleNamespace(
         _sessionMode="follow", _session=object(), _saveFormat="tiff",
         _watchAutoArrivals={}, _watchLapseChildren={},
+        _autoCalibrationSeenJobs=set(),
         _widget=widget, _stopDirectoryWatcher=lambda: observed.append(("stop",)),
         _disableSessionAuto=lambda: observed.append(("auto-off",)),
         _sync_auto_availability=lambda: observed.append(("auto-available",)),

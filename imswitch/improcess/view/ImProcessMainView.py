@@ -2615,10 +2615,9 @@ class BtnFrame(QtWidgets.QFrame):
         context = str(context or 'loaded')
         if context not in {'loaded', 'session', 'queue', 'multidata'}:
             context = 'loaded'
-        changed = context != self._context
         self._context = context
-        if changed:
-            self._resetTimepointScope()
+        # Scope is an operator preference, not a property of the selected data.
+        # Keep it when reconstruction or workspace navigation changes selection.
         self._syncContextVisibility()
         self._syncProcessingEnabled()
         if not self._reconstructionRunning:
@@ -2636,10 +2635,9 @@ class BtnFrame(QtWidgets.QFrame):
                     'identity': tuple(descriptor.get('identity')),
                     'total': total,
                 }
-        changed = normalized != self._timeLapseSelections.get(context)
         self._timeLapseSelections[context] = normalized
-        if changed and context == self._context:
-            self._resetTimepointScope()
+        # Replacing a selected dataset must not reset All / Current T / Range.
+        # The effective range is bounded by the selected lapse below.
         self._syncScopeVisibility()
         self._syncProcessingEnabled()
 
@@ -2665,7 +2663,13 @@ class BtnFrame(QtWidgets.QFrame):
                 return None
             return TimepointScope.single(self._currentTimeLapseContext['position'])
         if self._timepointScopeMode == 'range' and self._timepointScopeRange is not None:
-            return TimepointScope.range(*self._timepointScopeRange)
+            total = int(descriptor['total'])
+            first, last = self._timepointScopeRange
+            # Remember the requested range but bound it for smaller lapses.
+            # An out-of-range request should never submit an invalid queue job.
+            return TimepointScope.range(
+                min(first, total - 1), min(last, total - 1)
+            )
         return TimepointScope.all()
 
     def _currentScopeAvailable(self) -> bool:
@@ -2698,6 +2702,13 @@ class BtnFrame(QtWidgets.QFrame):
         self.scopeLabel.setVisible(visible)
         self.scopeCombo.setVisible(visible)
         self._setCurrentScopeItemEnabled(self._currentScopeAvailable())
+        if self._timepointScopeRange is not None and descriptor is not None:
+            total = int(descriptor['total'])
+            first, last = self._timepointScopeRange
+            bounded = TimepointScope.range(min(first, total - 1), min(last, total - 1))
+            self.scopeCombo.setItemText(2, f'Range {bounded.label(total)}')
+        elif self._timepointScopeRange is None:
+            self.scopeCombo.setItemText(2, 'Range…')
         if visible:
             self.scopeCombo.setToolTip(
                 f"Reconstruct timepoints from this {int(descriptor['total'])}-point logical lapse"
@@ -2741,8 +2752,8 @@ class BtnFrame(QtWidgets.QFrame):
         first.setRange(1, total)
         last.setRange(1, total)
         if self._timepointScopeRange is not None:
-            first.setValue(self._timepointScopeRange[0] + 1)
-            last.setValue(self._timepointScopeRange[1] + 1)
+            first.setValue(min(total, self._timepointScopeRange[0] + 1))
+            last.setValue(min(total, self._timepointScopeRange[1] + 1))
         else:
             first.setValue(1)
             last.setValue(total)
@@ -2910,6 +2921,10 @@ class BtnFrame(QtWidgets.QFrame):
         ))
         self.processWhileAcquiringCheck.blockSignals(False)
         self._syncContextVisibility()
+        # Queue snapshots update the Auto/Live checkbox values while signals
+        # are blocked. Re-evaluate their enabled states now, rather than
+        # waiting for the first reconstruction or another unrelated UI event.
+        self._syncProcessingEnabled()
         if not self._reconstructionRunning:
             self._showQueueStatus()
 

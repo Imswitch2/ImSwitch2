@@ -901,14 +901,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if mode == LOCALIZATION_MANUAL:
             return self._manual_localization(), "manual"
         if mode == LOCALIZATION_AUTO:
-            localization = PatternLocalization.from_dict(self._auto_localization)
-            source = "auto"
-            if localization is None and self._registry is not None:
+            # The transient registry includes calibration from queued Auto
+            # reconstruction, even if the source was never loaded as Current.
+            # Prefer the latest resolved detector calibration for Lock-current;
+            # do not copy it into auto_localization used by future jobs.
+            if self._registry is not None:
                 transient = self._registry.current_localization(self._detector_id)
                 if transient is not None:
-                    localization, source = transient.localization, transient.source
+                    return transient.localization, transient.source
+            localization = PatternLocalization.from_dict(self._auto_localization)
             if localization is not None:
-                return localization, source
+                return localization, "auto"
         return None
 
     def _lock_current_localization(self):
@@ -927,11 +930,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         )
         if not ok:
             return
+        transient = self._registry.current_localization(self._detector_id)
         profile = self._registry.lock_localization(
             name=str(name), detector=self._detector_id, localization=localization,
             source=source,
-            source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
-            source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
+            source_dataset=(str(transient.source_dataset) if transient is not None
+                            and transient.localization is localization else
+                            str(getattr(self._current_data_obj, "name", "") or "")),
+            source_path=(str(transient.source_path) if transient is not None
+                         and transient.localization is localization else
+                         str(getattr(self._current_data_obj, "dataPath", "") or "")),
             diagnostics=dict(localization.provenance),
         )
         self._selected_locked_localization_id = profile.id
@@ -1469,6 +1477,48 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._sync_locked_mode_availability()
         self._refresh_orientation_display()
         self._update_ui()
+
+    def remember_auto_reconstruction(self, snapshot: dict, *, source_label: str = "") -> bool:
+        """Expose resolved Auto calibration to Lock-current without reusing it.
+
+        Queued Session jobs may finish without a Current Data selection. Keep
+        their detector-specific transient calibration in the registry, while
+        leaving auto_localization (the next job's input) untouched.
+        """
+        if self._registry is None or not isinstance(snapshot, dict):
+            return False
+        detector = str(snapshot.get("detector") or "unknown")
+        if detector == "unknown":
+            return False  # cannot safely associate this calibration with a detector
+        updated = False
+        if str(snapshot.get("localization_source") or "").lower() == "auto":
+            localization = PatternLocalization.from_dict(snapshot.get("resolved_localization"))
+            if localization is not None:
+                self._registry.set_current_localization(
+                    detector, localization, source="auto",
+                    source_dataset=str(source_label or ""),
+                    diagnostics={"status": "Auto localization resolved during Session reconstruction"},
+                )
+                updated = True
+        if str(snapshot.get("orientation_source") or "").lower() == "auto":
+            literal = str(snapshot.get("resolved_orientation") or "")
+            if literal:
+                self._registry.set_current_orientation(
+                    detector, literal, source="auto", source_dataset=str(source_label or ""),
+                )
+                updated = True
+        if not updated:
+            return False
+        # When nothing has been loaded into Current Data, the Parameters panel
+        # can still refer to the detector that produced the completed result.
+        if self._current_data_obj is None:
+            self._detector_id = detector
+        if detector == self._detector_id:
+            self._refresh_registry_controls()
+            self.setPreviewStatus(
+                f"Session Auto calibration ready to lock ({source_label or detector})"
+            )
+        return True
 
     def sync_current_transient(self):
         if self._registry is None:
