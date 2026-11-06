@@ -51,6 +51,9 @@ from imswitch.improcess.execution.runner import QtIncrementalRunner
 from imswitch.improcess.execution.policy import (
     ExecutionPath, choose_execution, streaming_capability, supports_streaming_settings,
 )
+from imswitch.improcess.execution.auto_timepoints import (
+    AutoTimepointState, CompletedTimepointBatch, probe_completed_prefix,
+)
 from imswitch.improcess.execution.readiness import (
     Readiness, ReadinessState, probe_scope,
 )
@@ -106,6 +109,16 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._readinessDue: dict[str, float] = {}
         self._readinessCached: dict[str, Readiness] = {}
         self._readinessInspected: dict[str, dict] = {}
+        # Resumable finite Auto: publisher and first-T calibration survive
+        # between bounded worker batches without occupying the serial queue.
+        self._autoTimepointStates: dict[str, AutoTimepointState] = {}
+        self._autoTimepointDue: dict[str, float] = {}
+        self._autoTimepointCached: dict[str, CompletedTimepointBatch] = {}
+        # Early HDF5 acceptance has stricter post-close requirements than
+        # whole-acquisition readiness: never share positive-evidence caches.
+        self._autoTimepointInspected: dict[str, dict] = {}
+        self._offlineAutoBatch = False
+        self._offlineBatchIndices = ()
         # M1 executor remains available for genuine growing-source Follow
         # work. Finite manual/Auto jobs now use offline per-timepoint execution.
         self._incrementalRunner = None
@@ -424,6 +437,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         if session_job_ids:
             self.queue.remove_waiting(session_job_ids)
             for job_id in session_job_ids:
+                self._cancel_waiting_auto_timepoints(job_id)
                 self._clear_readiness(job_id)
         self._emit_changed()
         self._process_next()
@@ -451,6 +465,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         if not removed:
             return 0
         for job in removed:
+            self._cancel_waiting_auto_timepoints(job.id)
             self._clear_readiness(job.id)
         self._emit_changed()
         if not self.queue.paused:
@@ -539,6 +554,37 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._readinessDue.pop(job_id, None)
         self._readinessCached.pop(job_id, None)
         self._readinessInspected.pop(job_id, None)
+        self._autoTimepointDue.pop(job_id, None)
+        self._autoTimepointCached.pop(job_id, None)
+        self._autoTimepointInspected.pop(job_id, None)
+
+    def _cancel_waiting_auto_timepoints(self, job_id) -> None:
+        state = self._autoTimepointStates.pop(str(job_id), None)
+        if state is not None:
+            # Finished scientific timepoints remain visible as a partial result.
+            try:
+                state.publisher.finish("cancelled")
+            except Exception:
+                self._logger.exception("Could not finalize removed progressive Auto job")
+
+    def _probe_auto_timepoints(self, job, source) -> CompletedTimepointBatch:
+        job_id = str(job.id)
+        now = time.monotonic()
+        if now < self._autoTimepointDue.get(job_id, 0.0):
+            return self._autoTimepointCached.get(
+                job_id, CompletedTimepointBatch(reason="Waiting for next timepoint"))
+        self._autoTimepointDue[job_id] = now + 2.0
+        state = self._autoTimepointStates.get(job_id)
+        try:
+            start, _ = job.timepoint_scope.bounds(job.timepoint_total)
+            batch = probe_completed_prefix(
+                source, job, next_t=(state.next_t if state else start),
+                inspected=self._autoTimepointInspected.setdefault(job_id, {}),
+            )
+        except (TypeError, ValueError, IndexError) as exc:
+            batch = CompletedTimepointBatch(reason=f"Timepoint readiness unavailable: {exc}")
+        self._autoTimepointCached[job_id] = batch
+        return batch
 
     def _probe_auto_readiness(self, job, source) -> Readiness:
         """Throttle metadata-only probes; never use file stability as a signal."""
@@ -586,6 +632,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         selected_choice = None
         prepared_live_job = None
         selected_failure = ""
+        selected_auto_batch = ()
+        selected_auto_refs = ()
         for position, candidate in enumerate(waiting):
             source = self._resolve_job_source(candidate)
             reconstructor = get_registry().get_reconstructor(
@@ -596,7 +644,41 @@ class ProcessingQueueController(ImProcessWidgetController):
                 break
 
             growing = False
+            auto_batch = ()
             if candidate.origin == ProcessingOrigin.AUTO:
+                # Finite Auto can process individually completed timepoints
+                # without needing a StreamingSession or an active raw reader.
+                # FOLLOW still prefers frame streaming; if its reader is
+                # unsafe, sealed timepoints may run through finite process().
+                can_run_early = (
+                    self._source_kind(source) == "time-lapse"
+                    and bool(getattr(reconstructor, "supports_progressive_finite", False))
+                    and candidate.timepoint_total is not None
+                )
+                early_started = str(candidate.id) in self._autoTimepointStates
+                if can_run_early and (candidate.execution_requirement != ExecutionRequirement.FOLLOW
+                                      or early_started):
+                    prefix = self._probe_auto_timepoints(candidate, source)
+                    if prefix.indices:
+                        auto_batch = prefix.indices
+                        choice = choose_execution(candidate, "time-lapse", reconstructor)
+                        selected = position
+                        selected_choice = choice
+                        selected_source = source
+                        selected_reconstructor = reconstructor
+                        selected_auto_batch = auto_batch
+                        selected_auto_refs = prefix.references
+                        selected_failure = ""
+                        break
+                    # If this is a shared HDF5 file, retain the existing
+                    # whole-acquisition readiness path. A resumed job must
+                    # never fall back to reprocessing its completed prefix.
+                    if early_started:
+                        status = prefix.reason or "Waiting for next completed timepoint"
+                        if candidate.readiness_status != status:
+                            candidate.readiness_status = status
+                            self._emit_changed()
+                        continue
                 readiness = self._probe_auto_readiness(candidate, source)
                 if readiness.state != ReadinessState.READY:
                     growing = readiness.state == ReadinessState.ACQUIRING
@@ -604,6 +686,23 @@ class ProcessingQueueController(ImProcessWidgetController):
                         candidate, self._source_kind(source), reconstructor,
                         growing=growing, live_reader=readiness.live_readable,
                     )
+                    if (choice.path != ExecutionPath.INCREMENTAL_FOLLOW
+                            and can_run_early
+                            and candidate.execution_requirement == ExecutionRequirement.FOLLOW):
+                        # The requested frame-following engine is unsafe for
+                        # this source (notably active HDF5). A sealed physical
+                        # timepoint can still run through finite process().
+                        prefix = self._probe_auto_timepoints(candidate, source)
+                        if prefix.indices:
+                            selected = position
+                            selected_choice = choose_execution(
+                                candidate, "time-lapse", reconstructor)
+                            selected_source = source
+                            selected_reconstructor = reconstructor
+                            selected_auto_batch = prefix.indices
+                            selected_auto_refs = prefix.references
+                            selected_failure = ""
+                            break
                     if choice.path != ExecutionPath.INCREMENTAL_FOLLOW:
                         status = (choice.reason if choice.reason and growing
                                   else readiness.reason or choice.reason or "Waiting for acquisition")
@@ -716,7 +815,11 @@ class ProcessingQueueController(ImProcessWidgetController):
             if selected_choice.path == ExecutionPath.INCREMENTAL_FOLLOW:
                 self._finish_current(error="Growing acquisition has no compatible reader")
                 return
-        self._start_offline(job, source, reconstructor)
+        self._start_offline(
+            job, source, reconstructor,
+            ready_timepoints=selected_auto_batch or None,
+            ready_references=selected_auto_refs or None,
+        )
 
     @staticmethod
     def _source_kind(source) -> str:
@@ -1045,7 +1148,8 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error="Live reconstruction did not start")
         return True
 
-    def _start_offline(self, job, source, reconstructor) -> None:
+    def _start_offline(self, job, source, reconstructor, *,
+                       ready_timepoints=None, ready_references=None) -> None:
         self._logger.info(
             "Processing dataset %s: kind=%s origin=%s runner=offline timepoints=%s",
             job.label,
@@ -1063,8 +1167,11 @@ class ProcessingQueueController(ImProcessWidgetController):
         scope = coerce_timepoint_scope(getattr(job, "timepoint_scope", None))
         scoped_count = scope.count(self._currentSourceTimepoints)
         self._currentPlannedTimepoints = scoped_count or self._currentSourceTimepoints
+        auto_batch = ready_timepoints is not None
+        allowed_t = set(ready_timepoints) if auto_batch else None
         data_objs = self._data_objs_for_source(
-            source, timepoint_scope=scope
+            source, timepoint_scope=scope, allowed_timepoints=allowed_t,
+            verified_references=ready_references if auto_batch else None,
         )
         if not data_objs:
             self._finish_current(error="No readable source units found")
@@ -1088,7 +1195,9 @@ class ProcessingQueueController(ImProcessWidgetController):
                 self._release_data_objs(data_objs)
                 self._finish_current(error="Timelapse has ambiguous or duplicate timepoint identity")
                 return
-            if stop_t is not None and set(indices) != set(range(start_t, stop_t)):
+            required_indices = (allowed_t if auto_batch else
+                                set(range(start_t, stop_t)) if stop_t is not None else set())
+            if stop_t is not None and set(indices) != required_indices:
                 missing = sorted(set(range(start_t, stop_t)) - set(indices))
                 self._release_data_objs(data_objs)
                 self._finish_current(error=(
@@ -1112,6 +1221,9 @@ class ProcessingQueueController(ImProcessWidgetController):
         worker_jobs = []
         for data_obj in data_objs:
             params = copy.deepcopy(job.params)
+            state = self._autoTimepointStates.get(str(job.id)) if auto_batch else None
+            if state is not None:
+                params.update(copy.deepcopy(state.reuse_overrides))
             try:
                 validator = getattr(reconstructor, "validate_source", None)
                 if callable(validator):
@@ -1139,18 +1251,38 @@ class ProcessingQueueController(ImProcessWidgetController):
         # Progressive finite processing is a separate capability from
         # frame-streaming. Other plugins may opt in once their per-item result
         # and axis semantics have been validated.
-        progressive = bool(
+        progressive = bool(auto_batch or (
             atomic_lapse and len(worker_jobs) > 1 and scoped_count is not None
             and getattr(reconstructor, "supports_progressive_finite", False)
-        )
+        ))
+        if auto_batch and str(job.id) not in self._autoTimepointStates:
+            if not progressive or not atomic_lapse:
+                self._release_data_objs(data_objs)
+                self._finish_current(error="Invalid progressive Auto job")
+                return
+            _, stop_t = scope.bounds(self._currentSourceTimepoints)
+            self._autoTimepointStates[str(job.id)] = AutoTimepointState(
+                next_t=min(allowed_t), stop_t=stop_t,
+                publisher=self._new_result_publisher(
+                    job, scope=scope, total=self._currentSourceTimepoints,
+                    relation="timepoint",
+                ),
+            )
         thread = QtCore.QThread()
         self._offlinePendingOutcome = None
         self._offlineAtomicLapse = atomic_lapse
         self._offlinePendingResult = None
         self._offlineReconstructor = reconstructor
         self._offlineProgressive = progressive
-        self._offlinePublishedCount = 0
+        self._offlineAutoBatch = auto_batch
+        self._offlineBatchIndices = tuple(sorted(allowed_t)) if auto_batch else ()
+        state = self._autoTimepointStates.get(str(job.id)) if auto_batch else None
+        self._offlinePublishedCount = (
+            state.next_t - scope.bounds(self._currentSourceTimepoints)[0]
+            if state is not None else 0
+        )
         self._offlinePublisher = (
+            state.publisher if state is not None else
             self._new_result_publisher(
                 job, scope=scope, total=self._currentSourceTimepoints,
                 relation="timepoint",
@@ -1187,13 +1319,38 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineWorker = worker
         thread.start()
 
-    def _data_objs_for_source(self, source, *, timepoint_scope=None) -> list[DataObj]:
+    def _data_objs_for_source(self, source, *, timepoint_scope=None,
+                              allowed_timepoints=None, verified_references=None) -> list[DataObj]:
         scope = coerce_timepoint_scope(timepoint_scope)
         total = self._planned_timepoints(source)
         try:
             start, stop = scope.bounds(total)
         except (IndexError, TypeError, ValueError):
             return []
+
+        if verified_references is not None:
+            # Read exactly the same sealed partitions that readiness checked.
+            # They may not yet be present in the passive Session catalog (for
+            # example if Monitor was switched off after Auto admission).
+            out = []
+            for ref in verified_references:
+                if (allowed_timepoints is None or ref.logical_t not in allowed_timepoints
+                        or ref.logical_t < start
+                        or (stop is not None and ref.logical_t >= stop)):
+                    continue
+                dataset_name = ref.dataset
+                if not dataset_name:
+                    try:
+                        names = list(DataObj.getDatasetNames(str(ref.path)))
+                    except Exception:
+                        continue
+                    if len(names) != 1:
+                        continue
+                    dataset_name = names[0]
+                obj = DataObj(Path(ref.path).name, str(dataset_name), path=str(ref.path))
+                obj._improcess_timepoint_scope = TimepointScope.single(ref.logical_t)
+                out.append(obj)
+            return out
 
         if isinstance(source, DataObj):
             source_kind = str(getattr(source, "sourceKind", "image") or "image")
@@ -1210,7 +1367,9 @@ class ProcessingQueueController(ImProcessWidgetController):
                     logical_index = (
                         int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index)
                     )
-                    if logical_index < start or (stop is not None and logical_index >= stop):
+                    if (logical_index < start or (stop is not None and logical_index >= stop)
+                            or (allowed_timepoints is not None
+                                and logical_index not in allowed_timepoints)):
                         continue
                     dataset_name = item.dataset
                     if dataset_name in (None, ""):
@@ -1254,7 +1413,9 @@ class ProcessingQueueController(ImProcessWidgetController):
                 if logical_index is None:
                     logical_index = fallback_index
                 logical_index = int(logical_index)
-                if logical_index < start or (stop is not None and logical_index >= stop):
+                if (logical_index < start or (stop is not None and logical_index >= stop)
+                        or (allowed_timepoints is not None
+                            and logical_index not in allowed_timepoints)):
                     continue
             dataset_name = ref.dataset
             if dataset_name in (None, ""):
@@ -1289,8 +1450,17 @@ class ProcessingQueueController(ImProcessWidgetController):
         # phase/status concise there.
         if message.startswith("Item ") and ": " in message:
             message = message.split(": ", 1)[1]
+        fraction = max(0.0, min(1.0, float(progress.fraction)))
+        if self._offlineAutoBatch and self._offlineBatchIndices:
+            job = self.queue.current
+            if job is not None:
+                start, stop = job.timepoint_scope.bounds(job.timepoint_total)
+                if stop is not None and stop > start:
+                    first = self._offlineBatchIndices[0]
+                    fraction = min(1.0, (first - start
+                        + fraction * len(self._offlineBatchIndices)) / (stop - start))
         self._currentProgress = {
-            "fraction": max(0.0, min(1.0, float(progress.fraction))),
+            "fraction": fraction,
             "status": message,
         }
         self._emit_progress_changed()
@@ -1344,6 +1514,18 @@ class ProcessingQueueController(ImProcessWidgetController):
                 raise ValueError(f"Expected source T{expected}, got T{scope.first}")
             publisher.append_completed(result, ordinal, run=run)
             self._offlinePublishedCount += 1
+            job = self.queue.current
+            state = self._autoTimepointStates.get(str(job.id)) if job is not None else None
+            if state is not None and self._offlineAutoBatch:
+                # The persistent cursor advances only after publication of
+                # an actual scientific result, never merely after file reads.
+                state.next_t = int(scope.first) + 1
+                if not state.calibration_resolved:
+                    capture = getattr(self._offlineReconstructor,
+                                      "finite_timepoint_reuse_overrides", None)
+                    if callable(capture):
+                        state.reuse_overrides = dict(capture(result, job.params) or {})
+                    state.calibration_resolved = True
         except Exception as exc:
             self._logger.exception("Offline progressive publication failed")
             self._offlinePendingOutcome = ("failed", f"Progressive result assembly failed: {exc}")
@@ -1415,6 +1597,13 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlinePendingOutcome = None
         atomic_lapse = self._offlineAtomicLapse
         progressive = getattr(self, "_offlineProgressive", False)
+        auto_batch = self._offlineAutoBatch
+        expected_batch = self._offlineBatchIndices
+        self._offlineAutoBatch = False
+        self._offlineBatchIndices = ()
+        job = self.queue.current
+        stage = (self._autoTimepointStates.get(str(job.id))
+                 if auto_batch and job is not None else None)
         publisher = getattr(self, "_offlinePublisher", None)
         self._offlineProgressive = False
         self._offlinePublisher = None
@@ -1426,6 +1615,28 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineReconstructor = None
 
         state, message = outcome
+        if (stage is not None and state == "completed" and expected_batch
+                and stage.next_t != expected_batch[-1] + 1):
+            state, message = "failed", "Finite worker omitted a completed timepoint"
+        if (stage is not None and state == "completed" and not self._skipRequested
+                and stage.next_t < stage.stop_t):
+            # The worker and all HDF5 readers are gone. Release the serial
+            # slot while keeping this job, publisher and calibration alive.
+            self.queue.defer_current(position="end")
+            job.readiness_status = f"Waiting for completed T{stage.next_t + 1}"
+            self._readinessDue.pop(str(job.id), None)
+            self._autoTimepointDue.pop(str(job.id), None)
+            self._autoTimepointCached.pop(str(job.id), None)
+            self._autoTimepointInspected.pop(str(job.id), None)
+            self._currentProgress = {}
+            self._skipRequested = False
+            self._emit_changed()
+            self._emit_progress_changed()
+            if not self._closing and not self.queue.paused:
+                QtCore.QTimer.singleShot(0, self._process_next)
+            return
+        if stage is not None:
+            self._autoTimepointStates.pop(str(job.id), None)
         if progressive:
             try:
                 if publisher is None:
@@ -1533,6 +1744,14 @@ class ProcessingQueueController(ImProcessWidgetController):
         if job is None:
             return
         self._clear_readiness(job.id)
+        pending_stage = self._autoTimepointStates.pop(str(job.id), None)
+        if pending_stage is not None:
+            try:
+                pending_stage.publisher.finish(
+                    "cancelled" if skipped else "failed" if error else "complete"
+                )
+            except Exception:
+                self._logger.exception("Could not finalize interrupted Auto result")
         if skipped:
             self.queue.skip_current()
             self._lastTerminalStatus = {}
@@ -1590,8 +1809,14 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._readinessDue.clear()
         self._readinessCached.clear()
         self._readinessInspected.clear()
+        self._autoTimepointInspected.clear()
+        self._autoTimepointDue.clear()
+        self._autoTimepointCached.clear()
         self.autoPolicy.enabled = False
         self.queue.clear_waiting()
+        for job_id in tuple(self._autoTimepointStates):
+            if self.queue.current is None or str(self.queue.current.id) != job_id:
+                self._cancel_waiting_auto_timepoints(job_id)
         self._externalSources.clear()
         self.queue.pause()
         if self._live.is_running:
