@@ -1,9 +1,10 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
-    ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
+    ScanManagerBase, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
+from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
 from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.model.managers._scan_execution import (
@@ -108,6 +109,9 @@ class MasterController:
 
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:
+            retired = retiredScanWidgetTypeError(self.__setupInfo.scan.scanWidgetType)
+            if retired is not None:
+                raise retired
             # scanWidgetType is always the real scan backend.  A cloak only
             # changes the frontend selected by the main view/controller.
             try:
@@ -115,19 +119,15 @@ class MasterController:
             except ValueError as error:
                 self.__logger.error(str(error))
                 return
-            if scanType == "PointScan":
-                self.scanManager = ScanManagerPointScan(self.__setupInfo)
-            elif scanType == "Base":
+            if scanType == "Base":
                 self.scanManager = ScanManagerBase(self.__setupInfo)
-            elif scanType == "MoNaLISA":
-                self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
             elif scanType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
             elif scanType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
                                                            self.triggerScopeManager)
             else:
-                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]
+                known = ["Base", "Advanced", "TriggerScope"]
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the '
                     f'following: {known}.'

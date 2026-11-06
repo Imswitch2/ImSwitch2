@@ -191,7 +191,6 @@ class BeadRecWidget(Widget):
 
     def updateImage(self, image, autoLevels=False):
         self.img.setImage(image, autoLevels=autoLevels)
-        # self.removeCenterCoord()
 
     def _onRotateClicked(self):
         self._rotation = (self._rotation + 90) % 360
@@ -402,21 +401,6 @@ class BeadRecWidget(Widget):
 
     def erasePixelValue(self):
         self.pixelLabel.setPlainText("")
-    
-    def displayCenterCoord(self,y,x):
-        self.removeCenterCoord()
-        self.vline = pg.InfiniteLine(pos=x, angle=90, pen=pg.mkPen('r'))
-        self.hline = pg.InfiniteLine(pos=y, angle=0, pen=pg.mkPen('r'))
-        self.vb.addItem(self.vline)
-        self.vb.addItem(self.hline)
-
-    def removeCenterCoord(self):
-        if hasattr(self, 'vline') and self.vline in self.vb.addedItems:
-            self.vb.removeItem(self.vline)
-            del self.vline 
-        if hasattr(self, 'hline') and self.hline in self.vb.addedItems:
-            self.vb.removeItem(self.hline)
-            del self.hline
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

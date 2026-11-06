@@ -310,7 +310,7 @@ def test_the_point_tool_layer_is_not_an_image_source():
     from types import SimpleNamespace
 
     from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
-    from imswitch.improcess.layer_selection import is_image_layer
+    from imswitch.imcommon.algorithms.layer_selection import is_image_layer
 
     layer = SimpleNamespace(
         name=ViewerToolManager.POINTS_LAYER_NAME,
@@ -324,7 +324,7 @@ def test_every_tool_layer_the_manager_creates_is_excluded_by_name():
     """The two lists are in different packages; a new tool layer added to one
     and not the other is the same bug, found later."""
     from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
-    from imswitch.improcess.layer_selection import ANNOTATION_LAYER_NAMES
+    from imswitch.imcommon.algorithms.layer_selection import ANNOTATION_LAYER_NAMES
 
     for attribute in ("LAYER_NAME", "POINTS_LAYER_NAME"):
         name = getattr(ViewerToolManager, attribute)

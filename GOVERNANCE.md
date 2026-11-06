@@ -25,7 +25,7 @@ ImSwitch2 is maintained by a small team with clearly defined roles. The project 
 
 ### AI Agents
 
-AI agents (including OpenHands, Claude, and Microsoft Agent Framework agents) operate under strict constraints defined in `AGENTS.md`. They function as development assistants only:
+AI agents (including OpenHands, Claude, and Microsoft Agent Framework agents) operate under strict constraints defined in `docs/developer-onboarding.rst` and `docs/agent-task-templates.rst`. They function as development assistants only:
 
 - Agents never merge code automatically.
 - Agents never modify red-zone files without explicit human approval.

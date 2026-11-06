@@ -115,7 +115,7 @@ populator (below) fills them in.  The script applies the application's
 dark style sheet (the one ``prepareApp`` installs), so the captures look
 like the running program; ``--light`` leaves it off.  A widget that comes
 out smaller than 32 pixels in either direction — an empty frame whose
-content only its controller adds, such as ``WellPlateWidget`` — is skipped
+content only its controller adds — is skipped
 rather than written.
 
 **Mock-setup (``--mock-setup``).**  Builds the full ImControl main window
@@ -204,7 +204,7 @@ lazily from the positioner list.
 
 Populators live in ``tools/screenshot_widgets.py`` next to a
 ``POPULATORS`` dict that maps widget class names to populator
-functions.  Widgets without an entry (``SLMWidget``, for example) are
+functions.  Widgets without an entry (``SLMsWidget``, for example) are
 captured with their bare layout.  A few of the populators:
 
 * ``_populate_laser`` — adds 405 / 488 / 561 (modulation-capable) /

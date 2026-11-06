@@ -2,8 +2,8 @@ from unittest.mock import Mock, patch
 
 from imswitch.imcontrol.controller.SetupModeController import SetupModeController
 from imswitch.imcontrol.controller.controllers.ImageController import ImageController
-from imswitch.imcontrol.model.WidgetStatePersistence import WidgetStatePersistence
-from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
+from imswitch.imcommon.model.WidgetStatePersistence import WidgetStatePersistence
+from imswitch.imcommon.model.state_contracts import ComponentStateApplyMode
 
 
 class _Signal:

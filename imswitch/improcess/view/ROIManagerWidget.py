@@ -14,7 +14,7 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.view.guitools.naparitools import NapariROISetOverlay
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.analysis.roi_frame_adapter import world_to_data
-from imswitch.improcess.layer_selection import active_image_layer
+from imswitch.imcommon.algorithms.layer_selection import active_image_layer
 from imswitch.imcommon.algorithms.roi_style import ROIStyle
 from imswitch.improcess.analysis.roi_commands import (
     AddROI,

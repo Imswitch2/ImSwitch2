@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from imswitch.imcontrol.model.bead_recognition import (
+from imswitch.imcommon.algorithms.bead_recognition import (
     BeadAcquisitionConfig,
     BeadAnalysisParameters,
     BeadRecResultRecord,

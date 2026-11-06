@@ -24,7 +24,6 @@ from types import ModuleType
 _EXPORTS = {
     "ImConMainView": ("ImConMainView", "ImConMainView"),
     "PickSetupDialog": ("PickSetupDialog", "PickSetupDialog"),
-    "SLMDisplay": ("SLMDisplay", "SLMDisplay"),
     "ViewSetupInfo": ("guitools", "ViewSetupInfo"),
 }
 

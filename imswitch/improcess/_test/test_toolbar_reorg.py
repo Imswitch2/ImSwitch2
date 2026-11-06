@@ -1,6 +1,6 @@
 """Phase-2 toolbar reorg: origin-split enumerations and toolbar structure.
 
-Locks in the split introduced by docs/improcess-image-ops-plan.md Phase 2:
+Locks in the split introduced by docs/improcess-image-ops-plan.md (retired; see git history) Phase 2:
 Image (display-only) vs Image operations (result-producing), Tools (built-in
 panels) vs Plugins (drop-in plugins), with origin-aware enumeration so a
 hot-reloaded plugin lands in the Plugins combo and never leaks into Tools.

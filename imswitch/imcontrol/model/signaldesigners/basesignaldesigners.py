@@ -290,12 +290,26 @@ class TTLCycleDesigner(SignalDesigner, ABC):
         pass
 
 
+#: Removed designers, and what to name instead. A setup that still names one
+#: (the config editor's scan template defaulted to PointScanTTLCycleDesigner)
+#: gets this instead of a ModuleNotFoundError.
+_RETIRED_DESIGNERS = {
+    'PointScanTTLCycleDesigner': (
+        'it went with the PointScan panel. Use "AdvancedScanTTLCycleDesigner" '
+        'with scanWidgetType "Advanced", or "BetaTTLCycleDesigner" with "Base"'
+    ),
+}
+
+
 class SignalDesignerFactory:
     """Factory class for creating a SignalDesigner object. Factory checks
     that the new object is compatible with the parameters that will we
     be sent to its make_signal method."""
 
     def __new__(cls, designerName):
+        if designerName in _RETIRED_DESIGNERS:
+            raise ValueError(f'Signal designer "{designerName}" has been removed: '
+                             f'{_RETIRED_DESIGNERS[designerName]}.')
         currentPackage = '.'.join(__name__.split('.')[:-1])
         package = importlib.import_module(pythontools.joinModulePath(currentPackage, designerName))
         signalDesigner = getattr(package, designerName)()

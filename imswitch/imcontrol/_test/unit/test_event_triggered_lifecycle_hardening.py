@@ -305,14 +305,7 @@ def test_close_waits_for_owned_scan_before_disconnecting_completion_signals():
             sigScanBuildFailed=failedSignal,
         )
     )
-    controller._commChannel = SimpleNamespace(
-        sigSendScanParameters=_Signal(),
-        sigSendScanFreq=_Signal(),
-    )
-    controller._commChannel.sigSendScanParameters.connect(
-        controller.assignScanParameters
-    )
-    controller._commChannel.sigSendScanFreq.connect(controller.logScanFreq)
+    controller._commChannel = SimpleNamespace()
     controller.stopExperiment = lambda resetParams=False: None
 
     assert controller.closeEvent() is False

@@ -24,7 +24,7 @@ from imswitch.improcess.analysis.multicolor import (
     transform_details,
 )
 from imswitch.improcess.analysis.projections import axis_labels_for_shape
-from imswitch.improcess.layer_selection import active_image_layer
+from imswitch.imcommon.algorithms.layer_selection import active_image_layer
 from imswitch.improcess.processors.multicolor_apply import MulticolorApplyResult
 from imswitch.improcess.processors.multicolor_registration import (
     MulticolorRegistrationResult,

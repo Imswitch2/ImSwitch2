@@ -16,8 +16,8 @@ api.imcontrol
 
       Legacy, kept for old scripts: appends the live view's current
       image to a list that a script the Watcher widget runs gets, and that
-      nothing reads. Outside such a script it raises AttributeError. To get
-      images, use snapImage(True), getLiveFrame or recordFramesToMemory,
+      nothing reads. Outside such a script it keeps only the latest image.
+      To get images, use snapImage(True), getLiveFrame or recordFramesToMemory,
       which return them.
 
       Always available.
@@ -80,10 +80,9 @@ api.imcontrol
 
    .. method:: changed3StepDelayPar(d3StepDelay)
 
-      Sets the Point scan widget's delay before each step of the third
-      axis.
+      Set the D3 (frame-step) delay field, in microseconds.
 
-      Needs the *Scan* widget (PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: changeRotationParameters(rotationPars)
 
@@ -97,7 +96,7 @@ api.imcontrol
       Sets the centre of the scan along a positioner, in µm (the Scan
       widget's *Center*).
 
-      Needs the *Scan* widget (Advanced, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
 
@@ -115,7 +114,7 @@ api.imcontrol
       Sets the size of the scan along a positioner, in µm (the Scan
       widget's *Size*).
 
-      Needs the *Scan* widget (Advanced, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: connectInstrument(name: 'str') -> 'dict'
 
@@ -345,7 +344,7 @@ api.imcontrol
       Returns the device names of all positioners. These device names can
       be passed to other positioner-related functions.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getPositionerPosition(positionerName: str, axis: str) -> float
 
@@ -358,7 +357,7 @@ api.imcontrol
       Returns the positions of all positioners, in µm, as
       ``{positioner: {axis: position}}``.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getRecFileFormat() -> str
 
@@ -420,7 +419,7 @@ api.imcontrol
       ``TTL_end`` in s) and ``positionersScan``. Edit it and give it back
       with setScanParameters.
 
-      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, Base, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
@@ -525,18 +524,11 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: loadParams()
-
-      Loads the SLM parameters of the objective chosen in the SLM
-      widget; logs an error and does nothing while none is chosen.
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: loadScanParamsFromFile(filePath: str) -> None
 
       Loads scanning parameters from the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: loadSetupMode(name, componentNames=None)
 
@@ -620,7 +612,7 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: moveRotator(name: str, degrees: float) -> None
 
@@ -765,7 +757,7 @@ api.imcontrol
 
       Saves the set scanning parameters to the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: saveSetupMode(name, componentNames=None, description=None, shortcut=None)
 
@@ -898,13 +890,6 @@ api.imcontrol
 
       Needs *View* in ``availableWidgets``.
 
-   .. method:: setMask(maskMode)
-
-      Sets the mode of the mask chosen in the SLM widget, by MaskMode
-      value or by its name.
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: setMotorsEnabled(positionerName: str, is_enabled: int) -> None
 
       Moves the specified positioner axis to the specified position.
@@ -915,7 +900,7 @@ api.imcontrol
 
       Moves the specified positioner axis to the specified position.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setPositionerSpeed(positionerName: str, speed: float) -> None
 
@@ -928,7 +913,7 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setRecFileFormat(fileFormat: str) -> None
 
@@ -1005,7 +990,7 @@ api.imcontrol
       ValueError, naming what could not be applied, when the dict does
       not fit the setup (a device the setup lacks, say).
 
-      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, Base, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: setSessionNote(note: str) -> None
 
@@ -1090,14 +1075,14 @@ api.imcontrol
       Moves the specified positioner axis in negative direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stepPositionerUp(positionerName: str, axis: str) -> None
 
       Moves the specified positioner axis in positive direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stopRecording() -> bool
 
@@ -1113,12 +1098,6 @@ api.imcontrol
       Asks the running tiling run, or cell targeting, to stop.
 
       Needs *Tiling* in ``availableWidgets``.
-
-   .. method:: toggleSLMDisplay(enabled)
-
-      Shows or hides the SLM display window.
-
-      Needs *SLM* in ``availableWidgets``.
 
    .. method:: updateSetupModeMetadata(name, description=None, shortcut=None)
 

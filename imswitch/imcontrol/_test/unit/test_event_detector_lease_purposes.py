@@ -13,7 +13,7 @@ failing loudly:
   KEEPS the lease. A release guarded on that connection flag therefore skips a
   paused run and leaks the handle for the rest of the session.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 from imswitch.imcontrol.controller.controllers.EtSnoutyController import (

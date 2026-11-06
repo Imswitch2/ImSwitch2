@@ -243,7 +243,7 @@ def test_widget_sizing_audit():
     problematic patterns. A broader hard-size audit (e.g., all setFixedHeight,
     all setMinimumWidth) would flag many legitimate uses in dialogs, numeric
     inputs, graph controls, and specialized widgets. Those require case-by-case
-    review and are documented in docs/design/plans/widget-usability-improvements.md.
+    review and are documented in docs/design/plans/widget-usability-improvements.md (retired; see git history).
 
     Known legitimate sizing patterns NOT flagged here:
     - Small numeric field widths (e.g., coordinate inputs, power controls)

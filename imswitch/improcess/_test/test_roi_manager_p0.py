@@ -1,4 +1,4 @@
-"""P-0 defect fixes for the ROI manager (see docs/design/plans/improcess-roi-manager-2-0.md).
+"""P-0 defect fixes for the ROI manager (ROI manager 2.0 design retired; see git history of docs/design/plans/improcess-roi-manager-2-0.md).
 
 Covers D-01 (inert Visible checkbox), D-03 (one bad ROI blanking the batch),
 D-05 (rows keyed by model index) and D-12/D-13 (lossy mutations, unsafe name

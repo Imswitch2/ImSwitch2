@@ -1,5 +1,5 @@
-"""Recording dtype contract for the TIS camera mock (recording_dataflow_plan,
-ROADMAP M10 Phase 1): DetectorManager.dtype is the single source of truth for
+"""Recording dtype contract for the TIS camera mock (docs/design/plans/recording-dataflow.md,
+Phase 1): DetectorManager.dtype is the single source of truth for
 the storer's dataset dtype, and frames must match it. MockCameraTIS used to
 emit float64 frames while the manager declared uint16, so every mock recording
 logged an HDF5Storer dtype-mismatch warning and cast each frame. MockCameraTIS

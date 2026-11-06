@@ -25,6 +25,20 @@ Unreleased
   pixel size. The parameters are ``params_version`` 2: a recorded run of the
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
+- **The single-SLM panel is gone.** The ``SLM`` widget (``SLMController``, ``SLMWidget``, ``SLMManager``, ``SLMDisplay``), the ``slm`` setup section (``SLMInfo``) and ``CommunicationChannel.sigSLMMaskUpdated`` were removed. They could not run: ImControl builds only the multi-SLM manager of the ``slms`` section, so a layout that placed ``"SLM"`` stopped ImControl from loading. An ``slm`` key in an old setup file is still accepted (``validate-setup`` notes it) and dropped when ImSwitch rewrites the file; configure the device under ``slms`` and use the ``SLMs`` panel. ``example_sted.json`` no longer lists ``SLM`` or carries an ``slm`` section, and the per-objective ``imcontrol_slm/info_oil.json`` / ``info_glyc.json`` defaults of the old panel are no longer shipped (an existing copy in ``~/ImSwitchConfig`` is left alone).
+- **The PointScan scan panel is gone.** ``"scanWidgetType": "PointScan"`` (``ScanControllerPointScan``, ``ScanWidgetPointScan``, ``ScanManagerPointScan`` and ``PointScanTTLCycleDesigner``) has been removed; the ``Advanced`` panel does everything it did for shipped setups, and ``changed3StepDelayPar`` is now an ``api.imcontrol`` call of the Advanced controller. A setup that still names ``PointScan`` stops at startup with a message telling you to use ``"Advanced"`` with ``"AdvancedScanTTLCycleDesigner"`` (and ``scan.cloak: "SimplePointScan"`` for the simpler panel). The old panel's per-device *Line steps* / *Axis* pattern (``TTL_sequence`` / ``TTL_sequence_axis``) is dropped without replacement. Saved widget states from a PointScan session still load. The config editor's scan template now defaults to ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``, the pair the ``Base`` panel uses, instead of a mismatched Galvo / PointScan pair.
+- **The MoNaLISA scan panel is gone.** ``"scanWidgetType": "MoNaLISA"`` (``ScanControllerMoNaLISA``, ``ScanWidgetMoNaLISA``, ``ScanManagerMoNaLISA``) has been removed; it was the ``Base`` panel plus automatic axial scans. A setup that still names it stops at startup with a message telling you to use ``"Base"`` (same ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``, ms TTL timing and **Cont. Laser Pulses**) or ``"Advanced"`` (with ``scan.cloak: "SimpleMoNaLISA"`` for the profile-driven MoNaLISA panel). The **Axial Scan** option -- an XZ and/or YZ section after a 2-D XY scan, through a bead centre found in the Bead reconstruction tool -- is dropped without replacement, together with the ``CommunicationChannel`` signals and ``BeadRec`` handlers that only it used (``sigQueryCenterCoord``, ``sigCenterCoordPipelineFinished``, ``sigUpdateBeadRecCenter``, ``sigShowBeadRecCenterCross``, ``sigAutoAxialToggled``, ``sigNewAxialListBuffer``, ``getNextAxial`` and ``beadRecWorkflow``). Saved widget states from a MoNaLISA-panel session still load. ``mock_scan_setup.json`` and ``mock_scan_monalisa_live.json`` now use the ``Base`` panel. The ImProcess MoNaLISA reconstruction is unaffected.
+
+**Bug Fixes**
+
+- ImSwitch starts when a DVI SLM's display is not connected. A ``HamamatsuSLMdviManager`` whose ``monitorIdx`` names a monitor the computer does not have (the SLM meant to be the third display on a machine with one) raised during startup and ImControl did not load. Now the SLM is reported as *not found* in the device status, the log names the displays that are connected, and the rest of the setup runs; patterns are computed and shown in the SLMs panel but reach no display until the SLM's monitor is connected and ImSwitch restarted. In ``mockermode`` a missing display is expected and stays a mock, not an error.
+- ``api.imcontrol.acquireImage()`` works outside a running script. It appended to a list that only ``runScript`` created, so a call from the API raised ``AttributeError``; the list now exists from the start (outside a script it keeps just the latest image).
+
+**Developer / Internal**
+
+- Compatibility shims deleted, their callers import the real modules: ``imcontrol.controller.ShortcutManager`` (now ``imcommon.controller.ShortcutManager``), ``imcontrol.model.bead_fits`` / ``bead_recognition`` (``imcommon.algorithms``), ``imcontrol.model.WidgetStatePersistence`` / ``state_contracts`` (``imcommon.model``; ``imcontrol.model`` still exports ``WidgetStatePersistence`` and ``getWidgetStatePersistence``) and ``improcess.layer_selection`` (``imcommon.algorithms.layer_selection``). ``imcontrol.model.workflows.recording`` stays: user scripts import it. The never-collected ``tests/test_bead_fits.py`` moved into ``imswitch/imcommon/_test/test_bead_fits.py`` and ``tests/`` was removed.
+- ``CommunicationChannel`` second cleanup pass. The scan-parameter and scan-frequency request/response signal pairs (``sigRequestScanParameters``/``sigSendScanParameters``, ``sigRequestScanFreq``/``sigSendScanFreq``) became synchronous ``ScanWorkflowService.request_scan_parameters()`` / ``request_scan_frequency()`` calls that return the data. ``sigRunScanTriggerScopePLSRMulticolor`` became ``ScanWorkflowService.run_plsr_multicolor_scan()``, which calls ``runScanPLSRMulticolorExternal`` on the TriggerScope controllers that have one (it raises if there is none, rather than starting nothing). ``sigInitiateEtMonalisa`` and ``sigInitiateEtSnouty`` (nobody listened) and ``sigClockWidefield`` (EtSnouty's private clock, now a signal on the controller) left the channel; the unused ``getNumLineSteps`` and test-only ``isExecuting`` methods are gone and the two scan-source resolvers share one helper. The TriggerScope controllers' ``sendScanParameters`` replies emitted one argument on a three-argument signal and could never have been delivered; they are removed with the dead ``_attrCategoryDevices`` constants and ``LightSheetMulticolorController.attrChanged``.
+- Scripts have one home per kind. ``utility_scripts/`` is now ``scripts/utilities/`` (operator tools: ``python scripts/utilities/imswitch_config_editor.py``, ``aa_aotf_calibration.py``, ``scopeaid_seed_from_config.py``); the hardware probes ``bsc203_diag.py`` and ``diagnose_tis_camera.py`` moved to ``scripts/diagnostics/``; the ScopeAId templates and schemas moved from ``docs/microscope-kb/`` to ``scripts/utilities/scopeaid/``. Anyone running these by their old path must update the command. CI gained a lane that runs the tests of the three device plugins in ``examples/plugins``, the package build no longer swallows its errors, and the unused C header and import library of the Hamamatsu SLM library (``hpkSLMdaLV.h``, ``hpkSLMdaLV.lib``) were removed (the DLLs and their LabVIEW runtime files stay).
 
 v0.4.0 (2026-10-29)
 ===================
@@ -85,7 +99,7 @@ v0.4.0 (2026-10-29)
   is switched off, so colour shows depth rather than density (takes effect
   with a napari-storm release that has ``summed_contrast``). (#61)
 - **A workflow that feeds a step a kind of result it does not take is refused when it is checked**, not halfway through the run. Every built-in processor and reconstructor now declares what it produces (``output_kind``: image, labels, table, curve, localization, composite or rgb), so ``validate`` — and with it ``python -m imswitch.improcess.workflows validate``, the editor's issue list and every run, which validates first — can say *"'filter' does not accept table results, which 'coloc' produces"* before anything opens. Only declared kinds are compared: the Python step (``any``), a plugin that declares nothing and a raw recording are never refused on a guess, so a workflow that ran before still runs.
-- **The example setups run on the Advanced scan panel.** ``example_sted.json`` (was ``PointScan``), ``example_monalisa.json`` (was ``MoNaLISA``) and ``example_coolLED.json`` (was ``Base``) now use ``"scanWidgetType": "Advanced"`` with ``AdvancedScanTTLCycleDesigner``, keeping their scan designers (Galvo for the STED, Beta for the stepped MoNaLISA and coolLED scans): the PointScan and MoNaLISA panels have been merged into Advanced. What only the MoNaLISA panel had -- the automatic axial (XZ/YZ) scan and the continuous laser-pulse mode -- is not on the Advanced panel; a setup that needs them can still name ``MoNaLISA``. The hardware-free mocks that tests use (``mock_scan_setup``, ``mock_scan_monalisa_live``, ``hamamatsu_mock_scan_setup``, ``mixed_hamamatsu_apd_mock_scan_setup``) keep their panels, and ``mock_scan_setup``'s comment now says which one it uses.
+- **The example setups run on the Advanced scan panel.** ``example_sted.json`` (was ``PointScan``), ``example_monalisa.json`` (was ``MoNaLISA``) and ``example_coolLED.json`` (was ``Base``) now use ``"scanWidgetType": "Advanced"`` with ``AdvancedScanTTLCycleDesigner``, keeping their scan designers (Galvo for the STED, Beta for the stepped MoNaLISA and coolLED scans): the PointScan and MoNaLISA panels have been merged into Advanced. What only the MoNaLISA panel had -- the automatic axial (XZ/YZ) scan and the continuous laser-pulse mode -- is not on the Advanced panel (the MoNaLISA panel has since been removed; ``Base`` keeps the continuous laser-pulse mode). The hardware-free mocks that tests use (``mock_scan_setup``, ``mock_scan_monalisa_live``, ``hamamatsu_mock_scan_setup``, ``mixed_hamamatsu_apd_mock_scan_setup``) keep their panels, and ``mock_scan_setup``'s comment now says which one it uses.
 - ``example_sted.json``: its frame clock is ``frameStartClockLine`` (the old ``frameClockLine`` key was no longer read, so the line was silently not driven); the focus lock's ``PiezoZ`` and the scanned ``ND-PiezoZ`` declare one ``physicalActuator``, stating what the focus lock already assumed; the APDs lose a ``cameraListIndex`` they never read.
 
 **Bug Fixes**
@@ -458,8 +472,13 @@ manager-level refactors) remain in progress.
 - Completed hardware manager audit: applied 100+ instant fixes (mock fallbacks, lazy imports, validation checks)
 - Improved cross-thread signaling robustness in scan and tiling controllers (Qt signal emission replaces QMetaObject.invokeMethod)
 
+Upstream ImSwitch history
+=========================
+
+Releases of the upstream ImSwitch 1.x project that ImSwitch2 descends from, kept for reference.
+
 2.0.0
-=====
+-----
 
 Highlights:
 
@@ -474,7 +493,7 @@ Highlights:
 A list of all code changes is available on GitHub: https://github.com/kasasxav/ImSwitch/compare/v1.2.1...v2.0.0
 
 1.2.1
-=====
+-----
 
 Highlights:
 
@@ -488,7 +507,7 @@ A list of all code changes is available on GitHub: https://github.com/kasasxav/I
 
 
 1.2.0
-=====
+-----
 
 Highlights:
 
@@ -504,7 +523,7 @@ A list of all code changes is available on GitHub: https://github.com/kasasxav/I
 
 
 1.1.0
-=====
+-----
 
 Highlights:
 
@@ -520,6 +539,6 @@ A list of all code changes is available on GitHub: https://github.com/kasasxav/I
 
 
 1.0.0
-=====
+-----
 
 Initial release.

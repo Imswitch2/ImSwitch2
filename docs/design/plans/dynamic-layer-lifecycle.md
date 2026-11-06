@@ -1,8 +1,12 @@
 # Dynamic Napari Layer Lifecycle — Plan
 
-**Status:** NOT IMPLEMENTED (verified 2026-05-17)  
-**Current code:** `ImageController.__init__` still calls `setLiveViewLayers` once at init with all `forAcquisition` detectors (see line 20-22).  
-**Proposal:** Replace with lazy per-detector layer creation on first `sigUpdateImage`.
+**Status (2026-10-17):** NOT IMPLEMENTED, re-verified: `ImageController.__init__`
+(`imcontrol/controller/controllers/ImageController.py:37`) still calls
+`self._widget.setLiveViewLayers(...)` once with every `forAcquisition` detector,
+and layers are never removed. The design below (lazy creation on first
+`sigUpdateImage`, debounced removal on `sigAcquisitionStopped`) is still the
+proposal. Cosmetic/UX, no correctness impact; **maintainer decision: adopt or
+drop** (if dropped, delete this file).
 
 ---
 

@@ -173,21 +173,6 @@ def test_an_axial_image_carries_no_pixel_size(tmp_path, axial):
     assert stub._reconstructionPixelSizeUm(True, axial) is None
 
 
-def test_adding_an_auto_axial_run_labels_only_the_xy_image(tmp_path):
-    stub, _ = _controller(tmp_path)
-    stub.autoAxial = True
-    stub.ongoingScan = True
-    stub.currentRunImgs = {'XY': np.ones((3, 4)), 'XZ': np.ones((3, 4)), 'YZ': np.ones((3, 4))}
-    stub._widget.addToList = lambda name, axialName: axialName
-    records = []
-    stub._insertResultRecord = lambda index, record: records.insert(index, record)
-
-    stub.addCurrentRun()
-
-    pixel = {record.axial_name: record.pixel_size_um for record in records}
-    assert pixel == {'XY': (0.05, 0.02), 'XZ': None, 'YZ': None}
-
-
 def test_saving_a_shown_axial_image_writes_no_xy_calibration(tmp_path, monkeypatch):
     from imswitch.imcontrol.controller.controllers import BeadRecController as module
 

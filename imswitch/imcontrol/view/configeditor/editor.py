@@ -5,7 +5,7 @@ Visual editor for ImSwitch JSON configuration files.
 
 Two ways in:
 
-* standalone --- ``python utility_scripts/imswitch_config_editor.py
+* standalone --- ``python scripts/utilities/imswitch_config_editor.py
   [/path/to/config/dir]``, which owns its own QApplication and dark theme;
 * embedded --- ``Hardware > Edit hardware configuration...`` in imcontrol, which
   opens :class:`MainWindow` as a window of the running application and leaves
@@ -226,7 +226,7 @@ def _discover_managers() -> dict:
     base_managers = {
         "DetectorManager", "LaserManager", "PositionerManager", "RotatorManager",
         "FlipMirrorManager", "PulseGeneratorManager", "StandManager",
-        "RS232Manager", "SLMManager"
+        "RS232Manager"
     }
 
     for cat, (_, dir_name) in _CATEGORY_REGISTRY.items():
@@ -3686,7 +3686,6 @@ def _load_widget_registry() -> dict:
         "BFTimelapse": "Analysis",
         # Advanced
         "SLMs": "Advanced",
-        "SLM": "Advanced",          # Docstring uses SLM (singular)
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
@@ -3728,7 +3727,6 @@ def _load_widget_registry() -> dict:
             ("BFTimelapse",    "Brightfield timelapse"),
         ],
         "Advanced": [
-            ("SLM",        "SLM control (single)"),
             ("SLMs",       "SLM control (multi)"),
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),

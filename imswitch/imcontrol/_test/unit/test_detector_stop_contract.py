@@ -13,7 +13,7 @@ These tests drive the real stop methods on instances built with
 ``__new__`` (no hardware, no Qt), with only the attributes the stop path
 touches.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import pytest

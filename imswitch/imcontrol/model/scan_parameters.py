@@ -71,7 +71,7 @@ def scan_axis_provenance(positioners_scan, positioners_info,
 
     Deliberately not consumed anywhere in ImSwitch (no ImProcess reader): it
     exists for the person or tool opening the file. See
-    ``docs/galvo-designer-single-axis-findings.md``, phase C.
+    ``docs/galvo-designer-single-axis-findings.md`` (retired; see git history), phase C.
     """
     devices = []
     for i, dev in enumerate(positioners_scan):
@@ -119,7 +119,7 @@ class AdvancedScanParameterSerializer:
     """Round-trips ``ScanWidgetAdvanced`` UI state <-> analog/digital scan dicts."""
 
     def build_analog(self, widget, positioners) -> tuple[dict, list]:
-        """Serialize PointScan-compatible analog scan parameters from the widget.
+        """Serialize point-scan-compatible analog scan parameters from the widget.
 
         Returns ``(analogParameterDict, positionersScan)``.
         """
@@ -378,7 +378,7 @@ class AdvancedScanParameterSerializer:
         ``loadScan``). The caller owns the surrounding lifecycle (the
         ``settingParameters`` guard and the post-apply pixel/plot refresh).
         """
-        # --- analog back into widget (like PointScan) ---
+        # --- analog back into widget (like Base) ---
         for i, scanDimName in enumerate(analogParameterDict.get("scan_dim_target_device", [])):
             try:
                 widget.setScanDim(i, scanDimName)

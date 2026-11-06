@@ -135,7 +135,7 @@ class BetaScanDesigner(ScanDesigner):
         # silently applied another device's factor when scan dims were
         # reordered (e.g. a Z piezo on dim 0 under a galvo-first setup got the
         # galvo's factor: 17x range shrink under example_sted). See
-        # docs/galvo-designer-single-axis-findings.md, defect 4.
+        # docs/galvo-designer-single-axis-findings.md (retired; see git history), defect 4.
         scanningProps = {
             name: positioner.managerProperties
             for name, positioner in setupInfo.positioners.items()
@@ -378,7 +378,7 @@ class BetaScanDesigner(ScanDesigner):
         # than the number of physical axes: [per_pixel, per_line, per_frame(,
         # per_stack)] (sequenceSamples=per_pixel, rampSamples=per_line,
         # colSamples=per_frame, sliceSamples=per_stack). Sample-stream consumers
-        # (APDManager/PMTManager) and PointScanTTLCycleDesigner index it per
+        # (APDManager/PMTManager) and AdvancedScanTTLCycleDesigner index it per
         # level, so the trailing per-frame/per-stack element MUST be present even
         # for a 2-axis scan -- omitting it (the old behavior) broke APD/PMT >=3D
         # scans (samples_d_scanstep[:-1] dropped a real axis).

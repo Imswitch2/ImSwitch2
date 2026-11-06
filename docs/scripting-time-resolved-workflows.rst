@@ -307,5 +307,3 @@ Related documentation
   cookbook (parameters dataclasses, facade pattern, composition,
   headless testing) with WidefieldSTARSS as the worked example.
 * :doc:`scripting` — the scripting module and ``api.imcontrol`` surface.
-* Design plan:
-  ``docs/design/plans/time-resolved-detector-workflows.md``.

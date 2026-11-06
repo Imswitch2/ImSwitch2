@@ -8,7 +8,7 @@ from unittest.mock import Mock, MagicMock, patch
 from qtpy import QtCore, QtWidgets, QtGui
 
 from imswitch.imcommon.model import ShortcutAction, ShortcutScope
-from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
+from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
 
 
 class TestLeicaStandPhase3b:

@@ -9,7 +9,7 @@ They now hold a FOCUS lease, which is refcounted like any other and is
 excluded from the user-visible acquisition signals, and release it on
 ``closeEvent`` (acceptance #10).
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import inspect

@@ -21,7 +21,7 @@ from imswitch.imcontrol.model.bead_rec_io import (
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers import LeasePurpose
-from imswitch.imcontrol.model.bead_recognition import (
+from imswitch.imcommon.algorithms.bead_recognition import (
     analyze_donut,
     BeadAcquisitionConfig,
     BeadAnalysisParameters,
@@ -30,7 +30,6 @@ from imswitch.imcontrol.model.bead_recognition import (
     ReconstructionUpdate,
     append_roi_means,
     create_reconstruction_buffer,
-    find_bead_center,
     fit_bead,
     normalize_roi_bounds,
     reconstruction_image,
@@ -113,11 +112,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             QtCore.Qt.DirectConnection,
         )
 
-        self.yCenter = None
-        self.xCenter = None
-        self.showCenterState = False
-        self.autoAxial=False
-
         # Connect BeadRecWidget signals
         self._widget.sigROIToggled.connect(self.roiToggled)
         self._widget.sigRunClicked.connect(self.run)
@@ -159,11 +153,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._commChannel.sigScanStarted.connect(self.onNewScan)
         self._commChannel.sigScanStarted.connect(self.OngoingScanStatus)
         self._commChannel.sigScanEnded.connect(self.onEndedScan)
-        self._commChannel.beadRecWorkflow.on_query_center_coord(self.centerCoordQuery)
-        self._commChannel.beadRecWorkflow.on_update_bead_rec_center(self.updateCenterCross)
-        self._commChannel.beadRecWorkflow.on_show_bead_rec_center_cross(self.showStateChanged)
-        self._commChannel.beadRecWorkflow.on_auto_axial_toggled(self.onAutoAxialToggled)
-        self._commChannel.beadRecWorkflow.on_new_axial_list_buffer(self.onNewAxialListBuffer)
         getWidgetStatePersistence().register('BeadRec', self)
         
 
@@ -334,11 +323,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 ('sigScanStarted', self.onNewScan),
                 ('sigScanStarted', self.OngoingScanStatus),
                 ('sigScanEnded', self.onEndedScan),
-                ('sigQueryCenterCoord', self.centerCoordQuery),
-                ('sigUpdateBeadRecCenter', self.updateCenterCross),
-                ('sigShowBeadRecCenterCross', self.showStateChanged),
-                ('sigAutoAxialToggled', self.onAutoAxialToggled),
-                ('sigNewAxialListBuffer', self.onNewAxialListBuffer),
             ):
                 self._disconnectSignal(getattr(comm, signalName, None), slot)
 
@@ -725,16 +709,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             self._popResultRecord(idx)
 
     def addCurrentToWidgetList(self):
-        axial=False
-        axialName = None
-        if self.autoAxial:
-            if self._commChannel.getNextAxial() is not None:
-                axialName = self._commChannel.getNextAxial()
-                axial=True
-        if not axial: # clean up currentRunImgs
-            self.currentRunImgs={}
+        self.currentRunImgs={}  # clean up currentRunImgs
 
-        self._widget.addCurrentRunToList(axial,axialName)
+        self._widget.addCurrentRunToList(False, None)
         self._widget.imageListWidget.setCurrentRow(0)
 
 
@@ -747,7 +724,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             result = analyze_donut(self.imDisplay, self._widget.analysisPrm)
             self._display_legacy_donut_result(result)
         else:
-            from imswitch.imcontrol.model.bead_fits import FIT_MODELS
+            from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
             try:
                 result = fit_bead(self.imDisplay, modelKey, params=self._widget.analysisPrm)
             except ValueError as e:
@@ -859,7 +836,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             if self._widget.scaleButton.isChecked():
                 img = self.rescale(img)
                 scaled = True
-            axialName = key if self.autoAxial else None
+            axialName = None
             itemName = self._widget.addToList(name,axialName)
             self._insertResultRecord(
                 0,
@@ -1135,10 +1112,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self.newScan = True
         self.framesReceivedThisScan = 0
         self._cancelScanEndDrain()
-        if self.autoAxial:
-            self.axialName = self._commChannel.getNextAxial()
-        else:
-            self.axialName = "XY"
+        self.axialName = "XY"
 
         if self._widget.runButton.isChecked():
             if not self._hasScanDetectorLease():
@@ -1293,21 +1267,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setStatusText("Bead reconstruction scan complete")
         self._widget.updateProgress(self.recIm.size, self.recIm.size)
     
-    def onAutoAxialToggled(self,state:bool = False):
-        if self.__dict__.get('_shutdownComplete', False):
-            return
-        if state:
-            self.autoAxial=True
-        else:
-            self.autoAxial=False
-    
-    def onNewAxialListBuffer(self, axialList:list):
-        """ clean up self.currentRunImgs to not keep previous XZ/YZ and widget list """
-        if self.__dict__.get('_shutdownComplete', False):
-            return
-        self.currentRunImgs={}
-        self._widget.removeCurrentRunItems()
-
     def updateParameters(self):
         if self.__dict__.get('_shutdownComplete', False):
             return
@@ -1510,44 +1469,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             base, self._reconstructionPixelSizeUm(scaled, self.axialName)
         )
 
-
-    def centerCoordQuery(self, mode):
-        if self.__dict__.get('_shutdownComplete', False):
-            return
-        coord = None
-        if self.imDisplay is not None:
-            model_key = "gaussian2d" if mode == "Maxima" else "donut_r2_gaussian"
-            try:
-                result = fit_bead(self.imDisplay, model_key, params=self._widget.analysisPrm)
-                coord = (round(result.center_px[0]), round(result.center_px[1]))
-            except ValueError:
-                result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)
-                coord = result.coord
-        
-        self._commChannel.beadRecWorkflow.finish_center_coord_pipeline(coord)
-        if coord is not None and self.showCenterState:
-            self._widget.displayCenterCoord(coord[0], coord[1])
-        else:
-            self._logger.warning(f"Center search with '{mode}' method failed. Try manual coordinate")
-
-    def updateCenterCross(self,y,x):    
-        if self.__dict__.get('_shutdownComplete', False):
-            return
-        self.yCenter = y
-        self.xCenter = x
-        self.updateCenterCrossWidget()
-    
-    def showStateChanged(self,state:bool):
-        if self.__dict__.get('_shutdownComplete', False):
-            return
-        self.showCenterState = state
-        self.updateCenterCrossWidget()
-
-    def updateCenterCrossWidget(self):
-        if self.showCenterState and self.imDisplay is not None and self.yCenter is not None and self.xCenter is not None:   
-            self._widget.displayCenterCoord(self.yCenter,self.xCenter)
-        else:
-            self._widget.removeCenterCoord()
 
     # Unified State Persistence Interface (StatefulComponentMixin)
     

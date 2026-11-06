@@ -17,26 +17,22 @@ workflow-safe target scheduler.
 
 ## Implementation Status
 
-Updated 2026-06-21.
+**Status (2026-10-17):** the model layer for T1-T4 is on main under
+`imswitch/imcontrol/model/workflows/` (`target.py`: `Target`/`TargetList`,
+segmentation conversion, JSON; `target_timelapse.py`: `TargetTimelapseWorkflow`;
+`event_probe.py`: `EventProbe`, event-gated callback; `SmartModeWorkflowAdapter`
+for role-based mode transitions) with fake-driven tests. Nothing in
+`imswitch/imcontrol/controller` or `view` uses them yet (verified by grep), so
+there is no operator-facing feature. **Open:**
 
-- **T1 model foundation implemented:** `Target`, `TargetList`, segmentation
-  conversion, JSON serialization, pixel-to-stage target conversion, and optional
-  stitched overview construction in `TilingWorkflow` are in place. Manual
-  target editing in the tiling UI is still pending.
-- **T2 implemented:** `TargetTimelapseWorkflow` visits enabled targets in
-  A -> B -> C -> A order, moves/settles/acquires through a callback, and records
-  per-target metadata and failure policy behavior.
-- **T3 workflow foundation implemented:** `SmartModeWorkflowAdapter` lets target
-  workflows preflight and apply role-based setup modes, including event,
-  optional resume, and optional idle transitions. Overview/scouting-mode
-  controller wiring remains pending.
-- **T4 model foundation implemented:** `EventProbe` and
-  `EventGatedAcquisitionCallback` provide bounded event probing, no-event
-  skipped acquisitions, probe-error policy, and event-positive acquisition
-  triggering. The real camera/pipeline/recording controller adapters still need
-  to be wired.
-- **T5 pending:** operator UI for target lists, manual target editing, workflow
-  controls, and event-gated toggles is not implemented yet.
+- **T5 UI:** target table next to the tiling overview, manual target
+  add/edit/delete/reorder and metadata save, a "target timelapse" panel
+  (interval, cycles, acquisition preset, mode workflow, event-gated toggle),
+  progress/stop controls safe across stage motion, recording and scans.
+- **Controller adapters:** overview/`scouting` mode wiring and a production
+  Snouty target-timelapse mode mapping (T3); connect `EventProbe` to the real
+  camera frame source, event-trigger pipeline runner, coordinate transforms and
+  scan/recording facade, plus dwell-time-based probe windows (T4).
 
 ## Existing Building Blocks
 
@@ -384,8 +380,8 @@ Acceptance:
 Build this as a workflow stack, not as more special cases in EtSnouty or
 TilingController.
 
-The model-level foundation for **T1-T4** is now in place. The next useful
-deliverable should be **T5 plus controller adapters**: expose target lists and
+The model-level foundation for **T1-T4** is in place. The next useful
+deliverable is **T5 plus controller adapters**: expose target lists and
 target timelapse in the tiling UI, wire overview/scouting modes, and connect
 the event probe to the real camera/pipeline/recording stack.
 

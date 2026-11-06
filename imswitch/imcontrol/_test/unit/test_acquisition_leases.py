@@ -4,7 +4,7 @@ A detector participates in ImSwitch-managed acquisition iff it holds >= 1
 acquisition lease. These tests cover the refcount/transaction/fault semantics
 of AcquisitionLeaseTable directly, without Qt or real detectors.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import pytest

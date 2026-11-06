@@ -2566,7 +2566,7 @@ class RecordingManager(SignalInterface):
 
         Note: this stops the recording sink only. For scan-driven detectors the
         scan hardware source is not stopped here - see the source-abort design
-        in docs/recording_dataflow_plan.md. """
+        in docs/design/plans/recording-dataflow.md. """
 
         failure = None
         if self.__record:

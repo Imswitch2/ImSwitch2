@@ -13,7 +13,7 @@ time when a system got it wrong:
   scan runs iterations back to back, so rejecting would leave the user no
   usable window at all.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import pytest

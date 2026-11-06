@@ -50,10 +50,10 @@ def _minimal_simulated_setup(detectors_json):
         'lasers': {},
         'positioners': {},
         'scan': {
-            'scanWidgetType': 'PointScan',
+            'scanWidgetType': 'Advanced',
             'scanDesigner': 'GalvoScanDesigner',
             'scanDesignerParams': {},
-            'TTLCycleDesigner': 'PointScanTTLCycleDesigner',
+            'TTLCycleDesigner': 'AdvancedScanTTLCycleDesigner',
             'TTLCycleDesignerParams': {},
             'sampleRate': 100000,
         },
@@ -905,7 +905,7 @@ def test_mixed_hamamatsu_apd_mock_scan_once_records_each_target(tmp_path):
 
 
 def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
-    """Phase D of docs/galvo-designer-single-axis-findings.md, full chain: the
+    """Phase D of docs/galvo-designer-single-axis-findings.md (retired; see git history), full chain: the
     tracked galvo_apd_mock_scan_setup.json powers a simulated Z-only scan
     through the layers the real controller runs — the ScanControllerAdvanced
     serializer (widget state -> analog/digital dicts), ScanManagerAdvanced's

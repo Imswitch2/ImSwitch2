@@ -1,6 +1,6 @@
 """Shared, format-agnostic image metadata model for recordings.
 
-Phase 1 of the OME standardization plan (docs/recording_ome_standardization_plan.md).
+Phase 1 of the OME standardization plan (docs/recording_ome_standardization_plan.md (retired; see git history)).
 A single :class:`OmeImageMeta` is built once per detector per recording and then
 serialized into each container's native standard:
 

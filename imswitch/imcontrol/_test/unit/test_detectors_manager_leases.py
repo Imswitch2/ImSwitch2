@@ -7,7 +7,7 @@ plus the mirror attributes managers read instead of the lease table.
 The DetectorsManager is exercised with stub sub-managers so no camera/DAQ
 hardware or Qt event loop is needed; the poll-thread handle is stubbed too.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import sys

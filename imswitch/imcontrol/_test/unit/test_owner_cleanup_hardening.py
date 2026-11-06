@@ -1136,7 +1136,6 @@ def test_beadrec_scan_start_fails_closed_without_prearm_lease():
     ctrl._scanArmed = True
     ctrl._shutdownComplete = False
     ctrl._logger = _Logger()
-    ctrl.autoAxial = False
     ctrl.beadWorker = _Worker()
 
     BeadRecController.onNewScan(ctrl)

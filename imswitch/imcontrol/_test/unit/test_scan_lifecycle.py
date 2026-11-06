@@ -159,9 +159,7 @@ def test_known_scan_controllers_are_covered_by_the_audit():
     expected = {
         'SuperScanController',
         'ScanControllerBase',
-        'ScanControllerPointScan',
         'ScanControllerAdvanced',
-        'ScanControllerMoNaLISA',
         'TriggerScopeRasterController',
         'TriggerScopeScanController',
         'TriggerScopePLSRController',
@@ -197,7 +195,7 @@ def test_communication_channel_resolves_scan_state_via_active_source():
 
     # Metadata accessors must consult the active source first
     for accessor in ('def getDimsScan', 'def getScanStepSizes',
-                     'def getNumLineSteps', 'def getFramesPerScanPixel'):
+                     'def getFramesPerScanPixel'):
         body = source[source.index(accessor):]
         body = body[:body.index('\n    def ')]
         assert '_activeBeadRecScanSource()' in body, (

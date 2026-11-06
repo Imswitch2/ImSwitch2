@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from imswitch.imcontrol.controller.controllers.ScanControllerPointScan import (
-    ScanControllerPointScan,
+from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
+    ScanControllerAdvanced,
 )
 from imswitch.imcontrol.model.managers.RecordingManager import RecordingManager
 from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager
@@ -59,8 +59,8 @@ def test_scan_driven_pixel_size_survives_single_axis_scan(managerClass):
     assert managerClass.pixelSizeUm.fget(manager) == [1.0, 0.05, 0.05]
 
 
-def test_point_scan_exposes_padded_scan_geometry():
-    controller = ScanControllerPointScan.__new__(ScanControllerPointScan)
+def test_advanced_scan_exposes_padded_scan_geometry():
+    controller = ScanControllerAdvanced.__new__(ScanControllerAdvanced)
     controller._analogParameterDict = {
         "axis_length": [10.0, 20.0],
         "axis_step_size": [3.0, 0.2],

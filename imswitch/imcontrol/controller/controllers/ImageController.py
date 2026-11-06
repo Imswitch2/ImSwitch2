@@ -46,7 +46,6 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._commChannel.sigAddItemToVb.connect(self.addItemToVb)
         self._commChannel.sigRemoveItemFromVb.connect(self.removeItemFromVb)
         self._commChannel.sigMemorySnapAvailable.connect(self.memorySnapAvailable)
-        self._commChannel.sigSetExposure.connect(lambda t: self.setExposure(t))
 
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
@@ -162,11 +161,6 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             return
         if isNew and self._shouldResetView:
             self.adjustFrame(image.shape, instantResetView=True)
-
-    def setExposure(self, exp):
-        detectorName = self._master.detectorsManager.getAllDeviceNames()[0]
-        self.__logger.debug(f"Change exposure of {detectorName}, to {str(exp)}")
-        #self._master.detectorsManager[detectorName].setParameter('Readout time', exp)
 
     def setVisibleLayers(self, detectorNames):
         self._widget.setVisibleLayers(detectorNames)

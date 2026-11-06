@@ -10,7 +10,7 @@ It also resolved the reconstruction source per chunk via ``execOnCurrent``, so
 changing the current detector in the view mid-scan silently switched which
 camera the reconstruction was built from. The name is now pinned per scan.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import pytest

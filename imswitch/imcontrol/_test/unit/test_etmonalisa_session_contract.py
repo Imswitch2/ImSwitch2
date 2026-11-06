@@ -32,8 +32,7 @@ def test_etmonalisa_direct_stand_hooks_are_flag_gated():
     With smart-mode switching off (legacy/default), the hooks still call
     ``_switchStandToFastMode``/``_switchStandToSlowMode``; with it on, the
     LeicaStand setup-mode component carries FLUO/CS, so the direct switch is
-    suppressed to avoid double-actuation. The ``sigInitiateEtMonalisa`` emissions
-    are UI state and stay unconditional.
+    suppressed to avoid double-actuation.
     """
     controller_source = CONTROLLER_PATH.read_text()
 
@@ -46,8 +45,6 @@ def test_etmonalisa_direct_stand_hooks_are_flag_gated():
     assert 'self._master.standManager.setCS()' in controller_source
     assert 'self._master.standManager.setILshutter(1)' in controller_source
 
-    # sigInitiateEtMonalisa stays unconditional (not inside a flag/runMode guard).
-    pre_arm = controller_source.split('def _pre_arm_hook', 1)[1].split('def ', 1)[0]
-    emit_line = 'self._commChannel.sigInitiateEtMonalisa.emit(True)'
-    assert emit_line in pre_arm
-    assert pre_arm.index(emit_line) < pre_arm.index('if')
+    # The unused sigInitiateEtMonalisa flag is gone from the channel and the
+    # controller.
+    assert 'sigInitiateEtMonalisa' not in controller_source

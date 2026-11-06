@@ -41,18 +41,6 @@
     "args": []
   },
   {
-    "name": "sigGridToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigCrosshairToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
     "name": "sigAddItemToVb",
     "args": [
       "object"
@@ -184,37 +172,11 @@
     ]
   },
   {
-    "name": "sigRequestScanParameters",
-    "args": []
-  },
-  {
-    "name": "sigSendScanParameters",
-    "args": [
-      "dict",
-      "dict",
-      "object"
-    ]
-  },
-  {
     "name": "sigSetAxisCenters",
     "args": [
       "object",
       "object"
     ]
-  },
-  {
-    "name": "sigRequestScanFreq",
-    "args": []
-  },
-  {
-    "name": "sigSendScanFreq",
-    "args": [
-      "float"
-    ]
-  },
-  {
-    "name": "sigScanFrameFinished",
-    "args": []
   },
   {
     "name": "sigSnapImg",
@@ -233,12 +195,6 @@
     "args": []
   },
   {
-    "name": "sigSLMMaskUpdated",
-    "args": [
-      "object"
-    ]
-  },
-  {
     "name": "sigSaveFocus",
     "args": []
   },
@@ -255,94 +211,6 @@
       "float",
       "bool",
       "bool"
-    ]
-  },
-  {
-    "name": "sigInitiateEtMonalisa",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigInitiateEt",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigInitiateEtSnouty",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigClockWidefield",
-    "args": []
-  },
-  {
-    "name": "sigRunScanTriggerScopePLSRMulticolor",
-    "args": []
-  },
-  {
-    "name": "sigQueryCenterCoord",
-    "args": [
-      "str"
-    ]
-  },
-  {
-    "name": "sigCenterCoordPipelineFinished",
-    "args": [
-      "object"
-    ]
-  },
-  {
-    "name": "sigUpdateBeadRecCenter",
-    "args": [
-      "int",
-      "int"
-    ]
-  },
-  {
-    "name": "sigShowBeadRecCenterCross",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigAutoAxialToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigNewAxialListBuffer",
-    "args": [
-      "list"
-    ]
-  },
-  {
-    "name": "sigSetXYPosition",
-    "args": [
-      "float",
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetZPosition",
-    "args": [
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetExposure",
-    "args": [
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetSpeed",
-    "args": [
-      "float"
     ]
   },
   {

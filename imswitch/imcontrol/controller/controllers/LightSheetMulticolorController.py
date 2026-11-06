@@ -283,13 +283,6 @@ class LightSheetMulticolorController(
     # Shared attributes
     # ------------------------------------------------------------------
 
-    def attrChanged(self, key, value):
-        if self.settingAttr or len(key) != 2:
-            return
-        if key[0] in (_attrCategoryScan, _attrCategoryDevices):
-            self._scanParameterDict[key[1]] = value
-            self.setParameters()
-
     def setSharedAttr(self, category, attr, value):
         self.settingAttr = True
         try:
@@ -464,7 +457,6 @@ class LightSheetMulticolorController(
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
-_attrCategoryDevices = 'MS-RESOLFT_Dev'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

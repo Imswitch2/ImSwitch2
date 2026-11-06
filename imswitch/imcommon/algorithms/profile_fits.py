@@ -3,7 +3,6 @@
 Shared by imcontrol's live Line Profile panel and ImProcess's Profile panel,
 which are one widget (``imswitch.imcommon.view.guitools.ProfileWidget``); the
 fits it offers therefore live here rather than in either app.
-``imswitch.improcess.profile_helpers`` re-exports these names unchanged.
 """
 
 from __future__ import annotations

@@ -1408,7 +1408,7 @@ def build_facade_from_master(
         facade.scan = ScanWorkflowFacade(scan_workflow, scan_done_signal)
 
     # Trigger sub-facade: prefer WFS pass-through when a Teensy port was
-    # given (Option A in docs/design/plans/wfs-workflows-port.md). Otherwise
+    # given (Option A in docs/design/plans/wfs-workflows-port.md (retired; see git history)). Otherwise
     # fall back to ImSwitch's PulseGeneratorManager if present.
     if wfs_teensy_port is not None:
         facade.trig = TrigFacade(

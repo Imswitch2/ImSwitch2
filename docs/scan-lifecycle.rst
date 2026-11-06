@@ -14,8 +14,8 @@ Two layers are described here, and they answer different questions:
   *may this scan start*, *which detectors belong to it*, and *when may it be
   released* — the detector-acquisition-lease model.
 
-Design records for the lease work live in
-``docs/design/plans/detector-acquisition-selection.md``.
+The lease design record (review rounds, acceptance gate) is retired; see git
+history for ``detector-acquisition-selection.md``.
 
 
 Why this exists
@@ -118,16 +118,14 @@ attribute read).
 Metadata resolution order
 -------------------------
 
-``getDimsScan()``, ``getScanStepSizes()``, ``getNumLineSteps()``,
-``getFramesPerScanPixel()`` and ``getBeadRecScanSource()`` resolve in this
-order:
+``getDimsScan()``, ``getScanStepSizes()``, ``getFramesPerScanPixel()`` and
+``getBeadRecScanSource()`` resolve in this order:
 
 1. **Active scan source** — if it satisfies the ``BeadRecScanSource`` protocol
    (see ``controllers/_beadrec_scan_source.py``) and reports
    ``isBeadRecCompatible() == True``.
 2. **The** ``'Scan'`` **widget key** — legacy path; covers
-   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA`` /
-   ``ScanControllerPointScan``, which expose the legacy accessors but not the
+   ``ScanControllerAdvanced``, which exposes the legacy accessors but not the
    protocol.
 3. **First-compatible iteration** (``getBeadRecScanSource``) — idle fallback
    only, e.g. when the user presses BeadRec *Run* before starting a scan.
@@ -142,8 +140,7 @@ only ever serves idle reads.
 scan source first, then the ``'Scan'`` controller, then — while idle on a
 setup without a ``'Scan'`` widget — the one registered controller that exposes
 the accessor.  If several expose it, the lookup logs a warning and resolves
-nothing rather than guess.  Only ``getNextAxial()`` (the MoNaLISA axial
-workflow) stays on the ``'Scan'`` key.
+nothing rather than guess.
 
 
 The scan-execution coordinator
@@ -175,7 +172,7 @@ Two deliberately distinct levels:
      - Spans
    * - **Scan run**
      - ``ScanRunToken`` (``reserveRun`` / ``releaseRun``)
-     - One user-initiated scan *including* every repeat iteration, MoNaLISA ``autoAxial`` follow-up and ``isNonFinalPartOfSequence`` part.
+     - One user-initiated scan *including* every repeat iteration and ``isNonFinalPartOfSequence`` part.
    * - **Scan iteration**
      - ``ScanIterationToken`` (``arm`` / ``resolve``)
      - One ``runScan`` → ``scanDone`` cycle, i.e. one frame.
@@ -399,9 +396,6 @@ bases), registered under widget key ``'Scan'`` as
    * - ``ScanControllerBase``
      - ``Base``
      - protocol (``BeadRecScanSourceMixin``)
-   * - ``ScanControllerPointScan``
-     - ``PointScan``
-     - legacy accessors via ``'Scan'`` key
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key
@@ -410,9 +404,6 @@ bases), registered under widget key ``'Scan'`` as
      - ``SimplePointScan``
      - as Advanced; from the simple page, Live drives Advanced's Repeat box
        and an external start (recording, script) always runs one iteration
-   * - ``ScanControllerMoNaLISA``
-     - ``MoNaLISA``
-     - legacy accessors + axial workflow
 
 **TriggerScope family and standalone** — inherit
 ``TriggerScopeScanLifecycleMixin`` alongside ``ImConWidgetController``,
@@ -511,7 +502,7 @@ watchdog fired.
 **Not scan sources** — they orchestrate around scans but never own the
 lifecycle, and are deliberately excluded: ``EtSnoutyController`` (an
 event-triggered workflow that *requests* scans via
-``sigRunScanTriggerScopePLSRMulticolor``) and ``RotationScanController``
+``ScanWorkflowService.run_plsr_multicolor_scan()``) and ``RotationScanController``
 (steps rotators between scans run by others).
 
 

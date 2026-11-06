@@ -2,7 +2,7 @@
 
 ``loadScanParamsFromFile`` and setup-mode restores end in ``setParameters``.
 On the Base controller that method finished by calling ``plotSignalGraph`` --
-which only the MoNaLISA, Advanced and TriggerScope controllers define, since
+which only the Advanced and TriggerScope controllers define, since
 the Base widget has no signal graph -- so every load raised ``AttributeError``
 after the values had been written into the widget.
 """

@@ -59,7 +59,7 @@ Hand-written overrides in ``schemas/overrides/`` are merged last and never
 written by this tool; hand-written role rules in ``schemas/roles/`` are never
 written by it either. The rules live in
 ``imswitch.imcontrol.model.configeditor.extraction`` and are described in
-``docs/design/plans/config-editor-schema-extraction.md``.
+``docs/design/plans/config-editor-schema-extraction.md`` (retired; see git history).
 """
 
 from __future__ import annotations

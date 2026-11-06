@@ -12,7 +12,7 @@ from .ScanWidgetBase import SuperScanWidget
 
 class ScanWidgetAdvanced(SuperScanWidget):
     """
-    PointScan-like widget with:
+    Point-scan widget with:
       - line-step checkbox matrix (per device, per linestep)
       - optional advanced intra-pixel pulses per (device, linestep)
       - TTL graph (line plot for now)
@@ -30,7 +30,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         # --- Scan timing params ---
         self.seqTimePar = QtWidgets.QLineEdit("0.02")  # ms
-        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs (see ScanWidgetPointScan)
+        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs
         self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # µs
 
 

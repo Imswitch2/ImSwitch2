@@ -5,7 +5,7 @@ from ..signaldesigners.basesignaldesigners import TTLCycleDesigner
 
 class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
     """
-    TTL cycle designer for PointScan with:
+    TTL cycle designer for point scanning with:
       - Line-step gating: repeat each line S times (linesteps), each with its own device enable.
       - Optional intra-pixel pulse timing per device per linestep, within [0, dwell_time].
 
@@ -21,7 +21,7 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
     scanInfoDict expected (when scanning):
       img_dims: list[int]               # axis lengths in "steps" (pixels/lines/frames/...)
       axis_names: list[str]             # names, used only if you keep legacy features elsewhere
-      scan_samples: list[int]           # samples per axis step-length (?) as in current PointScan
+      scan_samples: list[int]           # samples per axis step-length (?) as in the Base designers
       scan_samples_total: int
       scan_samples_d2_period: int
       scan_throw_settling: int
@@ -456,7 +456,7 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
                 signal = self.__fit_to_length(signal, n_scan_samples_dx[axis])
             signal = np.tile(signal, n_steps_dx[axis])
 
-            # Match PointScan logic: add initpad only when smoothing requires it
+            # Match the Galvo designer logic: add initpad only when smoothing requires it
             if not any(self.smooth_axes[:axis]) and self.smooth_axes[axis] and not self.__init_added:
                 signal = np.append(self.__initpad, signal)
                 self.__init_added = True

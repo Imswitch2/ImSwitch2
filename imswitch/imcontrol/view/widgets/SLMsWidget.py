@@ -78,7 +78,7 @@ import os
 import datetime
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from imswitch.imcontrol.model.SetupInfo import SLMInfo
+    from imswitch.imcontrol.model.SetupInfo import SLMsInfo
 
 _collaps_section_format = {
     "button_height": 20,
@@ -168,7 +168,7 @@ class SLMsWidget(Widget):
         self._slmUpdateTimers = {}      # { slmKey: QTimer }
 
 
-    def add_slm(self,slmName: str,slmInfo: "SLMInfo", full_registry: dict,
+    def add_slm(self,slmName: str,slmInfo: "SLMsInfo", full_registry: dict,
                 device_connection: bool = False,*args,**kwargs):
         
         # NOTE: slmKey is the cleaned slmName used for referencing 
