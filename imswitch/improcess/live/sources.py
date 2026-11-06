@@ -1,5 +1,6 @@
 """Format-agnostic live source contracts and the in-memory stack wrapper."""
 
+import asyncio
 import os
 import re
 from abc import ABC, abstractmethod
@@ -36,6 +37,47 @@ from imswitch.improcess.model.image_sources import (
 )
 from imswitch.improcess.reconstructors.base import Chunk, StackInfo
 from .lapse_group_indices import next_scan_index, scan_group_indices
+
+
+if hasattr(zarr.storage, "LocalStore"):
+    class _RetryingReadLocalStore(zarr.storage.LocalStore):
+        """Tolerate brief Windows sharing conflicts while reading Zarr-v3 metadata.
+
+        The writer atomically replaces ``zarr.json`` after updating the
+        committed-frame marker. Windows may temporarily deny a concurrent
+        reader's open(). Retrying the individual metadata read (rather than
+        the entire poll) keeps already-read chunks and frame cursors intact.
+        Permanent permission errors still propagate after a bounded retry.
+        """
+
+        _READ_ATTEMPTS = 50
+        _RETRY_DELAY_S = 0.02
+
+        async def get(self, key, prototype, byte_range=None):
+            for attempt in range(self._READ_ATTEMPTS):
+                try:
+                    return await super().get(key, prototype, byte_range=byte_range)
+                except PermissionError:
+                    # Other paths indicate a different problem; do not mask it.
+                    is_metadata = str(key) == "zarr.json" or str(key).endswith("/zarr.json")
+                    if not is_metadata or attempt == self._READ_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(self._RETRY_DELAY_S)
+
+
+else:
+    _RetryingReadLocalStore = None  # Zarr v2 uses DirectoryStore instead.
+
+
+def _open_live_zarr(path: str):
+    """Open a local Zarr source with retryable v3 metadata reads.
+
+    Zarr 2 does not expose LocalStore and keeps its usual DirectoryStore path.
+    """
+    if hasattr(zarr.storage, "LocalStore"):
+        store = _RetryingReadLocalStore(path, read_only=True)
+        return zarr.open(store, mode="r")
+    return zarr.open(path, mode="r")
 
 
 def _axis_labels_from_attrs(attrs: dict[str, Any], ndim: int) -> tuple[str, ...] | None:
@@ -222,7 +264,7 @@ def _zarr_store_write_complete(path: Any) -> bool:
     stores never carry it).
     """
     try:
-        root = zarr.open(str(path), mode='r')
+        root = _open_live_zarr(str(path))
         if _is_zarr_array(root):
             return _writing_flag_complete(root.attrs.get('writing'))
         names = dataset_names(root)
@@ -246,7 +288,7 @@ def _zarr_store_streamable(path: Any) -> bool:
     if _zarr_store_write_complete(path):
         return True
     try:
-        root = zarr.open(str(path), mode='r')
+        root = _open_live_zarr(str(path))
         if _is_zarr_array(root):
             return root.attrs.get('recording:frames_committed') is not None
         names = dataset_names(root)
@@ -706,13 +748,13 @@ class ZarrLiveSource(LiveSource):
 
         path = Path(path_or_handle)
         self._path = str(path)
-        return zarr.open(str(path), mode='r')
+        return _open_live_zarr(str(path))
 
     def _refresh_array(self) -> None:
         if self._path is None or self._array is None:
             return
 
-        self._root = zarr.open(self._path, mode='r')
+        self._root = _open_live_zarr(self._path)
         node = self._root
         for part in self._array_path:
             node = node[part]
@@ -1371,14 +1413,14 @@ class ZarrLapseSource(LiveSource):
         
         path = Path(path_or_handle)
         self._path = str(path)
-        return zarr.open(str(path), mode='r')
+        return _open_live_zarr(str(path))
 
     def _refresh_current_array(self) -> None:
         """Re-open current array to see new frames."""
         if self._path is None or self._current_array is None:
             return
         
-        self._root = zarr.open(self._path, mode='r')
+        self._root = _open_live_zarr(self._path)
         current_group = self._root[f"scan{self._current_group_index}"]
         det_group = current_group[self._resolved_detector_name]
         self._current_array = det_group['data']
