@@ -31,7 +31,13 @@ from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, PRESET_FAST,
 )
-from .incremental_fast import IncrementalFastAccumulator, IncrementalFastGeometry
+from .incremental_fast import (
+    IncrementalFastAccumulator, IncrementalFastGeometry,
+    IncrementalFastMultiAccumulator,
+)
+from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
+    layout_scan, validated_timepoint_groups,
+)
 
 
 ALGORITHM_ID = "unified-monalisa-fast-gaussian"
@@ -86,13 +92,13 @@ def timepoint_stream_contract(info, params):
         )
     per_timepoint = int(info.frames_per_timepoint)
     resolved = timepoint_layout(info.acquisition_layout)
-    from imswitch.improcess.reconstructors.monalisa_lattice.scan import layout_scan
-    scan = layout_scan(resolved, per_timepoint)
-    if scan is None or scan.num_stacks != 1 or scan.frames_per_stack != per_timepoint:
-        raise Incompatible(
-            "Live Fast needs a recorded, contiguous, single-plane scan layout; "
-            "this source can use finite reconstruction after completion"
-        )
+    try:
+        scan = layout_scan(resolved, per_timepoint)
+        if scan is None:
+            raise ValueError("Live Fast needs an explicit recorded scan layout")
+        validated_timepoint_groups(scan, per_timepoint)
+    except ValueError as exc:
+        raise Incompatible(str(exc)) from exc
     # Explicit calibration and orientation can begin at the first committed
     # frame. Use single-frame chunks to preserve the first-scan boundary; a
     # larger fixed chunk would cross it when init_frames=1 (e.g. 1+2*N).
@@ -121,6 +127,7 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._effective_params = None
         self._attrs = None
         self._layout = None
+        self._scan = None
         self._name = None
         self._detector = None
         self._source_path = None
@@ -169,6 +176,13 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._planned = int(planned)
         self._frame_shape = tuple(frames.shape[1:])
         self._layout = timepoint_layout(stack_info.acquisition_layout)
+        self._scan = layout_scan(self._layout, per_timepoint)
+        if self._scan is None:
+            raise Incompatible("Live Fast needs a recorded scan layout")
+        try:
+            validated_timepoint_groups(self._scan, per_timepoint)
+        except ValueError as exc:
+            raise Incompatible(str(exc)) from exc
         self._attrs = dict(init_obj.attrs or {})
         self._attrs.update({
             "recording:num_timepoints": 1,
@@ -205,8 +219,8 @@ class UnifiedFastStreamingSession(StreamingSession):
         provisional = self.provisional_preview()
         return StreamPlan(
             out_shape=(self._planned, *self._incremental.shape),
-            axis_labels=["T", "Y", "X"],
-            view_modes=[], dtype=np.dtype("float32"),
+            axis_labels=["T", *provisional.axis_labels],
+            view_modes=list(provisional.view_modes or ()), dtype=np.dtype("float32"),
             scale_unit=str(provisional.scale_unit),
             axis_scales=[1., *list(provisional.axis_scales)],
         )
@@ -222,7 +236,10 @@ class UnifiedFastStreamingSession(StreamingSession):
                 self._reconstructor, self._effective_params, self._layout,
                 first_frame, self._per_timepoint,
             )
-        self._incremental = IncrementalFastAccumulator(calibrated)
+        self._incremental = (
+            IncrementalFastMultiAccumulator(calibrated)
+            if self._scan.num_stacks > 1 else IncrementalFastAccumulator(calibrated)
+        )
         self._timepoint_started = time.perf_counter()
 
     def _source_descriptor(self, frames=None):
@@ -238,12 +255,18 @@ class UnifiedFastStreamingSession(StreamingSession):
         """Build a normal unified Fast result without refitting any frames."""
         from .canonical_result import MonalisaResult
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
-            MonalisaLatticeReconstructor, _recorded_output_scale,
+            MonalisaLatticeReconstructor, _recorded_output_scale, _recorded_planes,
         )
 
         incremental = self._incremental
         calibrated = incremental.calibrated
-        scan_result = incremental.finalize_stack()
+        scan = self._scan
+        results = (
+            incremental.finalize_stacks()
+            if isinstance(incremental, IncrementalFastMultiAccumulator)
+            else {0: incremental.finalize_stack()}
+        )
+        scan_result = results[0]
         # reconstruct_scan() normally adds acquisition orientation to the
         # stack diagnostics. It is already locked/resolved in this session.
         complete_diagnostics = {
@@ -253,11 +276,11 @@ class UnifiedFastStreamingSession(StreamingSession):
         }
         scan_result = replace(scan_result, diagnostics=complete_diagnostics)
         camera_pixel_nm, output_pixel_nm = _recorded_output_scale(
-            calibrated.scan, scan_result.geometry, calibrated.orientation,
+            scan, scan_result.geometry, calibrated.orientation,
             float(self._effective_params.get("pixel_size_nm", 0.) or 0.),
         )
         diagnostics = MonalisaLatticeReconstructor._diagnostics(
-            calibrated.scan, scan_result, camera_pixel_nm, output_pixel_nm,
+            scan, scan_result, camera_pixel_nm, output_pixel_nm,
             time.perf_counter() - self._timepoint_started,
         )
         diagnostics.update({
@@ -270,16 +293,21 @@ class UnifiedFastStreamingSession(StreamingSession):
         })
         part = MonalisaResult(
             name=f"{self._name}_monalisa",
-            image=np.nan_to_num(scan_result.amplitude.image).astype(np.float32),
+            image=_recorded_planes(scan, results, lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
             params=deepcopy(self._original_params),
             diagnostics=diagnostics,
-            background=(
-                None if scan_result.background is None else
-                np.nan_to_num(scan_result.background.image).astype(np.float32)
+            background=_recorded_planes(
+                scan, results,
+                lambda result: None if result.background is None else result.background.image,
             ),
-            axis_labels=["Y", "X"],
-            scanned_axes=calibrated.scan.scanned_axes,
+            axis_labels=(
+                (["C"] if scan.num_conditions > 1 else [])
+                + (["Z"] if scan.num_planes > 1 else []) + ["Y", "X"]
+            ),
+            plane_step_nm=scan.plane_step_nm,
+            condition_labels=scan.condition_labels if scan.num_conditions > 1 else (),
+            scanned_axes=scan.scanned_axes + (("z",) if scan.num_planes > 1 else ()),
         )
         # Use the same provenance builder as the canonical finite pipeline.
         # ``_effective_params`` may contain internally locked Auto values;
@@ -394,7 +422,13 @@ class UnifiedFastStreamingSession(StreamingSession):
             image=pixels, output_pixel_nm=calibrated.output_pixel_nm,
             params=deepcopy(self._original_params),
             diagnostics={"placement": self._incremental._placement.method},
-            axis_labels=["Y", "X"], scanned_axes=calibrated.scan.scanned_axes,
+            axis_labels=(
+                (["C"] if self._scan.num_conditions > 1 else [])
+                + (["Z"] if self._scan.num_planes > 1 else []) + ["Y", "X"]
+            ),
+            plane_step_nm=self._scan.plane_step_nm,
+            condition_labels=self._scan.condition_labels if self._scan.num_conditions > 1 else (),
+            scanned_axes=self._scan.scanned_axes + (("z",) if self._scan.num_planes > 1 else ()),
         )
         image.metadata["monalisa_streaming"] = {
             "algorithm": ALGORITHM_ID, "provisional_preview": True,
@@ -405,7 +439,7 @@ class UnifiedFastStreamingSession(StreamingSession):
         return image
 
     def provisional_volume(self, preview):
-        """Create a viewer-only T,Y,X buffer from the first incomplete scan.
+        """Create a viewer-only T + spatial volume from an incomplete scan.
 
         This is never the scientific Session result: no completion coverage or
         provenance is claimed until the first full timepoint is reconstructed.
@@ -421,8 +455,10 @@ class UnifiedFastStreamingSession(StreamingSession):
             output_pixel_nm=preview.output_pixel_size_nm,
             params=deepcopy(self._original_params),
             diagnostics={"placement": self._incremental._placement.method},
-            axis_labels=["T", "Y", "X"],
-            scanned_axes=self._incremental.calibrated.scan.scanned_axes,
+            axis_labels=["T", *preview.axis_labels],
+            plane_step_nm=preview.plane_step_nm,
+            condition_labels=preview.condition_labels,
+            scanned_axes=preview.scanned_axes,
         )
         result.metadata["monalisa_streaming"] = {
             **preview.metadata["monalisa_streaming"], "provisional_preview": True,

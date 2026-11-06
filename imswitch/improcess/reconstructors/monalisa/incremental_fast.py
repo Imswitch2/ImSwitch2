@@ -12,7 +12,7 @@ finite Fast; Gaussian fitting is not repeated and raw frames are not buffered.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -27,19 +27,22 @@ from .scan_frame import orient_recorded_index, orient_step_columns
 from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
     _recorded_output_scale, pipeline_params, recorded_geometry_inputs,
 )
-from imswitch.improcess.reconstructors.monalisa_lattice.scan import layout_scan
+from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
+    layout_scan, timepoint_group_view, validated_timepoint_groups,
+)
 from .calibration import PatternLocalization
 
 
 @dataclass(frozen=True)
 class IncrementalFastGeometry:
-    """One fully specified scan geometry, shared by every timepoint."""
+    """One specified Gaussian calibration and a group-local scan mapping."""
 
     geometry: object
     scan: object
     orientation: str
     output_pixel_nm: object
     camera_index: np.ndarray
+    source_scan: object = None
 
     @classmethod
     def from_locked(cls, reconstructor, params, resolved_layout, first_frame, frames_per_timepoint):
@@ -76,10 +79,15 @@ class IncrementalFastGeometry:
     @classmethod
     def _make(cls, local_params, resolved_layout, frames_per_timepoint,
               orientation, *, first_frame, localization):
-        scan = layout_scan(resolved_layout, int(frames_per_timepoint))
-        if scan is None or scan.num_stacks != 1 or scan.frames_per_stack != int(frames_per_timepoint):
-            raise Incompatible("Live Fast previews need one recorded, contiguous XY scan per timepoint")
-        scan, step, step_aspect, pixel_nm = recorded_geometry_inputs(scan, local_params)
+        source_scan = layout_scan(resolved_layout, int(frames_per_timepoint))
+        if source_scan is None:
+            raise Incompatible("Live Fast needs a recorded acquisition layout")
+        try:
+            validated_timepoint_groups(source_scan, int(frames_per_timepoint))
+        except ValueError as exc:
+            raise Incompatible(str(exc)) from exc
+        source_scan, step, step_aspect, pixel_nm = recorded_geometry_inputs(source_scan, local_params)
+        scan = timepoint_group_view(source_scan, 0)
         settings = pipeline_params(local_params)
         # Use the *complete* recorded scan indices for lattice/step topology
         # even when only one actual camera frame has arrived.
@@ -94,7 +102,27 @@ class IncrementalFastGeometry:
             aspect=_oriented_aspect(step_aspect, orientation),
         )
         _, output_pixel_nm = _recorded_output_scale(scan, oriented, orientation, pixel_nm)
-        return cls(oriented, scan, orientation, output_pixel_nm, camera_index)
+        return cls(oriented, scan, orientation, output_pixel_nm, camera_index, source_scan)
+
+    def for_group(self, group: int) -> "IncrementalFastGeometry":
+        """Share the extraction operator/localization with another recorded plane.
+
+        Group-local indices (including reversed or interleaved traversal) are
+        the only differences. The scientific model is calibrated once for the
+        entire logical acquisition, as in finite recorded reconstruction.
+        """
+        source = self.source_scan or self.scan
+        if source.num_stacks == 1 and int(group) == 0:
+            return self
+        plane = timepoint_group_view(source, int(group))
+        camera_index = orient_recorded_index(plane.index, self.orientation)
+        oriented = geometry_with_step(
+            self.geometry, self.geometry.step, camera_index,
+            aspect=self.geometry.diagnostics.get("step_aspect"),
+        )
+        if tuple(oriented.raster.shape) != tuple(self.geometry.raster.shape):
+            raise Incompatible("Live Fast planes have incompatible output rasters")
+        return replace(self, geometry=oriented, scan=plane, camera_index=camera_index)
 
 
 class IncrementalFastAccumulator:
@@ -242,3 +270,77 @@ class IncrementalFastAccumulator:
         return replace(
             result, diagnostics={**gain_diagnostics, **result.diagnostics},
         )
+
+
+class IncrementalFastMultiAccumulator:
+    """Route one timepoint's frames to independent in-plane Fast accumulators.
+
+    The router owns the global frame cursor; each child receives its group's
+    subsequence in exact recorded order, with no frame copied to another Z
+    plane/condition. Each camera frame is Gaussian-extracted exactly once.
+    """
+
+    def __init__(self, calibrated: IncrementalFastGeometry):
+        self.calibrated = calibrated
+        self.scan = calibrated.source_scan or calibrated.scan
+        self._group_indices = validated_timepoint_groups(self.scan, len(self.scan.stack))
+        self._groups = [
+            IncrementalFastAccumulator(calibrated.for_group(group))
+            for group in range(self.scan.num_stacks)
+        ]
+        self.shape = (
+            *(count for count in (self.scan.num_conditions, self.scan.num_planes) if count > 1),
+            *self._groups[0].shape,
+        )
+        self._placement = self._groups[0]._placement
+        self.reset()
+
+    def reset(self):
+        self._received = 0
+        for group in self._groups:
+            group.reset()
+        self._preview_images = [None] * len(self._groups)
+        self._preview_dirty = set(range(len(self._groups)))
+
+    @property
+    def frames_received(self):
+        return self._received
+
+    def push(self, frames):
+        frames = np.asarray(frames)
+        if frames.ndim != 3:
+            raise ValueError("Incremental Fast expects (frame, camera_y, camera_x)")
+        stop = self._received + len(frames)
+        if stop > len(self.scan.stack):
+            raise ValueError("More frames than the declared multi-plane scan")
+        route = np.asarray(self.scan.stack[self._received:stop], dtype=int)
+        for group in np.unique(route):
+            local = np.flatnonzero(route == group)
+            accumulator = self._groups[int(group)]
+            expected = self._group_indices[int(group)][
+                accumulator.frames_received:accumulator.frames_received + len(local)
+            ]
+            if not np.array_equal(expected, self._received + local):
+                raise ValueError("Live Fast frames arrived out of their recorded group order")
+            accumulator.push(frames[local])
+            self._preview_dirty.add(int(group))
+        self._received = stop
+
+    def image(self):
+        """Provisional volume, with unknown groups represented by NaN."""
+        if not self._received:
+            return None
+        for group in self._preview_dirty:
+            accumulator = self._groups[group]
+            pixels = accumulator.image()
+            self._preview_images[group] = (
+                np.full(accumulator.shape, np.nan, dtype=np.float32)
+                if pixels is None else pixels
+            )
+        self._preview_dirty.clear()
+        return np.stack(self._preview_images).reshape(self.shape)
+
+    def finalize_stacks(self):
+        if self._received != len(self.scan.stack):
+            raise ValueError("Cannot finalize an incomplete multi-plane timepoint")
+        return {group: acc.finalize_stack() for group, acc in enumerate(self._groups)}

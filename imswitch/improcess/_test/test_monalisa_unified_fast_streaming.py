@@ -18,6 +18,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     AcquisitionLayout,
     AcquisitionLoop,
     TraversalRule,
+    iter_physical_coordinates,
 )
 from imswitch.improcess.model.acquisition_layout_resolver import ResolvedAcquisitionLayout
 from imswitch.improcess.execution.contracts import RawInfo, Incompatible
@@ -61,6 +62,163 @@ def _scan(*, stagger=False):
         shape=(64, 64), steps=(4, 5), sigma=1.7,
         offset=(3.2, 4.5), noise="none", **lattice,
     ).frames.astype(np.float32)
+
+
+def _multi_plane_fixture(axes=("y", "z"), *, interleaved=False, nt=1,
+                         stagger=False, negative_y=False, conditions=1):
+    """Synthetic layout with independently identifiable X/Y/Z coordinates."""
+    nx, ny, nz = (4 if "x" in axes else 1), (5 if "y" in axes else 1), (3 if "z" in axes else 1)
+    loops = []
+    if nt > 1:
+        loops.append(AcquisitionLoop("t", "time", nt))
+    if conditions > 1:
+        loops.append(AcquisitionLoop("c", "condition", conditions,
+                                     labels=tuple(f"condition_{i}" for i in range(conditions))))
+    spatial = {
+        "x": AcquisitionLoop("x", "scan_x", nx, step=0.1925, unit="um"),
+        "y": AcquisitionLoop("y", "scan_y", ny, step=0.154 if stagger else 0.154,
+                             unit="um", direction=-1 if negative_y else 1),
+        "z": AcquisitionLoop("z", "scan_z", nz, step=0.15, unit="um"),
+    }
+    # With Z innermost, frames from a given Z plane are interleaved.
+    scan_order = (["y", "x", "z"] if interleaved else ["z", "y", "x"])
+    loops.extend(spatial[axis] for axis in scan_order if axis in axes)
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=tuple(loops),
+        traversal=tuple(TraversalRule(loop.id, "forward") for loop in loops),
+        provenance="recorded",
+    )
+    base = _scan(stagger=stagger).reshape(5, 4, 64, 64)
+    data = []
+    for coords in iter_physical_coordinates(layout):
+        x, y, z = (int(coords.get(axis, 0)) for axis in ("x", "y", "z"))
+        # Vary specimen intensity with Z; no plane may consume a neighbour's
+        # frames and still match the finite reference numerically.
+        data.append(base[y, x] * (0.7 + z * 0.2 + 0.1 * int(coords.get("c", 0))))
+    return (np.asarray(data, np.float32), ResolvedAcquisitionLayout(
+        layout=layout, source="explicit-metadata", confidence="certain",
+    ), nx * ny * nz * conditions)
+
+
+@pytest.mark.parametrize("axes", [("x", "y"), ("y", "z"), ("x", "z"), ("x", "y", "z")])
+@pytest.mark.parametrize("interleaved", [False, True])
+def test_layout_general_fast_complete_scans_match_finite(axes, interleaved):
+    """YZ/XZ/XYZ use the same Fast extraction as completed finite scans."""
+    frames, layout, per_t = _multi_plane_fixture(axes, interleaved=interleaved,
+                                                  negative_y=True)
+    params = _params()
+    plugin = MonalisaReconstructor()
+    finite = plugin.process(_source(frames, layout), params)
+    session, plan = _start(plugin, frames[:1], params, layout,
+                           frames_per_timepoint=per_t)
+    assert plan.axis_labels == ["T", *finite.axis_labels]
+    assert plan.out_shape[1:] == finite.data.shape
+    # Deliberately break at arbitrary offsets, including inside a plane.
+    cut = min(7, per_t)
+    session.push(frames[1:cut], 1, cut)
+    session.push(frames[cut:], cut, per_t)
+    result = session.finish()
+    np.testing.assert_allclose(result.data[0], finite.data, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(result.background[0], finite.background, rtol=1e-5, atol=1e-5)
+    assert result.axis_scales == [1., *finite.axis_scales]
+    assert result.scanned_axes == finite.scanned_axes
+    session.close()
+
+
+def test_interleaved_z_group_views_preserve_gain_chronology():
+    """Group-local gain positions must match finite's selected indices."""
+    from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
+        layout_scan, timepoint_group_view, validated_timepoint_groups,
+    )
+    frames, resolved, per_t = _multi_plane_fixture(("x", "y", "z"), interleaved=True)
+    scan = layout_scan(resolved, per_t)
+    groups = validated_timepoint_groups(scan, per_t)
+    assert scan.num_stacks == 3 and all(len(group) == 20 for group in groups)
+    assert not np.array_equal(groups[0], np.arange(20))  # actually interleaved
+    for group in range(scan.num_stacks):
+        view = timepoint_group_view(scan, group)
+        np.testing.assert_array_equal(view.index, scan.index[groups[group]])
+        for actual, expected in zip(view.gain_positions(0), scan.gain_positions(group)):
+            np.testing.assert_array_equal(actual, expected)
+
+
+def test_layout_multiplane_capability_contract_accepts_yz_xz_xyz():
+    for axes in (("y", "z"), ("x", "z"), ("x", "y", "z")):
+        frames, layout, per_t = _multi_plane_fixture(axes, interleaved=True)
+        info = RawInfo(
+            T=1, S=(per_t,), frame_shape=frames.shape[1:], dtype=frames.dtype,
+            mode="ScanOnce", acquisition_layout=layout,
+        )
+        contract = MonalisaReconstructor().contract(info, _params())
+        assert contract.init_frames == 1
+
+
+def test_z_and_condition_groups_keep_separate_semantic_axes():
+    frames, layout, per_t = _multi_plane_fixture(
+        ("x", "y", "z"), interleaved=True, conditions=2,
+    )
+    params = _params()
+    plugin = MonalisaReconstructor()
+    finite = plugin.process(_source(frames, layout), params)
+    session, plan = _start(plugin, frames[:1], params, layout,
+                           frames_per_timepoint=per_t)
+    session.push(frames[1:], 1, per_t)
+    result = session.finish()
+    assert plan.axis_labels == ["T", "C", "Z", "Y", "X"]
+    np.testing.assert_allclose(result.data[0], finite.data, atol=1e-5, rtol=1e-5)
+    assert result.condition_labels == finite.condition_labels
+    assert result.plane_step_nm == finite.plane_step_nm
+    session.close()
+
+
+def test_multi_plane_two_timepoints_keep_one_result_and_correct_z():
+    frames, layout, per_t = _multi_plane_fixture(("x", "y", "z"), nt=2,
+                                                  interleaved=True)
+    params = _params()
+    plugin = MonalisaReconstructor()
+    finite = plugin.process(_source(frames, layout), params)
+    session, _ = _start(plugin, frames[:1], params, layout, nt=2,
+                        frames_per_timepoint=per_t)
+    session.push(frames[1:per_t], 1, per_t)
+    first = session.result()
+    assert first.axis_labels == ["T", "Z", "Y", "X"]
+    assert np.isnan(first.data[1]).all()
+    session.push(frames[per_t:2 * per_t], per_t, 2 * per_t)
+    complete = session.finish()
+    np.testing.assert_allclose(complete.data, finite.data, rtol=1e-5, atol=1e-5)
+    assert complete.metadata["monalisa_streaming"]["completed_timepoints"] == 2
+    session.close()
+
+
+def test_interleaved_xyz_extracts_each_frame_exactly_once(monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
+
+    frames, layout, per_t = _multi_plane_fixture(("x", "y", "z"), interleaved=True)
+    plugin, params = MonalisaReconstructor(), _params()
+    finite = plugin.process(_source(frames, layout), params)
+    calls = []
+    original_apply = ExtractionOperator.apply_device
+
+    def counted(self, batch, device="CPU", chunk=64):
+        calls.append(len(batch))
+        return original_apply(self, batch, device, chunk)
+
+    monkeypatch.setattr(ExtractionOperator, "apply_device", counted)
+    monkeypatch.setattr(plugin, "process", lambda *a, **kw: pytest.fail(
+        "Completed incremental XYZ must finalize retained coefficients, not refit"
+    ))
+    session, _ = _start(plugin, frames[:1], params, layout, frames_per_timepoint=per_t)
+    session.push(frames[1:10], 1, 10)
+    session.push(frames[10:37], 10, 37)
+    session.push(frames[37:], 37, per_t)
+    streamed = session.finish()
+    assert sum(calls) == per_t
+    np.testing.assert_allclose(streamed.data[0], finite.data, rtol=1e-5, atol=1e-5)
+    session.close()
 
 
 def _params(*, stagger=False, orientation="+x+y"):
