@@ -602,6 +602,30 @@ class ProcessingQueueController(ImProcessWidgetController):
         except (ValueError, TypeError, IndexError) as exc:
             status = Readiness(ReadinessState.UNKNOWN, f"Readiness unavailable: {exc}")
         self._readinessCached[job_id] = status
+        from imswitch.improcess.execution.readiness import references_for_scope
+
+        is_lapse = self._source_kind(source) == "time-lapse"
+        refs, bounds = references_for_scope(
+            source,
+            job.timepoint_scope,
+            job.timepoint_total,
+            is_lapse=is_lapse,
+        )
+
+        print(
+            "\n[AUTO READINESS]",
+            "\n  dataset:", job.label,
+            "\n  kind:", self._source_kind(source),
+            "\n  planned T:", job.timepoint_total,
+            "\n  references:", [(r.logical_t, r.dataset) for r in refs],
+            "\n  state:", status.state,
+            "\n  reason:", status.reason,
+            "\n  completed:", (
+                status.progress.completed_timepoints
+                if status.progress else None
+            ),
+            flush=True,
+        )
         return status
 
     @QtCore.Slot()
@@ -711,6 +735,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                             self._emit_changed()
                         continue
                 else:
+                    selected_auto_refs = readiness.verified_references
                     choice = choose_execution(
                         candidate, self._source_kind(source), reconstructor,
                     )
@@ -803,9 +828,20 @@ class ProcessingQueueController(ImProcessWidgetController):
                 display_error=self._display_error_for_source_failure(selected_failure),
             )
             return
-        if selected_choice is not None and selected_choice.path in (
-            ExecutionPath.INCREMENTAL_FINITE, ExecutionPath.INCREMENTAL_FOLLOW,
-        ):
+        # A finalized shared HDF5 lapse must use the ordinary finite
+        # reader with the exact references verified by readiness.
+        shared_hdf5_complete = (
+            job.origin == ProcessingOrigin.AUTO
+            and len(selected_auto_refs) > 1
+            and len({Path(ref.path) for ref in selected_auto_refs}) == 1
+            and Path(selected_auto_refs[0].path).suffix.lower()
+                in ('.h5', '.hdf5')
+        )
+        if (not shared_hdf5_complete and selected_choice is not None
+                and selected_choice.path in (
+                    ExecutionPath.INCREMENTAL_FINITE,
+                    ExecutionPath.INCREMENTAL_FOLLOW,
+                )):
             if self._start_finite_incremental(
                 job, source, reconstructor, prepared=prepared_live_job,
             ):
@@ -1171,7 +1207,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         allowed_t = set(ready_timepoints) if auto_batch else None
         data_objs = self._data_objs_for_source(
             source, timepoint_scope=scope, allowed_timepoints=allowed_t,
-            verified_references=ready_references if auto_batch else None,
+            verified_references=ready_references,
         )
         if not data_objs:
             self._finish_current(error="No readable source units found")
@@ -1334,7 +1370,8 @@ class ProcessingQueueController(ImProcessWidgetController):
             # example if Monitor was switched off after Auto admission).
             out = []
             for ref in verified_references:
-                if (allowed_timepoints is None or ref.logical_t not in allowed_timepoints
+                if ((allowed_timepoints is not None
+                     and ref.logical_t not in allowed_timepoints)
                         or ref.logical_t < start
                         or (stop is not None and ref.logical_t >= stop)):
                     continue

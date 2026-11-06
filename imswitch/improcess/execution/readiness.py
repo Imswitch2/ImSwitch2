@@ -17,6 +17,9 @@ from imswitch.imcommon.model.acquisition_metadata import (
     WRITER_STATE_FINALIZED, WRITER_STATE_WRITING,
 )
 from imswitch.improcess.model.timepoint_scope import coerce_timepoint_scope
+from imswitch.improcess.model.acquisition_progress import (
+    AcquisitionProgress, PhysicalReference, expected_single_file_hdf5_refs,
+)
 
 
 class ReadinessState(str, Enum):
@@ -31,13 +34,8 @@ class Readiness:
     state: ReadinessState
     reason: str = ""
     live_readable: bool = False
-
-
-@dataclass(frozen=True)
-class PhysicalReference:
-    path: str
-    dataset: str | None
-    logical_t: int
+    progress: AcquisitionProgress | None = None
+    verified_references: tuple[PhysicalReference, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,7 +47,7 @@ class PhysicalEvidence:
     allocated_frames: int
 
 
-def references_for_scope(source, scope, total: int | None, *, is_lapse: bool):
+def references_for_scope(source, scope, total: int | None, *, is_lapse: bool, include_expected: bool = True):
     """Use the Session's logical SourceRefs, not directory-name heuristics."""
     start, stop = coerce_timepoint_scope(scope).bounds(total)
     index = getattr(source, "sourceMetadata", None)
@@ -76,6 +74,8 @@ def references_for_scope(source, scope, total: int | None, *, is_lapse: bool):
                 if refs else []), (0, 1)
     if stop is None:
         return (), (start, stop)
+    if include_expected:
+        refs = expected_single_file_hdf5_refs(refs, total)
     return [ref for ref in refs if start <= ref.logical_t < stop], (start, stop)
 
 
@@ -203,7 +203,7 @@ def evaluate_evidence(evidence: PhysicalEvidence | None, *, is_lapse: bool = Fal
     return Readiness(ReadinessState.UNKNOWN, "Writer completion is unconfirmed")
 
 
-def probe_scope(source, job, *, is_lapse: bool, inspected=None,
+def _probe_scope_impl(source, job, *, is_lapse: bool, inspected=None,
                 max_new_files: int = 12) -> Readiness:
     """Bounded probe; `inspected` caches finalized physical refs across ticks."""
     refs, (start, stop) = references_for_scope(
@@ -259,3 +259,58 @@ def probe_scope(source, job, *, is_lapse: bool, inspected=None,
             return Readiness(state.state, state.reason, live_readable=pending_live)
         cache[key] = True
     return Readiness(ReadinessState.READY)
+
+
+def probe_scope(source, job, *, is_lapse: bool, inspected=None,
+                max_new_files: int = 12) -> Readiness:
+    """Probe readiness and expose one reusable acquisition-progress snapshot.
+
+    The metadata verification remains in _probe_scope_impl. The planned
+    references are never treated as completed merely because they can be
+    predicted from the acquisition geometry.
+    """
+    cache = inspected if inspected is not None else {}
+    result = _probe_scope_impl(
+        source, job, is_lapse=is_lapse, inspected=cache,
+        max_new_files=max_new_files,
+    )
+    expected, bounds = references_for_scope(
+        source, job.timepoint_scope, job.timepoint_total,
+        is_lapse=is_lapse,
+    )
+    catalog, _ = references_for_scope(
+        source, job.timepoint_scope, job.timepoint_total,
+        is_lapse=is_lapse, include_expected=False,
+    )
+    completed = tuple(sorted({
+        ref.logical_t for ref in expected
+        if (ref.path, ref.dataset, ref.logical_t) in cache
+    }))
+    if result.state == ReadinessState.READY:
+        status = "complete"
+    elif result.state == ReadinessState.ACQUIRING:
+        status = "acquiring"
+    elif (result.state == ReadinessState.INVALID
+          or "stopped early" in result.reason.lower()):
+        status = "incomplete"
+    else:
+        status = "unknown"
+
+    progress = AcquisitionProgress(
+        planned_timepoints=job.timepoint_total if is_lapse else 1,
+        scope=bounds,
+        expected_references=tuple(expected),
+        catalog_timepoints=tuple(sorted({
+            ref.logical_t for ref in catalog
+        })),
+        completed_timepoints=completed,
+        status=status,
+        reason=result.reason,
+    )
+    return Readiness(
+        result.state, result.reason, result.live_readable,
+        progress=progress,
+        verified_references=(
+            tuple(expected) if result.state == ReadinessState.READY else ()
+        ),
+    )
