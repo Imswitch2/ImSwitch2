@@ -831,7 +831,8 @@ Five scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
 ``scan.cloak`` selects a compatible simplified frontend; see
 :doc:`setupinfo-reference`. ``Expert`` edits a whole scan program (dimensions,
 positioners, what happens within one step, pauses and triggers, recording) and
-runs it on the scan engine its devices are on; see :doc:`expert-scanning`.
+runs it on the scan engine its devices are on, with a **Simple** view that lists
+its values; see :doc:`expert-scanning`.
 ``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.

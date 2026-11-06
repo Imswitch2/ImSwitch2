@@ -565,12 +565,8 @@ class _LoopChip(QtWidgets.QFrame):
     def _setOrder(self, traversal, outside):
         """``traversal``; a serpentine alternates with the ``outside``
         dimensions right outside it, outermost first -- the only parity the
-        model takes."""
-        loops = self._panel.tableRows('loops')
-        parity = ([loop['id'] for loop in loops[self._index - outside:self._index]]
-                  if traversal == 'serpentine' else [])
-        self._panel.setTableValue('loops', self._index, 'parity_loops', ', '.join(parity))
-        self._panel.setTableValue('loops', self._index, 'traversal', traversal)
+        model takes (the panel writes it)."""
+        self._panel.setLoopOrder(self._index, traversal, outside)
 
     def _fillMenu(self):
         menu = self.more.menu()
@@ -837,6 +833,7 @@ class StepCanvas(QtWidgets.QWidget):
         self._selected = -1
         self._drag = None                     # (event, mode, press_x, start_s, end_s)
         self._preview: Dict[int, tuple] = {}
+        self._editable = True
         self._labelW, self._t0, self._t1 = 0, 0.0, 1e-3
         #: Called before a press acts: the panel brings the drawing up to date
         #: with an edit committed by this very click.
@@ -864,6 +861,17 @@ class StepCanvas(QtWidgets.QWidget):
 
     def selected(self):
         return self._selected
+
+    def setEditable(self, on):
+        """While not editable the drawing is only drawn: presses, moves and
+        keys edit nothing and select nothing, and nothing is selected."""
+        self._editable = bool(on)
+        if not self._editable:
+            self._drag = None
+            self._preview = {}
+            QtWidgets.QToolTip.hideText()
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            self.setSelected(-1)
 
     def events(self):
         return list(self._events)
@@ -1054,7 +1062,7 @@ class StepCanvas(QtWidgets.QWidget):
         return start, stop
 
     def mousePressEvent(self, event):
-        if event.button() != QtCore.Qt.LeftButton:
+        if not self._editable or event.button() != QtCore.Qt.LeftButton:
             return
         if self.beforePress is not None:
             self.beforePress()
@@ -1068,6 +1076,9 @@ class StepCanvas(QtWidgets.QWidget):
         self.update()
 
     def mouseMoveEvent(self, event):
+        if not self._editable:
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            return
         if self._drag is None:
             _hit, mode = self._hit(event.pos())
             self.setCursor(QtCore.Qt.SizeHorCursor if mode in ('start', 'end') else
@@ -1082,7 +1093,7 @@ class StepCanvas(QtWidgets.QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
-        if self._drag is None or event.button() != QtCore.Qt.LeftButton:
+        if not self._editable or self._drag is None or event.button() != QtCore.Qt.LeftButton:
             return
         hit = self._drag[0]
         self._drag = None
@@ -1093,6 +1104,9 @@ class StepCanvas(QtWidgets.QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        if not self._editable:
+            super().keyPressEvent(event)
+            return
         chosen = next((e for e in self._events if e['row'] == self._selected), None)
         key = event.key()
         if chosen is not None and key in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right):
@@ -1153,7 +1167,13 @@ class StepCard(Card):
         self.phase.setToolTip('Show the step as one phase plays it.')
         self.phase.currentIndexChanged.connect(lambda _i: self.refresh())
         self.addButtons: Dict[str, QtWidgets.QToolButton] = {}
-        self.header.addWidget(_group('dwell', self.stepField, 'ms'))
+        self._readOnly = False
+        self._keptSelection = -1
+        self.dwellGroup = _group('dwell', self.stepField, 'ms')
+        self.dwellText = _muted('')
+        self.dwellText.setVisible(False)
+        self.header.addWidget(self.dwellGroup)
+        self.header.addWidget(self.dwellText)
         self.header.addWidget(self.phase)
         for title, kind, group in ADD_EVENT_BUTTONS:
             button = _menu_button(title, f'Add a {title[2:].lower()} of a {group} to every step.')
@@ -1244,15 +1264,40 @@ class StepCard(Card):
             text.setText(' '.join([section['text']] + section['notes']))
             canvas.setContent(section['events'], None if duration is None else float(duration),
                               self._panel.gridSeconds(), section['moving'], phase)
+            canvas.setEditable(not self._readOnly)
             canvas.setVisible(bool(section['events']) or duration is not None)
         self.prologueHost.setVisible(bool(sections))
 
     def _dragged(self, row, start_s, end_s):
         self._panel.setTimes(row, start_s, end_s)
 
+    def setReadOnly(self, on):
+        """The step as a view (the Simple view): what adds to it, edits it or
+        selects in it is not there -- no add buttons, no inspector, no hint,
+        no dragging, no keys -- and the dwell is text. ``refresh`` keeps it so
+        after every report; ``setReadOnly(False)`` brings everything back."""
+        on = bool(on)
+        if on == self._readOnly:
+            return
+        self._readOnly = on
+        if on:
+            # the event the inspector was on, selected again on the way back
+            self._keptSelection = max((c.selected() for c in self._canvases()),
+                                      default=-1)
+        self.canvas.setEditable(not on)
+        if not on:
+            self.canvas.setSelected(self._keptSelection)
+        self.dwellGroup.setVisible(not on)
+        for button in self.addButtons.values():
+            button.setVisible(not on)
+        self.refresh()
+
     def refresh(self):
         panel = self._panel
         _quiet_set(self.stepField, self.stepField.setText, panel.stepPar.text())
+        dwell = panel.stepPar.text().strip()
+        self.dwellText.setText(f'dwell {dwell} ms')
+        self.dwellText.setVisible(self._readOnly and bool(dwell))
         self.stepField.setStyleSheet('' if panel.stepSeconds() is not None else
                                      f'border: 1px solid {role_color("bad")};')
         phases = panel.phaseCount()
@@ -1267,19 +1312,26 @@ class StepCard(Card):
         events, moving, notes = panel.stepContent()
         self.canvas.setContent(events, panel.stepSeconds(), panel.gridSeconds(), moving, phase)
         self._refreshPrologues(phase)
-        self.hint.setVisible(bool(events) or bool(self.prologueSections))
+        self.hint.setVisible((bool(events) or bool(self.prologueSections))
+                             and not self._readOnly)
         _clear(self.notes)
         for note in notes:
             if isinstance(note, tuple):           # (text, button title, action)
                 text, title, action = note
                 self.notes.addWidget(_muted(text))
-                button = QtWidgets.QToolButton()
-                button.setText(title)
-                button.clicked.connect(action)
-                self.notes.addWidget(button)
+                if not self._readOnly:
+                    button = QtWidgets.QToolButton()
+                    button.setText(title)
+                    button.clicked.connect(action)
+                    self.notes.addWidget(button)
             else:
                 self.notes.addWidget(_muted(note))
         self.noteHost.setVisible(bool(notes))
+        if self._readOnly:
+            for canvas in self._canvases():
+                canvas.setSelected(-1)
+            self.inspector.setVisible(False)
+            return
         rows = len(panel.tableRows('timeline'))
         selected = max((c.selected() for c in self._canvases()), default=-1)
         if selected >= rows:
@@ -1670,6 +1722,10 @@ class StartCard(Card):
         self.body.addWidget(self.buildHost)
         self._panel = panel
 
+    def setBuildVisible(self, on):
+        """The row that builds a scan by hand: not in the Simple view."""
+        self.buildHost.setVisible(on)
+
     def setTemplates(self, templates, trajectories=()):
         _clear(self.flow)
         _clear(self.build)
@@ -1968,7 +2024,13 @@ class AdaptiveColumns(QtWidgets.QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        wanted = (QtWidgets.QBoxLayout.LeftToRight if event.size().width() >= self.threshold()
+        self.rearrange()
+
+    def rearrange(self):
+        """Choose side by side or stacked for the width now. A resize does it;
+        so must a change of which cards are shown, which changes the width the
+        editor asks for."""
+        wanted = (QtWidgets.QBoxLayout.LeftToRight if self.width() >= self.threshold()
                   else QtWidgets.QBoxLayout.TopToBottom)
         if self.box.direction() != wanted:
             self.box.setDirection(wanted)

@@ -74,6 +74,16 @@ def test_an_explicit_order_is_a_table():
         [0.0, 2.0, 1.0, 3.0]
 
 
+def test_a_table_without_its_positions_is_refused_not_raised():
+    """A drive that follows a table over a loop but has no positions (the
+    table's field cleared) is a problem the check reports, as one without a
+    loop is: it raised TypeError (``len(None)``) in the report instead."""
+    program = _program([Loop('x', 'scan_x', 2)],
+                       [DeviceDrive('X', table_loop='x', table_um=None, motion=ABSOLUTE)])
+    with pytest.raises(ProgramError, match='a table needs both table_loop and table_um'):
+        validate(program)
+
+
 def test_a_position_relative_to_the_capture_needs_the_capture():
     program = _program([Loop('x', 'scan_x', 2)],
                        [DeviceDrive('X', weights_um={'x': 1.0}, motion=Motion())])

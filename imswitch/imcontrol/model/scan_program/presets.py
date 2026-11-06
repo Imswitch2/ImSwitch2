@@ -22,6 +22,7 @@ Qt-free.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Dict, List, Mapping, Optional, Tuple
@@ -90,7 +91,7 @@ def _timeline(pulses, camera, exposure_pulse) -> Tuple[List[TimelineEvent], floa
     events, t, window = [], 0.0, None
     for index, (device, on_s, gap_s) in enumerate(pulses, start=1):
         on_s, gap_s = float(on_s), float(gap_s)
-        if on_s <= 0 or gap_s < 0:
+        if not (math.isfinite(on_s) and math.isfinite(gap_s)) or on_s <= 0 or gap_s < 0:
             raise PresetError(f'Pulse {index} ({device}): on must be positive and the gap '
                               'after it not negative.')
         events.append(TimelineEvent(str(device), 'ttl', t, exact_sum(t, on_s),
@@ -116,6 +117,16 @@ def _count(value, name, minimum=1):
     return count
 
 
+def _pause(value, name) -> float:
+    """A pause before each iteration, in s: 0 is none. A negative one, or one
+    that is not a number, is refused -- it was read as none, silently, while
+    the form kept showing it."""
+    pause_s = float(value)
+    if not math.isfinite(pause_s) or pause_s < 0:
+        raise PresetError(f'{name} must be 0 ms or more.')
+    return pause_s
+
+
 def ms_resolft(*, device, cycles, planes, cycle_step_um, start_um, pulses, camera,
                exposure_pulse, timepoints, pause_s, move_s, settle_s,
                transition='jump') -> ScanProgram:
@@ -126,7 +137,8 @@ def ms_resolft(*, device, cycles, planes, cycle_step_um, start_um, pulses, camer
     timepoints = _count(timepoints, 'Timepoints')
     exposure_pulse = _count(exposure_pulse, 'Exposure pulse')
     dy = float(cycle_step_um)
-    move_s, settle_s, pause_s = float(move_s), float(settle_s), float(pause_s)
+    move_s, settle_s = float(move_s), float(settle_s)
+    pause_s = _pause(pause_s, 'Pause before each timepoint')
     events, length = _timeline(pulses, camera, exposure_pulse)
     motion = Motion(transition=transition, move_s=move_s, settle_s=settle_s,
                     placement='in-step', return_s=exact_sum(move_s, settle_s),
@@ -149,7 +161,7 @@ def pulse_sequence(*, pulses, camera, exposure_pulse, frames, pause_s) -> ScanPr
     """A pulse sequence ``frames`` times, a pause before each frame."""
     frames = _count(frames, 'Frames')
     events, length = _timeline(pulses, camera, _count(exposure_pulse, 'Exposure pulse'))
-    pause_s = float(pause_s)
+    pause_s = _pause(pause_s, 'Pause before each frame')
     return validate(ScanProgram(
         loops=(Loop('frame', 'time', frames),), drives=(), step_s=length,
         timeline=tuple(events),

@@ -150,6 +150,23 @@ def test_a_pause_waits_before_every_timepoint():
     assert program.waits == (Wait(at='time', trigger='time', interval_s=0.02),)
 
 
+@pytest.mark.parametrize('pause_s', [-0.005, float('nan'), float('inf')])
+def test_a_pause_that_is_negative_or_not_a_number_is_refused_not_read_as_none(pause_s):
+    """It made a scan without a pause while the form kept showing it."""
+    with pytest.raises(PresetError, match='Pause before each timepoint must be 0 ms or more'):
+        presets.make('ms-resolft', dict(MS_RESOLFT, pause_s=pause_s))
+    with pytest.raises(PresetError, match='Pause before each frame must be 0 ms or more'):
+        presets.make('pulse-sequence', dict(pulses=PULSES, camera='Camera', exposure_pulse=3,
+                                            frames=5, pause_s=pause_s))
+    assert presets.make('ms-resolft', dict(MS_RESOLFT, pause_s=0.0)).waits == ()   # 0: none
+
+
+@pytest.mark.parametrize('pulse', [['L405', float('nan'), 1e-3], ['L405', 1e-3, float('nan')]])
+def test_a_pulse_time_that_is_not_a_number_is_refused(pulse):
+    with pytest.raises(PresetError, match='on must be positive and the gap after it not'):
+        presets.make('ms-resolft', dict(MS_RESOLFT, pulses=[pulse, *PULSES[1:]]))
+
+
 # ---------------------------------------------------------------------------
 # The NI-DAQ plays it, and tells the detectors what it is
 # ---------------------------------------------------------------------------
