@@ -24,6 +24,7 @@ import numpy as np
 
 from imswitch.improcess.execution.progressive_results import ProgressiveResultAssembler
 from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
+from imswitch.improcess.model.result import ViewMode
 from imswitch.improcess.reconstructors.base import (
     Incompatible, StreamPlan, StreamingSession,
 )
@@ -216,13 +217,53 @@ class UnifiedFastStreamingSession(StreamingSession):
         self._incremental.push(frames)
         self._buffered = len(frames)
         self._preview_revision += 1
-        provisional = self.provisional_preview()
+        # In an interpolating layout the first frame may not yet produce any
+        # valid pixels. The plan is a geometry contract, not a preview result:
+        # it must exist even when provisional_preview() still returns None.
+        return self._incremental_stream_plan()
+
+    def _spatial_axis_labels(self):
+        return (
+            (["C"] if self._scan.num_conditions > 1 else [])
+            + (["Z"] if self._scan.num_planes > 1 else []) + ["Y", "X"]
+        )
+
+    def _incremental_stream_plan(self):
+        """Describe the *final* output axes without needing a valid preview.
+
+        Keep the same scale and named Z view permutations as MonalisaResult.
+        The provisional display can start later for an underdetermined
+        interpolation while the Gaussian operator still initializes on T0/F0.
+        """
+        axes = ["T", *self._spatial_axis_labels()]
+        pixel = self._incremental.calibrated.output_pixel_nm
+        pixel = np.atleast_1d(np.asarray(
+            [0., 0.] if pixel is None else pixel, dtype=float,
+        ))
+        if pixel.size == 1:
+            pixel = np.repeat(pixel, 2)
+        y_nm, x_nm = float(pixel[0]), float(pixel[-1])
+        calibrated = y_nm > 0 and x_nm > 0
+        scales = [
+            (y_nm if calibrated else 1.) if axis == "Y" else
+            (x_nm if calibrated else 1.) if axis == "X" else
+            (float(self._scan.plane_step_nm) if calibrated and
+             self._scan.plane_step_nm else 1.) if axis == "Z" else 1.
+            for axis in axes
+        ]
+        views = []
+        if "Z" in axes:
+            leading = [i for i, axis in enumerate(axes) if axis not in ("X", "Y", "Z")]
+            x, y, z = (axes.index(axis) for axis in ("X", "Y", "Z"))
+            views = [
+                ViewMode("Standard", tuple([*leading, z, y, x])),
+                ViewMode("Bottom", tuple([*leading, y, z, x])),
+                ViewMode("Left", tuple([*leading, x, z, y])),
+            ]
         return StreamPlan(
             out_shape=(self._planned, *self._incremental.shape),
-            axis_labels=["T", *provisional.axis_labels],
-            view_modes=list(provisional.view_modes or ()), dtype=np.dtype("float32"),
-            scale_unit=str(provisional.scale_unit),
-            axis_scales=[1., *list(provisional.axis_scales)],
+            axis_labels=axes, view_modes=views, dtype=np.dtype("float32"),
+            scale_unit="nm" if calibrated else "px", axis_scales=scales,
         )
 
     def _initialize_incremental(self, *, first_frame):
@@ -422,10 +463,7 @@ class UnifiedFastStreamingSession(StreamingSession):
             image=pixels, output_pixel_nm=calibrated.output_pixel_nm,
             params=deepcopy(self._original_params),
             diagnostics={"placement": self._incremental._placement.method},
-            axis_labels=(
-                (["C"] if self._scan.num_conditions > 1 else [])
-                + (["Z"] if self._scan.num_planes > 1 else []) + ["Y", "X"]
-            ),
+            axis_labels=self._spatial_axis_labels(),
             plane_step_nm=self._scan.plane_step_nm,
             condition_labels=self._scan.condition_labels if self._scan.num_conditions > 1 else (),
             scanned_axes=self._scan.scanned_axes + (("z",) if self._scan.num_planes > 1 else ()),
@@ -443,12 +481,17 @@ class UnifiedFastStreamingSession(StreamingSession):
 
         This is never the scientific Session result: no completion coverage or
         provenance is claimed until the first full timepoint is reconstructed.
-        Subsequent raw chunks transfer just one T slice, not the entire volume.
+        Subsequent raw chunks transfer one T slice, not the entire series.
+        Only the currently acquired T needs a provisional allocation.
         """
         from .canonical_result import MonalisaResult
 
         t = int(preview.metadata["monalisa_streaming"]["timepoint"])
-        data = np.full((self._planned, *preview.data.shape), np.nan, dtype=np.float32)
+        # Before T0 completes this is a transient *viewer-only* object.
+        # There is no reason to allocate every future T of a large 3D lapse:
+        # the first scientific snapshot replaces this with the real time
+        # series, and the viewer can handle the shape change on that update.
+        data = np.full((t + 1, *preview.data.shape), np.nan, dtype=np.float32)
         data[t] = preview.data
         result = MonalisaResult(
             name=f"{self._name}_monalisa", image=data,

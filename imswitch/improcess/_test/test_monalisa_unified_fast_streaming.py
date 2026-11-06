@@ -518,9 +518,11 @@ def test_provisional_volume_uses_real_t_axis_and_never_mutates_complete_data():
     volume = session.provisional_volume(preview)
     assert volume.name == "recording_monalisa"
     assert volume.axis_labels == ["T", "Y", "X"]
-    assert volume.data.shape[0] == 2
+    # Before T0 is scientific, the temporary viewer raster need not
+    # preallocate every future T of a large 3D timelapse.
+    assert volume.data.shape[0] == 1
     np.testing.assert_allclose(volume.data[0], preview.data, equal_nan=True)
-    assert np.isnan(volume.data[1]).all()
+    assert not np.shares_memory(volume.data, preview.data)
     assert volume.metadata["monalisa_streaming"]["provisional_preview"] is True
     assert session.has_completed_timepoint is False
     session.close()
@@ -736,3 +738,152 @@ def test_m4b1_frame_gain_low_signal_fallback_is_identical_for_finite_and_streame
     assert gain is None and diagnostics == {}
     with pytest.raises(ValueError, match="Unknown frame gain"):
         resolve_scan_frame_gain(extracted, np.ones(4, dtype=bool), (4, 5), positions, "unknown")
+
+
+@pytest.mark.parametrize("axes", [("y", "z"), ("x", "z"), ("x", "y", "z")])
+@pytest.mark.parametrize("interleaved", [False, True])
+def test_patch_b_first_frame_3d_preview_keeps_correct_axes_and_coverage(axes, interleaved):
+    """Show a partial volume without waiting for a single Z plane to finish."""
+    frames, layout, per_t = _multi_plane_fixture(axes, interleaved=interleaved, nt=2)
+    plugin, params = MonalisaReconstructor(), _params()
+    reference = plugin.process(_source(frames, layout), params)
+    session, plan = _start(plugin, frames[:1], params, layout,
+                           nt=2, frames_per_timepoint=per_t)
+    assert not session.has_completed_timepoint
+    assert plan.axis_labels == ["T", "Z", "Y", "X"]
+    assert plan.out_shape == reference.data.shape
+    assert plan.axis_scales == reference.axis_scales
+    assert {view.name for view in plan.view_modes} == {"Standard", "Bottom", "Left"}
+
+    preview = session.provisional_preview()
+    assert preview is not None  # these fixtures use a directly placeable lattice
+    assert preview.axis_labels == ["Z", "Y", "X"]
+    assert preview.data.shape == reference.data.shape[1:]
+    assert np.isfinite(preview.data).any()
+    # The first frame never fills another Z plane (including Z-interleaved).
+    assert sum(np.isfinite(plane).any() for plane in preview.data) == 1
+    assert session.has_completed_timepoint is False
+    with pytest.raises(RuntimeError, match="No complete"):
+        session.result()
+
+    volume = session.provisional_volume(preview)
+    assert volume.axis_labels == plan.axis_labels
+    assert volume.axis_scales == plan.axis_scales
+    assert volume.data.shape == (1, *reference.data.shape[1:])
+    np.testing.assert_array_equal(np.isnan(volume.data[0]), np.isnan(preview.data))
+    assert volume.metadata["monalisa_streaming"]["provisional_preview"]
+    assert not np.shares_memory(volume.data, preview.data)
+    session.close()
+
+
+def test_patch_b_interleaved_3d_preview_reuses_buffer_and_preserves_completed_t0():
+    """T1's provisional Z volume must never overwrite completed scientific T0."""
+    frames, layout, per_t = _multi_plane_fixture(
+        ("x", "y", "z"), nt=2, interleaved=True,
+    )
+    session, _ = _start(MonalisaReconstructor(), frames[:1], _params(), layout,
+                        nt=2, frames_per_timepoint=per_t)
+    accumulator = session._incremental
+    preview_data = accumulator.image()
+    assert preview_data is not None
+    # GUI refresh with no new frames must reuse a single spatial volume.
+    assert accumulator.image() is preview_data
+    session.push(frames[1:9], 1, 9)
+    assert accumulator.image() is preview_data
+    assert np.isfinite(preview_data).any()
+    assert not session.has_completed_timepoint
+
+    session.push(frames[9:per_t], 9, per_t)
+    complete_t0 = session.result()
+    assert complete_t0.axis_labels == ["T", "Z", "Y", "X"]
+    assert session.has_completed_timepoint
+    assert np.isnan(complete_t0.data[1]).all()
+    science = complete_t0.data.copy()
+
+    session.push(frames[per_t:per_t + 1], per_t, per_t + 1)
+    provisional_t1 = session.provisional_preview()
+    assert provisional_t1 is not None
+    assert provisional_t1.metadata["monalisa_streaming"]["timepoint"] == 1
+    assert np.isfinite(provisional_t1.data).any()
+    np.testing.assert_array_equal(complete_t0.data, science)
+    assert session.result().metadata["monalisa_streaming"]["completed_timepoints"] == 1
+
+    session.push(frames[per_t + 1:], per_t + 1, 2 * per_t)
+    final = session.finish()
+    assert final.metadata["monalisa_streaming"]["completed_timepoints"] == 2
+    np.testing.assert_allclose(final.data[0], final.data[1], rtol=1e-5, atol=1e-5)
+    session.close()
+
+
+@pytest.mark.parametrize("axes", [("x", "y"), ("y", "z"), ("x", "y", "z")])
+def test_patch_b_begin_does_not_require_a_solvable_first_frame(monkeypatch, axes):
+    """An underdetermined interpolation must not fail stream initialization."""
+    from imswitch.improcess.reconstructors.monalisa.incremental_fast import (
+        IncrementalFastAccumulator, IncrementalFastMultiAccumulator,
+    )
+    frames, layout, per_t = _multi_plane_fixture(axes)
+    plugin, params = MonalisaReconstructor(), _params()
+    reference = plugin.process(_source(frames, layout), params)
+    with monkeypatch.context() as patch:
+        patch.setattr(IncrementalFastAccumulator, "image", lambda self: None)
+        patch.setattr(IncrementalFastMultiAccumulator, "image", lambda self: None)
+        session, plan = _start(plugin, frames[:1], params, layout,
+                               frames_per_timepoint=per_t)
+        assert session.provisional_preview() is None
+        assert plan.out_shape == (1, *reference.data.shape)
+        assert plan.axis_labels == ["T", *reference.axis_labels]
+        assert plan.axis_scales == [1., *reference.axis_scales]
+    session.push(frames[1:], 1, per_t)
+    complete = session.finish()
+    np.testing.assert_allclose(complete.data[0], reference.data, rtol=1e-5, atol=1e-5)
+    session.close()
+
+
+def test_patch_b_worker_publishes_provisional_xyz_without_scientific_claim():
+    """Qt transport must carry a complete Z volume as one provisional T slice."""
+    from imswitch.improcess.execution.qt_workers import StreamProcessWorker
+
+    frames, layout, per_t = _multi_plane_fixture(("y", "z"), nt=2, interleaved=True)
+    plugin, params = MonalisaReconstructor(), _params()
+    session, _ = _start(plugin, frames[:1], params, layout,
+                        nt=2, frames_per_timepoint=per_t)
+    worker = StreamProcessWorker(7, plugin, name="recording")
+    worker._session = session
+    worker._record_snapshot = lambda *args: None
+    previews = []
+    worker.sigPreview.connect(lambda generation, result, delta: previews.append(
+        (generation, result, delta)
+    ))
+    worker._preview(force=True)
+    assert len(previews) == 1
+    generation, result, delta = previews[-1]
+    assert generation == 7 and delta is None
+    assert result.axis_labels == ["T", "Z", "Y", "X"]
+    assert result.data.shape[0] == 1
+    assert result.metadata["monalisa_streaming"]["provisional_preview"]
+    session.push(frames[1:5], 1, 5)
+    worker._preview(force=True)
+    _, complete, delta = previews[-1]
+    assert complete is None
+    assert delta[0] == "provisional" and delta[1] == 0
+    assert delta[2].shape == (1, *result.data.shape[1:])
+
+    session.push(frames[5:per_t], 5, per_t)
+    worker._preview(force=True)
+    _, scientific, delta = previews[-1]
+    assert delta is None and scientific is not None
+    assert scientific.data.shape == (2, *result.data.shape[1:])
+    assert scientific.metadata["monalisa_streaming"]["completed_timepoints"] == 1
+    assert np.isnan(scientific.data[1]).all()
+
+    # Further previews have a full-Z T slice, but must not mutate the
+    # completed scientific snapshot retained by Session.
+    published = scientific.data.copy()
+    session.push(frames[per_t:per_t + 1], per_t, per_t + 1)
+    worker._preview(force=True)
+    _, scientific, delta = previews[-1]
+    assert scientific is None
+    assert delta[0] == "provisional" and delta[1] == 1
+    assert delta[2].shape == (1, *published.shape[1:])
+    np.testing.assert_array_equal(published, session.result().data)
+    session.close()

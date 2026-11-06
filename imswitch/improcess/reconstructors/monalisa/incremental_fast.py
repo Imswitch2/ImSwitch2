@@ -299,8 +299,11 @@ class IncrementalFastMultiAccumulator:
         self._received = 0
         for group in self._groups:
             group.reset()
-        self._preview_images = [None] * len(self._groups)
+        # Keep one in-progress spatial buffer. Building a fresh stack on
+        # every viewer refresh costs O(Z*Y*X) allocations in 3D.
+        self._preview_volume = None
         self._preview_dirty = set(range(len(self._groups)))
+        self._preview_has_pixels = False
 
     @property
     def frames_received(self):
@@ -327,18 +330,27 @@ class IncrementalFastMultiAccumulator:
         self._received = stop
 
     def image(self):
-        """Provisional volume, with unknown groups represented by NaN."""
+        """A reusable Z/C volume, with unmeasured pixels represented by NaN.
+
+        Return None until an actual pixel is reconstructable. Interpolating
+        placement can need several frames before its first valid partial
+        solve; this must not prevent first-frame geometry initialization.
+        """
         if not self._received:
             return None
-        for group in self._preview_dirty:
-            accumulator = self._groups[group]
-            pixels = accumulator.image()
-            self._preview_images[group] = (
-                np.full(accumulator.shape, np.nan, dtype=np.float32)
-                if pixels is None else pixels
-            )
+        if self._preview_volume is None:
+            self._preview_volume = np.full(self.shape, np.nan, dtype=np.float32)
+        groups = self._preview_volume.reshape(len(self._groups), *self._groups[0].shape)
+        for group in sorted(self._preview_dirty):
+            pixels = self._groups[group].image()
+            if pixels is None:
+                groups[group].fill(np.nan)
+            else:
+                groups[group] = pixels
+                if not self._preview_has_pixels and np.isfinite(pixels).any():
+                    self._preview_has_pixels = True
         self._preview_dirty.clear()
-        return np.stack(self._preview_images).reshape(self.shape)
+        return self._preview_volume if self._preview_has_pixels else None
 
     def finalize_stacks(self):
         if self._received != len(self.scan.stack):
