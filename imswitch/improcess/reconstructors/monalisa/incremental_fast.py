@@ -19,7 +19,7 @@ import numpy as np
 from imswitch.improcess.reconstructors.base import Incompatible
 from .pipeline import (
     _oriented_aspect, _raster_coordinates, geometry_with_step, prepare_geometry,
-    reconstruct_stack,
+    reconstruct_stack, resolve_scan_frame_gain,
 )
 from .extraction import ExtractionResult
 from .placement import prepare_placement
@@ -196,8 +196,9 @@ class IncrementalFastAccumulator:
         """Complete one scan using its retained extraction; no second GPU/CPU fit.
 
         The canonical finite pipeline handles final placement, background and
-        diagnostics. Fast streaming capability excludes corrections requiring
-        the original raw frames, so passing ``frames=None`` is intentional.
+        diagnostics.  Timepoint-level intensity and cell-offset corrections
+        use these retained coefficients; no raw frames or second solve are
+        required. Reassignment and pinholes remain explicitly unsupported.
         A partial or overlong scan cannot become a scientific result.
         """
         expected = len(self.calibrated.camera_index)
@@ -224,7 +225,20 @@ class IncrementalFastAccumulator:
             noise_sigma=concatenate("noise_sigma"),
             coefficients=concatenate("coefficients"),
         )
-        return reconstruct_stack(
-            None, self.calibrated.geometry, self.calibrated.camera_index,
-            extracted=extracted,
+        geometry = self.calibrated.geometry
+        scan = self.calibrated.scan
+        # These are chronological scan coordinates, NOT necessarily the
+        # oriented physical index: bidirectional traversal must agree with
+        # the finite reconstructor's gain_positions(stack).
+        gain, gain_diagnostics = resolve_scan_frame_gain(
+            extracted, geometry.operator.valid, scan.in_plane_shape,
+            scan.gain_positions(0), geometry.params.frame_gain,
+        )
+        result = reconstruct_stack(
+            None, geometry, self.calibrated.camera_index,
+            frame_gain=gain, extracted=extracted,
+        )
+        from dataclasses import replace
+        return replace(
+            result, diagnostics={**gain_diagnostics, **result.diagnostics},
         )

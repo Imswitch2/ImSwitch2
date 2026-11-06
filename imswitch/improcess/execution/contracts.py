@@ -38,7 +38,14 @@ class RawInfo:
 
 @dataclass(frozen=True)
 class Contract:
-    """0 init_frames means begin on the first frame (legacy watcher semantics)."""
+    """Reader scheduling requirements, not a scientific correction policy.
+
+    ``init_frames`` controls when begin() is called (0 means first frame in
+    legacy watcher semantics), and ``chunk_frames`` controls push() batches.
+    Parameters are the snapped reconstruction settings; any independent
+    timepoint finalization is owned by the StreamingSession implementation,
+    not mandated or selected here by a generic boolean.
+    """
 
     init_frames: int
     chunk_frames: int

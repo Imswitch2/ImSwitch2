@@ -271,21 +271,28 @@ def test_auto_requires_full_t0_before_starting_partial_t1():
     assert timepoint_stream_contract(info, params)[0] == 20
 
 
-def test_live_rejects_correction_settings_instead_of_silently_ignoring_them():
+def test_live_only_allows_verified_timepoint_corrections():
     plugin = MonalisaReconstructor()
     defaults = _params()
-    for patch in ({"intensity_correction": True}, {"cell_offsets": True},
-                  {"reassignment": "fixed"}, {"variance_weighting": True},
-                  {"sharpen": True}, {"pinhole_stack": True},
-                  {"spot_width_mode": "Auto"}, {"background": "auto"}):
-        settings = {**defaults, **patch}
+    info = RawInfo(
+        T=1, S=(20,), frame_shape=(64, 64), dtype=np.dtype("float32"),
+        mode="ScanOnce", acquisition_layout=_resolved(),
+    )
+    for intensity, offsets in ((False, False), (True, False), (False, True), (True, True)):
+        settings = {**defaults, "intensity_correction": intensity, "cell_offsets": offsets}
+        assert plugin.streaming_capability(settings)[0]
+        assert plugin.contract(info, settings).params == settings
+    # No raw-frame-dependent or other unverified processing becomes available.
+    for patch in ({"reassignment": "fixed"}, {"reassignment": "auto"},
+                  {"variance_weighting": True}, {"sharpen": True},
+                  {"pinhole_stack": True}, {"spot_width_mode": "Auto"},
+                  {"background": "auto"}):
+        settings = {**defaults, "intensity_correction": True,
+                    "cell_offsets": True, **patch}
         supported, reason = plugin.streaming_capability(settings)
         assert not supported and reason
         with pytest.raises(Incompatible):
-            plugin.contract(RawInfo(
-                T=1, S=(20,), frame_shape=(64, 64), dtype=np.dtype("float32"),
-                mode="ScanOnce", acquisition_layout=_resolved(),
-            ), settings)
+            plugin.contract(info, settings)
 
 
 def test_provisional_timepoint_updates_are_viewer_only():
@@ -477,3 +484,97 @@ def test_m4b_auto_t0_calibrates_once_and_following_timepoints_reuse_extraction(m
     np.testing.assert_allclose(final.data[0], final.data[1], rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(final.data[1], final.data[2], rtol=1e-4, atol=1e-4)
     session.close()
+
+
+@pytest.mark.parametrize("stagger", [False, True], ids=["rectangular", "staggered-hex"])
+@pytest.mark.parametrize("placement_mode", ["Auto", "Interpolate"])
+@pytest.mark.parametrize("intensity,offsets", [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_m4b1_timepoint_finalization_matches_finite_without_refit(
+    monkeypatch, stagger, placement_mode, intensity, offsets,
+):
+    """Complete timepoint corrections reuse frame fits, also on an off-grid lattice."""
+    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
+
+    frames = _scan(stagger=stagger)
+    # Nontrivial frame-dependent brightness, the case gain fitting corrects.
+    scales = np.linspace(0.72, 1.26, len(frames), dtype=np.float32)
+    frames = (frames * scales[:, None, None]).astype(np.float32)
+    layout = _resolved(stagger=stagger)
+    params = _params(stagger=stagger)
+    params.update({
+        "placement_mode": placement_mode,
+        "intensity_correction": intensity,
+        "cell_offsets": offsets,
+    })
+    plugin = MonalisaReconstructor()
+    offline = plugin.process(_source(frames, layout), params)
+    calls = []
+    original = ExtractionOperator.apply_device
+
+    def counted(self, batch, device="CPU", chunk=64):
+        calls.append(len(batch))
+        return original(self, batch, device, chunk)
+
+    monkeypatch.setattr(ExtractionOperator, "apply_device", counted)
+    monkeypatch.setattr(plugin, "process", lambda *a, **kw: pytest.fail(
+        "Incrementally completed timepoint must not call process() again"
+    ))
+    session, _ = _start(
+        plugin, frames[:1], params, layout, frames_per_timepoint=len(frames),
+    )
+    assert session.provisional_preview() is not None
+    assert not session.has_completed_timepoint
+    session.push(frames[1:9], 1, 9)
+    session.push(frames[9:], 9, len(frames))
+    result = session.finish()
+    assert sum(calls) == len(frames) and len(calls) == 3
+    np.testing.assert_allclose(result.data[0], offline.data, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(result.background[0], offline.background, rtol=1e-5, atol=1e-5)
+    assert result.metadata["monalisa_calibration"]["corrections"]["intensity_correction"] == intensity
+    assert result.metadata["monalisa_calibration"]["corrections"]["cell_offsets"] == offsets
+    if intensity:
+        assert ("frame gain (% rms)" in result.diagnostics
+                or "frame gain" in result.diagnostics)
+    if offsets:
+        assert result.metadata["monalisa_streaming"]["completed_timepoints"] == 1
+    session.close()
+
+
+def test_m4b1_auto_t0_and_incremental_t1_same_corrections():
+    """Auto first-scan calibration and subsequent streaming use one correction policy."""
+    frames, layout, params = _scan(), _resolved(nt=2), _params()
+    params.update(orientation_mode="Auto", intensity_correction=True, cell_offsets=True)
+    plugin = MonalisaReconstructor()
+    session, _ = _start(plugin, frames, params, layout, nt=2)
+    reference = session.result().data[0].copy()
+    session.push(frames[:7], len(frames), len(frames) + 7)
+    assert session.provisional_preview() is not None
+    session.push(frames[7:], len(frames) + 7, 2 * len(frames))
+    result = session.finish()
+    np.testing.assert_allclose(result.data[1], reference, rtol=1e-4, atol=1e-4)
+    assert result.metadata["monalisa_streaming"]["completed_timepoints"] == 2
+    session.close()
+
+
+def test_m4b1_frame_gain_low_signal_fallback_is_identical_for_finite_and_streamed():
+    from imswitch.improcess.reconstructors.monalisa.pipeline import resolve_scan_frame_gain
+    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionResult
+
+    extracted = ExtractionResult(
+        amplitude=np.zeros((20, 4), dtype=np.float32),
+        background=None, haze=None, noise_sigma=None, coefficients=None,
+    )
+    positions = (np.arange(20) % 4, np.arange(20) // 4)
+    gain, diagnostics = resolve_scan_frame_gain(
+        extracted, np.ones(4, dtype=bool), (4, 5), positions, "smooth",
+    )
+    assert gain is None
+    assert "frame_gain_skipped" in diagnostics
+    gain, diagnostics = resolve_scan_frame_gain(
+        extracted, np.ones(4, dtype=bool), (4, 5), positions, "off",
+    )
+    assert gain is None and diagnostics == {}
+    with pytest.raises(ValueError, match="Unknown frame gain"):
+        resolve_scan_frame_gain(extracted, np.ones(4, dtype=bool), (4, 5), positions, "unknown")

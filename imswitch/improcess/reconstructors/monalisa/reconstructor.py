@@ -1130,8 +1130,6 @@ class MonalisaReconstructor(StreamingReconstructor):
         merged = fast_defaults()
         merged.update(dict(params or {}))
         corrections = (
-            ("intensity_correction", bool(merged["intensity_correction"])),
-            ("cell_offsets", bool(merged["cell_offsets"])),
             ("reassignment", str(merged["reassignment"]) != "off"),
             ("variance_weighting", bool(merged["variance_weighting"])),
             ("sharpen", bool(merged["sharpen"])),
@@ -1139,7 +1137,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         unsupported = [name for name, enabled in corrections if enabled]
         if unsupported:
-            return False, ("Live Fast does not yet finalize corrections: "
+            return False, ("Live Fast does not yet support: "
                            + ", ".join(unsupported) + ". Use finite reconstruction.")
         if str(merged.get("background", "constant")) not in ("constant", "none"):
             return False, "Live Fast requires fixed background extraction, not Auto background estimation."
@@ -1150,7 +1148,8 @@ class MonalisaReconstructor(StreamingReconstructor):
             return False, "Live Fast requires recorded scan geometry; scan-step overrides need finite reconstruction."
         return True, (
             "Unified MoNaLISA Fast: explicit calibration starts at the first frame; "
-            "Auto calibration waits for T0, then shows live frame previews."
+            "Auto calibration waits for T0; intensity and cell-offset corrections "
+            "are applied at completed-timepoint finalization."
         )
 
     @classmethod

@@ -717,7 +717,14 @@ class StreamingSession(ABC):
 
     @abstractmethod
     def push(self, chunk: np.ndarray, start: int, end: int) -> None:
-        """Process raw frames in the half-open range ``[start:end]``."""
+        """Process raw frames in the half-open range ``[start:end]``.
+
+        Implementations with independent scientific output units (e.g.
+        completed timepoints) finalize those units internally when enough
+        committed frames have arrived. Provisional views must not claim
+        completion. A source-wide :meth:`finish` remains separate; the
+        generic runner does not impose timepoint semantics on other plugins.
+        """
         ...
 
     @abstractmethod
@@ -745,7 +752,12 @@ class StreamingSession(ABC):
         return None
 
     def finish(self) -> ProcessingResult:
-        """Finalize processing and return the final result."""
+        """Finalize the *whole stream* and return its result snapshot.
+
+        This is not a per-timepoint correction hook. A reconstructor may
+        finalize complete independent units during :meth:`push` using its
+        own scientific pipeline and publish them before the source ends.
+        """
         return self.result()
 
     def close(self) -> None:

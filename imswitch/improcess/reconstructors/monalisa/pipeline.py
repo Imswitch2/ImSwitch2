@@ -913,6 +913,40 @@ def _shift_factor_to_use(geometry: StackGeometry, scan_index: np.ndarray):
     return _masked_reassignment(choice, geometry, scan_index)
 
 
+def resolve_scan_frame_gain(
+    extracted: ExtractionResult,
+    valid: np.ndarray,
+    scan_shape: tuple[int, int],
+    positions: tuple[np.ndarray, np.ndarray] | None,
+    mode: str,
+) -> tuple[np.ndarray | None, dict]:
+    """Resolve per-frame intensity correction from *already fitted* amplitudes.
+
+    Finite scans and completed streaming timepoints use exactly the same
+    model, scan traversal coordinates, and low-signal fallback.  This
+    belongs to the scientific pipeline rather than the streaming executor:
+    provisional images can remain uncorrected until a complete scan exists.
+    """
+    if mode == "off":
+        return None, {}
+    if mode != "smooth":
+        raise ValueError(f"Unknown frame gain {mode!r}")
+    try:
+        fitted = fit_frame_gain(
+            extracted.amplitude[:, valid], scan_shape, positions=positions,
+        )
+    except ValueError as error:
+        # No usable signal: retain the uncorrected image rather than failing
+        # this independent timepoint or the whole acquisition.
+        return None, {"frame_gain_skipped": str(error)}
+    gain = fitted.gain
+    return gain, {
+        "frame_gain_rms": fitted.rms,
+        "frame_gain_residual_rms": fitted.residual_rms,
+        "frame_gain_range": (float(gain.min()), float(gain.max())),
+    }
+
+
 def reconstruct_stack(
     frames: np.ndarray | None,
     geometry: StackGeometry,
@@ -1204,26 +1238,13 @@ def reconstruct_scan(
     # compact calibration/correction steps, while the expensive sparse solve
     # uses the selected device.
     extracted = operator.apply_device(frames, params.device)
+    gain, gain_diagnostics = resolve_scan_frame_gain(
+        extracted, valid, (num_fast, num_slow), gain_positions, params.frame_gain,
+    )
+    diagnostics.update(gain_diagnostics)
     amplitude = extracted.amplitude[:, valid]
-    gain = None
-    if params.frame_gain == "smooth":
-        try:
-            fitted = fit_frame_gain(
-                amplitude, (num_fast, num_slow), positions=gain_positions
-            )
-        except ValueError as error:
-            # A plane with no signal (out of focus, bleached) has no gain to
-            # measure; it is reconstructed as it is, gain 1, rather than
-            # failing the volume it is part of.
-            diagnostics["frame_gain_skipped"] = str(error)
-        else:
-            gain = fitted.gain
-            amplitude = amplitude / gain[:, None]
-            diagnostics["frame_gain_rms"] = fitted.rms
-            diagnostics["frame_gain_residual_rms"] = fitted.residual_rms
-            diagnostics["frame_gain_range"] = (float(gain.min()), float(gain.max()))
-    elif params.frame_gain != "off":
-        raise ValueError(f"Unknown frame gain {params.frame_gain!r}")
+    if gain is not None:
+        amplitude = amplitude / gain[:, None]
 
     def assemble(index: np.ndarray) -> np.ndarray:
         gx, gy = _raster_coordinates(geometry, index)
