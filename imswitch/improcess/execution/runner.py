@@ -10,6 +10,7 @@ from qtpy import QtCore
 
 from .reader import IncrementalReader
 from .qt_workers import StreamProcessWorker, StreamReaderWorker
+from . import live_diagnostics as diag
 
 
 # An owner can be closed while cancellation is pending. Keep Python wrappers
@@ -33,7 +34,8 @@ class QtIncrementalRunner(QtCore.QObject):
     def __init__(self, reconstructor, source, params: dict, *,
                  name: str, path=None, dataset_name: str | None = None,
                  max_buffer_bytes: int = 256 * 1024 * 1024, poll_ms: int = 100,
-                 enable_preview: bool = True):
+                 enable_preview: bool = True, diagnostic_mode: str = "off",
+                 diagnostic_job: str = ""):
         super().__init__(None)
         self._reconstructor = reconstructor
         self._source = source
@@ -44,6 +46,8 @@ class QtIncrementalRunner(QtCore.QObject):
         self._buffer_bytes = max_buffer_bytes
         self._poll_ms = poll_ms
         self._enable_preview = bool(enable_preview)
+        self._diagnostic_mode = diagnostic_mode
+        self._diagnostic_job = str(diagnostic_job)
         self._started = False
         self._cancelled = False
         self._final_result = False
@@ -57,15 +61,22 @@ class QtIncrementalRunner(QtCore.QObject):
             raise RuntimeError("An incremental runner cannot be reused")
         self._started = True
         _active_runners.add(self)
+        diag.event("runner.start", job=self._diagnostic_job,
+                   injection=self._diagnostic_mode, path=self._path)
         reader = IncrementalReader(
             self._source, type(self._reconstructor), self._params,
             name=self._name, path=self._path, max_buffer_bytes=self._buffer_bytes,
         )
-        self._reader_worker = StreamReaderWorker(1, reader, self._poll_ms)
+        self._reader_worker = StreamReaderWorker(
+            1, reader, self._poll_ms, diagnostic_mode=self._diagnostic_mode,
+            diagnostic_job=self._diagnostic_job,
+        )
         self._process_worker = StreamProcessWorker(
             1, self._reconstructor, name=self._name,
             dataset_name=self._dataset_name,
             enable_preview=self._enable_preview,
+            diagnostic_mode=self._diagnostic_mode,
+            diagnostic_job=self._diagnostic_job,
         )
         r_thread, p_thread = QtCore.QThread(), QtCore.QThread()
         self._threads = [r_thread, p_thread]
@@ -107,6 +118,8 @@ class QtIncrementalRunner(QtCore.QObject):
         if not self._started or self._cancelled:
             return
         self._cancelled = True
+        diag.event("runner.cancel", job=self._diagnostic_job,
+                   last_error=self._last_error)
         self.sigCancelReader.emit()
         self.sigCancelProcessor.emit()
 
@@ -114,6 +127,8 @@ class QtIncrementalRunner(QtCore.QObject):
     def _on_error(self, generation: int, message: str):
         if generation != 1:
             return
+        diag.event("runner.error", job=self._diagnostic_job,
+                   generation=generation, message=message, cancelled=self._cancelled)
         if not self._cancelled:
             self._last_error = message
             self.sigFailed.emit(message)
@@ -123,6 +138,7 @@ class QtIncrementalRunner(QtCore.QObject):
     def _on_result(self, generation, result):
         if generation == 1 and not self._cancelled and not self._final_result:
             self._final_result = True
+            diag.event("runner.final_result", job=self._diagnostic_job)
             self.sigResult.emit(result)
 
     @QtCore.Slot(int, object, object)
@@ -138,6 +154,7 @@ class QtIncrementalRunner(QtCore.QObject):
     @QtCore.Slot(int, int)
     def _on_timepoint(self, generation, index):
         if generation == 1 and not self._cancelled:
+            diag.event("runner.timepoint_complete", job=self._diagnostic_job, count=index)
             self.sigTimepoint.emit(index)
 
     @QtCore.Slot()
@@ -145,6 +162,8 @@ class QtIncrementalRunner(QtCore.QObject):
         # This is a GUI-thread slot. Do not finalize or release Qt wrappers
         # from an undecorated callback that might run on the worker thread.
         self._finished_threads.add(self.sender())
+        diag.event("runner.thread_finished", job=self._diagnostic_job,
+                   completed_threads=len(self._finished_threads), total_threads=2)
         if len(self._finished_threads) != 2:
             return
         # A worker can stop on its own before any process finalization if the
@@ -152,5 +171,7 @@ class QtIncrementalRunner(QtCore.QObject):
         success = bool(self._final_result and not self._cancelled)
         self._reader_worker = self._process_worker = None
         self._threads.clear()
+        diag.event("runner.finished", job=self._diagnostic_job, success=success,
+                   cancelled=self._cancelled, error=self._last_error)
         self.sigFinished.emit(success)
         _active_runners.discard(self)

@@ -18,6 +18,7 @@ from qtpy import QtCore
 from imswitch.improcess.reconstructors.base import StreamInit
 
 from .reader import IncrementalReader
+from . import live_diagnostics as diag
 
 _logger = logging.getLogger(__name__)
 
@@ -30,9 +31,12 @@ class StreamReaderWorker(QtCore.QObject):
     sigStopped = QtCore.Signal(int)
     sigCoverage = QtCore.Signal(int, object)  # source-declared missing raw intervals
 
-    def __init__(self, generation: int, reader: IncrementalReader, poll_ms: int = 100):
+    def __init__(self, generation: int, reader: IncrementalReader, poll_ms: int = 100,
+                 *, diagnostic_mode: str = "off", diagnostic_job: str = ""):
         super().__init__()
         self._generation = generation
+        self._diagnostic_mode = diagnostic_mode
+        self._diagnostic_job = diagnostic_job
         self._reader = reader
         self._poll_ms = max(1, int(poll_ms))
         self._timer = None
@@ -42,6 +46,7 @@ class StreamReaderWorker(QtCore.QObject):
     def start(self):
         try:
             self._reader.open()
+            diag.event("reader.opened", job=self._diagnostic_job, generation=self._generation)
             self._timer = QtCore.QTimer(self)
             self._timer.setInterval(self._poll_ms)
             self._timer.timeout.connect(self._tick)
@@ -55,11 +60,17 @@ class StreamReaderWorker(QtCore.QObject):
         if self._stopped:
             return
         try:
+            if self._diagnostic_mode == "reader":
+                self._diagnostic_mode = "off"
+                diag.injected("reader", self._diagnostic_job)
+                raise RuntimeError("TEST_INJECTED_LIVE_FAILURE: reader")
             self._reader.prefetch()
             item = self._reader.next_item()
             if item is None:
                 return
             if item.kind == "begin":
+                diag.event("reader.begin_sent", job=self._diagnostic_job,
+                           frames=len(item.frames.data))
                 self.sigBegin.emit(self._generation, self._reader.info,
                                    self._reader.contract, item.frames.data,
                                    self._reader.stack_info)
@@ -67,6 +78,7 @@ class StreamReaderWorker(QtCore.QObject):
                 self.sigPush.emit(self._generation, item.frames.start,
                                   item.frames.end, item.frames.data)
             elif item.kind == "finish":
+                diag.event("reader.finish_sent", job=self._diagnostic_job)
                 self.sigCoverage.emit(self._generation, self._reader.missing_ranges)
                 self.sigFinish.emit(self._generation)
             else:
@@ -99,6 +111,8 @@ class StreamReaderWorker(QtCore.QObject):
         self._stop()
 
     def _fail(self, exc):
+        diag.exception("reader.failed", exc, job=self._diagnostic_job,
+                       generation=self._generation)
         _logger.error(
             "Incremental reader failed (generation=%s)",
             self._generation, exc_info=(type(exc), exc, exc.__traceback__),
@@ -110,6 +124,7 @@ class StreamReaderWorker(QtCore.QObject):
         if self._stopped:
             return
         self._stopped = True
+        diag.event("reader.stopping", job=self._diagnostic_job)
         if self._timer is not None:
             self._timer.stop()
         try:
@@ -118,6 +133,7 @@ class StreamReaderWorker(QtCore.QObject):
             self.sigFailed.emit(self._generation,
                                 f"Source close failed: {type(exc).__name__}: {exc}")
         finally:
+            diag.event("reader.stopped", job=self._diagnostic_job)
             self.sigStopped.emit(self._generation)
 
 
@@ -131,9 +147,12 @@ class StreamProcessWorker(QtCore.QObject):
 
     def __init__(self, generation: int, reconstructor, *, name: str,
                  dataset_name: str | None = None, preview_interval_s: float = 0.2,
-                 enable_preview: bool = True):
+                 enable_preview: bool = True, diagnostic_mode: str = "off",
+                 diagnostic_job: str = ""):
         super().__init__()
         self._generation = generation
+        self._diagnostic_mode = diagnostic_mode
+        self._diagnostic_job = diagnostic_job
         self._reconstructor = reconstructor
         self._name = name
         self._dataset_name = dataset_name
@@ -177,6 +196,12 @@ class StreamProcessWorker(QtCore.QObject):
                 source_path=info.source_path, stack_info=effective_stack,
             )
             self._session = self._reconstructor.make_session()
+            diag.event("processor.begin", job=self._diagnostic_job,
+                       init_frames=len(init_frames), frames_per_t=info.frames_per_timepoint)
+            if self._diagnostic_mode == "begin":
+                self._diagnostic_mode = "off"
+                diag.injected("begin", self._diagnostic_job)
+                raise RuntimeError("TEST_INJECTED_LIVE_FAILURE: begin")
             self._session.begin(self._stream_init, contract.params)
             self._preview(force=True)
             if len(init_frames) % info.frames_per_timepoint == 0:
@@ -195,12 +220,24 @@ class StreamProcessWorker(QtCore.QObject):
         try:
             if self._session is None:
                 raise RuntimeError("push received without begin")
+            if (self._diagnostic_mode == "after_t0"
+                    and self._frames_processed >= self._info.frames_per_timepoint):
+                # Force the completed T0 publication first, even if the normal
+                # preview timer skipped the boundary in a large reader chunk.
+                self._preview(force=True)
+                if self._last_published_timepoint_count:
+                    self.sigTimepoint.emit(generation, self._last_published_timepoint_count)
+                self._diagnostic_mode = "off"
+                diag.injected("after_t0", self._diagnostic_job)
+                raise RuntimeError("TEST_INJECTED_LIVE_FAILURE: after_t0")
             self._session.push(frames, start, end)
             self._frames_processed = end
             per_timepoint = self._info.frames_per_timepoint
             done = end // per_timepoint
             self._preview(force=(end % per_timepoint == 0 and per_timepoint > 1))
             if end % per_timepoint == 0:
+                diag.event("processor.timepoint_complete", job=self._diagnostic_job,
+                           timepoints=done)
                 self.sigTimepoint.emit(generation, done)
         except Exception as exc:
             self._fail(exc)
@@ -216,6 +253,7 @@ class StreamProcessWorker(QtCore.QObject):
                 raise RuntimeError("finish received without begin")
             result = self._session.finish()
             self._record_snapshot(result, "complete")
+            diag.event("processor.result_final", job=self._diagnostic_job)
             self.sigResult.emit(generation, result)
         except Exception as exc:
             self._fail(exc)
@@ -300,6 +338,8 @@ class StreamProcessWorker(QtCore.QObject):
         self._last_preview_revision = revision
 
     def _fail(self, exc):
+        diag.exception("processor.failed", exc, job=self._diagnostic_job,
+                       generation=self._generation)
         _logger.error(
             "Incremental processor failed (generation=%s)",
             self._generation, exc_info=(type(exc), exc, exc.__traceback__),
@@ -311,6 +351,7 @@ class StreamProcessWorker(QtCore.QObject):
         if self._stopped:
             return
         self._stopped = True
+        diag.event("processor.stopping", job=self._diagnostic_job)
         try:
             if self._session is not None:
                 self._session.close()
@@ -319,4 +360,5 @@ class StreamProcessWorker(QtCore.QObject):
             self.sigFailed.emit(self._generation,
                                 f"Session close failed: {type(exc).__name__}: {exc}")
         finally:
+            diag.event("processor.stopped", job=self._diagnostic_job)
             self.sigStopped.emit(self._generation)
