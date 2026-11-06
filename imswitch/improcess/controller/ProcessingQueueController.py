@@ -29,7 +29,10 @@ from imswitch.improcess.live.job import (
     watcher_entry_for_source,
 )
 from imswitch.improcess.model.DataObj import DataObj
-from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
+from imswitch.improcess.model.lapse_source import (
+    TIME_LAPSE_SOURCE_KIND,
+    discover_time_lapse,
+)
 from imswitch.improcess.model.timepoint_scope import (
     TimepointScope,
     annotate_result_timepoint_scope,
@@ -1252,10 +1255,17 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._currentPlannedTimepoints = scoped_count or self._currentSourceTimepoints
         auto_batch = ready_timepoints is not None
         allowed_t = set(ready_timepoints) if auto_batch else None
-        data_objs = self._data_objs_for_source(
-            source, timepoint_scope=scope, allowed_timepoints=allowed_t,
-            verified_references=ready_references,
-        )
+        try:
+            data_objs = self._data_objs_for_source(
+                source, timepoint_scope=scope, allowed_timepoints=allowed_t,
+                verified_references=ready_references,
+            )
+        except Exception as exc:
+            # Manual finite membership is resolved at execution time. A
+            # transient discovery error must also release the queue slot.
+            self._logger.exception("Could not resolve finite source units")
+            self._finish_current(error=f"Could not resolve finite source units: {exc}")
+            return
         if self._source_kind(source) == "time-lapse":
             diag.log_lapse_inventory(source, scope=str(scope), units=data_objs)
         if not data_objs:
@@ -1404,6 +1414,44 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineWorker = worker
         thread.start()
 
+    @staticmethod
+    def _fresh_manual_lapse_index(source):
+        """Rediscover physical members without mutating the Session catalog.
+
+        The watcher intentionally does not repeatedly reconcile an existing
+        growing Zarr root. Its cached source_refs may therefore hold only T0
+        after the writer has finished T1/T2. Manual finite jobs need a fresh
+        *execution snapshot*, while Auto's verified references stay untouched.
+        """
+        if isinstance(source, DataObj):
+            original = getattr(source, "sourceMetadata", None)
+            if original is None:
+                raise ValueError("Time-lapse source has no discovery index")
+            anchor_path, anchor_dataset = original.anchor.path, original.anchor.dataset
+            expected_total = original.planned_count
+            expected_origin = int(original.anchor.ordinal) - int(original.anchor_index)
+            expected_detector = original.anchor_detector
+        else:
+            anchor_path = getattr(source, "primary_path", None)
+            anchor_dataset = getattr(source, "primary_dataset", None)
+            expected_total = getattr(source, "planned_timepoints", None)
+            expected_origin = int(getattr(source, "timepoint_origin", 0) or 0)
+            parts = str(anchor_dataset or "").split("/")
+            expected_detector = parts[1] if len(parts) > 1 else None
+        if not anchor_path or not anchor_dataset:
+            raise ValueError("Time-lapse source has no usable anchor")
+
+        fresh = discover_time_lapse(anchor_path, anchor_dataset)
+        actual_origin = int(fresh.anchor.ordinal) - int(fresh.anchor_index)
+        if (expected_total is not None
+                and int(fresh.planned_count) != int(expected_total)):
+            raise ValueError("Time-lapse planned count changed; refresh the Session")
+        if actual_origin != expected_origin:
+            raise ValueError("Time-lapse origin changed; refresh the Session")
+        if expected_detector and fresh.anchor_detector != expected_detector:
+            raise ValueError("Time-lapse detector changed; refresh the Session")
+        return fresh
+
     def _data_objs_for_source(self, source, *, timepoint_scope=None,
                               allowed_timepoints=None, verified_references=None) -> list[DataObj]:
         scope = coerce_timepoint_scope(timepoint_scope)
@@ -1438,40 +1486,52 @@ class ProcessingQueueController(ImProcessWidgetController):
                 out.append(obj)
             return out
 
+        if self._source_kind(source) == "time-lapse":
+            if allowed_timepoints is not None:
+                # Auto batches require sealed references, handled above. Never
+                # substitute a fresh-but-unverified catalog for those records.
+                return []
+            # A Session dataset can have cached only scan0 even though the
+            # live writer has since created scan1/scan2. Resolve the *current*
+            # members immediately before manual finite execution, using the
+            # same discovery rules as Session open/refresh.
+            index = self._fresh_manual_lapse_index(source)
+            channel = index.channel(index.anchor_detector)
+            out = []
+            observed = []
+            for item in channel.candidates:
+                logical_index = (
+                    int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index)
+                )
+                # A single physical file may contain several distinct lapses.
+                if not (0 <= logical_index < int(index.planned_count)):
+                    continue
+                observed.append(logical_index)
+                if (logical_index < start or (stop is not None and logical_index >= stop)
+                        or (allowed_timepoints is not None
+                            and logical_index not in allowed_timepoints)):
+                    continue
+                dataset_name = item.dataset
+                if dataset_name in (None, ""):
+                    names = list(DataObj.getDatasetNames(str(item.path)))
+                    if len(names) != 1:
+                        continue
+                    dataset_name = names[0]
+                data_obj = DataObj(
+                    Path(str(item.path)).name, str(dataset_name), path=str(item.path)
+                )
+                data_obj._improcess_timepoint_scope = TimepointScope.single(logical_index)
+                out.append(data_obj)
+            diag.event(
+                "finite.lapse_rediscovered",
+                planned=index.planned_count,
+                discovered=sorted(set(observed)),
+                selected=[obj._improcess_timepoint_scope.first for obj in out],
+            )
+            return out
+
         if isinstance(source, DataObj):
             source_kind = str(getattr(source, "sourceKind", "image") or "image")
-            if source_kind == TIME_LAPSE_SOURCE_KIND:
-                index = getattr(source, "sourceMetadata", None)
-                if index is None:
-                    return []
-                try:
-                    channel = index.channel(index.anchor_detector)
-                except Exception:
-                    return []
-                out = []
-                for item in channel.candidates:
-                    logical_index = (
-                        int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index)
-                    )
-                    if (logical_index < start or (stop is not None and logical_index >= stop)
-                            or (allowed_timepoints is not None
-                                and logical_index not in allowed_timepoints)):
-                        continue
-                    dataset_name = item.dataset
-                    if dataset_name in (None, ""):
-                        try:
-                            names = list(DataObj.getDatasetNames(str(item.path)))
-                        except Exception:
-                            continue
-                        if len(names) != 1:
-                            continue
-                        dataset_name = names[0]
-                    data_obj = DataObj(
-                        Path(str(item.path)).name, str(dataset_name), path=str(item.path)
-                    )
-                    data_obj._improcess_timepoint_scope = TimepointScope.single(logical_index)
-                    out.append(data_obj)
-                return out
             if source_kind != "image":
                 return []
             path = getattr(source, "dataPath", None)
