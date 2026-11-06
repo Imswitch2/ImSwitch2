@@ -203,9 +203,7 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
             (metrics.horizontalAdvance(text) for text in statuses if text),
             default=metrics.horizontalAdvance("No result"),
         )
-        # Keep normal states readable but never let transient long status text
-        # steal substantial space from the (more useful) dataset name.
-        status_width = max(54, min(86, widest_status + 12))
+        status_width = max(54, min(96, widest_status + 12))
         header.resizeSection(3, status_width)
 
         has_panel_link = any(

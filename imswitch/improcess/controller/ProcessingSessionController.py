@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -24,6 +26,88 @@ from imswitch.improcess.model.saved_result import load_saved_result, read_saved_
 from imswitch.improcess.model.session_result_presentation import reconstruction_presentation
 from imswitch.improcess.model.timepoint_scope import logical_time_lapse_identity
 from imswitch.improcess.model.session_result_store import FORMAT_SUFFIX, SessionResultStore
+
+
+class _AcquisitionProbeWorker(QtCore.QObject):
+    """Run one coalesced, metadata-only Session acquisition probe off-GUI."""
+
+    sigFinished = QtCore.Signal(object)
+
+    def __init__(self, requests):
+        super().__init__()
+        self._requests = tuple(requests)
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        from imswitch.improcess.execution.auto_timepoints import _current_references
+        from imswitch.improcess.execution.readiness import probe_scope
+        from imswitch.improcess.model.timepoint_scope import TimepointScope
+
+        results = []
+        for request in self._requests:
+            dataset_id = str(request["dataset_id"])
+            is_lapse = bool(request["is_lapse"])
+            source = SimpleNamespace(
+                sourceMetadata=None,
+                source_refs=list(request["source_refs"]),
+                primary_path=request["primary_path"],
+                primary_dataset=request["primary_dataset"],
+                dataPath=request["primary_path"],
+                datasetName=request["primary_dataset"],
+            )
+            job = SimpleNamespace(
+                timepoint_scope=TimepointScope.all(),
+                timepoint_total=request["timepoint_total"],
+            )
+            try:
+                if is_lapse:
+                    current_refs = list(_current_references(source, job))
+                    original_paths = {
+                        str(Path(ref.path).resolve())
+                        for ref in source.source_refs
+                    }
+                    single_file_hdf5 = (
+                        original_paths
+                        and len(original_paths) == 1
+                        and Path(next(iter(original_paths))).suffix.lower()
+                        in {".h5", ".hdf5"}
+                    )
+                    if not single_file_hdf5:
+                        source.source_refs = [
+                            SimpleNamespace(
+                                path=ref.path,
+                                dataset=ref.dataset,
+                                timepoint_index=ref.logical_t,
+                            )
+                            for ref in current_refs
+                        ]
+                previous = request.get("progress")
+                inspected = {}
+                if previous is not None:
+                    completed = set(previous.completed_timepoints)
+                    inspected = {
+                        (ref.path, ref.dataset, ref.logical_t): True
+                        for ref in previous.expected_references
+                        if ref.logical_t in completed
+                    }
+                readiness = probe_scope(
+                    source,
+                    job,
+                    is_lapse=is_lapse,
+                    inspected=inspected,
+                    activity_observed=bool(request.get("activity_observed", False)),
+                )
+                progress = readiness.progress
+                retry = bool(
+                    progress is None
+                    and "safe source access" in str(readiness.reason).lower()
+                )
+                if progress is not None:
+                    retry = retry or "safe source access" in str(progress.reason).lower()
+                results.append((dataset_id, readiness, tuple(source.source_refs), retry, ""))
+            except Exception as exc:
+                results.append((dataset_id, None, tuple(source.source_refs), True, str(exc)))
+        self.sigFinished.emit(results)
 
 
 def _same_path(a, b) -> bool:
@@ -66,6 +150,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._saveFormat = "tiff"
         self._resultStore: SessionResultStore | None = None
         self._processingQueueController = None
+        self._queueProgressByDatasetId: dict[str, dict] = {}
         # Loaded-result ownership is indexed once when Results-panel membership
         # changes. Full Session renders can then use O(1) dataset lookups instead
         # of rescanning every loaded result for every dataset.
@@ -83,9 +168,20 @@ class ProcessingSessionController(ImProcessWidgetController):
         # stop Session catalog synchronization.
         self._directoryWatcher: DirectoryWatcher | None = None
         self._watchPendingPaths: set[str] = set()
-        # Only unrecognized root entries are eligible for bounded retries.
-        # Once catalogued, ordinary acquisition growth belongs to LiveSource;
-        # never repeatedly reopen recognized Zarr/HDF5 stores.
+        # Acquisition visibility is a lightweight runtime cache.  It is
+        # invalidated by the existing Session watcher and is never persisted
+        # into the Session manifest.
+        self._acquisitionProgress: dict[str, object] = {}
+        self._acquisitionProbePending: set[str] = set()
+        self._acquisitionProbeActivity: set[str] = set()
+        self._acquisitionProbeInFlight: set[str] = set()
+        self._acquisitionProbeThread = None
+        self._acquisitionProbeWorker = None
+        self._acquisitionProbeGeneration = 0
+        self._watchAcquisitionRetryPaths: set[str] = set()
+        # Unrecognized entries and metadata probes that hit a transient access
+        # conflict share the existing bounded retry scheduler.  Ordinary
+        # completed datasets are never added here.
         self._watchUnresolvedPaths: set[str] = set()
         self._watchRetrySchedule = UnresolvedDiscoveryRetry()
         self._watchRetryTimer = QtCore.QTimer(self)
@@ -332,6 +428,13 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     def _deactivate_session(self, *, status: str | None = None) -> None:
         self._stopDirectoryWatcher()
+        self._acquisitionProbeGeneration = getattr(
+            self, "_acquisitionProbeGeneration", 0
+        ) + 1
+        getattr(self, "_acquisitionProgress", {}).clear()
+        getattr(self, "_acquisitionProbePending", set()).clear()
+        getattr(self, "_acquisitionProbeActivity", set()).clear()
+        getattr(self, "_acquisitionProbeInFlight", set()).clear()
         self._sessionMode = "review"
         self._widget.setSessionMode("review")
         self._watchAutoArrivals.clear()
@@ -426,6 +529,13 @@ class ProcessingSessionController(ImProcessWidgetController):
         # Every Session opens passive. Watching/Auto remain deliberate, runtime-
         # only choices, and are not saved in the Session manifest.
         self._stopDirectoryWatcher()
+        self._acquisitionProbeGeneration = getattr(
+            self, "_acquisitionProbeGeneration", 0
+        ) + 1
+        getattr(self, "_acquisitionProgress", {}).clear()
+        getattr(self, "_acquisitionProbePending", set()).clear()
+        getattr(self, "_acquisitionProbeActivity", set()).clear()
+        getattr(self, "_acquisitionProbeInFlight", set()).clear()
         self._sessionMode = "review"
         self._watchAutoArrivals.clear()
         self._watchLapseChildren.clear()
@@ -443,6 +553,10 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         self._sync_current_dataset(getattr(self._main, "_currentDataObj", None))
         self._render()
+        queue_probe = getattr(self, "_queue_acquisition_probes", None)
+        if callable(queue_probe):
+            queue_probe(str(dataset.id) for dataset in session.datasets)
+            self._start_acquisition_probe()
         self.sigCatalogChanged.emit()
         if self._followActiveReconstruction and self._reconstruction is not None:
             self._currentResultChanged(self._reconstruction.getActiveResult())
@@ -508,6 +622,13 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Could not start watching: {exc}")
             return
         self._sync_auto_availability()
+        update_details = getattr(self, "_update_watcher_detail_paths", None)
+        if callable(update_details):
+            update_details()
+        queue_probe = getattr(self, "_queue_acquisition_probes", None)
+        if callable(queue_probe):
+            queue_probe(str(dataset.id) for dataset in session.datasets)
+            self._start_acquisition_probe()
         self._syncWatchRetryTimer()
         if hasattr(self._widget, "setWatchingActive"):
             self._widget.setWatchingActive(True)
@@ -525,12 +646,317 @@ class ProcessingSessionController(ImProcessWidgetController):
         elif not active:
             self._watchRetryTimer.stop()
 
+    @staticmethod
+    def _source_paths(dataset) -> tuple[str, ...]:
+        paths = [getattr(dataset, "primary_path", None)]
+        paths.extend(
+            getattr(ref, "path", None)
+            for ref in getattr(dataset, "source_refs", ())
+        )
+        return tuple(dict.fromkeys(
+            str(path) for path in paths if path
+        ))
+
+    @classmethod
+    def _dataset_uses_metadata_probe(cls, dataset) -> bool:
+        return any(
+            Path(path).suffix.lower() in {".h5", ".hdf5", ".zarr"}
+            for path in cls._source_paths(dataset)
+        )
+
+    def _dataset_ids_for_watch_path(self, path: str) -> tuple[str, ...]:
+        session = self._session
+        if session is None:
+            return ()
+        try:
+            watched = Path(path).resolve()
+        except OSError:
+            watched = Path(path).absolute()
+        matched = []
+        for dataset in session.datasets:
+            for source in self._source_paths(dataset):
+                try:
+                    source_path = Path(source).resolve()
+                    if source_path == watched:
+                        matched.append(str(dataset.id))
+                        break
+                    source_path.relative_to(watched)
+                    matched.append(str(dataset.id))
+                    break
+                except (ValueError, OSError):
+                    continue
+        return tuple(dict.fromkeys(matched))
+
+    def _acquisition_probe_request(self, dataset) -> dict:
+        refs = []
+        for ref in getattr(dataset, "source_refs", ()):
+            refs.append(SimpleNamespace(
+                path=str(getattr(ref, "path", "")),
+                dataset=getattr(ref, "dataset", None),
+                timepoint_index=getattr(ref, "timepoint_index", None),
+            ))
+        if not refs and getattr(dataset, "primary_path", None):
+            refs.append(SimpleNamespace(
+                path=str(dataset.primary_path),
+                dataset=getattr(dataset, "primary_dataset", None),
+                timepoint_index=0,
+            ))
+        planned = getattr(dataset, "planned_timepoints", None)
+        if getattr(dataset, "kind", "") != "time-lapse":
+            planned = 1
+        elif planned not in (None, 0):
+            planned = int(planned)
+        return {
+            "dataset_id": str(dataset.id),
+            "is_lapse": str(getattr(dataset, "kind", "")) == "time-lapse",
+            "primary_path": str(getattr(dataset, "primary_path", "") or ""),
+            "primary_dataset": getattr(dataset, "primary_dataset", None),
+            "source_refs": tuple(refs),
+            "timepoint_total": planned,
+            "progress": self._acquisitionProgress.get(str(dataset.id)),
+            "activity_observed": str(dataset.id) in self._acquisitionProbeActivity,
+        }
+
+    def _queue_acquisition_probes(self, dataset_ids, *, activity_observed: bool = False) -> None:
+        session = self._session
+        if session is None:
+            return
+        for dataset_id in dataset_ids or ():
+            dataset = session.dataset_by_id(str(dataset_id))
+            if dataset is None or not self._dataset_uses_metadata_probe(dataset):
+                continue
+            progress = self._acquisitionProgress.get(str(dataset.id))
+            # Verified complete acquisitions are stable historical entries.
+            # They are still rendered from the cached snapshot, but never
+            # reopened just because an unrelated watcher entry changed.
+            if progress is not None and progress.status in {"complete", "incomplete"}:
+                continue
+            self._acquisitionProbePending.add(str(dataset.id))
+            if activity_observed:
+                self._acquisitionProbeActivity.add(str(dataset.id))
+
+    @staticmethod
+    def _zarr_watch_metadata_paths(path: str, dataset: str | None) -> tuple[str, ...]:
+        root = Path(path)
+        if root.suffix.lower() != ".zarr":
+            return ()
+        bases = [root]
+        name = str(dataset or "").strip("/")
+        if name:
+            bases.append(root.joinpath(*name.split("/")))
+            if not name.endswith("/data"):
+                bases.append(root.joinpath(*name.split("/"), "data"))
+        paths = []
+        for base in bases:
+            for marker in (".zattrs", ".zgroup", "zarr.json"):
+                paths.append(str(base / marker))
+        return tuple(dict.fromkeys(paths))
+
+    def _watch_entry_for_source(self, path: str) -> str | None:
+        session = self._session
+        if session is None:
+            return None
+        try:
+            relative = Path(path).resolve().relative_to(session.raw_root.resolve())
+        except (ValueError, OSError):
+            return None
+        if not relative.parts:
+            return None
+        return str((session.raw_root / relative.parts[0]).resolve())
+
+    def _update_watcher_detail_paths(self) -> None:
+        watcher = self._directoryWatcher
+        session = self._session
+        setter = getattr(watcher, "set_detail_paths", None) if watcher is not None else None
+        if session is None or not callable(setter):
+            return
+        details: dict[str, set[str]] = {}
+        for dataset in session.datasets:
+            progress = self._acquisitionProgress.get(str(dataset.id))
+            if progress is not None and progress.status in {"complete", "incomplete"}:
+                continue
+            refs = list(getattr(dataset, "source_refs", ()) or ())
+            if progress is not None:
+                refs.extend(
+                    SimpleNamespace(path=ref.path, dataset=ref.dataset)
+                    for ref in progress.expected_references
+                )
+            if not refs:
+                refs = [SimpleNamespace(
+                    path=getattr(dataset, "primary_path", ""),
+                    dataset=getattr(dataset, "primary_dataset", None),
+                )]
+            for ref in refs:
+                source = str(getattr(ref, "path", "") or "")
+                entry = self._watch_entry_for_source(source)
+                if not entry:
+                    continue
+                metadata = self._zarr_watch_metadata_paths(
+                    source, getattr(ref, "dataset", None)
+                )
+                if metadata:
+                    details.setdefault(entry, set()).update(metadata)
+        setter({key: tuple(value) for key, value in details.items()})
+
+    def _start_acquisition_probe(self) -> None:
+        if self._session is None or self._acquisitionProbeThread is not None:
+            return
+        if not self._acquisitionProbePending:
+            return
+        ids = tuple(sorted(self._acquisitionProbePending))
+        requests = []
+        for dataset_id in ids:
+            dataset = self._session.dataset_by_id(dataset_id)
+            if dataset is None:
+                continue
+            requests.append(self._acquisition_probe_request(dataset))
+        self._acquisitionProbePending.difference_update(ids)
+        self._acquisitionProbeActivity.difference_update(ids)
+        if not requests:
+            return
+
+        generation = self._acquisitionProbeGeneration
+        thread = QtCore.QThread()
+        worker = _AcquisitionProbeWorker(requests)
+        worker.moveToThread(thread)
+        worker.sigFinished.connect(
+            lambda results, generation=generation: self._acquisition_probe_finished(
+                results, generation
+            )
+        )
+        worker.sigFinished.connect(thread.quit)
+        thread.started.connect(worker.run)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda thread=thread, ids=ids: self._acquisition_probe_thread_finished(
+                thread, ids
+            )
+        )
+        self._acquisitionProbeThread = thread
+        self._acquisitionProbeWorker = worker
+        self._acquisitionProbeInFlight = set(ids)
+        thread.start()
+
+    def _acquisition_probe_finished(self, results, generation: int) -> None:
+        if generation != self._acquisitionProbeGeneration or self._session is None:
+            return
+        changed = []
+        for result in results or ():
+            dataset_id, readiness, refs, retry, error = result
+            dataset_id = str(dataset_id)
+            dataset = self._session.dataset_by_id(dataset_id)
+            if dataset is None:
+                continue
+            previous = self._acquisitionProgress.get(dataset_id)
+            if readiness is not None and readiness.progress is not None:
+                progress = self._merge_acquisition_progress(
+                    previous, readiness.progress
+                )
+                self._acquisitionProgress[dataset_id] = progress
+                if previous != progress:
+                    changed.append(dataset_id)
+                if progress.status in {"complete", "incomplete"}:
+                    for path in self._source_paths(dataset):
+                        self._watchAcquisitionRetryPaths.discard(str(path))
+                        self._watchRetrySchedule.discard(str(path))
+                elif retry:
+                    for path in self._source_paths(dataset):
+                        self._watchAcquisitionRetryPaths.add(str(path))
+                        self._watchRetrySchedule.track(str(path))
+                else:
+                    for path in self._source_paths(dataset):
+                        self._watchAcquisitionRetryPaths.discard(str(path))
+                        self._watchRetrySchedule.discard(str(path))
+            elif retry:
+                paths = self._source_paths(dataset)
+                if previous is not None and previous.status in {"complete", "incomplete"}:
+                    for path in paths:
+                        self._watchAcquisitionRetryPaths.discard(str(path))
+                        self._watchRetrySchedule.discard(str(path))
+                else:
+                    for path in paths:
+                        self._watchAcquisitionRetryPaths.add(str(path))
+                        self._watchRetrySchedule.track(str(path))
+            if error:
+                self._logger.warning(
+                    "Acquisition metadata probe failed for %s: %s", dataset_id, error
+                )
+        self._update_watcher_detail_paths()
+        self._syncWatchRetryTimer()
+        if changed:
+            queue_states = self._queue_states()
+            for dataset_id in dict.fromkeys(changed):
+                self._renderDataset(
+                    dataset_id,
+                    render_selected=(dataset_id == self._selectedDatasetId),
+                    queue_state=queue_states.get(dataset_id),
+                )
+
+    def _acquisition_probe_thread_finished(self, thread, ids) -> None:
+        if self._acquisitionProbeThread is not thread:
+            return
+        self._acquisitionProbeThread = None
+        self._acquisitionProbeWorker = None
+        self._acquisitionProbeInFlight.difference_update(ids)
+        self._start_acquisition_probe()
+
+    @staticmethod
+    def _merge_acquisition_progress(previous, current):
+        """Keep verified acquisition knowledge across transient probe states."""
+        if previous is None:
+            return current
+        if current is None:
+            return previous
+
+        # A verified completion or an explicit interrupted outcome is a
+        # terminal acquisition decision.  Later access failures must not make
+        # the Session row look queued/unknown again.
+        if previous.status == "complete":
+            return previous
+        if previous.status == "incomplete":
+            return previous
+
+        completed = tuple(sorted(set(previous.completed_timepoints)
+                                 | set(current.completed_timepoints)))
+        catalog = tuple(sorted(set(previous.catalog_timepoints)
+                               | set(current.catalog_timepoints)))
+        expected = current.expected_references or previous.expected_references
+        planned = (
+            current.planned_timepoints
+            if current.planned_timepoints is not None
+            else previous.planned_timepoints
+        )
+        scope = current.scope or previous.scope
+        status = current.status
+        if previous.status == "acquiring" and status == "unknown":
+            status = "acquiring"
+        reason = current.reason or previous.reason
+        return replace(
+            current,
+            planned_timepoints=planned,
+            scope=scope,
+            expected_references=expected,
+            catalog_timepoints=catalog,
+            completed_timepoints=completed,
+            status=status,
+            reason=reason,
+        )
+
     @QtCore.Slot()
     def _retryUnresolvedPaths(self) -> None:
         """Retry a bounded batch through existing reconciliation, never arrival."""
         if self._session is None or self._sessionMode != "follow" or self._directoryWatcher is None:
             return
+        acquisition_retry_paths = getattr(self, "_watchAcquisitionRetryPaths", set())
         for path in self._watchRetrySchedule.due():
+            if path in acquisition_retry_paths:
+                if not Path(path).exists():
+                    acquisition_retry_paths.discard(path)
+                    self._watchRetrySchedule.discard(path)
+                    continue
+                self._queue_acquisition_probes(self._dataset_ids_for_watch_path(path))
+                continue
             if path not in self._watchUnresolvedPaths:
                 self._watchRetrySchedule.discard(path)
             elif not Path(path).exists():
@@ -542,7 +968,11 @@ class ProcessingSessionController(ImProcessWidgetController):
                 self._admit_resolved_arrivals((path,))
             else:
                 self._watchPendingPaths.add(path)
-        if self._watchPendingPaths or self._watchNeedsFullReconcile:
+        if (
+            self._watchPendingPaths
+            or self._watchNeedsFullReconcile
+            or getattr(self, "_acquisitionProbePending", set())
+        ):
             self._watchReconcileTimer.start()
         self._syncWatchRetryTimer()
 
@@ -553,6 +983,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             watcher.deleteLater()
         self._watchPendingPaths.clear()
         self._watchUnresolvedPaths.clear()
+        getattr(self, "_watchAcquisitionRetryPaths", set()).clear()
         self._watchRetrySchedule.clear()
         self._watchRetryTimer.stop()
         self._watchNeedsFullReconcile = False
@@ -664,11 +1095,22 @@ class ProcessingSessionController(ImProcessWidgetController):
         if (self._sessionMode != "follow" or self._session is None
                 or self._pathBelongsToResults(path)):
             return
+        finder = getattr(self, "_dataset_ids_for_watch_path", None)
+        known_ids = finder(path) if callable(finder) else ()
+        if known_ids:
+            # Catalog discovery deliberately remains frozen for known growing
+            # sources.  The existing watcher event is nevertheless the exact
+            # trigger needed to refresh metadata-only acquisition progress.
+            queue_probe = getattr(self, "_queue_acquisition_probes", None)
+            if callable(queue_probe):
+                queue_probe(known_ids, activity_observed=True)
+            self._watchReconcileTimer.start()
         if path not in self._watchUnresolvedPaths:
             # Known growing Zarr/HDF5 entries are NOT reopened on every
             # metadata update. Only inspect directory children for a pending
             # multi-file logical acquisition whose next file might have arrived.
-            queue = self._queue_controller()
+            queue_getter = getattr(self, "_queue_controller", None)
+            queue = queue_getter() if callable(queue_getter) else None
             if queue is None or not Path(path).is_dir() or not any(
                 str(job.dataset_id) == str(dataset.id)
                 for job in getattr(queue.queue, "waiting", ())
@@ -694,6 +1136,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
             return
         self._watchUnresolvedPaths.discard(str(path))
+        self._watchAcquisitionRetryPaths.discard(str(path))
         self._watchRetrySchedule.discard(str(path))
         self._syncWatchRetryTimer()
         self._watchAutoArrivals.pop(str(path), None)
@@ -711,6 +1154,8 @@ class ProcessingSessionController(ImProcessWidgetController):
         before_ids = {str(dataset.id) for dataset in session.datasets}
         changed = False
         pending = sorted(self._watchPendingPaths)
+        acquisition_ids = set(getattr(self, "_acquisitionProbePending", set()))
+        added_ids = ()
         admitted = set(pending)
         try:
             if self._watchNeedsFullReconcile:
@@ -737,6 +1182,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                     if reconciled:
                         self._watchUnresolvedPaths.discard(path)
                         self._watchRetrySchedule.discard(path)
+                        acquisition_ids.update(self._dataset_ids_for_watch_path(path))
         except Exception:
             self._logger.exception("Could not reconcile Session filesystem update")
             return
@@ -753,6 +1199,15 @@ class ProcessingSessionController(ImProcessWidgetController):
             self.sigCatalogChanged.emit()
             if added_ids:
                 self.sigDatasetsAdded.emit(added_ids)
+            acquisition_ids.update(added_ids)
+        queue_probe = getattr(self, "_queue_acquisition_probes", None)
+        if callable(queue_probe):
+            queue_probe(
+                acquisition_ids,
+                activity_observed=bool(pending or added_ids),
+            )
+            self._update_watcher_detail_paths()
+            self._start_acquisition_probe()
         self._admit_resolved_arrivals(sorted(admitted))
 
     def openSession(self, raw_root, results_root) -> bool:
@@ -1232,11 +1687,31 @@ class ProcessingSessionController(ImProcessWidgetController):
         recon_entries = self._reconstruction_entries(dataset)
         total_count = len(recon_entries)
         loaded_count = sum(1 for item in recon_entries if item["loaded"] is not None)
-        if self._loadingDatasetId == dataset.id:
+        acquisition = getattr(self, "_acquisitionProgress", {}).get(str(dataset.id))
+        acquisition_visible = bool(
+            acquisition is not None
+            and acquisition.status in {"acquiring", "incomplete"}
+        )
+        if acquisition_visible:
+            status = self._acquisition_progress_label(acquisition)
+            # Keep the row's filter/style state truthful even though the
+            # acquisition text intentionally outranks queue presentation.
+            state = (
+                "processing" if queue_state == "running"
+                else "queued" if queue_state == "waiting"
+                else "raw"
+            )
+        elif self._loadingDatasetId == dataset.id:
             status = "Loading…"
             state = "loading"
         elif queue_state == "running":
-            status = "▶ Reconstructing"
+            queue_progress = getattr(self, "_queueProgressByDatasetId", {}).get(
+                str(dataset.id), {}
+            )
+            progress_label = self._queue_progress_label(queue_progress)
+            status = "▶ Processing…"
+            if progress_label:
+                status += f" {progress_label}"
             state = "processing"
         elif queue_state == "waiting":
             status = "… Queued"
@@ -1254,6 +1729,14 @@ class ProcessingSessionController(ImProcessWidgetController):
         tooltip = self._dataset_source_tooltip(dataset)
         if info_tooltip:
             tooltip = (tooltip + "\n" if tooltip else "") + info_tooltip
+        acquisition_tooltip = self._acquisition_tooltip(acquisition)
+        if acquisition_tooltip:
+            tooltip = (tooltip + "\n" if tooltip else "") + acquisition_tooltip
+        processing_tooltip = self._processing_tooltip(
+            dataset, queue_state=queue_state, total_count=total_count
+        )
+        if processing_tooltip:
+            tooltip = (tooltip + "\n" if tooltip else "") + processing_tooltip
         return {
             "id": dataset.id,
             "label": dataset.label,
@@ -1280,6 +1763,55 @@ class ProcessingSessionController(ImProcessWidgetController):
             "result_count": total_count,
             "panel_link": bool(loaded_count),
         }
+
+    @staticmethod
+    def _acquisition_progress_label(progress) -> str:
+        if progress is None or progress.status not in {"acquiring", "incomplete"}:
+            return ""
+        planned = int(progress.planned_timepoints or 0)
+        prefix = "Acquiring" if progress.status == "acquiring" else "Incomplete"
+        if planned > 1:
+            return f"{prefix} {progress.completed_count}/{planned}"
+        return prefix
+
+    @staticmethod
+    def _queue_progress_label(progress: dict | None) -> str:
+        text = str((progress or {}).get("status") or "")
+        import re
+        match = re.search(
+            r"(?:Timepoint|Item)\s+(\d+)\s*/\s*(\d+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return f"{match.group(1)}/{match.group(2)}"
+        return ""
+
+    @staticmethod
+    def _acquisition_tooltip(progress) -> str:
+        if progress is None:
+            return ""
+        planned = int(progress.planned_timepoints or 0)
+        if planned > 1:
+            label = f"{progress.completed_count}/{planned} timepoints complete"
+        elif progress.status == "acquiring":
+            label = "Acquisition in progress"
+        elif progress.status == "complete":
+            label = "Complete"
+        else:
+            label = "Completion not confirmed"
+        reason = str(progress.reason or "").strip()
+        return "Acquisition: " + label + (f"\n  {reason}" if reason else "")
+
+    @staticmethod
+    def _processing_tooltip(dataset, *, queue_state: str | None, total_count: int) -> str:
+        if queue_state == "running":
+            return "Processing: Active reconstruction"
+        if queue_state == "waiting":
+            return "Processing: Queued"
+        if total_count:
+            return f"Processing: {total_count} result{'s' if total_count != 1 else ''}"
+        return ""
 
     def _renderDataset(
         self, dataset_id: str, *, render_selected: bool = False, queue_state: str | None = None
@@ -2442,6 +2974,26 @@ class ProcessingSessionController(ImProcessWidgetController):
                 queue_state=queue_states.get(dataset_id),
             )
 
+    @QtCore.Slot(object)
+    def _processingQueueProgressChanged(self, snapshot) -> None:
+        current = (snapshot or {}).get("current") or {}
+        dataset_id = str(getattr(current, "dataset_id", "") or "")
+        if isinstance(current, dict):
+            dataset_id = str(current.get("dataset_id") or "")
+        if not dataset_id:
+            self._queueProgressByDatasetId.clear()
+            return
+        self._queueProgressByDatasetId[dataset_id] = dict(
+            (snapshot or {}).get("current_progress") or {}
+        )
+        if self._session is None:
+            return
+        self._renderDataset(
+            dataset_id,
+            render_selected=(dataset_id == self._selectedDatasetId),
+            queue_state=self._queue_states().get(dataset_id),
+        )
+
     def isDatasetProcessed(self, dataset_id: str) -> bool:
         """Whether Session has a complete derived result for ``dataset_id``.
 
@@ -2486,9 +3038,15 @@ class ProcessingSessionController(ImProcessWidgetController):
                 old.sigQueueChanged.disconnect(self._processingQueueChanged)
             except Exception:
                 pass
+            try:
+                old.sigProgressChanged.disconnect(self._processingQueueProgressChanged)
+            except Exception:
+                pass
         self._processingQueueController = controller
+        self._queueProgressByDatasetId.clear()
         if controller is not None:
             controller.sigQueueChanged.connect(self._processingQueueChanged)
+            controller.sigProgressChanged.connect(self._processingQueueProgressChanged)
             self._widget.setProcessingQueue(controller.queueSnapshot())
 
     def queueDatasetsForProcessing(

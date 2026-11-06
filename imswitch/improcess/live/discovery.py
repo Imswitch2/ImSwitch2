@@ -75,7 +75,11 @@ class DirectoryWatcher(QtCore.QObject):
         self._root_path = root_path
         self._logger = initLogger(self, tryInheritParent=False)
         self._seen_entries: set[str] = set()
-        self._entry_signatures: dict[str, tuple[int, int, bool]] = {}
+        self._entry_signatures: dict[str, tuple] = {}
+        # Optional metadata paths let Session observe a growing Zarr store
+        # without recursively scanning every historical store.  The normal
+        # watcher remains a cheap immediate-entry stat diff.
+        self._detail_paths: dict[str, tuple[str, ...]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(poll_interval_ms)
         self._timer.timeout.connect(self._tick)
@@ -102,6 +106,33 @@ class DirectoryWatcher(QtCore.QObject):
         """
         self._seen_entries.clear()
         self._entry_signatures.clear()
+
+    def set_detail_paths(self, detail_paths: dict[str, list[str] | tuple[str, ...]]) -> None:
+        """Track selected metadata files beneath watched entries.
+
+        This is intentionally opt-in.  Session supplies metadata paths only
+        for currently relevant Zarr acquisitions; completed historical stores
+        therefore remain on the original O(1)-per-entry stat path.
+        """
+        normalized = {}
+        for entry, paths in (detail_paths or {}).items():
+            key = os.path.abspath(os.path.expanduser(str(entry)))
+            normalized[key] = tuple(sorted({
+                os.path.abspath(os.path.expanduser(str(path)))
+                for path in (paths or ())
+            }))
+        self._detail_paths = normalized
+        # The caller normally establishes this immediately after the initial
+        # baseline.  Refresh signatures here so enabling detail tracking does
+        # not manufacture a change event for an already-known entry.
+        for path in tuple(self._seen_entries):
+            try:
+                stat = os.stat(path, follow_symlinks=False)
+            except OSError:
+                continue
+            self._entry_signatures[path] = self._signature_from_stat(
+                stat, os.path.isdir(path), self._detail_paths.get(path, ())
+            )
 
     @property
     def running(self) -> bool:
@@ -131,7 +162,24 @@ class DirectoryWatcher(QtCore.QObject):
         return new_entries
 
     @staticmethod
-    def _signature(entry) -> tuple[int, int, bool]:
+    def _detail_signature(path: str):
+        try:
+            stat = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        return (int(stat.st_mtime_ns), int(stat.st_size), bool(os.path.isdir(path)))
+
+    @classmethod
+    def _signature_from_stat(cls, stat, is_dir: bool, detail_paths=()) -> tuple:
+        signature = (int(stat.st_mtime_ns), int(stat.st_size), bool(is_dir))
+        if not detail_paths:
+            return signature
+        return signature + tuple(
+            (path, cls._detail_signature(path)) for path in detail_paths
+        )
+
+    @classmethod
+    def _signature(cls, entry, detail_paths=()) -> tuple:
         """Cheap signature used only to notice that a root entry changed.
 
         Directory mtimes change when children are created/removed, which lets a
@@ -140,7 +188,7 @@ class DirectoryWatcher(QtCore.QObject):
         single-file recording is noticed as well.  Nothing is opened here.
         """
         stat = entry.stat(follow_symlinks=False)
-        return (int(stat.st_mtime_ns), int(stat.st_size), bool(entry.is_dir()))
+        return cls._signature_from_stat(stat, entry.is_dir(), detail_paths)
 
     def _snapshot(self) -> dict[str, tuple[int, int, bool]] | None:
         """Current immediate watchable entries and their cheap signatures.
@@ -151,7 +199,7 @@ class DirectoryWatcher(QtCore.QObject):
         """
         try:
             with os.scandir(self._root_path) as root_dir:
-                current: dict[str, tuple[int, int, bool]] = {}
+                current: dict[str, tuple] = {}
                 for entry in root_dir:
                     try:
                         name = entry.name.lower()
@@ -161,7 +209,9 @@ class DirectoryWatcher(QtCore.QObject):
                         )
                         if entry.is_dir() or is_dataset_file:
                             path = os.path.abspath(entry.path)
-                            current[path] = self._signature(entry)
+                            current[path] = self._signature(
+                                entry, self._detail_paths.get(path, ())
+                            )
                     except OSError:
                         continue
                 return current

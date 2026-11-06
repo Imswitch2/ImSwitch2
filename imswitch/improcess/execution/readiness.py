@@ -204,7 +204,7 @@ def evaluate_evidence(evidence: PhysicalEvidence | None, *, is_lapse: bool = Fal
 
 
 def _probe_scope_impl(source, job, *, is_lapse: bool, inspected=None,
-                max_new_files: int = 12) -> Readiness:
+                max_new_files: int = 12, observed_timepoints=None) -> Readiness:
     """Bounded probe; `inspected` caches finalized physical refs across ticks."""
     refs, (start, stop) = references_for_scope(
         source, job.timepoint_scope, job.timepoint_total, is_lapse=is_lapse,
@@ -212,33 +212,83 @@ def _probe_scope_impl(source, job, *, is_lapse: bool, inspected=None,
     if stop is None:
         return Readiness(ReadinessState.UNKNOWN, "Unknown planned lapse extent")
     mapping = {ref.logical_t: ref for ref in refs if ref.logical_t >= 0}
-    missing = [t for t in range(start, stop) if t not in mapping]
+    catalog, _ = references_for_scope(
+        source, job.timepoint_scope, job.timepoint_total,
+        is_lapse=is_lapse, include_expected=False,
+    )
+    catalog_mapping = {
+        ref.logical_t: ref for ref in catalog if ref.logical_t >= 0
+    }
+    missing = [t for t in range(start, stop) if t not in catalog_mapping]
+    cache = inspected if inspected is not None else {}
+    observed_timepoints = (
+        observed_timepoints if observed_timepoints is not None else set()
+    )
     if missing:
         # A live-follow job can start on explicitly committed Zarr T0 even
         # though the later logical timepoints do not exist yet. Finite Auto
         # must keep waiting; no absent final T is ever declared complete.
-        first = mapping.get(start)
-        evidence = None
-        if first is not None:
+        # Inspect the physical catalog before returning for a missing future
+        # point.  This is important for Session visibility: a predicted
+        # reference is not evidence, but an already-present finalized
+        # reference is.  The bounded loop also preserves the existing
+        # metadata-only probe budget.
+        live_reason = ""
+        live_readable = False
+        count = 0
+        for ref in catalog:
+            key = (ref.path, ref.dataset, ref.logical_t)
+            if key in cache:
+                continue
+            if count >= max_new_files:
+                break
+            count += 1
             try:
-                evidence = inspect_physical_reference(first)
-                state = evaluate_evidence(evidence, is_lapse=is_lapse,
-                    expected_total=job.timepoint_total, logical_index=start)
-            except Exception:
-                state = Readiness(ReadinessState.UNKNOWN)
-            if (evidence is not None and evidence.format_id == "zarr"
-                    and state.state in (ReadinessState.READY, ReadinessState.ACQUIRING)
-                    and evidence.markers.frames_committed is not None
-                    and evidence.markers.frames_committed > 0):
-                return Readiness(ReadinessState.ACQUIRING,
-                    f"Waiting for logical T{missing[0] + 1} of {stop}", live_readable=True)
-        return Readiness(ReadinessState.UNKNOWN,
-                         f"Waiting for logical T{missing[0] + 1} of {stop}")
-    cache = inspected if inspected is not None else {}
-    pending_live = False
-    count = 0
+                evidence = inspect_physical_reference(ref)
+            except Exception as exc:
+                return Readiness(
+                    ReadinessState.UNKNOWN,
+                    f"Waiting for safe source access: {type(exc).__name__}",
+                )
+            if evidence is not None:
+                observed_timepoints.add(ref.logical_t)
+            state = evaluate_evidence(
+                evidence,
+                is_lapse=is_lapse,
+                expected_total=job.timepoint_total,
+                logical_index=ref.logical_t,
+            )
+            if state.state == ReadinessState.READY:
+                cache[key] = True
+            elif state.state == ReadinessState.ACQUIRING:
+                live_reason = state.reason
+                live_readable = live_readable or state.live_readable
+    else:
+        live_reason = ""
+        live_readable = False
+        count = 0
+
+    if missing and live_reason:
+        return Readiness(
+            ReadinessState.ACQUIRING,
+            f"{live_reason}; waiting for logical T{missing[0] + 1} of {stop}",
+            live_readable=live_readable,
+        )
+
+    pending_live = bool(live_reason)
     for t in range(start, stop):
-        ref = mapping[t]
+        ref = mapping.get(t)
+        if ref is None:
+            if live_reason:
+                return Readiness(
+                    ReadinessState.ACQUIRING,
+                    f"{live_reason}; waiting for logical T{t + 1} of {stop}",
+                    live_readable=live_readable,
+                )
+            return Readiness(
+                ReadinessState.UNKNOWN,
+                f"Waiting for logical T{t + 1} of {stop}",
+            )
         key = (ref.path, ref.dataset, t)
         if key in cache:
             continue
@@ -250,19 +300,27 @@ def _probe_scope_impl(source, job, *, is_lapse: bool, inspected=None,
         except Exception as exc:
             return Readiness(ReadinessState.UNKNOWN,
                              f"Waiting for safe source access: {type(exc).__name__}")
+        if evidence is not None:
+            observed_timepoints.add(ref.logical_t)
         state = evaluate_evidence(evidence, is_lapse=is_lapse,
                                   expected_total=job.timepoint_total,
                                   logical_index=t)
         if state.state != ReadinessState.READY:
             if state.live_readable:
                 pending_live = True
+            if pending_live and state.state == ReadinessState.UNKNOWN:
+                return Readiness(
+                    ReadinessState.ACQUIRING,
+                    state.reason,
+                    live_readable=live_readable or state.live_readable,
+                )
             return Readiness(state.state, state.reason, live_readable=pending_live)
         cache[key] = True
     return Readiness(ReadinessState.READY)
 
 
 def probe_scope(source, job, *, is_lapse: bool, inspected=None,
-                max_new_files: int = 12) -> Readiness:
+                max_new_files: int = 12, activity_observed: bool = False) -> Readiness:
     """Probe readiness and expose one reusable acquisition-progress snapshot.
 
     The metadata verification remains in _probe_scope_impl. The planned
@@ -270,9 +328,11 @@ def probe_scope(source, job, *, is_lapse: bool, inspected=None,
     predicted from the acquisition geometry.
     """
     cache = inspected if inspected is not None else {}
+    observed_timepoints = set()
     result = _probe_scope_impl(
         source, job, is_lapse=is_lapse, inspected=cache,
         max_new_files=max_new_files,
+        observed_timepoints=observed_timepoints,
     )
     expected, bounds = references_for_scope(
         source, job.timepoint_scope, job.timepoint_total,
@@ -282,6 +342,7 @@ def probe_scope(source, job, *, is_lapse: bool, inspected=None,
         source, job.timepoint_scope, job.timepoint_total,
         is_lapse=is_lapse, include_expected=False,
     )
+    planned_timepoints = job.timepoint_total if is_lapse else 1
     completed = tuple(sorted({
         ref.logical_t for ref in expected
         if (ref.path, ref.dataset, ref.logical_t) in cache
@@ -293,16 +354,34 @@ def probe_scope(source, job, *, is_lapse: bool, inspected=None,
     elif (result.state == ReadinessState.INVALID
           or "stopped early" in result.reason.lower()):
         status = "incomplete"
+    elif (
+        activity_observed
+        and len(catalog) > 0
+        and planned_timepoints is not None
+        and len(completed) < planned_timepoints
+    ):
+        # A watcher change is positive evidence that this source was active at
+        # the time of the probe.  It is deliberately scoped to Session's
+        # informational call site; Auto readiness continues to use the strict
+        # ReadinessState above and never infers liveness from a count deficit.
+        status = "acquiring"
     else:
         status = "unknown"
 
+    catalog_timepoints = {
+        ref.logical_t for ref in catalog
+    }
+    # A predicted reference becomes part of the physical catalog only after
+    # its metadata probe found the selected object.  Cached finalized points
+    # remain observed across bounded probes for the same runtime snapshot.
+    catalog_timepoints.update(observed_timepoints)
+    catalog_timepoints.update(completed)
+
     progress = AcquisitionProgress(
-        planned_timepoints=job.timepoint_total if is_lapse else 1,
+        planned_timepoints=planned_timepoints,
         scope=bounds,
         expected_references=tuple(expected),
-        catalog_timepoints=tuple(sorted({
-            ref.logical_t for ref in catalog
-        })),
+        catalog_timepoints=tuple(sorted(catalog_timepoints)),
         completed_timepoints=completed,
         status=status,
         reason=result.reason,
