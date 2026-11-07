@@ -214,7 +214,6 @@ class ProcessingSessionController(ImProcessWidgetController):
 
         self._widget.sigStartSessionRequested.connect(self.startSession)
         self._widget.sigSettingsRequested.connect(self.editSessionSettings)
-        self._widget.sigLiveDiagnosticsRequested.connect(self.showLiveFailureDiagnostics)
         self._widget.sigRefresh.connect(self.refresh)
         self._widget.sigSessionModeChanged.connect(self.setSessionMode)
         self._widget.sigDatasetSelectionChanged.connect(self.datasetSelected)
@@ -387,22 +386,6 @@ class ProcessingSessionController(ImProcessWidgetController):
         origin = self._session_origin_id(session or self._session)
         if origin:
             result._session_origin = origin
-
-    @QtCore.Slot()
-    def showLiveFailureDiagnostics(self) -> None:
-        """Developer-only, runtime diagnostic panel; never persisted with Session."""
-        from imswitch.improcess.view.LiveFailureDiagnosticsDialog import (
-            LiveFailureDiagnosticsDialog,
-        )
-        dialog = getattr(self, "_liveFailureDiagnosticsDialog", None)
-        if dialog is not None:
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            return
-        dialog = LiveFailureDiagnosticsDialog(self._widget)
-        self._liveFailureDiagnosticsDialog = dialog
-        dialog.show()
 
     def claimResultForDataset(self, result, dataset_id: str):
         """Attach exact transient Session ownership to a queued result.

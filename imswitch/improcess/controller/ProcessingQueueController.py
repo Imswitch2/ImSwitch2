@@ -51,7 +51,6 @@ from imswitch.improcess.execution.queue_finite import (
     finite_incremental_eligible, make_finite_source,
 )
 from imswitch.improcess.execution.runner import QtIncrementalRunner
-from imswitch.improcess.execution import live_diagnostics as diag
 from imswitch.improcess.execution.policy import (
     ExecutionPath, choose_execution, streaming_capability, supports_streaming_settings,
 )
@@ -144,7 +143,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._currentSourceTimepoints = None
         self._lastTerminalStatus = {}
         self._skipRequested = False
-        self._diagnosticBlockState = None
 
         # Retry an auto job whose newly-created store is not readable yet.
         self._retryTimer = QtCore.QTimer(self)
@@ -257,9 +255,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             )
             jobs.append(job)
         added = self.queue.enqueue_many(jobs, position="end")
-        diag.event("queue.auto_submitted", requested=len(jobs), added=added,
-                   jobs=",".join(str(job.id) for job in jobs),
-                   requirements=",".join(str(job.execution_requirement) for job in jobs))
         if added:
             self._emit_changed()
             self._process_next()
@@ -311,8 +306,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 dataset, reconstructor, params, origin=origin, timepoint_scope=scope
             ))
         added = self.queue.enqueue_many(jobs, position=position)
-        diag.event("queue.manual_submitted", requested=len(jobs), added=added,
-                   jobs=",".join(str(job.id) for job in jobs))
         if added:
             self._emit_changed()
             self._process_next()
@@ -642,9 +635,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     def _process_next(self) -> None:
         reconstructor_manager = getattr(self, "_reconstructorManager", None)
         direct_running = getattr(reconstructor_manager, "isReconstructionRunning", None)
-        # Preserve the normal short-circuit dispatch guard exactly. Diagnostics
-        # may inspect blockers separately, but cannot change queue behavior.
-        blocked = (
+        if (
             self._closing
             or self.queue.paused
             or self.queue.current is not None
@@ -652,29 +643,10 @@ class ProcessingQueueController(ImProcessWidgetController):
             or self._incrementalRunner is not None
             or self._live.is_running
             or (callable(direct_running) and direct_running())
-        )
+        ):
+            return
         waiting = self.queue.waiting
-        if diag.state()["active"]:
-            blocks = [
-                name for name, flag in (
-                    ("closing", self._closing),
-                    ("paused", self.queue.paused),
-                    ("queue_current", self.queue.current is not None),
-                    ("offline_thread", self._offlineThread is not None),
-                    ("incremental_runner", self._incrementalRunner is not None),
-                    ("legacy_live_running", self._live.is_running),
-                    ("direct_running", callable(direct_running) and direct_running()),
-                ) if flag
-            ]
-            # Log transitions, not every 500-ms readiness retry.
-            signature = (tuple(blocks), tuple(str(j.id) for j in waiting[:4]),
-                         str(getattr(self.queue.current, "id", "")))
-            if signature != self._diagnosticBlockState:
-                diag.event("queue.dispatch_state", blocks=",".join(blocks) or "none",
-                           waiting=len(waiting),
-                           current=str(getattr(self.queue.current, "id", "")))
-                self._diagnosticBlockState = signature
-        if blocked or not waiting:
+        if not waiting:
             return
 
         # Search in submission order, skipping acquisitions that still lack
@@ -852,10 +824,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error=f"Reconstructor {job.reconstructor_id!r} is unavailable")
             return
 
-        diag.event("queue.dispatch_selected", job=str(job.id),
-                   path=str(getattr(selected_choice, "path", "")),
-                   origin=str(job.origin), label=job.label,
-                   requirement=str(job.execution_requirement))
         if selected_failure:
             self._finish_current(
                 error=selected_failure,
@@ -878,7 +846,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 )):
             if self._start_finite_incremental(
                 job, source, reconstructor, prepared=prepared_live_job,
-                live_follow=(selected_choice.path == ExecutionPath.INCREMENTAL_FOLLOW),
             ):
                 return
             # An unsupported physical layout can use the conventional finite
@@ -967,8 +934,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             source_kind=ProcessingQueueController._source_kind(source),
         )
 
-    def _start_finite_incremental(self, job, source, reconstructor, *, prepared,
-                                  live_follow: bool = False) -> bool:
+    def _start_finite_incremental(self, job, source, reconstructor, *, prepared) -> bool:
         """Run finite acquisition incrementally, publishing snapshots in place.
 
         A preview is a real, retained viewer result. The Session finalization
@@ -1012,17 +978,12 @@ class ProcessingQueueController(ImProcessWidgetController):
             job, scope=scope, total=total, relation="timepoint",
         )
         budget = self._reconstructorManager._default_memory_budget_bytes()
-        injection = diag.claim_live(str(job.id)) if live_follow else "off"
-        diag.event("queue.incremental_start", job=str(job.id),
-                   live_follow=live_follow, fault=injection,
-                   path=prepared.seed_path)
         runner = QtIncrementalRunner(
             reconstructor, disk_source, copy.deepcopy(job.params),
             name=job.label, path=prepared.seed_path,
             dataset_name="time-lapse",
             max_buffer_bytes=max(1, min(256 * 1024 * 1024, int(budget) // 3)),
             enable_preview=True,
-            diagnostic_mode=injection, diagnostic_job=str(job.id),
         )
         self._incrementalRunner = runner
         self._incrementalReconstructor = reconstructor
@@ -1038,7 +999,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         try:
             runner.start()
         except Exception as exc:
-            diag.exception("queue.incremental_start_failed", exc, job=str(job.id))
             self._incrementalRunner = None
             self._incrementalReconstructor = None
             self._resultPublisher = None
@@ -1135,20 +1095,13 @@ class ProcessingQueueController(ImProcessWidgetController):
     @QtCore.Slot(str)
     def _on_incremental_failed(self, message: str) -> None:
         self._incrementalError = str(message or "Incremental processing failed")
-        diag.event("queue.incremental_failed", job=str(getattr(self.queue.current, "id", "")),
-                   error=self._incrementalError)
         self._logger.error("Incremental reconstruction failed: %s", self._incrementalError)
 
     @QtCore.Slot(bool)
     def _on_incremental_finished(self, success: bool) -> None:
         """Stop after both threads finish, retaining published work on Cancel."""
         if self._incrementalRunner is None:
-            diag.event("queue.incremental_finished_ignored", reason="no_runner")
             return
-        diag.event("queue.incremental_finished", success=success,
-                   job=str(getattr(self.queue.current, "id", "")),
-                   error=self._incrementalError,
-                   completed_t=self._incrementalCompletedTimepoints)
         self._incrementalRunner = None
         result = self._incrementalResult
         error = self._incrementalError
@@ -1235,7 +1188,6 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     def _start_offline(self, job, source, reconstructor, *,
                        ready_timepoints=None, ready_references=None) -> None:
-        diag.event("queue.offline_start", job=str(job.id), label=job.label)
         self._logger.info(
             "Processing dataset %s: kind=%s origin=%s runner=offline timepoints=%s",
             job.label,
@@ -1266,8 +1218,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._logger.exception("Could not resolve finite source units")
             self._finish_current(error=f"Could not resolve finite source units: {exc}")
             return
-        if self._source_kind(source) == "time-lapse":
-            diag.log_lapse_inventory(source, scope=str(scope), units=data_objs)
         if not data_objs:
             self._finish_current(error="No readable source units found")
             return
@@ -1498,7 +1448,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             index = self._fresh_manual_lapse_index(source)
             channel = index.channel(index.anchor_detector)
             out = []
-            observed = []
             for item in channel.candidates:
                 logical_index = (
                     int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index)
@@ -1506,7 +1455,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 # A single physical file may contain several distinct lapses.
                 if not (0 <= logical_index < int(index.planned_count)):
                     continue
-                observed.append(logical_index)
                 if (logical_index < start or (stop is not None and logical_index >= stop)
                         or (allowed_timepoints is not None
                             and logical_index not in allowed_timepoints)):
@@ -1522,12 +1470,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 )
                 data_obj._improcess_timepoint_scope = TimepointScope.single(logical_index)
                 out.append(data_obj)
-            diag.event(
-                "finite.lapse_rediscovered",
-                planned=index.planned_count,
-                discovered=sorted(set(observed)),
-                selected=[obj._improcess_timepoint_scope.first for obj in out],
-            )
             return out
 
         if isinstance(source, DataObj):
@@ -1888,12 +1830,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     ) -> None:
         job = self.queue.current
         if job is None:
-            diag.event("queue.finish_ignored", reason="no_current")
             return
-        diag.event("queue.finish_current", job=str(job.id),
-                   error=error, skipped=skipped,
-                   incremental_runner=self._incrementalRunner is not None,
-                   offline_thread=self._offlineThread is not None)
         self._clear_readiness(job.id)
         pending_stage = self._autoTimepointStates.pop(str(job.id), None)
         if pending_stage is not None:
@@ -1925,9 +1862,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._currentSourceTimepoints = None
         self._emit_changed()
         self._emit_progress_changed()
-        diag.event("queue.finished_state", previous_job=str(job.id),
-                   current=str(getattr(self.queue.current, "id", "")),
-                   waiting=len(self.queue.waiting))
         if not self._closing and not self.queue.paused:
             QtCore.QTimer.singleShot(0, self._process_next)
 
