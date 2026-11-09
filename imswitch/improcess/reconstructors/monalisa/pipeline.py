@@ -77,6 +77,7 @@ from .local_extraction import LocalExtractionOperator
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
 from .footprint_suggestion import suggest_local_footprint_size
+from .footprint_config import footprint_from_params
 
 # A haze term is only used when it removes this share of the residual.
 HAZE_RESIDUAL_RATIO = 0.8
@@ -151,6 +152,11 @@ class PipelineParams:
     local_footprint_shape: str = "square"
     local_footprint_size: int = 9
     local_sampling: str = "camera_pixels"
+    # None means a historical caller with estimator-specific footprint keys.
+    footprint_shape: str | None = None
+    footprint_mode: str | None = None
+    footprint_size_px: float = 9.0
+    footprint_sigma_factor: float = 2.5
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
     # ``fast`` detects the general lattice directly from the mean frame (the
@@ -439,7 +445,8 @@ def prepare_geometry(
         else float(first.shared_sigma)
     )
     margin = 3.0 * final_sigma
-    if params.estimator == "joint" and params.joint_footprint_mode == "lattice":
+    fit = footprint_from_params(vars(params), estimator=params.estimator)
+    if fit.shape == "lattice":
         if len(localization.motif) != 1:
             raise ValueError(
                 "Joint lattice unit cells require a single-motif axis-aligned rectangular lattice"
@@ -472,6 +479,10 @@ def prepare_geometry(
         background = "constant+haze" if use_haze else "constant"
 
     estimator = str(params.estimator).lower()
+    # A single geometric support policy is resolved independently of the
+    # estimator. Changing Local <-> Joint must not silently change fit pixels.
+    shared_sigma = float(np.median(np.asarray(sigma)))
+    resolved_size = fit.resolved_size(localization, shared_sigma)
     if estimator == "local":
         if background not in ("none", "constant"):
             raise ValueError("Local Gaussian extraction supports constant or no background")
@@ -481,34 +492,39 @@ def prepare_geometry(
             raise ValueError("Variance weighting requires Joint Gaussian extraction")
         if params.reassignment != "off" or params.pinhole_stack != "off":
             raise ValueError("Reassignment and pinhole stacks require Joint extraction")
-        footprint = str(params.local_footprint_shape).lower()
-        if footprint not in ("square", "circle"):
-            raise ValueError(f"Unknown Local footprint {footprint!r}")
-        if params.local_footprint_mode == "from_lattice":
-            side = suggest_local_footprint_size(localization, footprint)
-        elif params.local_footprint_mode == "fixed":
-            side = int(params.local_footprint_size)
-        else:
-            raise ValueError(f"Unknown Local footprint sizing mode {params.local_footprint_mode!r}")
-        if side < 3 or side % 2 != 1:
-            raise ValueError("Local footprint size must be an odd integer >= 3")
+        # Unit-cell support uses actual camera pixels; Local's existing DLL
+        # geometry path already implements this without changing its solver.
+        if fit.shape == "lattice" and params.local_sampling != "camera_pixels":
+            raise ValueError("Lattice unit cells require original camera-pixel sampling")
+        sampling = params.local_sampling
         operator = LocalExtractionOperator.build(
             spot_model.x, spot_model.y, sigma, (rows, cols),
             background=background,
-            footprint_shape="rectangular" if footprint == "square" else "circular",
-            footprint_size=side,
-            pinhole_radius_px=side / 2.0,
-            sampling=params.local_sampling,
+            footprint_shape={"square": "rectangular", "circle": "circular",
+                             "lattice": "lattice"}[fit.shape],
+            footprint_size=int(resolved_size) if fit.shape == "square" else 3,
+            pinhole_radius_px=(resolved_size / 2.0 if resolved_size is not None else 1.0),
+            sampling=sampling, lattice=lattice if fit.shape == "lattice" else None,
             focus_coordinates="localized",
         )
     elif estimator == "joint":
+        if fit.shape == "lattice":
+            support_mode, radius = "lattice", None
+        elif fit.shape == "square":
+            support_mode, radius = "fixed", None
+        elif fit.mode == "fwhm":
+            # Preserve exact per-focus sigma scaling of historical Joint Auto.
+            support_mode, radius = "auto", None
+        else:
+            support_mode, radius = "fixed", resolved_size / 2.0
         operator = ExtractionOperator.build(
             spot_model.x, spot_model.y, sigma, (rows, cols),
-            reach_sigma=params.reach_sigma,
-            footprint_mode=params.joint_footprint_mode,
-            fit_radius_px=(params.joint_fit_radius_px
-                           if params.joint_footprint_mode == "fixed" else None),
-            lattice=lattice if params.joint_footprint_mode == "lattice" else None,
+            reach_sigma=fit.sigma_factor,
+            footprint_mode=support_mode,
+            fit_shape="square" if fit.shape == "square" else "circle",
+            fit_size_px=resolved_size if fit.shape == "square" else None,
+            fit_radius_px=radius,
+            lattice=lattice if fit.shape == "lattice" else None,
             background=background,
             haze_sigma=haze_sigma if background == "constant+haze" else None,
             joint=params.joint,
@@ -557,14 +573,25 @@ def prepare_geometry(
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
         "estimator": estimator,
-        "joint_footprint_mode": params.joint_footprint_mode if estimator == "joint" else None,
-        "joint_fit_radius_px": (params.joint_fit_radius_px
-                                if estimator == "joint" and params.joint_footprint_mode == "fixed"
-                                else None),
+        "footprint_shape": fit.shape,
+        "footprint_mode": fit.mode,
+        "footprint_size_px": fit.size_px,
+        "footprint_sigma_factor": fit.sigma_factor,
+        "resolved_footprint_size_px": resolved_size,
+        # Historical aliases remain for old diagnostic consumers, but report
+        # the *effective* common support rather than stale old UI defaults.
+        "joint_footprint_mode": (
+            "lattice" if fit.shape == "lattice" else
+            "auto" if fit.shape == "circle" and fit.mode == "fwhm" else "fixed"
+        ) if estimator == "joint" else None,
+        "joint_fit_radius_px": (
+            resolved_size / 2.0 if estimator == "joint" and fit.shape == "circle"
+            and fit.mode != "fwhm" else None
+        ),
         "joint_fit_pixel_count": operator.num_fit_pixels if estimator == "joint" else None,
-        "local_footprint_mode": params.local_footprint_mode if estimator == "local" else None,
-        "local_footprint_shape": params.local_footprint_shape if estimator == "local" else None,
-        "local_footprint_size": side if estimator == "local" else None,
+        "local_footprint_mode": fit.mode if estimator == "local" else None,
+        "local_footprint_shape": fit.shape if estimator == "local" else None,
+        "local_footprint_size": resolved_size if estimator == "local" else None,
         "local_sampling": params.local_sampling if estimator == "local" else None,
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,

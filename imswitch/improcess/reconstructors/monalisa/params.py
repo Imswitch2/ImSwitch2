@@ -35,8 +35,6 @@ ESTIMATOR_LOCAL = "local"
 ESTIMATOR_JOINT = "joint"
 ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT)
 JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
-JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
-JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
 FOOTPRINT_SQUARE = "square"
 FOOTPRINT_CIRCLE = "circle"
 FOOTPRINT_SHAPES = (FOOTPRINT_SQUARE, FOOTPRINT_CIRCLE)
@@ -92,6 +90,12 @@ DEFAULT_PARAMS = {
     "local_footprint_mode": FOOTPRINT_FROM_LATTICE,
     "local_footprint_size": 9,
     "local_sampling": "camera_pixels",
+    # One footprint policy for either Local or Joint (legacy keys above are
+    # retained only to interpret older saved reconstruction settings).
+    "footprint_shape": "square",
+    "footprint_mode": "from_lattice",
+    "footprint_size_px": 9.0,
+    "footprint_sigma_factor": 2.5,
     "legacy_bleaching_correction": False,
     "legacy_bg_modelling": "Constant",
     "legacy_bg_gaussian_size_nm": 1000.0,

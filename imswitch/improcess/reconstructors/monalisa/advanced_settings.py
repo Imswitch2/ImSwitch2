@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 from .params import PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE
 from .footprint_suggestion import suggest_local_footprint_size
 from .params import FOOTPRINT_FIXED, FOOTPRINT_FROM_LATTICE
+from .footprint_config import SHAPES, MODES, footprint_from_params
 
 
 class AdvancedReconstructionDialog(QtWidgets.QDialog):
@@ -102,69 +103,74 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         self.estimator.addItems(["local", "joint"])
         self.estimator.setCurrentText(str(values.get("estimator", "local")))
         self.estimator.setToolTip("Local fits spots independently; Joint fits neighboring Gaussian signals together.")
-        self.footprintMode = QtWidgets.QComboBox()
-        self.footprintMode.addItem("From lattice", FOOTPRINT_FROM_LATTICE)
-        self.footprintMode.addItem("Fixed", FOOTPRINT_FIXED)
-        mode = str(values.get("local_footprint_mode", FOOTPRINT_FIXED))
-        self.footprintMode.setCurrentIndex(max(0, self.footprintMode.findData(mode)))
-        self.footprintMode.setToolTip(
-            "From lattice chooses a safe odd size when building the extraction operator. "
-            "Fixed uses the entered size. Both choices can be saved as setup defaults."
-        )
+        fit = footprint_from_params(values, estimator=self.estimator.currentText())
         self.footprintShape = QtWidgets.QComboBox()
-        self.footprintShape.addItems(["square", "circle"])
-        self.footprintShape.setCurrentText(str(values.get("local_footprint_shape", "square")))
-        self.footprintSize = QtWidgets.QSpinBox()
-        self.footprintSize.setRange(3, 255)
-        self.footprintSize.setSingleStep(2)
-        size = int(values.get("local_footprint_size", 9))
-        self.footprintSize.setValue(size if size % 2 else max(3, size - 1))
-        self.footprintSize.setToolTip("Odd camera-pixel side length (Square) or diameter (Circle).")
+        self.footprintShape.addItem("Square", "square")
+        self.footprintShape.addItem("Circle", "circle")
+        self.footprintShape.addItem("Lattice unit cells (DLL)", "lattice")
+        self.footprintShape.setCurrentIndex(self.footprintShape.findData(fit.shape))
+        self.footprintShape.setToolTip(
+            "Select which original camera pixels contribute to the Gaussian fit. "
+            "Lattice cells require an axis-aligned rectangular, single-motif pattern."
+        )
+        self.footprintMode = QtWidgets.QComboBox()
+        self.footprintMode.addItem("From lattice", "from_lattice")
+        self.footprintMode.addItem("Fixed", "fixed")
+        self.footprintMode.addItem("FWHM-relative", "fwhm")
+        self.footprintMode.setCurrentIndex(self.footprintMode.findData(fit.mode))
+        self.footprintMode.setToolTip(
+            "From lattice selects a conservative footprint size from the detected pattern; "
+            "Fixed uses the entered side/diameter; FWHM-relative uses a radius "
+            "proportional to the spot sigma. Lattice unit cells ignore sizing."
+        )
+        self.footprintSize = QtWidgets.QDoubleSpinBox()
+        self.footprintSize.setRange(0.1, 255.0)
+        self.footprintSize.setDecimals(2)
+        self.footprintSize.setSingleStep(1.0)
+        self.footprintSize.setSuffix(" px")
+        self.footprintSize.setValue(fit.size_px)
+        self.footprintSize.setToolTip(
+            "Square: odd side in camera pixels. Circle: diameter in camera pixels "
+            "(twice the actual fit radius)."
+        )
+        self.sigmaFactor = QtWidgets.QDoubleSpinBox()
+        self.sigmaFactor.setRange(0.1, 100.0)
+        self.sigmaFactor.setDecimals(3)
+        self.sigmaFactor.setSingleStep(0.25)
+        self.sigmaFactor.setSuffix(" σ")
+        self.sigmaFactor.setValue(fit.sigma_factor)
+        self.sigmaFactor.setToolTip(
+            "Fit radius expressed in spot sigmas. Applies to both estimators. "
+            "Joint also models neighboring Gaussian tails out to its normal 5.5σ support."
+        )
         self.suggestButton = QtWidgets.QPushButton("Suggest from lattice")
-        self.suggestButton.setToolTip("Apply a conservative size from the current localized pattern once; never resizes during reconstruction.")
-        self.suggestButton.setEnabled(localization is not None)
-        if localization is None:
-            self.suggestButton.setToolTip("Localize or select a pattern first to suggest a footprint size.")
+        self.suggestButton.setToolTip(
+            "Apply the currently suggested size once, switching to Fixed. "
+            "From lattice instead recomputes the size on each new localization."
+        )
         self.suggestButton.clicked.connect(self._suggest_size)
         self.sampling = QtWidgets.QComboBox()
         self.sampling.addItems(["camera_pixels", "bilinear"])
         self.sampling.setCurrentText(str(values.get("local_sampling", "camera_pixels")))
-        self.sampling.setToolTip("Fit original camera pixels or the WIP bilinear shifted stencil.")
+        self.sampling.setToolTip(
+            "Local only: bilinear samples an interpolated stencil rather than "
+            "the camera pixels used by Joint. Use camera_pixels for matched fit supports."
+        )
         footprintRow = QtWidgets.QHBoxLayout()
         footprintRow.addWidget(self.footprintSize)
         footprintRow.addWidget(self.suggestButton)
         gaussian = QtWidgets.QGroupBox("Gaussian fitting")
         gaussianForm = QtWidgets.QFormLayout(gaussian)
         gaussianForm.addRow("Estimator", self.estimator)
-        self.jointSupport = QtWidgets.QComboBox()
-        self.jointSupport.addItem("Auto (2.5σ)", "auto")
-        self.jointSupport.addItem("Fixed radius", "fixed")
-        self.jointSupport.addItem("Lattice unit cells (DLL)", "lattice")
-        joint_mode = str(values.get("joint_footprint_mode", "auto"))
-        self.jointSupport.setCurrentIndex(max(0, self.jointSupport.findData(joint_mode)))
-        self.jointSupport.setToolTip(
-            "Pixels contributing to the Joint fit. Auto uses a 2.5σ circular radius; "
-            "Fixed uses camera pixels; Lattice uses DLL-style axis-aligned "
-            "rectangular cells. The Gaussian model support remains 5.5σ."
-        )
-        self.jointRadius = QtWidgets.QDoubleSpinBox()
-        self.jointRadius.setRange(0.1, 50.0)
-        self.jointRadius.setDecimals(2)
-        self.jointRadius.setSingleStep(0.25)
-        self.jointRadius.setSuffix(" px")
-        self.jointRadius.setValue(float(values.get("joint_footprint_radius_px", 4.5)))
-        self.jointRadius.setToolTip("Circular Joint fit-pixel radius (used only for Fixed support).")
-        gaussianForm.addRow("Joint support", self.jointSupport)
-        gaussianForm.addRow("Joint radius", self.jointRadius)
-        gaussianForm.addRow("Local shape", self.footprintShape)
-        gaussianForm.addRow("Local size mode", self.footprintMode)
-        gaussianForm.addRow("Local side/diameter", footprintRow)
+        gaussianForm.addRow("Footprint shape", self.footprintShape)
+        gaussianForm.addRow("Footprint sizing", self.footprintMode)
+        gaussianForm.addRow("Side / diameter", footprintRow)
+        gaussianForm.addRow("Radius / sigma", self.sigmaFactor)
         gaussianForm.addRow("Local sampling", self.sampling)
-        self.estimator.currentTextChanged.connect(self._update_local_enabled)
-        self.footprintMode.currentIndexChanged.connect(self._update_local_enabled)
-        self.jointSupport.currentIndexChanged.connect(self._update_local_enabled)
-        self.footprintSize.valueChanged.connect(self._odd_footprint_size)
-        self._update_local_enabled()
+        self.estimator.currentTextChanged.connect(self._update_footprint_enabled)
+        self.footprintShape.currentIndexChanged.connect(self._update_footprint_enabled)
+        self.footprintMode.currentIndexChanged.connect(self._update_footprint_enabled)
+        self._update_footprint_enabled()
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -179,25 +185,22 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         layout.addWidget(sharpening)
         layout.addWidget(buttons)
 
-    def _odd_footprint_size(self, size: int) -> None:
-        if size % 2 == 0:
-            old = self.footprintSize.blockSignals(True)
-            self.footprintSize.setValue(min(255, size + 1))
-            self.footprintSize.blockSignals(old)
-
-    def _update_local_enabled(self, *_):
-        local = self.estimator.currentText() == "local"
-        for widget in (self.footprintShape, self.footprintMode, self.sampling):
-            widget.setEnabled(local)
-        self.footprintSize.setEnabled(local and self.footprintMode.currentData() == FOOTPRINT_FIXED)
-        self.suggestButton.setEnabled(local and self._localization is not None)
-        self.jointSupport.setEnabled(not local)
-        self.jointRadius.setEnabled(not local and self.jointSupport.currentData() == "fixed")
+    def _update_footprint_enabled(self, *_):
+        shape = self.footprintShape.currentData()
+        mode = self.footprintMode.currentData()
+        cells = shape == "lattice"
+        self.footprintMode.setEnabled(not cells)
+        self.footprintSize.setEnabled(not cells and mode == "fixed")
+        self.sigmaFactor.setEnabled(not cells and mode == "fwhm")
+        self.suggestButton.setEnabled(not cells and self._localization is not None)
+        if cells and self.sampling.currentText() != "camera_pixels":
+            self.sampling.setCurrentText("camera_pixels")
+        self.sampling.setEnabled(self.estimator.currentText() == "local" and not cells)
 
     def _suggest_size(self):
         try:
             size = suggest_local_footprint_size(
-                self._localization, self.footprintShape.currentText()
+                self._localization, str(self.footprintShape.currentData())
             )
         except ValueError as error:
             QtWidgets.QMessageBox.warning(self, "Footprint suggestion", str(error))
@@ -205,14 +208,24 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             self.footprintMode.setCurrentIndex(self.footprintMode.findData(FOOTPRINT_FIXED))
             self.footprintSize.setValue(size)
 
+    def accept(self):
+        if (self.footprintShape.currentData() == "square"
+                and self.footprintMode.currentData() == "fixed"):
+            value = self.footprintSize.value()
+            if value < 3 or value % 2 != 1:
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid footprint", "Fixed square support requires an odd integer side of at least 3 px."
+                )
+                return
+        super().accept()
+
     def values(self) -> dict:
         return {
             "estimator": self.estimator.currentText(),
-            "joint_footprint_mode": str(self.jointSupport.currentData()),
-            "joint_footprint_radius_px": float(self.jointRadius.value()),
-            "local_footprint_mode": str(self.footprintMode.currentData()),
-            "local_footprint_shape": self.footprintShape.currentText(),
-            "local_footprint_size": int(self.footprintSize.value()),
+            "footprint_shape": str(self.footprintShape.currentData()),
+            "footprint_mode": str(self.footprintMode.currentData()),
+            "footprint_size_px": float(self.footprintSize.value()),
+            "footprint_sigma_factor": float(self.sigmaFactor.value()),
             "local_sampling": self.sampling.currentText(),
             "device": self.device.currentText(),
             "pixel_size_nm": float(self.pixelNm.value()),

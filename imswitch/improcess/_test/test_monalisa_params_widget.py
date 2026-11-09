@@ -256,9 +256,9 @@ def test_expert_dialog_can_suggest_footprint_from_manual_lattice(qapp):
     assert dialog.estimator.currentText() == "local"
     dialog.footprintSize.setValue(5)
     dialog.suggestButton.click()
-    assert dialog.values()["local_footprint_size"] == 11
-    dialog.footprintShape.setCurrentText("circle")
-    assert dialog.values()["local_footprint_shape"] == "circle"
+    assert dialog.values()["footprint_size_px"] == 11
+    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("circle"))
+    assert dialog.values()["footprint_shape"] == "circle"
 
 
 def test_calibrated_fwhm_can_be_fixed_then_saved_to_setup(qapp, tmp_path, monkeypatch):
@@ -358,9 +358,9 @@ def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch)
     widget = MonalisaParamsWidget()
     widget.load_from_attrs({"recording:detector_name": "CAM"})
     widget._advanced_values.update({
-        "local_footprint_mode": "from_lattice",
-        "local_footprint_shape": "circle",
-        "local_footprint_size": 7,
+        "footprint_mode": "from_lattice",
+        "footprint_shape": "circle",
+        "footprint_size_px": 7.0,
     })
     widget._save_footprint_default()
     saved = read_detector_defaults("CAM", path=path)
@@ -370,8 +370,8 @@ def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch)
     new_widget = MonalisaParamsWidget()
     new_widget.load_from_attrs({"recording:detector_name": "CAM"})
     values = new_widget.get_values()
-    assert values["local_footprint_mode"] == "from_lattice"
-    assert values["local_footprint_shape"] == "circle"
+    assert values["footprint_mode"] == "from_lattice"
+    assert values["footprint_shape"] == "circle"
     assert "Circle · From lattice" in new_widget.footprintSummaryLabel.text()
 
 
@@ -380,19 +380,21 @@ def test_expert_joint_support_is_editable_without_new_widget(qapp):
 
     widget = MonalisaParamsWidget()
     dialog = AdvancedReconstructionDialog(widget._advanced_values)
-    assert dialog.jointSupport.currentData() == "auto"
-    assert dialog.jointRadius.isEnabled() is False
+    assert dialog.footprintMode.currentData() == "from_lattice"
+    assert dialog.footprintShape.currentData() == "square"
     dialog.estimator.setCurrentText("joint")
-    assert dialog.jointSupport.isEnabled() is True
-    dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("fixed"))
-    assert dialog.jointRadius.isEnabled() is True
-    dialog.jointRadius.setValue(5.25)
-    assert dialog.values()["joint_footprint_mode"] == "fixed"
-    assert dialog.values()["joint_footprint_radius_px"] == 5.25
-    dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("lattice"))
-    assert dialog.jointRadius.isEnabled() is False
+    assert dialog.footprintShape.isEnabled() is True
+    dialog.footprintMode.setCurrentIndex(dialog.footprintMode.findData("fixed"))
+    assert dialog.footprintSize.isEnabled() is True
+    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("circle"))
+    dialog.footprintSize.setValue(10.5)
+    assert dialog.values()["footprint_mode"] == "fixed"
+    assert dialog.values()["footprint_size_px"] == 10.5
     dialog.estimator.setCurrentText("local")
-    assert dialog.jointSupport.isEnabled() is False
+    assert dialog.values()["footprint_size_px"] == 10.5  # one shared choice
+    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("lattice"))
+    assert dialog.footprintMode.isEnabled() is False
+    assert dialog.sampling.isEnabled() is False
 
 
 def test_editing_joint_support_marks_full_as_custom(qapp, monkeypatch):
@@ -404,11 +406,11 @@ def test_editing_joint_support_marks_full_as_custom(qapp, monkeypatch):
 
     def choose_lattice(dialog):
         dialog.estimator.setCurrentText("joint")
-        dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("lattice"))
+        dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("lattice"))
         return QtWidgets.QDialog.Accepted
 
     monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", choose_lattice)
     widget._open_advanced_reconstruction()
     values = widget.get_values()
     assert values["preset"] == PRESET_CUSTOM
-    assert values["joint_footprint_mode"] == "lattice"
+    assert values["footprint_shape"] == "lattice"

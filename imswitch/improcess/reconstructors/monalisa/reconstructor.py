@@ -21,6 +21,7 @@ from .calibration import PatternLocalization, ScanOrientation
 from .calibration_frames import most_modulated_indices
 from .live_session import MonalisaLiveSession
 from .localization_settings import LocalizationSettings
+from .footprint_config import footprint_from_params, migrate_footprint_params
 from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
@@ -128,11 +129,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
             ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
             ParamField('estimator', 'select', defaults['estimator'], label='Gaussian estimator', options=ESTIMATORS, group='Advanced', advanced=True),
-            ParamField('joint_footprint_mode', 'select', defaults['joint_footprint_mode'], label='Joint fit support', options=('auto', 'fixed', 'lattice'), group='Advanced', advanced=True),
-            ParamField('joint_footprint_radius_px', 'float', defaults['joint_footprint_radius_px'], label='Joint fixed radius', suffix='px', min=0.1, group='Advanced', advanced=True),
-            ParamField('local_footprint_mode', 'select', defaults['local_footprint_mode'], label='Local size mode', options=FOOTPRINT_MODES, group='Advanced', advanced=True),
-            ParamField('local_footprint_shape', 'select', defaults['local_footprint_shape'], label='Local footprint', options=FOOTPRINT_SHAPES, group='Advanced', advanced=True),
-            ParamField('local_footprint_size', 'int', defaults['local_footprint_size'], label='Local side/diameter', min=3, max=255, group='Advanced', advanced=True),
+            ParamField('footprint_shape', 'select', defaults['footprint_shape'], label='Fit footprint', options=('square', 'circle', 'lattice'), group='Advanced', advanced=True),
+            ParamField('footprint_mode', 'select', defaults['footprint_mode'], label='Footprint size mode', options=('from_lattice', 'fixed', 'fwhm'), group='Advanced', advanced=True),
+            ParamField('footprint_size_px', 'float', defaults['footprint_size_px'], label='Side / diameter', suffix='px', min=0.1, group='Advanced', advanced=True),
+            ParamField('footprint_sigma_factor', 'float', defaults['footprint_sigma_factor'], label='Radius / sigma', min=0.1, group='Advanced', advanced=True),
             ParamField('local_sampling', 'select', defaults['local_sampling'], label='Local sampling', options=('camera_pixels', 'bilinear'), group='Advanced', advanced=True),
             ParamField('background', 'select', defaults['background'], label='Background', options=('constant', 'none', 'auto'), group='Spot model'),
             ParamField('legacy_bleaching_correction', 'bool', defaults['legacy_bleaching_correction'],
@@ -445,11 +445,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             "pixel_size_nm": float(params.get("pixel_size_nm", 0.0) or 0.0),
             "background": str(params.get("background", "constant")),
             "estimator": str(params.get("estimator", ESTIMATOR_JOINT)),
-            "joint_footprint_mode": str(params.get("joint_footprint_mode", "auto")),
-            "joint_footprint_radius_px": float(params.get("joint_footprint_radius_px", 4.5)),
-            "local_footprint_mode": str(params.get("local_footprint_mode", "fixed")),
-            "local_footprint_shape": str(params.get("local_footprint_shape", "square")),
-            "local_footprint_size": int(params.get("local_footprint_size", 9)),
+            **footprint_from_params(params).to_dict(),
             "local_sampling": str(params.get("local_sampling", "camera_pixels")),
             "scan_steps_fast": int(params.get("scan_steps_fast", 0) or 0),
             "scan_steps_slow": int(params.get("scan_steps_slow", 0) or 0),
@@ -638,16 +634,19 @@ class MonalisaReconstructor(StreamingReconstructor):
             MonalisaLatticeReconstructor,
         )
 
+        original = dict(params or {})
         merged = unified_default_params()
-        merged.update(dict(params or {}))
-        if "local_footprint_mode" not in params:
+        merged.update(original)
+        if "local_footprint_mode" not in original:
             # Patch 1/2 saved settings chose a fixed odd pixel size. Preserve it.
             merged["local_footprint_mode"] = "fixed"
-        if "estimator" not in params:
-            # Old saved Fast/Full dictionaries predate the estimator setting.
-            # Keep their historical Joint calculation; only new configurations
-            # explicitly opt into Local, including new default_params().
+        if "estimator" not in original:
+            # Historical settings predate estimator selection; preserve Joint.
             merged["estimator"] = ESTIMATOR_JOINT
+        # Migrate estimator-specific support before default shared fields can
+        # mask it. This retains old Joint radii without integer rounding.
+        if original:
+            merged.update(migrate_footprint_params(original, estimator=str(merged["estimator"])))
         localization = self._resolved_localization(merged)
         orientation = self._orientation_literal(merged)
 
@@ -681,6 +680,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             # Old persisted Fast/Full settings had no estimator key and
             # must retain the old Joint mathematics on replay.
             "estimator": str(merged["estimator"]),
+            "footprint_shape": str(merged["footprint_shape"]),
+            "footprint_mode": str(merged["footprint_mode"]),
+            "footprint_size_px": float(merged["footprint_size_px"]),
+            "footprint_sigma_factor": float(merged["footprint_sigma_factor"]),
             "joint_footprint_mode": str(merged.get("joint_footprint_mode", "auto")),
             "joint_footprint_radius_px": float(merged.get("joint_footprint_radius_px", 4.5)),
             "local_footprint_mode": str(merged.get("local_footprint_mode", "fixed")),
@@ -778,12 +781,17 @@ class MonalisaReconstructor(StreamingReconstructor):
             "resolved_shift_factor_xy": diagnostics.get("resolved_shift_factor_xy"),
             "preset": str(merged.get("preset", "")),
             "estimator": str(merged["estimator"]),
+            "footprint_shape": str(merged["footprint_shape"]),
+            "footprint_mode": str(merged["footprint_mode"]),
+            "footprint_size_px": float(merged["footprint_size_px"]),
+            "footprint_sigma_factor": float(merged["footprint_sigma_factor"]),
             "joint_footprint_mode": str(merged.get("joint_footprint_mode", "auto")),
             "joint_footprint_radius_px": float(merged.get("joint_footprint_radius_px", 4.5)),
             "local_footprint_mode": str(merged.get("local_footprint_mode", "fixed")),
             "local_footprint_shape": str(merged.get("local_footprint_shape", "square")),
             "local_footprint_size": int(merged.get("local_footprint_size", 9)),
             "resolved_local_footprint_size_px": diagnostics.get("local_footprint_size"),
+            "resolved_footprint_size_px": diagnostics.get("resolved_footprint_size_px"),
             "local_sampling": str(merged.get("local_sampling", "camera_pixels")),
             "placement_mode_requested": str(merged.get("placement_mode", PLACEMENT_AUTO)),
             "placement_mode_used": str(diagnostics.get("placement_method") or ""),

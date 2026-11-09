@@ -147,6 +147,34 @@ def _disc_entries(
     )
 
 
+def _square_entries(
+    x: np.ndarray, y: np.ndarray, side: int, frame_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Square sensor-pixel support matching Local camera_pixels exactly.
+
+    Centres are rounded only to select pixel coordinates; Gaussian distances
+    always use the true subpixel centre.  Border clipping is identical to Local.
+    """
+    rows, cols = frame_shape
+    half = (side - 1) // 2
+    offsets = np.arange(-half, half + 1, dtype=np.int64)
+    oy, ox = np.meshgrid(offsets, offsets, indexing="ij")
+    dx, dy = ox.ravel(), oy.ravel()
+    block = max(1, _BLOCK_ENTRIES // (side * side))
+    focuses, pixels, distances = [], [], []
+    for start in range(0, x.size, block):
+        stop = min(start + block, x.size)
+        px = np.rint(x[start:stop]).astype(np.int64)[:, None] + dx
+        py = np.rint(y[start:stop]).astype(np.int64)[:, None] + dy
+        keep = (px >= 0) & (px < cols) & (py >= 0) & (py < rows)
+        indices = np.broadcast_to(np.arange(start, stop)[:, None], px.shape)
+        focuses.append(indices[keep])
+        pixels.append((py * cols + px)[keep])
+        distances.append(((px - x[start:stop, None])**2
+                          + (py - y[start:stop, None])**2)[keep])
+    return np.concatenate(focuses), np.concatenate(pixels), np.concatenate(distances)
+
+
 def _lattice_cell_entries(
     x: np.ndarray,
     y: np.ndarray,
@@ -410,6 +438,8 @@ class ExtractionOperator:
         reach_sigma: float = DEFAULT_REACH_SIGMA,
         fit_radius_px: float | None = None,
         footprint_mode: str = "auto",
+        fit_shape: str = "circle",
+        fit_size_px: float | None = None,
         lattice=None,
         background: str = "constant",
         haze_sigma: float | None = None,
@@ -432,6 +462,9 @@ class ExtractionOperator:
                 used when footprint_mode is "fixed".
             footprint_mode: "auto" (sigma-scaled circle), "fixed" (circle of
                 given radius), or "lattice" (DLL rectangular unit-cell pixels).
+            fit_shape: "square" selects an odd-square camera-pixel footprint;
+                "circle" retains the original radial fit-pixel selection.
+            fit_size_px: Odd side in camera pixels for square support.
             lattice: Required for "lattice". The lattice defines pixel
                 ownership, while Gaussian centres remain the localized ones.
                 Only axis-aligned rectangular lattices are supported.
@@ -460,15 +493,24 @@ class ExtractionOperator:
             fit_radius_px = float(fit_radius_px)
             if not np.isfinite(fit_radius_px) or fit_radius_px <= 0:
                 raise ValueError("Joint fit radius must be finite and > 0")
-        if footprint_mode == "fixed" and fit_radius_px is None:
+        if footprint_mode == "fixed" and fit_radius_px is None and fit_shape != "square":
             raise ValueError("Fixed Joint footprint requires a fit radius")
         if footprint_mode == "lattice" and not joint:
             raise ValueError("Joint lattice footprint requires joint extraction")
+        if fit_shape not in ("square", "circle"):
+            raise ValueError("Joint footprint shape must be square or circle")
+        if fit_shape == "square":
+            if fit_size_px is None or not np.isfinite(fit_size_px):
+                raise ValueError("Square Joint footprint requires a finite side")
+            if fit_size_px < 3 or fit_size_px > 255 or fit_size_px % 2 != 1:
+                raise ValueError("Square Joint footprint side must be an odd integer 3–255 px")
         rows, cols = (int(n) for n in frame_shape)
         usable, variance = _usable_pixels(rows * cols, pixel_mask, pixel_variance)
 
         if footprint_mode == "lattice":
             focus, pixel, dist2 = _lattice_cell_entries(x, y, (rows, cols), lattice)
+        elif fit_shape == "square":
+            focus, pixel, dist2 = _square_entries(x, y, int(fit_size_px), (rows, cols))
         else:
             radius = (reach_sigma * sigma if footprint_mode == "auto" else
                       np.full(x.size, fit_radius_px, dtype=float))

@@ -36,6 +36,7 @@ from .scanning_settings import ScanningAdvancedDialog
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
 from .footprint_suggestion import suggest_local_footprint_size
+from .footprint_config import FitFootprint, footprint_from_params, migrate_footprint_params
 from .setup_defaults import (
     DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
     read_detector_defaults, save_detector_default, save_detector_footprint, positive_fwhm,
@@ -241,11 +242,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
             "sharpen_regularization": float(values["sharpen_regularization"]),
             "estimator": str(values["estimator"]),
-            "joint_footprint_mode": str(values["joint_footprint_mode"]),
-            "joint_footprint_radius_px": float(values["joint_footprint_radius_px"]),
-            "local_footprint_mode": str(values["local_footprint_mode"]),
-            "local_footprint_shape": str(values["local_footprint_shape"]),
-            "local_footprint_size": int(values["local_footprint_size"]),
+            "footprint_shape": str(values["footprint_shape"]),
+            "footprint_mode": str(values["footprint_mode"]),
+            "footprint_size_px": float(values["footprint_size_px"]),
+            "footprint_sigma_factor": float(values["footprint_sigma_factor"]),
             "local_sampling": str(values["local_sampling"]),
         }
 
@@ -932,16 +932,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._advanced_values.update(dialog.values())
-        if any(
-            self._advanced_values[key] != before[key]
-            for key in ("local_footprint_mode", "local_footprint_shape", "local_footprint_size")
-        ):
+        footprint_keys = ("footprint_shape", "footprint_mode", "footprint_size_px",
+                          "footprint_sigma_factor")
+        if any(self._advanced_values[key] != before[key] for key in footprint_keys):
             self._footprint_user_override = True
         self._update_ui()
-        controlled = (
-            "device", "placement_mode", "variance_weighting", "estimator",
-            "joint_footprint_mode", "joint_footprint_radius_px",
-        )
+        controlled = ("device", "placement_mode", "variance_weighting", "estimator",
+                      *footprint_keys)
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
 
@@ -1297,14 +1294,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     # ----------------------------------------------------------- spot / ISM
     def _update_footprint_summary(self):
-        mode = str(self._advanced_values["local_footprint_mode"])
-        shape = str(self._advanced_values["local_footprint_shape"]).capitalize()
-        if mode == FOOTPRINT_FIXED:
-            detail = f"Fixed {self._advanced_values['local_footprint_size']} px"
+        fit = footprint_from_params(self._advanced_values)
+        shape = fit.shape.capitalize() if fit.shape != "lattice" else "Lattice unit cells"
+        if fit.shape == "lattice":
+            detail = "DLL pixel ownership"
+        elif fit.mode == "fixed":
+            detail = f"Fixed {fit.size_px:g} px"
+        elif fit.mode == "fwhm":
+            detail = f"Radius {fit.sigma_factor:g}σ"
         else:
             loc = self._lockable_localization()
             try:
-                size = suggest_local_footprint_size(loc[0], shape.lower()) if loc else None
+                size = suggest_local_footprint_size(loc[0], fit.shape) if loc else None
             except ValueError:
                 size = None
             detail = f"From lattice ({size} px)" if size else "From lattice"
@@ -1456,27 +1457,27 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 self, "No setup", "Select data from a known detector and an active ImControl setup."
             )
             return
-        mode = str(self._advanced_values["local_footprint_mode"])
-        shape = str(self._advanced_values["local_footprint_shape"])
-        size = int(self._advanced_values["local_footprint_size"])
+        fit = footprint_from_params(self._advanced_values)
         answer = QtWidgets.QMessageBox.question(
             self, "Save MoNaLISA footprint default?",
-            f"Save {shape}, {mode}, fixed size {size} px for detector "
+            f"Save {fit.shape}, {fit.mode}, size {fit.size_px:g} px, "
+            f"radius factor {fit.sigma_factor:g}σ for detector "
             f"'{self._detector_id}' in:\n{path}\n\n"
-            "Only the three footprint setup properties are changed.",
+            "Only the fitting-footprint setup properties are changed.",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
         try:
-            save_detector_footprint(self._detector_id, mode, shape, size, path=path)
+            save_detector_footprint(self._detector_id, fit.mode, fit.shape,
+                                    fit.size_px, sigma_factor=fit.sigma_factor, path=path)
         except (OSError, ValueError) as exc:
             QtWidgets.QMessageBox.warning(self, "Could not save footprint", str(exc))
             return
         self._setup_defaults = read_detector_defaults(self._detector_id, path=path)
         self._footprint_user_override = False
-        self.setPreviewStatus("Saved Local footprint preference to active setup")
+        self.setPreviewStatus("Saved fitting footprint preference to active setup")
         self._update_ui()
 
     def _save_orientation_default(self):
@@ -1793,11 +1794,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
             "estimator": str(self._advanced_values["estimator"]),
-            "joint_footprint_mode": str(self._advanced_values["joint_footprint_mode"]),
-            "joint_footprint_radius_px": float(self._advanced_values["joint_footprint_radius_px"]),
-            "local_footprint_mode": str(self._advanced_values["local_footprint_mode"]),
-            "local_footprint_shape": str(self._advanced_values["local_footprint_shape"]),
-            "local_footprint_size": int(self._advanced_values["local_footprint_size"]),
+            "footprint_shape": str(self._advanced_values["footprint_shape"]),
+            "footprint_mode": str(self._advanced_values["footprint_mode"]),
+            "footprint_size_px": float(self._advanced_values["footprint_size_px"]),
+            "footprint_sigma_factor": float(self._advanced_values["footprint_sigma_factor"]),
             "local_sampling": str(self._advanced_values["local_sampling"]),
             "legacy_bleaching_correction": bool(self.legacyBleachingCheck.isChecked()),
             "legacy_bg_modelling": str(self._combo_data(self.legacyBackgroundCombo)),
@@ -1935,9 +1935,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self._footprint_user_override = False
         if not self._footprint_user_override and self._setup_defaults.footprint_mode is not None:
             self._advanced_values.update({
-                "local_footprint_mode": self._setup_defaults.footprint_mode,
-                "local_footprint_shape": self._setup_defaults.footprint_shape,
-                "local_footprint_size": self._setup_defaults.footprint_size,
+                "footprint_mode": self._setup_defaults.footprint_mode,
+                "footprint_shape": self._setup_defaults.footprint_shape,
+                "footprint_size_px": self._setup_defaults.footprint_size,
+                "footprint_sigma_factor": self._setup_defaults.footprint_sigma_factor,
             })
         from .setup_defaults import valid_orientation
         self._recorded_orientation = valid_orientation(attrs.get("monalisa:scan_orientation"))
@@ -1996,17 +1997,21 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 embedded = None
         if isinstance(embedded, dict) and "per_data_item" not in embedded:
             if not self._footprint_user_override:
-                saved = validate_footprint(
-                    embedded.get("local_footprint_mode"),
-                    embedded.get("local_footprint_shape"),
-                    embedded.get("local_footprint_size"),
-                )
-                if saved is not None:
-                    self._advanced_values.update({
-                        "local_footprint_mode": saved[0],
-                        "local_footprint_shape": saved[1],
-                        "local_footprint_size": saved[2],
-                    })
+                # Old results stored per-estimator fields.  Convert according
+                # to the estimator actually used, never to today's UI default.
+                if ("footprint_shape" in embedded or
+                        "local_footprint_shape" in embedded or
+                        "joint_footprint_mode" in embedded):
+                    try:
+                        migrated = migrate_footprint_params(
+                            embedded, estimator=str(embedded.get("estimator", "joint"))
+                        )
+                        self._advanced_values.update({key: migrated[key] for key in (
+                            "footprint_shape", "footprint_mode", "footprint_size_px",
+                            "footprint_sigma_factor",
+                        )})
+                    except (TypeError, ValueError):
+                        pass
             try:
                 resolved = PatternLocalization.from_dict(embedded.get("resolved_localization"))
             except (KeyError, TypeError, ValueError):

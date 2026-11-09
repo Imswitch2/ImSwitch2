@@ -14,12 +14,17 @@ import tempfile
 from dataclasses import dataclass
 
 from .scan_frame import ORIENTATIONS
+from .footprint_config import FitFootprint
 
 FWHM_KEY = "monalisaSpotFwhmNm"
 ORIENTATION_KEY = "monalisaScanOrientation"
 FOOTPRINT_MODE_KEY = "monalisaLocalFootprintMode"
 FOOTPRINT_SHAPE_KEY = "monalisaLocalFootprintShape"
 FOOTPRINT_SIZE_KEY = "monalisaLocalFootprintSizePx"
+SHARED_FOOTPRINT_MODE_KEY = "monalisaFitFootprintMode"
+SHARED_FOOTPRINT_SHAPE_KEY = "monalisaFitFootprintShape"
+SHARED_FOOTPRINT_SIZE_KEY = "monalisaFitFootprintSizePx"
+SHARED_FOOTPRINT_SIGMA_KEY = "monalisaFitFootprintSigmaFactor"
 
 
 def validate_footprint(mode, shape, size) -> tuple[str, str, int] | None:
@@ -41,7 +46,8 @@ class DetectorSetupDefaults:
     orientation: str | None = None
     footprint_mode: str | None = None
     footprint_shape: str | None = None
-    footprint_size: int | None = None
+    footprint_size: float | None = None
+    footprint_sigma_factor: float = 2.5
 
 
 def positive_fwhm(value) -> float | None:
@@ -101,30 +107,54 @@ def read_detector_defaults(detector: str, *, path: Path | None = None) -> Detect
         props = _detector_properties(_read_setup(Path(setup_path)), detector, create=False)
     except (OSError, ValueError, json.JSONDecodeError):
         props = None
-    footprint = (validate_footprint(
-        props.get(FOOTPRINT_MODE_KEY), props.get(FOOTPRINT_SHAPE_KEY),
-        props.get(FOOTPRINT_SIZE_KEY),
-    ) if props else None)
+    footprint = None
+    if props and SHARED_FOOTPRINT_SHAPE_KEY in props:
+        try:
+            footprint = FitFootprint(
+                shape=str(props[SHARED_FOOTPRINT_SHAPE_KEY]),
+                mode=str(props.get(SHARED_FOOTPRINT_MODE_KEY, "from_lattice")),
+                size_px=float(props.get(SHARED_FOOTPRINT_SIZE_KEY, 9)),
+                sigma_factor=float(props.get(SHARED_FOOTPRINT_SIGMA_KEY, 2.5)),
+            ).validate()
+        except (ValueError, TypeError):
+            pass
+    if footprint is None and props:
+        old = validate_footprint(
+            props.get(FOOTPRINT_MODE_KEY), props.get(FOOTPRINT_SHAPE_KEY),
+            props.get(FOOTPRINT_SIZE_KEY),
+        )
+        if old is not None:
+            footprint = FitFootprint(old[1], old[0], float(old[2]))
     return DetectorSetupDefaults(
         detector=detector,
         fwhm_nm=positive_fwhm(props.get(FWHM_KEY)) if props else None,
         orientation=valid_orientation(props.get(ORIENTATION_KEY)) if props else None,
-        footprint_mode=footprint[0] if footprint else None,
-        footprint_shape=footprint[1] if footprint else None,
-        footprint_size=footprint[2] if footprint else None,
+        footprint_mode=footprint.mode if footprint else None,
+        footprint_shape=footprint.shape if footprint else None,
+        footprint_size=footprint.size_px if footprint else None,
+        footprint_sigma_factor=footprint.sigma_factor if footprint else 2.5,
     )
 
 
 def save_detector_footprint(
-    detector: str, mode: str, shape: str, size: int, *, path: Path | None = None,
+    detector: str, mode: str, shape: str, size: float, *,
+    sigma_factor: float = 2.5, path: Path | None = None,
 ) -> Path:
-    """Save an entire footprint preference as one atomic setup update."""
-    valid = validate_footprint(mode, shape, size)
-    if valid is None:
-        raise ValueError("Invalid Local footprint preference")
-    return _save_detector_properties(detector, dict(zip(
-        (FOOTPRINT_MODE_KEY, FOOTPRINT_SHAPE_KEY, FOOTPRINT_SIZE_KEY), valid
-    )), path=path)
+    """Save one estimator-independent footprint preference atomically.
+
+    The older Local-only setup keys remain readable for compatibility, but
+    new saves use shared property keys.  Nothing changes until Save is clicked.
+    """
+    try:
+        fit = FitFootprint(shape, mode, float(size), float(sigma_factor)).validate()
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Invalid fitting footprint preference") from exc
+    return _save_detector_properties(detector, {
+        SHARED_FOOTPRINT_SHAPE_KEY: fit.shape,
+        SHARED_FOOTPRINT_MODE_KEY: fit.mode,
+        SHARED_FOOTPRINT_SIZE_KEY: fit.size_px,
+        SHARED_FOOTPRINT_SIGMA_KEY: fit.sigma_factor,
+    }, path=path)
 
 
 def save_detector_default(detector: str, key: str, value, *, path: Path | None = None) -> Path:
