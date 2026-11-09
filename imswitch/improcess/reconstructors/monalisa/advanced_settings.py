@@ -6,6 +6,7 @@ from qtpy import QtWidgets
 
 from .params import PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE
 from .footprint_suggestion import suggest_local_footprint_size
+from .params import FOOTPRINT_FIXED, FOOTPRINT_FROM_LATTICE
 
 
 class AdvancedReconstructionDialog(QtWidgets.QDialog):
@@ -101,6 +102,15 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         self.estimator.addItems(["local", "joint"])
         self.estimator.setCurrentText(str(values.get("estimator", "local")))
         self.estimator.setToolTip("Local fits spots independently; Joint fits neighboring Gaussian signals together.")
+        self.footprintMode = QtWidgets.QComboBox()
+        self.footprintMode.addItem("From lattice", FOOTPRINT_FROM_LATTICE)
+        self.footprintMode.addItem("Fixed", FOOTPRINT_FIXED)
+        mode = str(values.get("local_footprint_mode", FOOTPRINT_FIXED))
+        self.footprintMode.setCurrentIndex(max(0, self.footprintMode.findData(mode)))
+        self.footprintMode.setToolTip(
+            "From lattice chooses a safe odd size when building the extraction operator. "
+            "Fixed uses the entered size. Both choices can be saved as setup defaults."
+        )
         self.footprintShape = QtWidgets.QComboBox()
         self.footprintShape.addItems(["square", "circle"])
         self.footprintShape.setCurrentText(str(values.get("local_footprint_shape", "square")))
@@ -127,9 +137,11 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         gaussianForm = QtWidgets.QFormLayout(gaussian)
         gaussianForm.addRow("Estimator", self.estimator)
         gaussianForm.addRow("Local shape", self.footprintShape)
+        gaussianForm.addRow("Local size mode", self.footprintMode)
         gaussianForm.addRow("Local side/diameter", footprintRow)
         gaussianForm.addRow("Local sampling", self.sampling)
         self.estimator.currentTextChanged.connect(self._update_local_enabled)
+        self.footprintMode.currentIndexChanged.connect(self._update_local_enabled)
         self.footprintSize.valueChanged.connect(self._odd_footprint_size)
         self._update_local_enabled()
 
@@ -154,8 +166,9 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
 
     def _update_local_enabled(self, *_):
         local = self.estimator.currentText() == "local"
-        for widget in (self.footprintShape, self.footprintSize, self.sampling):
+        for widget in (self.footprintShape, self.footprintMode, self.sampling):
             widget.setEnabled(local)
+        self.footprintSize.setEnabled(local and self.footprintMode.currentData() == FOOTPRINT_FIXED)
         self.suggestButton.setEnabled(local and self._localization is not None)
 
     def _suggest_size(self):
@@ -166,11 +179,13 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         except ValueError as error:
             QtWidgets.QMessageBox.warning(self, "Footprint suggestion", str(error))
         else:
+            self.footprintMode.setCurrentIndex(self.footprintMode.findData(FOOTPRINT_FIXED))
             self.footprintSize.setValue(size)
 
     def values(self) -> dict:
         return {
             "estimator": self.estimator.currentText(),
+            "local_footprint_mode": str(self.footprintMode.currentData()),
             "local_footprint_shape": self.footprintShape.currentText(),
             "local_footprint_size": int(self.footprintSize.value()),
             "local_sampling": self.sampling.currentText(),

@@ -17,6 +17,21 @@ from .scan_frame import ORIENTATIONS
 
 FWHM_KEY = "monalisaSpotFwhmNm"
 ORIENTATION_KEY = "monalisaScanOrientation"
+FOOTPRINT_MODE_KEY = "monalisaLocalFootprintMode"
+FOOTPRINT_SHAPE_KEY = "monalisaLocalFootprintShape"
+FOOTPRINT_SIZE_KEY = "monalisaLocalFootprintSizePx"
+
+
+def validate_footprint(mode, shape, size) -> tuple[str, str, int] | None:
+    if mode not in ("fixed", "from_lattice") or shape not in ("square", "circle"):
+        return None
+    try:
+        number = int(size)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if isinstance(size, bool) or number != size or number < 3 or number > 255 or number % 2 != 1:
+        return None
+    return mode, shape, number
 
 
 @dataclass(frozen=True)
@@ -24,6 +39,9 @@ class DetectorSetupDefaults:
     detector: str
     fwhm_nm: float | None = None
     orientation: str | None = None
+    footprint_mode: str | None = None
+    footprint_shape: str | None = None
+    footprint_size: int | None = None
 
 
 def positive_fwhm(value) -> float | None:
@@ -83,11 +101,30 @@ def read_detector_defaults(detector: str, *, path: Path | None = None) -> Detect
         props = _detector_properties(_read_setup(Path(setup_path)), detector, create=False)
     except (OSError, ValueError, json.JSONDecodeError):
         props = None
+    footprint = (validate_footprint(
+        props.get(FOOTPRINT_MODE_KEY), props.get(FOOTPRINT_SHAPE_KEY),
+        props.get(FOOTPRINT_SIZE_KEY),
+    ) if props else None)
     return DetectorSetupDefaults(
         detector=detector,
         fwhm_nm=positive_fwhm(props.get(FWHM_KEY)) if props else None,
         orientation=valid_orientation(props.get(ORIENTATION_KEY)) if props else None,
+        footprint_mode=footprint[0] if footprint else None,
+        footprint_shape=footprint[1] if footprint else None,
+        footprint_size=footprint[2] if footprint else None,
     )
+
+
+def save_detector_footprint(
+    detector: str, mode: str, shape: str, size: int, *, path: Path | None = None,
+) -> Path:
+    """Save an entire footprint preference as one atomic setup update."""
+    valid = validate_footprint(mode, shape, size)
+    if valid is None:
+        raise ValueError("Invalid Local footprint preference")
+    return _save_detector_properties(detector, dict(zip(
+        (FOOTPRINT_MODE_KEY, FOOTPRINT_SHAPE_KEY, FOOTPRINT_SIZE_KEY), valid
+    )), path=path)
 
 
 def save_detector_default(detector: str, key: str, value, *, path: Path | None = None) -> Path:
@@ -104,6 +141,10 @@ def save_detector_default(detector: str, key: str, value, *, path: Path | None =
         validated = valid_orientation(value)
     if validated is None:
         raise ValueError(f"Invalid {key} value: {value!r}")
+    return _save_detector_properties(detector, {key: validated}, path=path)
+
+
+def _save_detector_properties(detector: str, values: dict, *, path: Path | None = None) -> Path:
     if not detector or detector == "unknown":
         raise ValueError("Select data with an identified detector before saving a setup default")
     setup_path = Path(path) if path is not None else current_setup_path()
@@ -113,7 +154,7 @@ def save_detector_default(detector: str, key: str, value, *, path: Path | None =
     props = _detector_properties(document, detector, create=True)
     if props is None:
         raise ValueError(f"Detector {detector!r} is not defined in the selected setup")
-    props[key] = validated
+    props.update(values)
     # Save atomically; do not serialize the SetupInfo dataclass, which can
     # reformat or drop unknown fields from carefully maintained setups.
     temp_path = None

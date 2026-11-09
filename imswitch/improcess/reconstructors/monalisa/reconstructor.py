@@ -27,7 +27,7 @@ from .params import (
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, ORIENTATION_SETUP, ORIENTATION_RECORDED,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
     PRESET_FAST, PRESET_LEGACY, PRESETS,
-    SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES,
+    SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES, FOOTPRINT_MODES,
     ESTIMATOR_JOINT, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
@@ -128,6 +128,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
             ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
             ParamField('estimator', 'select', defaults['estimator'], label='Gaussian estimator', options=ESTIMATORS, group='Advanced', advanced=True),
+            ParamField('local_footprint_mode', 'select', defaults['local_footprint_mode'], label='Local size mode', options=FOOTPRINT_MODES, group='Advanced', advanced=True),
             ParamField('local_footprint_shape', 'select', defaults['local_footprint_shape'], label='Local footprint', options=FOOTPRINT_SHAPES, group='Advanced', advanced=True),
             ParamField('local_footprint_size', 'int', defaults['local_footprint_size'], label='Local side/diameter', min=3, max=255, group='Advanced', advanced=True),
             ParamField('local_sampling', 'select', defaults['local_sampling'], label='Local sampling', options=('camera_pixels', 'bilinear'), group='Advanced', advanced=True),
@@ -381,6 +382,36 @@ class MonalisaReconstructor(StreamingReconstructor):
             "spot_sigma_px": float(finding.spot.shared_sigma),
         }
 
+    @classmethod
+    def estimate_spot_fwhm(cls, data_obj, params: dict | None = None):
+        """Estimate width without Gaussian extraction or reconstructing an image.
+
+        Keep the selected locked/manual/auto localization; detect it only when
+        Auto has not yet been resolved. The caller accepts the returned value.
+        """
+        from .spot_calibration import estimate_shared_width
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        localization = cls._resolved_localization(merged)
+        preloaded = bool(getattr(data_obj, "dataLoaded", True))
+        try:
+            data_obj.checkAndLoadData()
+            frames = np.asarray(data_obj.data)
+            if frames.ndim != 3:
+                raise ValueError(f"Expected (frames, rows, cols), got {frames.shape}")
+            calibration_frames = cls._calibration_frames(data_obj, frames, merged)
+            sigma, description, found = estimate_shared_width(
+                calibration_frames, localization=localization,
+                localization_settings=LocalizationSettings.from_dict(
+                    merged.get("localization_settings")
+                ),
+            )
+        finally:
+            if not preloaded and hasattr(data_obj, "checkAndUnloadData"):
+                data_obj.checkAndUnloadData()
+        return sigma, description, found
+
     @staticmethod
     def _orientation_literal(params: dict):
         mode = str(params.get("orientation_mode", ORIENTATION_AUTO))
@@ -412,6 +443,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             "pixel_size_nm": float(params.get("pixel_size_nm", 0.0) or 0.0),
             "background": str(params.get("background", "constant")),
             "estimator": str(params.get("estimator", ESTIMATOR_JOINT)),
+            "local_footprint_mode": str(params.get("local_footprint_mode", "fixed")),
             "local_footprint_shape": str(params.get("local_footprint_shape", "square")),
             "local_footprint_size": int(params.get("local_footprint_size", 9)),
             "local_sampling": str(params.get("local_sampling", "camera_pixels")),
@@ -604,6 +636,9 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         merged = unified_default_params()
         merged.update(dict(params or {}))
+        if "local_footprint_mode" not in params:
+            # Patch 1/2 saved settings chose a fixed odd pixel size. Preserve it.
+            merged["local_footprint_mode"] = "fixed"
         if "estimator" not in params:
             # Old saved Fast/Full dictionaries predate the estimator setting.
             # Keep their historical Joint calculation; only new configurations
@@ -642,6 +677,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             # Old persisted Fast/Full settings had no estimator key and
             # must retain the old Joint mathematics on replay.
             "estimator": str(merged["estimator"]),
+            "local_footprint_mode": str(merged.get("local_footprint_mode", "fixed")),
             "local_footprint_shape": str(merged.get("local_footprint_shape", "square")),
             "local_footprint_size": int(merged.get("local_footprint_size", 9)),
             "local_sampling": str(merged.get("local_sampling", "camera_pixels")),
@@ -736,8 +772,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             "resolved_shift_factor_xy": diagnostics.get("resolved_shift_factor_xy"),
             "preset": str(merged.get("preset", "")),
             "estimator": str(merged["estimator"]),
+            "local_footprint_mode": str(merged.get("local_footprint_mode", "fixed")),
             "local_footprint_shape": str(merged.get("local_footprint_shape", "square")),
             "local_footprint_size": int(merged.get("local_footprint_size", 9)),
+            "resolved_local_footprint_size_px": diagnostics.get("local_footprint_size"),
             "local_sampling": str(merged.get("local_sampling", "camera_pixels")),
             "placement_mode_requested": str(merged.get("placement_mode", PLACEMENT_AUTO)),
             "placement_mode_used": str(diagnostics.get("placement_method") or ""),

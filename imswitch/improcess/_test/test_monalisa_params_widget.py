@@ -310,3 +310,66 @@ def test_orientation_setup_default_is_explicitly_saved_and_recorded_value_wins(q
     assert widget2.get_values()["orientation"] == "+y-x"
     widget2._set_combo_data(widget2.orientationModeCombo, "Setup default")
     assert widget2.get_values()["orientation"] == "-x+y"
+
+
+def test_pre_reconstruction_estimate_keeps_manual_editing_and_rejects_stale_data(qapp):
+    from imswitch.improcess.reconstructors.monalisa.params import SPOT_AUTO, SPOT_MANUAL
+
+    widget = MonalisaParamsWidget()
+    current = object()
+    widget._current_data_obj = current
+    widget._fwhm_estimate_serial = 1
+    widget._fwhm_estimate_busy = True
+    widget._fwhm_estimate_revision = widget._fwhm_data_revision
+    widget._fwhm_estimate_signature = widget._fwhm_calibration_signature(widget.get_values())
+    widget._set_combo_data(widget.spotModeCombo, SPOT_AUTO)
+    # The Estimate action is independent of Auto during reconstruction.
+    widget._finish_fwhm_estimate((1, current, 1.8, "measured", None, ""))
+    assert widget.get_values()["spot_width_mode"] == SPOT_MANUAL
+    assert widget.fwhmSpin.isEnabled()
+    assert widget.fwhmSpin.value() == pytest.approx(1.8 * 2.35482 * 77.0, rel=0.001)
+    widget.fwhmSpin.setValue(200.0)
+    assert widget.get_values()["spot_fwhm"] == 200.0
+    # A result for the previous dataset cannot overwrite the new one's width.
+    widget._fwhm_estimate_serial = 2
+    widget._fwhm_estimate_busy = True
+    widget._fwhm_estimate_revision = widget._fwhm_data_revision
+    widget._fwhm_estimate_signature = widget._fwhm_calibration_signature(widget.get_values())
+    widget._current_data_obj = object()
+    widget._finish_fwhm_estimate((2, current, 4.0, "old scan", None, ""))
+    assert widget.fwhmSpin.value() == 200.0
+
+
+def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import read_detector_defaults
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({"detectors": {"CAM": {"managerProperties": {}}}}))
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    monkeypatch.setattr(
+        module, "read_detector_defaults",
+        lambda detector, path=path: read_detector_defaults(detector, path=path),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "question", lambda *args, **kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    widget = MonalisaParamsWidget()
+    widget.load_from_attrs({"recording:detector_name": "CAM"})
+    widget._advanced_values.update({
+        "local_footprint_mode": "from_lattice",
+        "local_footprint_shape": "circle",
+        "local_footprint_size": 7,
+    })
+    widget._save_footprint_default()
+    saved = read_detector_defaults("CAM", path=path)
+    assert (saved.footprint_mode, saved.footprint_shape, saved.footprint_size) == (
+        "from_lattice", "circle", 7,
+    )
+    new_widget = MonalisaParamsWidget()
+    new_widget.load_from_attrs({"recording:detector_name": "CAM"})
+    values = new_widget.get_values()
+    assert values["local_footprint_mode"] == "from_lattice"
+    assert values["local_footprint_shape"] == "circle"
+    assert "Circle · From lattice" in new_widget.footprintSummaryLabel.text()

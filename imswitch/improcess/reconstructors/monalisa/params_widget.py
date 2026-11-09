@@ -27,6 +27,7 @@ from .params import (
     PRESET_LEGACY,
     SPOT_AUTO,
     SPOT_MANUAL,
+    FOOTPRINT_FROM_LATTICE, FOOTPRINT_FIXED,
     apply_preset,
     default_params,
 )
@@ -34,9 +35,11 @@ from .scan_frame import ORIENTATIONS
 from .scanning_settings import ScanningAdvancedDialog
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
+from .footprint_suggestion import suggest_local_footprint_size
 from .setup_defaults import (
     DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
-    read_detector_defaults, save_detector_default, positive_fwhm,
+    read_detector_defaults, save_detector_default, save_detector_footprint, positive_fwhm,
+    validate_footprint,
 )
 
 
@@ -144,6 +147,32 @@ class LocalizationSettingsDialog(QtWidgets.QDialog):
         )
 
 
+class _WidthEstimateSignals(QtCore.QObject):
+    finished = QtCore.Signal(object)
+
+
+class _WidthEstimateTask(QtCore.QRunnable):
+    """One-off background calibration; only the GUI accepts the resulting value."""
+
+    def __init__(self, data_obj, params, serial):
+        super().__init__()
+        self.signals = _WidthEstimateSignals()
+        self.data_obj = data_obj
+        self.params = deepcopy(params)
+        self.serial = serial
+
+    def run(self):
+        try:
+            from .reconstructor import MonalisaReconstructor
+            sigma, status, localization = MonalisaReconstructor.estimate_spot_fwhm(
+                self.data_obj, self.params
+            )
+            result = (self.serial, self.data_obj, sigma, status, localization, "")
+        except Exception as exc:
+            result = (self.serial, self.data_obj, None, "", None, str(exc))
+        self.signals.finished.emit(result)
+
+
 class MonalisaParamsWidget(QtWidgets.QWidget):
     """Compact workflow-oriented controls for unified Gaussian MoNaLISA.
 
@@ -186,6 +215,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._loading_setup_orientation = False
         self._fwhm_source = "Application default"
         self._programmatic_fwhm = False
+        self._footprint_user_override = False
+        self._fwhm_estimate_serial = 0
+        self._fwhm_estimate_task = None
+        self._fwhm_estimate_busy = False
+        self._fwhm_data_revision = 0
+        self._fwhm_estimate_revision = None
+        self._fwhm_estimate_signature = None
         self._applying_preset = False
         self._recorded_scan_summary = ""
         self._recorded_scan_axes: dict[str, dict[str, float | int | None]] = {}
@@ -205,6 +241,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
             "sharpen_regularization": float(values["sharpen_regularization"]),
             "estimator": str(values["estimator"]),
+            "local_footprint_mode": str(values["local_footprint_mode"]),
             "local_footprint_shape": str(values["local_footprint_shape"]),
             "local_footprint_size": int(values["local_footprint_size"]),
             "local_sampling": str(values["local_sampling"]),
@@ -450,6 +487,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.spotModeCombo = self._combo([SPOT_MANUAL, SPOT_AUTO], values["spot_width_mode"])
         spot.addWidget(self.spotModeLabel, 0, 0)
         spot.addWidget(self.spotModeCombo, 0, 1)
+        self.estimateFwhmButton = QtWidgets.QPushButton("Estimate")
+        self.estimateFwhmButton.setToolTip(
+            "Estimate a shared FWHM from one representative scan of the selected dataset, "
+            "without reconstructing; switch to Manual and allow refinement."
+        )
         self.useEstimatedFwhmButton = QtWidgets.QPushButton("Use estimate")
         self.useEstimatedFwhmButton.setToolTip(
             "After Auto estimation during reconstruction, keep the displayed FWHM as a fixed value."
@@ -466,6 +508,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.addWidget(self.fwhmLabel, 1, 0)
         spot.addWidget(self.fwhmSpin, 1, 1)
         spot.addWidget(self.fwhmUnitCombo, 1, 2)
+        spot.addWidget(self.estimateFwhmButton, 1, 5)
         spot.addWidget(self.backgroundLabel, 1, 3)
         spot.addWidget(self.backgroundCombo, 1, 4)
         self.useSetupFwhmButton = QtWidgets.QPushButton("Use setup")
@@ -478,6 +521,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         )
         spot.addWidget(self.useSetupFwhmButton, 2, 1)
         spot.addWidget(self.saveFwhmDefaultButton, 2, 2, 1, 2)
+        self.footprintTitle = QtWidgets.QLabel("Local footprint")
+        self.footprintSummaryLabel = QtWidgets.QLabel("Square · From lattice")
+        self.footprintSummaryLabel.setToolTip(
+            "Current Local footprint. The actual size is calculated from the selected "
+            "lattice when From lattice is enabled."
+        )
+        self.footprintEditButton = QtWidgets.QPushButton("Edit…")
+        self.footprintEditButton.setToolTip("Open the existing Expert settings for footprint shape and sizing.")
+        self.saveFootprintDefaultButton = QtWidgets.QPushButton("Save default…")
+        self.saveFootprintDefaultButton.setToolTip(
+            "Save the Local footprint shape, size mode and fixed size in the detector setup."
+        )
+        spot.addWidget(self.footprintTitle, 3, 0)
+        spot.addWidget(self.footprintSummaryLabel, 3, 1, 1, 2)
+        spot.addWidget(self.footprintEditButton, 3, 3)
+        spot.addWidget(self.saveFootprintDefaultButton, 3, 4)
         spot.setColumnStretch(5, 1)
         root.addWidget(self.spotBox)
 
@@ -612,7 +671,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.lockOrientationButton.clicked.connect(self._lock_current_orientation)
         self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
         self.saveOrientationDefaultButton.clicked.connect(self._save_orientation_default)
+        self.estimateFwhmButton.clicked.connect(self._estimate_fwhm)
         self.useEstimatedFwhmButton.clicked.connect(self._use_estimated_fwhm)
+        self.footprintEditButton.clicked.connect(self._open_advanced_reconstruction)
+        self.saveFootprintDefaultButton.clicked.connect(self._save_footprint_default)
         self.useSetupFwhmButton.clicked.connect(self._use_setup_fwhm)
         self.saveFwhmDefaultButton.clicked.connect(self._save_fwhm_default)
         self.fwhmSpin.valueChanged.connect(self._fwhm_changed)
@@ -773,6 +835,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
         spot_auto = str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO
         self.fwhmSpin.setEnabled(not spot_auto)
+        self.estimateFwhmButton.setEnabled(
+            not legacy and self._current_data_obj is not None and not self._fwhm_estimate_busy
+        )
+        self.estimateFwhmButton.setText(
+            "Estimating…" if self._fwhm_estimate_busy else "Estimate"
+        )
         has_detector_setup = (
             self._detector_id != "unknown" and current_setup_path() is not None
         )
@@ -784,10 +852,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.saveFwhmDefaultButton.setEnabled(
             not spot_auto and has_detector_setup and not legacy
         )
+        self.saveFootprintDefaultButton.setEnabled(not legacy and has_detector_setup)
         self.saveOrientationDefaultButton.setEnabled(
             not legacy and has_detector_setup and self._lockable_orientation() is not None
         )
         self.fwhmSourceLabel.setText(self._fwhm_source)
+        for widget in (
+            self.footprintTitle, self.footprintSummaryLabel, self.footprintEditButton,
+            self.saveFootprintDefaultButton,
+        ):
+            widget.setVisible(not legacy)
+        self._update_footprint_summary()
         # The unit remains editable in Auto: changing units changes only how
         # the resolved value is displayed, not how it was estimated.
         self.fwhmUnitCombo.setEnabled(True)
@@ -855,6 +930,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._advanced_values.update(dialog.values())
+        if any(
+            self._advanced_values[key] != before[key]
+            for key in ("local_footprint_mode", "local_footprint_shape", "local_footprint_size")
+        ):
+            self._footprint_user_override = True
+        self._update_ui()
         controlled = ("device", "placement_mode", "variance_weighting", "estimator")
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
@@ -1210,6 +1291,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     # ----------------------------------------------------------- spot / ISM
+    def _update_footprint_summary(self):
+        mode = str(self._advanced_values["local_footprint_mode"])
+        shape = str(self._advanced_values["local_footprint_shape"]).capitalize()
+        if mode == FOOTPRINT_FIXED:
+            detail = f"Fixed {self._advanced_values['local_footprint_size']} px"
+        else:
+            loc = self._lockable_localization()
+            try:
+                size = suggest_local_footprint_size(loc[0], shape.lower()) if loc else None
+            except ValueError:
+                size = None
+            detail = f"From lattice ({size} px)" if size else "From lattice"
+        self.footprintSummaryLabel.setText(f"{shape} · {detail}")
+
     def _spot_unit_changed(self, *_):
         new_unit = str(self._combo_data(self.fwhmUnitCombo))
         old_unit = self._spot_unit
@@ -1261,6 +1356,67 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.fwhmSourceLabel.setText(source)
         self._update_ui()
 
+    @staticmethod
+    def _fwhm_calibration_signature(params: dict) -> str:
+        keys = (
+            "localization_mode", "auto_localization", "locked_localization",
+            "manual_offset_x_px", "manual_offset_y_px", "manual_period_x_px",
+            "manual_period_y_px", "stagger_axis", "stagger", "localization_settings",
+            "scan_steps_fast", "scan_steps_slow", "scan_step_nm",
+        )
+        return json.dumps({key: params.get(key) for key in keys}, sort_keys=True, default=str)
+
+    def _estimate_fwhm(self):
+        if self._current_data_obj is None or self._fwhm_estimate_busy:
+            return
+        self._fwhm_estimate_busy = True
+        self._fwhm_estimate_serial += 1
+        # Snapshot parameters and data identity: never apply a stale result
+        # after switching datasets, localizations or the active detector.
+        params = self.get_values()
+        self._fwhm_estimate_revision = self._fwhm_data_revision
+        self._fwhm_estimate_signature = self._fwhm_calibration_signature(params)
+        task = _WidthEstimateTask(self._current_data_obj, params, self._fwhm_estimate_serial)
+        task.signals.finished.connect(self._finish_fwhm_estimate)
+        self._fwhm_estimate_task = task
+        self._update_ui()
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    @QtCore.Slot(object)
+    def _finish_fwhm_estimate(self, result):
+        serial, data_obj, sigma, status, localization, error = result
+        if serial != self._fwhm_estimate_serial:
+            return
+        self._fwhm_estimate_busy = False
+        self._fwhm_estimate_task = None
+        if (
+            data_obj is not self._current_data_obj
+            or self._fwhm_estimate_revision != self._fwhm_data_revision
+            or self._fwhm_estimate_signature != self._fwhm_calibration_signature(self.get_values())
+        ):
+            self.setPreviewStatus("Discarded FWHM estimate: source or localization changed")
+            self._update_ui()
+            return
+        if error:
+            QtWidgets.QMessageBox.warning(self, "FWHM estimation failed", error)
+            self._update_ui()
+            return
+        unit = str(self._combo_data(self.fwhmUnitCombo))
+        pixel_nm = float(self._advanced_values.get("pixel_size_nm", 0.0))
+        try:
+            value = sigma_px_to_fwhm(float(sigma), unit, pixel_nm if unit == "nm" else None)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "FWHM estimation failed", str(exc))
+            self._update_ui()
+            return
+        self._set_combo_data(self.spotModeCombo, SPOT_MANUAL)
+        self._set_fwhm_value(value, "Calibrated estimate")
+        # Auto localization is shared only if a new one had to be detected.
+        if localization is not None and str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
+            self.set_auto_localization(localization, status)
+        self.setPreviewStatus(f"FWHM estimated: {value:.3f} {unit}. {status}")
+        self._update_ui()
+
     def _use_estimated_fwhm(self):
         if self._fwhm_source != "Auto estimate":
             return
@@ -1287,6 +1443,36 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Invalid FWHM", "A positive FWHM and detector pixel calibration are required.")
             return
         self._confirm_save_setup(FWHM_KEY, fwhm_nm, f"FWHM = {fwhm_nm:g} nm")
+
+    def _save_footprint_default(self):
+        path = current_setup_path()
+        if path is None or self._detector_id == "unknown":
+            QtWidgets.QMessageBox.warning(
+                self, "No setup", "Select data from a known detector and an active ImControl setup."
+            )
+            return
+        mode = str(self._advanced_values["local_footprint_mode"])
+        shape = str(self._advanced_values["local_footprint_shape"])
+        size = int(self._advanced_values["local_footprint_size"])
+        answer = QtWidgets.QMessageBox.question(
+            self, "Save MoNaLISA footprint default?",
+            f"Save {shape}, {mode}, fixed size {size} px for detector "
+            f"'{self._detector_id}' in:\n{path}\n\n"
+            "Only the three footprint setup properties are changed.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            save_detector_footprint(self._detector_id, mode, shape, size, path=path)
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Could not save footprint", str(exc))
+            return
+        self._setup_defaults = read_detector_defaults(self._detector_id, path=path)
+        self._footprint_user_override = False
+        self.setPreviewStatus("Saved Local footprint preference to active setup")
+        self._update_ui()
 
     def _save_orientation_default(self):
         lockable = self._lockable_orientation()
@@ -1602,6 +1788,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
             "estimator": str(self._advanced_values["estimator"]),
+            "local_footprint_mode": str(self._advanced_values["local_footprint_mode"]),
             "local_footprint_shape": str(self._advanced_values["local_footprint_shape"]),
             "local_footprint_size": int(self._advanced_values["local_footprint_size"]),
             "local_sampling": str(self._advanced_values["local_sampling"]),
@@ -1734,8 +1921,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         attrs = dict(attrs or {})
         old_detector = self._detector_id
         self._current_data_obj = data_obj
+        self._fwhm_data_revision += 1
         self._detector_id = detector_identity(data_obj, attrs)
         self._setup_defaults = read_detector_defaults(self._detector_id)
+        if old_detector != self._detector_id:
+            self._footprint_user_override = False
+        if not self._footprint_user_override and self._setup_defaults.footprint_mode is not None:
+            self._advanced_values.update({
+                "local_footprint_mode": self._setup_defaults.footprint_mode,
+                "local_footprint_shape": self._setup_defaults.footprint_shape,
+                "local_footprint_size": self._setup_defaults.footprint_size,
+            })
         from .setup_defaults import valid_orientation
         self._recorded_orientation = valid_orientation(attrs.get("monalisa:scan_orientation"))
         self._sync_locked_mode_availability()
@@ -1792,6 +1988,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             except (TypeError, ValueError, json.JSONDecodeError):
                 embedded = None
         if isinstance(embedded, dict) and "per_data_item" not in embedded:
+            if not self._footprint_user_override:
+                saved = validate_footprint(
+                    embedded.get("local_footprint_mode"),
+                    embedded.get("local_footprint_shape"),
+                    embedded.get("local_footprint_size"),
+                )
+                if saved is not None:
+                    self._advanced_values.update({
+                        "local_footprint_mode": saved[0],
+                        "local_footprint_shape": saved[1],
+                        "local_footprint_size": saved[2],
+                    })
             try:
                 resolved = PatternLocalization.from_dict(embedded.get("resolved_localization"))
             except (KeyError, TypeError, ValueError):

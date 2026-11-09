@@ -271,14 +271,14 @@ def pipeline_params(params: dict) -> PipelineParams:
     background = str(params["background"])
     if background not in ("constant", "none", "auto"):
         raise ValueError(f"Unknown background {background!r}")
-    # The footprint is 2.5 spot widths (96 % of a Gaussian spot; the joint
-    # fit makes a wide footprint safe) and the foci are always fitted
-    # together: neither is a choice the panel offers.
+    # Local footprint sizing and Joint extraction are selected separately.
+    # From-lattice sizing is resolved after localization by prepare_geometry.
     localization_settings = params.get("localization_settings")
     if not isinstance(localization_settings, LocalizationSettings):
         localization_settings = LocalizationSettings.from_dict(localization_settings)
     return PipelineParams(
         estimator=str(params.get("estimator", "joint")),
+        local_footprint_mode=str(params.get("local_footprint_mode", "fixed")),
         local_footprint_shape=str(params.get("local_footprint_shape", "square")),
         local_footprint_size=int(params.get("local_footprint_size", 9)),
         local_sampling=str(params.get("local_sampling", "camera_pixels")),
@@ -1156,6 +1156,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
             "lattice angle, tilt (deg)": f"{between:.1f}, {angle:.1f}",
             "foci": int(geometry["num_foci"]),
             "spot sigma (px)": round(sigma, 3),
+            "local_footprint_size": geometry.get("local_footprint_size"),
+            "local_footprint_mode": geometry.get("local_footprint_mode"),
             "calibration": (
                 f"{geometry['calibration_image']} frame; foci contrast: " + ", ".join(
                     f"{name} {value:.2f}"

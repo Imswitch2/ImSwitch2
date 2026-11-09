@@ -76,6 +76,7 @@ from .scan_frame import (
 from .local_extraction import LocalExtractionOperator
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
+from .footprint_suggestion import suggest_local_footprint_size
 
 # A haze term is only used when it removes this share of the residual.
 HAZE_RESIDUAL_RATIO = 0.8
@@ -142,6 +143,7 @@ class PipelineParams:
     haze_sigma_px: float | None = None
     joint: bool = True
     estimator: str = "joint"
+    local_footprint_mode: str = "fixed"
     local_footprint_shape: str = "square"
     local_footprint_size: int = 9
     local_sampling: str = "camera_pixels"
@@ -470,7 +472,12 @@ def prepare_geometry(
         footprint = str(params.local_footprint_shape).lower()
         if footprint not in ("square", "circle"):
             raise ValueError(f"Unknown Local footprint {footprint!r}")
-        side = int(params.local_footprint_size)
+        if params.local_footprint_mode == "from_lattice":
+            side = suggest_local_footprint_size(localization, footprint)
+        elif params.local_footprint_mode == "fixed":
+            side = int(params.local_footprint_size)
+        else:
+            raise ValueError(f"Unknown Local footprint sizing mode {params.local_footprint_mode!r}")
         if side < 3 or side % 2 != 1:
             raise ValueError("Local footprint size must be an odd integer >= 3")
         operator = LocalExtractionOperator.build(
@@ -534,8 +541,9 @@ def prepare_geometry(
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
         "estimator": estimator,
+        "local_footprint_mode": params.local_footprint_mode if estimator == "local" else None,
         "local_footprint_shape": params.local_footprint_shape if estimator == "local" else None,
-        "local_footprint_size": params.local_footprint_size if estimator == "local" else None,
+        "local_footprint_size": side if estimator == "local" else None,
         "local_sampling": params.local_sampling if estimator == "local" else None,
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,

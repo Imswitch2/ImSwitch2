@@ -13,6 +13,10 @@
     {
       "key": "monalisaScanOrientation",
       "fallback": "automatic orientation detection"
+    },
+    {
+      "key": "monalisaLocalFootprintMode",
+      "fallback": "from_lattice for new settings; old saved settings retain fixed size"
     }
   ],
   "properties": {
@@ -33,6 +37,28 @@
         "-y-x"
       ],
       "description": "Detector-specific default scan-to-camera orientation for Gaussian MoNaLISA. Use Auto/Manual in reconstruction to override; new recordings snapshot this value."
+    },
+    "monalisaLocalFootprintMode": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "from_lattice",
+        "fixed"
+      ],
+      "description": "Default Local fit sizing: resolve from localization or use an explicit fixed size."
+    },
+    "monalisaLocalFootprintShape": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "square",
+        "circle"
+      ],
+      "description": "Local Gaussian pixel footprint shape."
+    },
+    "monalisaLocalFootprintSizePx": {
+      "x-imswitch-kind": "integer",
+      "minimum": 3,
+      "maximum": 255,
+      "description": "Odd local footprint size in camera pixels, used only for Fixed sizing."
     }
   }
 }

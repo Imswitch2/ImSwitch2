@@ -37,6 +37,9 @@ ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT)
 FOOTPRINT_SQUARE = "square"
 FOOTPRINT_CIRCLE = "circle"
 FOOTPRINT_SHAPES = (FOOTPRINT_SQUARE, FOOTPRINT_CIRCLE)
+FOOTPRINT_FROM_LATTICE = "from_lattice"
+FOOTPRINT_FIXED = "fixed"
+FOOTPRINT_MODES = (FOOTPRINT_FROM_LATTICE, FOOTPRINT_FIXED)
 
 PLACEMENT_AUTO = "Auto"
 PLACEMENT_DIRECT = "Direct"
@@ -80,6 +83,7 @@ DEFAULT_PARAMS = {
     "background": "constant",
     "estimator": ESTIMATOR_LOCAL,
     "local_footprint_shape": FOOTPRINT_SQUARE,
+    "local_footprint_mode": FOOTPRINT_FROM_LATTICE,
     "local_footprint_size": 9,
     "local_sampling": "camera_pixels",
     "legacy_bleaching_correction": False,
@@ -131,7 +135,7 @@ PRESET_VALUES = {
         "reassignment": "auto",
         "reassignment_asymmetric": False,
         "placement_mode": PLACEMENT_AUTO,
-        "variance_weighting": True,
+        "variance_weighting": False,
         "sharpen": False,
     },
     PRESET_LEGACY: {
@@ -179,6 +183,7 @@ __all__ = [
     "DEFAULT_PARAMS",
     "ESTIMATOR_LOCAL", "ESTIMATOR_JOINT", "ESTIMATORS",
     "FOOTPRINT_SQUARE", "FOOTPRINT_CIRCLE", "FOOTPRINT_SHAPES",
+    "FOOTPRINT_FROM_LATTICE", "FOOTPRINT_FIXED", "FOOTPRINT_MODES",
     "LOCALIZATION_AUTO",
     "LOCALIZATION_LOCKED",
     "LOCALIZATION_MANUAL",
