@@ -1,5 +1,5 @@
 """M2B: finite Full/Robust timelapse publishes only one finished result."""
-
+import pytest
 from types import SimpleNamespace
 
 from imswitch.improcess.model.processing_queue import ProcessingJob, ProcessingQueue

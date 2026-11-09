@@ -485,7 +485,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         updated.name = result.name
         updated.params = dict(merged)
-        updated._monalisa_fast_update_signature = copy.deepcopy(expected)
+        updated._monalisa_fast_update_signature = copy.deepcopy(
+            result._monalisa_fast_update_signature
+        )
 
         snapshot = dict(
             ((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
