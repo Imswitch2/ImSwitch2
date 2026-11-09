@@ -1,11 +1,11 @@
-"""M2A: finite incremental queue policy, scoped sources and terminal ownership."""
+"""Scoped incremental sources and terminal ownership."""
 
 from types import SimpleNamespace
 
 import pytest
 
 from imswitch.improcess.execution.queue_finite import (
-    detector_from_logical_source, finite_incremental_eligible, make_finite_source,
+    detector_from_logical_source, make_finite_source,
 )
 from imswitch.improcess.model.processing_queue import (
     ExecutionRequirement, ProcessingJob, ProcessingOrigin, ProcessingQueue,
@@ -28,25 +28,6 @@ def test_job_execution_requirement_is_independent_of_origin_and_snapshotted():
     assert job.snapshot().execution_requirement == ExecutionRequirement.FINITE
     assert job.view().execution_requirement == ExecutionRequirement.FINITE
     assert job.timepoint_scope == TimepointScope.range(2, 3)
-
-
-def test_finite_incremental_only_for_explicit_finite_logical_lapses():
-    source = SimpleNamespace(kind="time-lapse")
-    plugin = SimpleNamespace(id="monalisa", supports_streaming=True, result_role="derived")
-    assert finite_incremental_eligible(_job(), source, plugin, source_kind="time-lapse")
-    assert finite_incremental_eligible(
-        _job(origin=ProcessingOrigin.AUTO), source, plugin, source_kind="time-lapse"
-    )  # Origin never selects execution mode.
-    assert not finite_incremental_eligible(
-        _job(ExecutionRequirement.POLICY), source, plugin, source_kind="time-lapse"
-    )
-    assert not finite_incremental_eligible(
-        _job(), source, plugin, source_kind="scan"
-    )
-    assert not finite_incremental_eligible(
-        _job(), source, SimpleNamespace(id="offline", supports_streaming=False),
-        source_kind="time-lapse"
-    )
 
 
 @pytest.mark.parametrize("dataset,expected", [

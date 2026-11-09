@@ -102,7 +102,6 @@ def test_auto_readiness_probe_does_not_toggle_queue_state(monkeypatch):
         _closing=False,
         queue=queue,
         _offlineThread=None,
-        _live=SimpleNamespace(is_running=False),
         _sessionController=SimpleNamespace(session=session),
         _emit_changed=lambda: emitted.append(True),
     )
@@ -153,7 +152,6 @@ def test_persistent_live_access_error_fails_queue_instead_of_waiting(monkeypatch
         _closing=False,
         queue=queue,
         _offlineThread=None,
-        _live=SimpleNamespace(is_running=False),
         _sessionController=SimpleNamespace(session=session),
         _logger=SimpleNamespace(error=lambda *args, **kwargs: None),
         _emit_changed=lambda: None,
@@ -200,7 +198,6 @@ def test_queue_failure_is_retained_for_footer_status():
         queue=queue,
         _lastTerminalStatus={},
         _skipRequested=False,
-        _liveFinalResult=None,
         _currentProgress={},
         _currentPlannedTimepoints=None,
         _closing=True,
@@ -302,42 +299,6 @@ def test_session_save_worker_delegates_save_without_session_catalog_work():
 
     assert calls == [(result, dataset, "display")]
     assert succeeded == [(result, "scan", "display", receipt)]
-
-
-def test_manual_timelapse_uses_streaming_runner_when_supported():
-    """Runner choice follows logical dataset semantics, not submission origin."""
-    dataset = SimpleNamespace(kind="time-lapse")
-    streaming = SimpleNamespace(supports_streaming=True)
-    offline = SimpleNamespace(supports_streaming=False)
-
-    manual = ProcessingJob(
-        dataset_id="lapse", label="lapse", reconstructor_id="monalisa",
-        params={}, origin=ProcessingOrigin.MANUAL,
-    )
-    working_set = ProcessingJob(
-        dataset_id="lapse", label="lapse", reconstructor_id="monalisa",
-        params={}, origin=ProcessingOrigin.WORKING_SET,
-    )
-
-    assert ProcessingQueueController._uses_streaming_runner(manual, dataset, streaming)
-    assert ProcessingQueueController._uses_streaming_runner(working_set, dataset, streaming)
-    assert not ProcessingQueueController._uses_streaming_runner(manual, dataset, offline)
-
-
-def test_manual_single_scan_stays_offline_but_auto_single_scan_streams():
-    dataset = SimpleNamespace(kind="scan")
-    reconstructor = SimpleNamespace(supports_streaming=True)
-    manual = ProcessingJob(
-        dataset_id="scan", label="scan", reconstructor_id="monalisa",
-        params={}, origin=ProcessingOrigin.MANUAL,
-    )
-    auto = ProcessingJob(
-        dataset_id="scan", label="scan", reconstructor_id="monalisa",
-        params={}, origin=ProcessingOrigin.AUTO,
-    )
-
-    assert not ProcessingQueueController._uses_streaming_runner(manual, dataset, reconstructor)
-    assert ProcessingQueueController._uses_streaming_runner(auto, dataset, reconstructor)
 
 
 def test_loaded_manual_batch_enqueues_as_external_source_without_session_ownership(tmp_path):

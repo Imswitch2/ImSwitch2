@@ -14,9 +14,6 @@ from pathlib import Path
 from qtpy import QtCore
 
 from imswitch.improcess.controller.basecontrollers import ImProcessWidgetController
-from imswitch.improcess.controller.LiveReconstructionController import (
-    LiveReconstructionController,
-)
 from imswitch.improcess.controller.reconstruction_worker import (
     ReconstructionWorker,
     ReconstructionWorkerFailure,
@@ -25,7 +22,6 @@ from imswitch.improcess.controller.reconstruction_worker import (
 from imswitch.improcess.live.job import (
     LiveJobState,
     prepare_entry_job,
-    start_prepared_live_job,
     watcher_entry_for_source,
 )
 from imswitch.improcess.model.DataObj import DataObj
@@ -47,12 +43,10 @@ from imswitch.improcess.model.processing_queue import (
 )
 from imswitch.improcess.reconstructors.registry import get_registry
 from imswitch.improcess.execution.contracts import Incompatible
-from imswitch.improcess.execution.queue_finite import (
-    finite_incremental_eligible, make_finite_source,
-)
+from imswitch.improcess.execution.queue_finite import make_finite_source
 from imswitch.improcess.execution.runner import QtIncrementalRunner
 from imswitch.improcess.execution.policy import (
-    ExecutionPath, choose_execution, streaming_capability, supports_streaming_settings,
+    ExecutionPath, choose_execution, streaming_capability,
 )
 from imswitch.improcess.execution.auto_timepoints import (
     AutoTimepointState, CompletedTimepointBatch, probe_completed_prefix,
@@ -133,11 +127,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._incrementalCompletedTimepoints = 0
         self._resultPublisher = None
         self._closing = False
-        self._live = LiveReconstructionController(self._commChannel)
-        self._live.sigFinalResult.connect(self._on_live_final_result)
-        self._live.sigFinished.connect(self._on_live_finished)
-        self._live.sigTimepointProgress.connect(self._on_live_timepoint_progress)
-        self._liveFinalResult = None
         self._currentProgress = {}
         self._currentPlannedTimepoints = None
         self._currentSourceTimepoints = None
@@ -409,16 +398,12 @@ class ProcessingQueueController(ImProcessWidgetController):
     def pause(self) -> None:
         """Pause queue advancement and a live run at its next TP boundary."""
         self.queue.pause()
-        if self._live.is_running:
-            self._live.pause()
         if self._incrementalRunner is not None:
             self._incrementalRunner.pause(True)
         self._emit_changed()
 
     def resume(self) -> None:
         self.queue.resume()
-        if self._live.is_running and self._live.is_paused:
-            self._live.resume()
         if self._incrementalRunner is not None:
             self._incrementalRunner.pause(False)
         self._emit_changed()
@@ -452,9 +437,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._skipRequested = True
         if self._incrementalRunner is not None:
             self._incrementalRunner.cancel()
-            return
-        if self._live.is_running:
-            self._live.stop(graceful=True, notify_finished=True)
             return
         worker = self._offlineWorker
         if worker is not None:
@@ -605,30 +587,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         except (ValueError, TypeError, IndexError) as exc:
             status = Readiness(ReadinessState.UNKNOWN, f"Readiness unavailable: {exc}")
         self._readinessCached[job_id] = status
-        from imswitch.improcess.execution.readiness import references_for_scope
-
-        is_lapse = self._source_kind(source) == "time-lapse"
-        refs, bounds = references_for_scope(
-            source,
-            job.timepoint_scope,
-            job.timepoint_total,
-            is_lapse=is_lapse,
-        )
-
-        print(
-            "\n[AUTO READINESS]",
-            "\n  dataset:", job.label,
-            "\n  kind:", self._source_kind(source),
-            "\n  planned T:", job.timepoint_total,
-            "\n  references:", [(r.logical_t, r.dataset) for r in refs],
-            "\n  state:", status.state,
-            "\n  reason:", status.reason,
-            "\n  completed:", (
-                status.progress.completed_timepoints
-                if status.progress else None
-            ),
-            flush=True,
-        )
         return status
 
     @QtCore.Slot()
@@ -641,7 +599,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             or self.queue.current is not None
             or self._offlineThread is not None
             or self._incrementalRunner is not None
-            or self._live.is_running
             or (callable(direct_running) and direct_running())
         ):
             return
@@ -746,8 +703,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                     candidate, self._source_kind(source), reconstructor,
                 )
 
-            if choice.path in (ExecutionPath.INCREMENTAL_FINITE,
-                               ExecutionPath.INCREMENTAL_FOLLOW):
+            if choice.path == ExecutionPath.INCREMENTAL_FOLLOW:
                 path = self._streaming_job_path(source)
                 if not path:
                     if candidate.origin == ProcessingOrigin.AUTO:
@@ -803,7 +759,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             return
         self._clear_readiness(job.id)
         self._skipRequested = False
-        self._liveFinalResult = None
         self._currentProgress = {
             "fraction": 0.0,
             "status": "Starting…",
@@ -840,10 +795,7 @@ class ProcessingQueueController(ImProcessWidgetController):
                 in ('.h5', '.hdf5')
         )
         if (not shared_hdf5_complete and selected_choice is not None
-                and selected_choice.path in (
-                    ExecutionPath.INCREMENTAL_FINITE,
-                    ExecutionPath.INCREMENTAL_FOLLOW,
-                )):
+                and selected_choice.path == ExecutionPath.INCREMENTAL_FOLLOW):
             if self._start_finite_incremental(
                 job, source, reconstructor, prepared=prepared_live_job,
             ):
@@ -917,29 +869,11 @@ class ProcessingQueueController(ImProcessWidgetController):
         raw_root = getattr(session, "raw_root", Path(path).parent)
         return watcher_entry_for_source(raw_root, path)
 
-    @staticmethod
-    def _uses_streaming_runner(job, source, reconstructor) -> bool:
-        """Compatibility helper; origin and lapse shape alone never mean live."""
-        return bool(
-            source is not None and reconstructor is not None
-            and ExecutionRequirement(getattr(job, "execution_requirement", "policy"))
-                == ExecutionRequirement.FOLLOW
-            and supports_streaming_settings(reconstructor, job.params)
-        )
-
-    @staticmethod
-    def _uses_finite_incremental(job, source, reconstructor) -> bool:
-        return finite_incremental_eligible(
-            job, source, reconstructor,
-            source_kind=ProcessingQueueController._source_kind(source),
-        )
-
     def _start_finite_incremental(self, job, source, reconstructor, *, prepared) -> bool:
-        """Run finite acquisition incrementally, publishing snapshots in place.
+        """Follow a growing acquisition and publish completed timepoints in place.
 
-        A preview is a real, retained viewer result. The Session finalization
-        event is separate and emitted after the worker threads have stopped,
-        including after Skip when timepoints were already published.
+        Preview updates and Session finalization are separate; finalization
+        waits for both worker threads to stop, including after Skip.
         """
         if prepared is None:
             return False
@@ -958,7 +892,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             return True
         except (ValueError, TypeError, NotImplementedError) as exc:
             self._logger.warning(
-                "Finite incremental source unavailable for %s: %s; using legacy path",
+                "Incremental follow source unavailable for %s: %s; using finite path",
                 job.label, exc,
             )
             return False
@@ -1130,61 +1064,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._finish_current(error=f"Result publication failed: {exc}")
             return
         self._finish_current()
-
-    def _start_live(self, job, source, reconstructor, *, prepared=None) -> bool:
-        total_timepoints = self._planned_timepoints(source)
-        scope = coerce_timepoint_scope(getattr(job, "timepoint_scope", None))
-        try:
-            scoped_count = scope.count(total_timepoints)
-        except (IndexError, TypeError, ValueError) as exc:
-            self._finish_current(error=str(exc))
-            return True
-        self._currentSourceTimepoints = total_timepoints
-        self._currentPlannedTimepoints = scoped_count or total_timepoints
-        if not getattr(reconstructor, "supports_streaming", False):
-            return False
-        if prepared is None:
-            job_path = self._streaming_job_path(source)
-            if not job_path:
-                return False
-            resolution = prepare_entry_job(job_path, reconstructor)
-            if resolution.state != LiveJobState.READY:
-                return False
-            prepared = resolution.prepared
-
-        source_type = prepared.source_type
-        self._logger.info(
-            "Processing dataset %s: kind=%s origin=%s source=%s runner=streaming "
-            "job=%s seed=%s raw=%s/%s timepoints=%s scope=%s",
-            job.label,
-            self._source_kind(source),
-            getattr(job.origin, "value", str(job.origin)),
-            getattr(job, "source", "session"),
-            prepared.job_path,
-            prepared.seed_path,
-            getattr(source_type, "format_id", "?"),
-            getattr(source_type, "layout", "?"),
-            total_timepoints,
-            scope.label(total_timepoints),
-        )
-        try:
-            started = start_prepared_live_job(
-                self._live,
-                prepared,
-                reconstructor,
-                dict(job.params),
-                name=job.label,
-                timepoint_scope=scope,
-                total_timepoints=total_timepoints,
-                timepoint_origin=self._timepoint_origin(source),
-            )
-        except Exception as exc:
-            self._logger.exception("Could not start queued live reconstruction")
-            self._finish_current(error=str(exc))
-            return True
-        if not started:
-            self._finish_current(error="Live reconstruction did not start")
-        return True
 
     def _start_offline(self, job, source, reconstructor, *,
                        ready_timepoints=None, ready_references=None) -> None:
@@ -1553,21 +1432,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         }
         self._emit_progress_changed()
 
-    @QtCore.Slot(int)
-    def _on_live_timepoint_progress(self, completed: int) -> None:
-        if self.queue.current is None or not self._live.is_running:
-            return
-        total = int(self._currentPlannedTimepoints or 0)
-        completed = max(0, int(completed))
-        if total > 0:
-            fraction = max(0.0, min(1.0, completed / total))
-            status = f"Timepoint {min(completed, total)}/{total}"
-        else:
-            fraction = None
-            status = f"Timepoint {completed}"
-        self._currentProgress = {"fraction": fraction, "status": status}
-        self._emit_progress_changed()
-
     def _publish_offline_completed(self, result, reconstructor, *, scope=None):
         """Conventional final-only fallback for non-progressive worker results."""
         job = self.queue.current
@@ -1780,35 +1644,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 except Exception:
                     pass
 
-    # ------------------------------------------------------------------ live completion
-
-    @QtCore.Slot(object)
-    def _on_live_final_result(self, result) -> None:
-        # sigFinalResult is emitted before sigResultFinalized, so snapshot scope
-        # provenance and claim exact Session ownership while the queue still holds
-        # the current job.
-        job = self.queue.current
-        if job is not None and self._source_kind(self._resolve_job_source(job)) == "time-lapse":
-            source = self._resolve_job_source(job)
-            annotate_result_timepoint_scope(
-                result,
-                getattr(job, "timepoint_scope", None),
-                total=self._planned_timepoints(source),
-            )
-        self._claim_current_result(result)
-        self._liveFinalResult = result
-
-    @QtCore.Slot()
-    def _on_live_finished(self) -> None:
-        if self.queue.current is None:
-            return
-        if self._skipRequested:
-            self._finish_current(skipped=True)
-        elif self._liveFinalResult is not None:
-            self._finish_current()
-        else:
-            self._finish_current(error="Live processing ended without a final result")
-
     # ------------------------------------------------------------------ completion / lifecycle
 
     @staticmethod
@@ -1856,7 +1691,6 @@ class ProcessingQueueController(ImProcessWidgetController):
             self.queue.complete_current()
             self._lastTerminalStatus = {}
         self._skipRequested = False
-        self._liveFinalResult = None
         self._currentProgress = {}
         self._currentPlannedTimepoints = None
         self._currentSourceTimepoints = None
@@ -1907,8 +1741,6 @@ class ProcessingQueueController(ImProcessWidgetController):
                 self._cancel_waiting_auto_timepoints(job_id)
         self._externalSources.clear()
         self.queue.pause()
-        if self._live.is_running:
-            self._live.stop(graceful=False)
         if self._offlineWorker is not None:
             self._offlineWorker.request_cancel()
         if self._incrementalRunner is not None:
@@ -1921,7 +1753,6 @@ class ProcessingQueueController(ImProcessWidgetController):
         return (
             self._offlineThread is None
             and self._incrementalRunner is None
-            and not self._live.is_running
         )
 
 

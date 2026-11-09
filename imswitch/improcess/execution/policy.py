@@ -16,7 +16,6 @@ from imswitch.improcess.model.processing_queue import ExecutionRequirement
 
 class ExecutionPath(str, Enum):
     OFFLINE_FINITE = "offline-finite"
-    INCREMENTAL_FINITE = "incremental-finite"
     INCREMENTAL_FOLLOW = "incremental-follow"
     WAIT_FINITE = "wait-finite"
 

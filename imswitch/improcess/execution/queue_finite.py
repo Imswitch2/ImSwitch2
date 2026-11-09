@@ -1,35 +1,13 @@
-"""Finite incremental Session job selection and physical source preparation.
+"""Physical source adaptation for committed-frame Session streams.
 
-No queue ownership, auto-readiness heuristic, or GUI in this module. Review
-manually-selected, already-completed lapses use the same M1 executor without
-confusing job origin with finite/live execution policy.
+This module contains no queue ownership, readiness heuristics or UI policy.
 """
 
 from __future__ import annotations
 
 from imswitch.improcess.execution.disk_sources import make_incremental_disk_source
 from imswitch.improcess.live.source_type import LAYOUT_SINGLE_LAPSE_FILE
-from imswitch.improcess.model.processing_queue import ExecutionRequirement
-from .policy import supports_streaming_settings
 from imswitch.improcess.model.timepoint_scope import coerce_timepoint_scope
-
-
-def finite_incremental_eligible(job, source, reconstructor, *, source_kind: str) -> bool:
-    """Restrict the first queue integration to finite logical timelapses.
-
-    Other jobs still use the proven pre-M2 controller. In particular, queued
-    Auto acquisition jobs are *not* inferred to be finite from their origin.
-    """
-    return bool(
-        source is not None
-        and reconstructor is not None
-        and source_kind == "time-lapse"
-        and ExecutionRequirement(getattr(job, "execution_requirement", "policy"))
-        == ExecutionRequirement.FINITE
-        and supports_streaming_settings(reconstructor, getattr(job, "params", {}))
-        and getattr(reconstructor, "result_role", "derived") != "inspection"
-        and getattr(reconstructor, "id", "") != "monalisa-legacy"
-    )
 
 
 def detector_from_logical_source(source) -> str | None:
