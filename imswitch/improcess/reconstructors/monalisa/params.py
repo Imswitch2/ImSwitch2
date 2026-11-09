@@ -28,6 +28,14 @@ ORIENTATION_MANUAL = "Manual"
 SPOT_MANUAL = "Manual/default"
 SPOT_AUTO = "Auto"
 
+# Gaussian estimators. The exact string values are persisted in results/jobs.
+ESTIMATOR_LOCAL = "local"
+ESTIMATOR_JOINT = "joint"
+ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT)
+FOOTPRINT_SQUARE = "square"
+FOOTPRINT_CIRCLE = "circle"
+FOOTPRINT_SHAPES = (FOOTPRINT_SQUARE, FOOTPRINT_CIRCLE)
+
 PLACEMENT_AUTO = "Auto"
 PLACEMENT_DIRECT = "Direct"
 PLACEMENT_INTERPOLATE = "Interpolate"
@@ -67,6 +75,10 @@ DEFAULT_PARAMS = {
     "spot_fwhm": DEFAULT_SPOT_FWHM_NM,
     "spot_fwhm_unit": "nm",
     "background": "constant",
+    "estimator": ESTIMATOR_LOCAL,
+    "local_footprint_shape": FOOTPRINT_SQUARE,
+    "local_footprint_size": 9,
+    "local_sampling": "camera_pixels",
     "legacy_bleaching_correction": False,
     "legacy_bg_modelling": "Constant",
     "legacy_bg_gaussian_size_nm": 1000.0,
@@ -96,6 +108,7 @@ PRESET_VALUES = {
         "device": "GPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
         "spot_width_mode": SPOT_MANUAL,
+        "estimator": ESTIMATOR_LOCAL,
         "intensity_correction": False,
         "cell_offsets": False,
         "reassignment": "off",
@@ -108,6 +121,7 @@ PRESET_VALUES = {
         "device": "GPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FULL,
         "spot_width_mode": SPOT_AUTO,
+        "estimator": ESTIMATOR_JOINT,
         "intensity_correction": True,
         "cell_offsets": True,
         "reassignment": "auto",
@@ -124,6 +138,7 @@ PRESET_VALUES = {
         "device": "CPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
         "spot_width_mode": SPOT_MANUAL,
+        "estimator": ESTIMATOR_JOINT,
         "intensity_correction": False,
         "cell_offsets": False,
         "reassignment": "off",
@@ -157,6 +172,8 @@ def apply_preset(params: dict, preset: str) -> dict:
 
 __all__ = [
     "DEFAULT_PARAMS",
+    "ESTIMATOR_LOCAL", "ESTIMATOR_JOINT", "ESTIMATORS",
+    "FOOTPRINT_SQUARE", "FOOTPRINT_CIRCLE", "FOOTPRINT_SHAPES",
     "LOCALIZATION_AUTO",
     "LOCALIZATION_LOCKED",
     "LOCALIZATION_MANUAL",

@@ -278,6 +278,10 @@ def pipeline_params(params: dict) -> PipelineParams:
     if not isinstance(localization_settings, LocalizationSettings):
         localization_settings = LocalizationSettings.from_dict(localization_settings)
     return PipelineParams(
+        estimator=str(params.get("estimator", "joint")),
+        local_footprint_shape=str(params.get("local_footprint_shape", "square")),
+        local_footprint_size=int(params.get("local_footprint_size", 9)),
+        local_sampling=str(params.get("local_sampling", "camera_pixels")),
         background=background,
         reassignment=reassignment,
         frame_gain="smooth" if params.get("frame_gain", True) else "off",

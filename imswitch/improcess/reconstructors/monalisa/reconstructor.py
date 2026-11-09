@@ -27,7 +27,8 @@ from .params import (
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
     PRESET_FAST, PRESET_LEGACY, PRESETS,
-    SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
+    SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES,
+    ESTIMATOR_JOINT, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
 from .spot_settings import fwhm_to_sigma_px, sigma_px_to_fwhm
@@ -126,6 +127,10 @@ class MonalisaReconstructor(StreamingReconstructor):
                        options=(SPOT_MANUAL, SPOT_AUTO), group='Spot model'),
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
             ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
+            ParamField('estimator', 'select', defaults['estimator'], label='Gaussian estimator', options=ESTIMATORS, group='Advanced', advanced=True),
+            ParamField('local_footprint_shape', 'select', defaults['local_footprint_shape'], label='Local footprint', options=FOOTPRINT_SHAPES, group='Advanced', advanced=True),
+            ParamField('local_footprint_size', 'int', defaults['local_footprint_size'], label='Local side/diameter', min=3, max=255, group='Advanced', advanced=True),
+            ParamField('local_sampling', 'select', defaults['local_sampling'], label='Local sampling', options=('camera_pixels', 'bilinear'), group='Advanced', advanced=True),
             ParamField('background', 'select', defaults['background'], label='Background', options=('constant', 'none', 'auto'), group='Spot model'),
             ParamField('legacy_bleaching_correction', 'bool', defaults['legacy_bleaching_correction'],
                        label='Bleaching correction', group='Legacy DLL'),
@@ -406,6 +411,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             "spot_sigma_px": None if spot_sigma_px is None else float(spot_sigma_px),
             "pixel_size_nm": float(params.get("pixel_size_nm", 0.0) or 0.0),
             "background": str(params.get("background", "constant")),
+            "estimator": str(params.get("estimator", ESTIMATOR_JOINT)),
+            "local_footprint_shape": str(params.get("local_footprint_shape", "square")),
+            "local_footprint_size": int(params.get("local_footprint_size", 9)),
+            "local_sampling": str(params.get("local_sampling", "camera_pixels")),
             "scan_steps_fast": int(params.get("scan_steps_fast", 0) or 0),
             "scan_steps_slow": int(params.get("scan_steps_slow", 0) or 0),
             "scan_step_nm": float(params.get("scan_step_nm", 0.0) or 0.0),
@@ -595,6 +604,11 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         merged = unified_default_params()
         merged.update(dict(params or {}))
+        if "estimator" not in params:
+            # Old saved Fast/Full dictionaries predate the estimator setting.
+            # Keep their historical Joint calculation; only new configurations
+            # explicitly opt into Local, including new default_params().
+            merged["estimator"] = ESTIMATOR_JOINT
         localization = self._resolved_localization(merged)
         orientation = self._orientation_literal(merged)
 
@@ -625,6 +639,12 @@ class MonalisaReconstructor(StreamingReconstructor):
             # populate the experimental plugin's temporary single-entry cache.
             "_cache_localization_reference": False,
             "background": str(merged.get("background", "constant")),
+            # Old persisted Fast/Full settings had no estimator key and
+            # must retain the old Joint mathematics on replay.
+            "estimator": str(merged["estimator"]),
+            "local_footprint_shape": str(merged.get("local_footprint_shape", "square")),
+            "local_footprint_size": int(merged.get("local_footprint_size", 9)),
+            "local_sampling": str(merged.get("local_sampling", "camera_pixels")),
             "frame_gain": bool(merged.get("intensity_correction", False)),
             "cell_offsets": bool(merged.get("cell_offsets", False)),
             "reassignment": str(merged.get("reassignment", "off")),
@@ -715,6 +735,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             "resolved_shift_factor": diagnostics.get("resolved_shift_factor"),
             "resolved_shift_factor_xy": diagnostics.get("resolved_shift_factor_xy"),
             "preset": str(merged.get("preset", "")),
+            "estimator": str(merged["estimator"]),
+            "local_footprint_shape": str(merged.get("local_footprint_shape", "square")),
+            "local_footprint_size": int(merged.get("local_footprint_size", 9)),
+            "local_sampling": str(merged.get("local_sampling", "camera_pixels")),
             "placement_mode_requested": str(merged.get("placement_mode", PLACEMENT_AUTO)),
             "placement_mode_used": str(diagnostics.get("placement_method") or ""),
             "placement_residual_px": diagnostics.get("placement_residual_px"),

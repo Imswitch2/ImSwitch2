@@ -49,6 +49,7 @@ def test_fast_mode_shows_cheap_corrections_but_hides_heavier_sections(qapp):
     assert widget.outputBox.isHidden() is True
     assert widget.legacyBox.isHidden() is True
     assert widget.spotModeCombo.isHidden() is True
+    assert widget.advancedButton.isHidden() is False
 
 
 def test_fast_corrections_do_not_turn_the_mode_into_custom(qapp):
@@ -61,9 +62,9 @@ def test_fast_corrections_do_not_turn_the_mode_into_custom(qapp):
     assert values["cell_offsets"] is True
 
 
-def test_robust_is_the_ui_name_for_the_existing_full_contract_value(qapp):
+def test_full_auto_is_the_ui_name_for_the_existing_full_contract_value(qapp):
     widget = MonalisaParamsWidget()
-    index = widget.modeCombo.findText("Robust")
+    index = widget.modeCombo.findText("Full (Auto + ISM)")
     widget.modeCombo.setCurrentIndex(index)
     values = widget.get_values()
     assert values["preset"] == PRESET_FULL
@@ -95,7 +96,7 @@ def test_fast_fwhm_is_a_normal_edit_not_a_customization(qapp):
 
 def test_changing_a_mode_controlled_option_enters_custom(qapp):
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Robust"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
     widget.reassignmentCombo.setCurrentIndex(widget.reassignmentCombo.findText("Manual"))
     assert widget.get_values()["preset"] == PRESET_CUSTOM
 
@@ -243,3 +244,18 @@ def test_embedded_localization_counts_as_current_auto_result(qapp):
 
     assert widget.has_auto_localization_for_current_data() is True
     assert "Embedded localization" in widget.previewStatusLabel.text()
+
+
+def test_expert_dialog_can_suggest_footprint_from_manual_lattice(qapp):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+
+    widget = MonalisaParamsWidget()
+    localization = PatternLocalization.manual_grid(11.05, 11.05, 2, 3)
+    dialog = AdvancedReconstructionDialog(widget._advanced_values, localization=localization)
+    assert dialog.estimator.currentText() == "local"
+    dialog.footprintSize.setValue(5)
+    dialog.suggestButton.click()
+    assert dialog.values()["local_footprint_size"] == 11
+    dialog.footprintShape.setCurrentText("circle")
+    assert dialog.values()["local_footprint_shape"] == "circle"

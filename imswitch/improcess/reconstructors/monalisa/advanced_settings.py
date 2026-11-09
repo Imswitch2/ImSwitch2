@@ -5,6 +5,7 @@ from __future__ import annotations
 from qtpy import QtWidgets
 
 from .params import PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE
+from .footprint_suggestion import suggest_local_footprint_size
 
 
 class AdvancedReconstructionDialog(QtWidgets.QDialog):
@@ -15,9 +16,10 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
     scanning or the spot model in the interactive panel.
     """
 
-    def __init__(self, values: dict, parent=None):
+    def __init__(self, values: dict, parent=None, *, localization=None):
         super().__init__(parent)
-        self.setWindowTitle("Advanced parameters")
+        self.setWindowTitle("Expert reconstruction parameters")
+        self._localization = localization
 
         self.device = QtWidgets.QComboBox()
         self.device.addItems(["GPU", "CPU"])
@@ -94,6 +96,43 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         sharpeningForm.addRow("Blur", self.sharpenSigma)
         sharpeningForm.addRow("Regularization", self.sharpenRegularization)
 
+        # One small section in the existing Expert dialog; no new footprint UI.
+        self.estimator = QtWidgets.QComboBox()
+        self.estimator.addItems(["local", "joint"])
+        self.estimator.setCurrentText(str(values.get("estimator", "local")))
+        self.estimator.setToolTip("Local fits spots independently; Joint fits neighboring Gaussian signals together.")
+        self.footprintShape = QtWidgets.QComboBox()
+        self.footprintShape.addItems(["square", "circle"])
+        self.footprintShape.setCurrentText(str(values.get("local_footprint_shape", "square")))
+        self.footprintSize = QtWidgets.QSpinBox()
+        self.footprintSize.setRange(3, 255)
+        self.footprintSize.setSingleStep(2)
+        size = int(values.get("local_footprint_size", 9))
+        self.footprintSize.setValue(size if size % 2 else max(3, size - 1))
+        self.footprintSize.setToolTip("Odd camera-pixel side length (Square) or diameter (Circle).")
+        self.suggestButton = QtWidgets.QPushButton("Suggest from lattice")
+        self.suggestButton.setToolTip("Apply a conservative size from the current localized pattern once; never resizes during reconstruction.")
+        self.suggestButton.setEnabled(localization is not None)
+        if localization is None:
+            self.suggestButton.setToolTip("Localize or select a pattern first to suggest a footprint size.")
+        self.suggestButton.clicked.connect(self._suggest_size)
+        self.sampling = QtWidgets.QComboBox()
+        self.sampling.addItems(["camera_pixels", "bilinear"])
+        self.sampling.setCurrentText(str(values.get("local_sampling", "camera_pixels")))
+        self.sampling.setToolTip("Fit original camera pixels or the WIP bilinear shifted stencil.")
+        footprintRow = QtWidgets.QHBoxLayout()
+        footprintRow.addWidget(self.footprintSize)
+        footprintRow.addWidget(self.suggestButton)
+        gaussian = QtWidgets.QGroupBox("Gaussian fitting")
+        gaussianForm = QtWidgets.QFormLayout(gaussian)
+        gaussianForm.addRow("Estimator", self.estimator)
+        gaussianForm.addRow("Local shape", self.footprintShape)
+        gaussianForm.addRow("Local side/diameter", footprintRow)
+        gaussianForm.addRow("Local sampling", self.sampling)
+        self.estimator.currentTextChanged.connect(self._update_local_enabled)
+        self.footprintSize.valueChanged.connect(self._odd_footprint_size)
+        self._update_local_enabled()
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -101,13 +140,40 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(gaussian)
         layout.addWidget(execution)
         layout.addWidget(placement)
         layout.addWidget(sharpening)
         layout.addWidget(buttons)
 
+    def _odd_footprint_size(self, size: int) -> None:
+        if size % 2 == 0:
+            old = self.footprintSize.blockSignals(True)
+            self.footprintSize.setValue(min(255, size + 1))
+            self.footprintSize.blockSignals(old)
+
+    def _update_local_enabled(self, *_):
+        local = self.estimator.currentText() == "local"
+        for widget in (self.footprintShape, self.footprintSize, self.sampling):
+            widget.setEnabled(local)
+        self.suggestButton.setEnabled(local and self._localization is not None)
+
+    def _suggest_size(self):
+        try:
+            size = suggest_local_footprint_size(
+                self._localization, self.footprintShape.currentText()
+            )
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(self, "Footprint suggestion", str(error))
+        else:
+            self.footprintSize.setValue(size)
+
     def values(self) -> dict:
         return {
+            "estimator": self.estimator.currentText(),
+            "local_footprint_shape": self.footprintShape.currentText(),
+            "local_footprint_size": int(self.footprintSize.value()),
+            "local_sampling": self.sampling.currentText(),
             "device": self.device.currentText(),
             "pixel_size_nm": float(self.pixelNm.value()),
             "placement_mode": self.placement.currentText(),

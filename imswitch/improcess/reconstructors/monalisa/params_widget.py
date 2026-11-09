@@ -154,8 +154,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigModeChanged = QtCore.Signal(str)
 
     _MODE_LABELS = (
-        ("Fast", PRESET_FAST),
-        ("Robust", PRESET_FULL),
+        ("Normal", PRESET_FAST),
+        ("Full (Auto + ISM)", PRESET_FULL),
         ("Legacy DLL", PRESET_LEGACY),
         ("Custom", PRESET_CUSTOM),
     )
@@ -192,6 +192,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "variance_weighting": bool(values["variance_weighting"]),
             "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
             "sharpen_regularization": float(values["sharpen_regularization"]),
+            "estimator": str(values["estimator"]),
+            "local_footprint_shape": str(values["local_footprint_shape"]),
+            "local_footprint_size": int(values["local_footprint_size"]),
+            "local_sampling": str(values["local_sampling"]),
         }
 
         self._build_ui(values)
@@ -283,15 +287,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
         self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
         self.modeCombo.setToolTip(
-            "Fast uses the low-overhead Gaussian path with optional corrections. "
-            "Robust enables automatic spot calibration, ISM and corrections. "
+            "Normal uses Local Gaussian fitting with optional corrections. "
+            "Full uses Joint Gaussian fitting, automatic width, reassignment and corrections. "
             "Legacy DLL uses the classic SignalExtractor implementation. "
-            "Custom exposes expert Gaussian choices."
+            "Use Expert settings to compare fitting methods and footprints."
         )
         modeRow.addWidget(self.modeCombo, 1)
-        self.advancedButton = QtWidgets.QPushButton("Advanced parameters…")
+        self.advancedButton = QtWidgets.QPushButton("Expert…")
         self.advancedButton.setToolTip(
-            "Open expert numerical controls for execution, placement and sharpening."
+            "Open existing advanced parameters, including Gaussian estimator and footprint."
         )
         modeRow.addWidget(self.advancedButton)
         root.addLayout(modeRow)
@@ -615,6 +619,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def _apply_controlled_values(self, values: dict) -> None:
         self._advanced_values["device"] = str(values["device"])
+        self._advanced_values["estimator"] = str(values["estimator"])
         if hasattr(self, "legacyDeviceCombo"):
             self._set_combo_data(self.legacyDeviceCombo, values["device"])
         self._advanced_values["placement_mode"] = str(values["placement_mode"])
@@ -662,7 +667,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         mode = self._mode_value()
         fast = mode == PRESET_FAST
         legacy = mode == PRESET_LEGACY
-        self.advancedButton.setVisible(not fast and not legacy)
+        self.advancedButton.setVisible(not legacy)
         self.ismBox.setVisible(not fast and not legacy)
         self.correctionsBox.setVisible(not legacy)
         self.outputBox.setVisible(not fast and not legacy)
@@ -781,11 +786,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def _open_advanced_reconstruction(self):
         before = dict(self._advanced_values)
-        dialog = AdvancedReconstructionDialog(self._advanced_values, self)
+        localization = self._lockable_localization()
+        if localization is not None:
+            localization = localization[0]
+        elif str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_LOCKED:
+            profile = (self._registry.localization_profile(self._selected_locked_localization_id)
+                       if self._registry is not None and self._selected_locked_localization_id else None)
+            localization = profile.localization if profile is not None else None
+        dialog = AdvancedReconstructionDialog(
+            self._advanced_values, self, localization=localization
+        )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._advanced_values.update(dialog.values())
-        controlled = ("device", "placement_mode", "variance_weighting")
+        controlled = ("device", "placement_mode", "variance_weighting", "estimator")
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
 
@@ -1386,6 +1400,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm": float(self.fwhmSpin.value()),
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
+            "estimator": str(self._advanced_values["estimator"]),
+            "local_footprint_shape": str(self._advanced_values["local_footprint_shape"]),
+            "local_footprint_size": int(self._advanced_values["local_footprint_size"]),
+            "local_sampling": str(self._advanced_values["local_sampling"]),
             "legacy_bleaching_correction": bool(self.legacyBleachingCheck.isChecked()),
             "legacy_bg_modelling": str(self._combo_data(self.legacyBackgroundCombo)),
             "legacy_bg_gaussian_size_nm": float(self.legacyGaussianSizeSpin.value()),

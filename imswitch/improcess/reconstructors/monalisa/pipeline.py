@@ -73,6 +73,7 @@ from .scan_frame import (
     orient_step_columns,
     raster_scan_index,
 )
+from .local_extraction import LocalExtractionOperator
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
 
@@ -140,6 +141,10 @@ class PipelineParams:
     background: str = "constant"
     haze_sigma_px: float | None = None
     joint: bool = True
+    estimator: str = "joint"
+    local_footprint_shape: str = "square"
+    local_footprint_size: int = 9
+    local_sampling: str = "camera_pixels"
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
     # ``fast`` detects the general lattice directly from the mean frame (the
@@ -178,7 +183,7 @@ class StackGeometry:
     localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
-    operator: ExtractionOperator
+    operator: ExtractionOperator | LocalExtractionOperator
     raster: OutputRaster
     step: np.ndarray
     index_matrix: np.ndarray
@@ -452,15 +457,43 @@ def prepare_geometry(
         use_haze = haze_ratio is not None and haze_ratio <= HAZE_RESIDUAL_RATIO
         background = "constant+haze" if use_haze else "constant"
 
-    operator = ExtractionOperator.build(
-        spot_model.x, spot_model.y, sigma, (rows, cols),
-        reach_sigma=params.reach_sigma,
-        background=background,
-        haze_sigma=haze_sigma if background == "constant+haze" else None,
-        joint=params.joint,
-        pixel_mask=pixel_mask,
-        min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
-    )
+    estimator = str(params.estimator).lower()
+    if estimator == "local":
+        if background not in ("none", "constant"):
+            raise ValueError("Local Gaussian extraction supports constant or no background")
+        if pixel_mask is not None:
+            raise ValueError("Local Gaussian extraction does not support pixel masks")
+        if params.variance_weighting:
+            raise ValueError("Variance weighting requires Joint Gaussian extraction")
+        if params.reassignment != "off" or params.pinhole_stack != "off":
+            raise ValueError("Reassignment and pinhole stacks require Joint extraction")
+        footprint = str(params.local_footprint_shape).lower()
+        if footprint not in ("square", "circle"):
+            raise ValueError(f"Unknown Local footprint {footprint!r}")
+        side = int(params.local_footprint_size)
+        if side < 3 or side % 2 != 1:
+            raise ValueError("Local footprint size must be an odd integer >= 3")
+        operator = LocalExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            background=background,
+            footprint_shape="rectangular" if footprint == "square" else "circular",
+            footprint_size=side,
+            pinhole_radius_px=side / 2.0,
+            sampling=params.local_sampling,
+            focus_coordinates="localized",
+        )
+    elif estimator == "joint":
+        operator = ExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            reach_sigma=params.reach_sigma,
+            background=background,
+            haze_sigma=haze_sigma if background == "constant+haze" else None,
+            joint=params.joint,
+            pixel_mask=pixel_mask,
+            min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
+        )
+    else:
+        raise ValueError(f"Unknown Gaussian estimator {params.estimator!r}")
 
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
     step, completed = complete_step(step, lattice, scan_index, step_aspect)
@@ -500,6 +533,10 @@ def prepare_geometry(
         "haze_sigma_px": haze_sigma if background == "constant+haze" else None,
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
+        "estimator": estimator,
+        "local_footprint_shape": params.local_footprint_shape if estimator == "local" else None,
+        "local_footprint_size": params.local_footprint_size if estimator == "local" else None,
+        "local_sampling": params.local_sampling if estimator == "local" else None,
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,
         "step_completed_axes": tuple("xy"[axis] for axis in completed),
