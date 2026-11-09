@@ -1,0 +1,81 @@
+"""Detector-scoped setup defaults: explicit persistence and reproducibility."""
+
+import json
+
+import pytest
+
+from imswitch.improcess.reconstructors.monalisa.setup_defaults import (
+    FWHM_KEY, ORIENTATION_KEY, current_setup_path, positive_fwhm,
+    read_detector_defaults, save_detector_default, valid_orientation,
+)
+from imswitch.improcess.reconstructors.monalisa.params import ORIENTATION_SETUP, ORIENTATION_RECORDED
+
+
+def _setup(tmp_path):
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({
+        "detectors": {
+            "CAM": {"managerName": "MockDetector", "managerProperties": {
+                "cameraPixelSizeUm": 0.077, "untouched": {"x": 1},
+            }},
+            "CAM2": {"managerName": "MockDetector", "managerProperties": {}},
+        },
+        "misc_user_field": {"a": [1, 2]},
+    }), encoding="utf-8")
+    return path
+
+
+def test_explicit_save_round_trip_keeps_other_setup_content(tmp_path):
+    path = _setup(tmp_path)
+    old = json.loads(path.read_text())
+    assert read_detector_defaults("CAM", path=path).fwhm_nm is None
+    save_detector_default("CAM", FWHM_KEY, 212.5, path=path)
+    save_detector_default("CAM", ORIENTATION_KEY, "-y+x", path=path)
+    result = read_detector_defaults("CAM", path=path)
+    assert result.detector == "CAM"
+    assert result.fwhm_nm == pytest.approx(212.5)
+    assert result.orientation == "-y+x"
+    doc = json.loads(path.read_text())
+    assert doc["misc_user_field"] == old["misc_user_field"]
+    assert doc["detectors"]["CAM"]["managerProperties"]["untouched"] == {"x": 1}
+    assert doc["detectors"]["CAM2"] == old["detectors"]["CAM2"]
+
+
+@pytest.mark.parametrize("detector,key,value", [
+    ("missing", FWHM_KEY, 100), ("unknown", FWHM_KEY, 100),
+    ("CAM", FWHM_KEY, -1), ("CAM", FWHM_KEY, float("nan")),
+    ("CAM", ORIENTATION_KEY, "+x+x"), ("CAM", "otherKey", "a"),
+])
+def test_invalid_save_leaves_original_setup_untouched(tmp_path, detector, key, value):
+    path = _setup(tmp_path)
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        save_detector_default(detector, key, value, path=path)
+    assert path.read_bytes() == before
+
+
+def test_missing_or_invalid_defaults_do_not_create_a_false_calibration(tmp_path):
+    path = _setup(tmp_path)
+    doc = json.loads(path.read_text())
+    doc["detectors"]["CAM"]["managerProperties"].update({
+        FWHM_KEY: "bad", ORIENTATION_KEY: "not an orientation",
+    })
+    path.write_text(json.dumps(doc))
+    assert read_detector_defaults("CAM", path=path).fwhm_nm is None
+    assert read_detector_defaults("CAM", path=path).orientation is None
+    assert read_detector_defaults("unknown", path=path).orientation is None
+    assert positive_fwhm("inf") is None
+    assert valid_orientation("+x+y") == "+x+y"
+
+
+def test_setup_and_recorded_orientation_resolve_without_auto_detection():
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+
+    for mode in (ORIENTATION_SETUP, ORIENTATION_RECORDED):
+        assert MonalisaReconstructor._orientation_literal({
+            "orientation_mode": mode, "orientation": "-y+x",
+        }) == "-y+x"
+    with pytest.raises(ValueError):
+        MonalisaReconstructor._orientation_literal({
+            "orientation_mode": ORIENTATION_SETUP, "orientation": "+x+x",
+        })

@@ -21,6 +21,8 @@ LOCALIZATION_MANUAL = "Manual"
 LOCALIZATION_REFINEMENT_FAST = "fast"
 LOCALIZATION_REFINEMENT_FULL = "full"
 
+ORIENTATION_SETUP = "Setup default"
+ORIENTATION_RECORDED = "Recorded"
 ORIENTATION_AUTO = "Auto"
 ORIENTATION_LOCKED = "Locked"
 ORIENTATION_MANUAL = "Manual"
@@ -72,6 +74,7 @@ DEFAULT_PARAMS = {
     "orientation": "+x+y",
     "locked_orientation": "",
     "spot_width_mode": SPOT_MANUAL,
+    "spot_width_source": "Application default",
     "spot_fwhm": DEFAULT_SPOT_FWHM_NM,
     "spot_fwhm_unit": "nm",
     "background": "constant",
@@ -108,6 +111,7 @@ PRESET_VALUES = {
         "device": "GPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
         "spot_width_mode": SPOT_MANUAL,
+    "spot_width_source": "Application default",
         "estimator": ESTIMATOR_LOCAL,
         "intensity_correction": False,
         "cell_offsets": False,
@@ -138,6 +142,7 @@ PRESET_VALUES = {
         "device": "CPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
         "spot_width_mode": SPOT_MANUAL,
+    "spot_width_source": "Application default",
         "estimator": ESTIMATOR_JOINT,
         "intensity_correction": False,
         "cell_offsets": False,
@@ -179,6 +184,8 @@ __all__ = [
     "LOCALIZATION_MANUAL",
     "LOCALIZATION_REFINEMENT_FAST",
     "LOCALIZATION_REFINEMENT_FULL",
+    "ORIENTATION_SETUP",
+    "ORIENTATION_RECORDED",
     "ORIENTATION_AUTO",
     "ORIENTATION_LOCKED",
     "ORIENTATION_MANUAL",

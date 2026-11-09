@@ -3979,6 +3979,15 @@ class RecordingWorker(Worker):
                     new_attrs['monalisa:spot_fwhm_nm'] = float(fwhm_nm)
             except (AttributeError, TypeError, ValueError, KeyError):
                 pass
+            # This is a historical snapshot, not permission to override an
+            # explicit later reconstruction calibration/Manual selection.
+            try:
+                detector = self.__recordingManager.detectorsManager[detectorName]
+                orientation = detector.monalisaScanOrientation
+                if orientation is not None:
+                    new_attrs['monalisa:scan_orientation'] = orientation
+            except (AttributeError, TypeError, ValueError, KeyError):
+                pass
             new_attrs['recording:source_format'] = self.saveFormat.name
             if expected_frames is not None and detectorName in expected_frames:
                 frame_count = int(expected_frames[detectorName])

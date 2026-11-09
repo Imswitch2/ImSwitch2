@@ -24,7 +24,7 @@ from .localization_settings import LocalizationSettings
 from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
-    ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
+    ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, ORIENTATION_SETUP, ORIENTATION_RECORDED,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
     PRESET_FAST, PRESET_LEGACY, PRESETS,
     SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES,
@@ -118,7 +118,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('localization_settings', 'json', defaults['localization_settings'],
                        label='Localization settings', group='Localization', advanced=True),
             ParamField('orientation_mode', 'select', defaults['orientation_mode'], label='Mode',
-                       options=(ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL), group='Scanning'),
+                       options=(ORIENTATION_AUTO, ORIENTATION_RECORDED, ORIENTATION_SETUP, ORIENTATION_LOCKED, ORIENTATION_MANUAL), group='Scanning'),
             ParamField('orientation', 'select', defaults['orientation'], label='Orientation',
                        options=tuple(ORIENTATIONS), group='Scanning'),
             ParamField('locked_orientation', 'str', defaults['locked_orientation'],
@@ -386,7 +386,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         mode = str(params.get("orientation_mode", ORIENTATION_AUTO))
         if mode == ORIENTATION_AUTO:
             return None
-        if mode == ORIENTATION_MANUAL:
+        if mode in (ORIENTATION_MANUAL, ORIENTATION_RECORDED, ORIENTATION_SETUP):
             value = str(params.get("orientation", "+x+y"))
         elif mode == ORIENTATION_LOCKED:
             value = str(params.get("locked_orientation") or "")
@@ -724,7 +724,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             "locked_localization_name": str(merged.get("locked_localization_name") or ""),
             "orientation_source": orientation_mode,
             "resolved_orientation": resolved_orientation,
-            "spot_width_source": str(merged.get("spot_width_mode", SPOT_MANUAL)),
+            "spot_width_source": str(merged.get("spot_width_source") or merged.get("spot_width_mode", SPOT_MANUAL)),
             "spot_fwhm": float(merged.get("spot_fwhm", 0.0)),
             "spot_fwhm_unit": str(merged.get("spot_fwhm_unit", "nm")),
             "requested_spot_fwhm": float(merged.get("spot_fwhm", 0.0)),

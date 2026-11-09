@@ -17,6 +17,8 @@ from .params import (
     LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST,
     ORIENTATION_AUTO,
+    ORIENTATION_SETUP,
+    ORIENTATION_RECORDED,
     ORIENTATION_LOCKED,
     ORIENTATION_MANUAL,
     PRESET_CUSTOM,
@@ -32,6 +34,10 @@ from .scan_frame import ORIENTATIONS
 from .scanning_settings import ScanningAdvancedDialog
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
+from .setup_defaults import (
+    DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
+    read_detector_defaults, save_detector_default, positive_fwhm,
+)
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
@@ -174,6 +180,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._auto_localization = deepcopy(values["auto_localization"])
         self._localization_busy = False
         self._spot_unit = str(values["spot_fwhm_unit"])
+        self._setup_defaults = DetectorSetupDefaults("unknown")
+        self._recorded_orientation = None
+        self._orientation_user_override = False
+        self._loading_setup_orientation = False
+        self._fwhm_source = "Application default"
+        self._programmatic_fwhm = False
         self._applying_preset = False
         self._recorded_scan_summary = ""
         self._recorded_scan_axes: dict[str, dict[str, float | int | None]] = {}
@@ -386,7 +398,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         # Scanning -----------------------------------------------------------
         self.scanningBox, scan = self._section("Scanning")
         self.orientationModeCombo = self._combo(
-            [ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
+            [ORIENTATION_AUTO, ORIENTATION_RECORDED, ORIENTATION_SETUP, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
             values["orientation_mode"],
         )
         self.orientationCombo = self._combo(list(ORIENTATIONS), values["orientation"])
@@ -397,6 +409,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "Save the currently resolved orientation for this detector and use it immediately."
         )
         self.clearOrientationButton = QtWidgets.QPushButton("Clear lock")
+        self.saveOrientationDefaultButton = QtWidgets.QPushButton("Save default…")
+        self.saveOrientationDefaultButton.setToolTip(
+            "Explicitly save the resolved orientation for this detector in the active hardware setup."
+        )
         self.scanningAdvancedButton = QtWidgets.QPushButton("Edit…")
         self.scanningAdvancedButton.setToolTip(
             "Review or override scan metadata used only for reconstruction."
@@ -407,7 +423,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         scan.addWidget(self.orientationResultLabel, 0, 2)
         scan.addWidget(self.lockOrientationButton, 0, 3)
         scan.addWidget(self.clearOrientationButton, 0, 4)
-        scan.setColumnStretch(5, 1)
+        scan.addWidget(self.saveOrientationDefaultButton, 0, 5)
+        scan.setColumnStretch(6, 1)
 
         self.scanSummaryLabel = QtWidgets.QLabel("Scan metadata: —")
         self.scanSummaryLabel.setWordWrap(True)
@@ -433,6 +450,14 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.spotModeCombo = self._combo([SPOT_MANUAL, SPOT_AUTO], values["spot_width_mode"])
         spot.addWidget(self.spotModeLabel, 0, 0)
         spot.addWidget(self.spotModeCombo, 0, 1)
+        self.useEstimatedFwhmButton = QtWidgets.QPushButton("Use estimate")
+        self.useEstimatedFwhmButton.setToolTip(
+            "After Auto estimation during reconstruction, keep the displayed FWHM as a fixed value."
+        )
+        spot.addWidget(self.useEstimatedFwhmButton, 0, 2)
+        self.fwhmSourceLabel = QtWidgets.QLabel("Application default")
+        self.fwhmSourceLabel.setStyleSheet("color: palette(mid);")
+        spot.addWidget(self.fwhmSourceLabel, 0, 3, 1, 2)
         self.fwhmSpin = self._double_spin(values["spot_fwhm"], 0.001, 100000, 3)
         self.fwhmUnitCombo = self._combo(["nm", "px"], values["spot_fwhm_unit"])
         self.backgroundLabel = QtWidgets.QLabel("Background")
@@ -443,6 +468,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.addWidget(self.fwhmUnitCombo, 1, 2)
         spot.addWidget(self.backgroundLabel, 1, 3)
         spot.addWidget(self.backgroundCombo, 1, 4)
+        self.useSetupFwhmButton = QtWidgets.QPushButton("Use setup")
+        self.useSetupFwhmButton.setToolTip(
+            "Apply the current detector setup FWHM, including when a recording contains an older value."
+        )
+        self.saveFwhmDefaultButton = QtWidgets.QPushButton("Save default…")
+        self.saveFwhmDefaultButton.setToolTip(
+            "Save the selected fixed FWHM (nm) to the active hardware setup for this detector."
+        )
+        spot.addWidget(self.useSetupFwhmButton, 2, 1)
+        spot.addWidget(self.saveFwhmDefaultButton, 2, 2, 1, 2)
         spot.setColumnStretch(5, 1)
         root.addWidget(self.spotBox)
 
@@ -576,6 +611,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.deleteLocalizationButton.clicked.connect(self._delete_locked_localization)
         self.lockOrientationButton.clicked.connect(self._lock_current_orientation)
         self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
+        self.saveOrientationDefaultButton.clicked.connect(self._save_orientation_default)
+        self.useEstimatedFwhmButton.clicked.connect(self._use_estimated_fwhm)
+        self.useSetupFwhmButton.clicked.connect(self._use_setup_fwhm)
+        self.saveFwhmDefaultButton.clicked.connect(self._save_fwhm_default)
+        self.fwhmSpin.valueChanged.connect(self._fwhm_changed)
         self.scanningAdvancedButton.clicked.connect(self._open_scanning_advanced)
         self.advancedButton.clicked.connect(self._open_advanced_reconstruction)
 
@@ -672,8 +712,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.correctionsBox.setVisible(not legacy)
         self.outputBox.setVisible(not fast and not legacy)
         self.legacyBox.setVisible(legacy)
-        self.spotModeLabel.setVisible(not fast and not legacy)
-        self.spotModeCombo.setVisible(not fast and not legacy)
+        # Width estimation is a calibration tool, also usable in Normal mode.
+        self.spotModeLabel.setVisible(not legacy)
+        self.spotModeCombo.setVisible(not legacy)
         self.backgroundLabel.setVisible(not legacy)
         self.backgroundCombo.setVisible(not legacy)
         self.fwhmUnitCombo.setEnabled(True)
@@ -732,6 +773,21 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
         spot_auto = str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO
         self.fwhmSpin.setEnabled(not spot_auto)
+        has_detector_setup = (
+            self._detector_id != "unknown" and current_setup_path() is not None
+        )
+        self.useEstimatedFwhmButton.setVisible(spot_auto and not legacy)
+        self.useEstimatedFwhmButton.setEnabled(
+            spot_auto and self._fwhm_source == "Auto estimate"
+        )
+        self.useSetupFwhmButton.setEnabled(self._setup_defaults.fwhm_nm is not None)
+        self.saveFwhmDefaultButton.setEnabled(
+            not spot_auto and has_detector_setup and not legacy
+        )
+        self.saveOrientationDefaultButton.setEnabled(
+            not legacy and has_detector_setup and self._lockable_orientation() is not None
+        )
+        self.fwhmSourceLabel.setText(self._fwhm_source)
         # The unit remains editable in Auto: changing units changes only how
         # the resolved value is displayed, not how it was estimated.
         self.fwhmUnitCombo.setEnabled(True)
@@ -968,13 +1024,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     # ----------------------------------------------------------- orientation
     def _orientation_mode_changed(self, *_):
+        if not self._loading_setup_orientation:
+            self._orientation_user_override = True
         self._refresh_orientation_display()
         self._update_ui()
 
     def _lockable_orientation(self):
         mode = str(self._combo_data(self.orientationModeCombo))
+        if mode == ORIENTATION_RECORDED and self._recorded_orientation:
+            return ScanOrientation.from_literal(self._recorded_orientation), "recorded"
+        if mode == ORIENTATION_SETUP and self._setup_defaults.orientation:
+            return ScanOrientation.from_literal(self._setup_defaults.orientation), "setup"
         if mode == ORIENTATION_MANUAL:
             return ScanOrientation.from_literal(str(self._combo_data(self.orientationCombo))), "manual"
+        if mode == ORIENTATION_LOCKED and self._registry is not None:
+            item = self._registry.locked_orientation(self._detector_id)
+            return (item.orientation, "locked") if item is not None else None
         if mode == ORIENTATION_AUTO and self._registry is not None:
             transient = self._registry.current_orientation(self._detector_id)
             if transient is not None:
@@ -1006,6 +1071,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         value = None
         if mode == ORIENTATION_MANUAL:
             value = str(self._combo_data(self.orientationCombo))
+        elif mode == ORIENTATION_SETUP:
+            value = self._setup_defaults.orientation
+        elif mode == ORIENTATION_RECORDED:
+            value = self._recorded_orientation
         elif self._registry is not None:
             if mode == ORIENTATION_LOCKED:
                 item = self._registry.locked_orientation(self._detector_id)
@@ -1060,6 +1129,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             mode = str(self._combo_data(self.orientationModeCombo))
             if mode == ORIENTATION_MANUAL:
                 orientation = str(self._combo_data(self.orientationCombo))
+            elif mode == ORIENTATION_SETUP:
+                orientation = self._setup_defaults.orientation
+            elif mode == ORIENTATION_RECORDED:
+                orientation = self._recorded_orientation
             elif self._registry is not None:
                 item = (
                     self._registry.locked_orientation(self._detector_id)
@@ -1171,7 +1244,94 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             value = sigma_px_to_fwhm(sigma_px, unit, pixel_nm if unit == "nm" else None)
         except ValueError:
             return
-        self.fwhmSpin.setValue(float(value))
+        self._set_fwhm_value(float(value), "Auto estimate")
+
+    def _fwhm_changed(self, *_):
+        if not self._programmatic_fwhm and str(self._combo_data(self.spotModeCombo)) != SPOT_AUTO:
+            self._fwhm_source = "Manual"
+            self.fwhmSourceLabel.setText(self._fwhm_source)
+
+    def _set_fwhm_value(self, value: float, source: str) -> None:
+        self._programmatic_fwhm = True
+        try:
+            self.fwhmSpin.setValue(float(value))
+        finally:
+            self._programmatic_fwhm = False
+        self._fwhm_source = source
+        self.fwhmSourceLabel.setText(source)
+        self._update_ui()
+
+    def _use_estimated_fwhm(self):
+        if self._fwhm_source != "Auto estimate":
+            return
+        self._set_combo_data(self.spotModeCombo, SPOT_MANUAL)
+        self._fwhm_source = "Calibrated estimate"
+        self._update_ui()
+
+    def _use_setup_fwhm(self):
+        value = self._setup_defaults.fwhm_nm
+        if value is None:
+            return
+        self._set_combo_data(self.spotModeCombo, SPOT_MANUAL)
+        self._set_combo_data(self.fwhmUnitCombo, "nm")
+        self._spot_unit = "nm"
+        self._set_fwhm_value(value, "Setup default")
+
+    def _save_fwhm_default(self):
+        if str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO:
+            return
+        unit = str(self._combo_data(self.fwhmUnitCombo))
+        pixel_nm = float(self._advanced_values.get("pixel_size_nm", 0.0))
+        fwhm_nm = float(self.fwhmSpin.value()) * (pixel_nm if unit == "px" else 1.0)
+        if positive_fwhm(fwhm_nm) is None or (unit == "px" and pixel_nm <= 0):
+            QtWidgets.QMessageBox.warning(self, "Invalid FWHM", "A positive FWHM and detector pixel calibration are required.")
+            return
+        self._confirm_save_setup(FWHM_KEY, fwhm_nm, f"FWHM = {fwhm_nm:g} nm")
+
+    def _save_orientation_default(self):
+        lockable = self._lockable_orientation()
+        if lockable is None:
+            return
+        self._confirm_save_setup(
+            ORIENTATION_KEY, lockable[0].to_literal(),
+            f"orientation = {lockable[0].to_literal()}",
+        )
+
+    def _confirm_save_setup(self, key: str, value, detail: str) -> None:
+        path = current_setup_path()
+        if path is None or self._detector_id == "unknown":
+            QtWidgets.QMessageBox.warning(self, "No setup", "Select data from a known detector and an active ImControl setup.")
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Save MoNaLISA setup default?",
+            f"Save {detail} for detector '{self._detector_id}' in:\n{path}\n\n"
+            "Only this setup property is changed. ImControl may require a restart "
+            "before new recordings snapshot the updated default.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            save_detector_default(self._detector_id, key, value, path=path)
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Could not save setup default", str(exc))
+            return
+        self._setup_defaults = read_detector_defaults(self._detector_id, path=path)
+        self._sync_locked_mode_availability()
+        if key == FWHM_KEY:
+            self._fwhm_source = "Setup default"
+            self._update_ui()
+        else:
+            self._orientation_user_override = False
+            self._loading_setup_orientation = True
+            try:
+                self._set_combo_data(self.orientationModeCombo, ORIENTATION_SETUP)
+            finally:
+                self._loading_setup_orientation = False
+            self._refresh_orientation_display()
+            self._update_ui()
+        self.setPreviewStatus(f"Saved {detail} to active setup ({path.name})")
 
     @staticmethod
     def _result_for_current_data(results, current_name: str):
@@ -1310,6 +1470,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.orientationModeCombo, ORIENTATION_LOCKED, has_orientation, orientation_tip
         )
         self.orientationModeCombo.setToolTip(orientation_tip if not has_orientation else "")
+        has_recorded_orientation = self._recorded_orientation is not None
+        self._set_combo_item_enabled(
+            self.orientationModeCombo, ORIENTATION_RECORDED, has_recorded_orientation,
+            "Use orientation embedded with the recording."
+            if has_recorded_orientation else "No recorded orientation available for this dataset.",
+        )
+        has_setup_orientation = self._setup_defaults.orientation is not None
+        self._set_combo_item_enabled(
+            self.orientationModeCombo, ORIENTATION_SETUP, has_setup_orientation,
+            "Use detector orientation configured in the active hardware setup."
+            if has_setup_orientation else "No orientation default for this detector in the active setup.",
+        )
 
         if (
             str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_LOCKED
@@ -1321,6 +1493,26 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             and not has_orientation
         ):
             self._set_combo_data(self.orientationModeCombo, ORIENTATION_AUTO)
+        if (
+            str(self._combo_data(self.orientationModeCombo)) == ORIENTATION_RECORDED
+            and not has_recorded_orientation
+        ):
+            previous = self._loading_setup_orientation
+            self._loading_setup_orientation = True
+            try:
+                self._set_combo_data(self.orientationModeCombo, ORIENTATION_AUTO)
+            finally:
+                self._loading_setup_orientation = previous
+        if (
+            str(self._combo_data(self.orientationModeCombo)) == ORIENTATION_SETUP
+            and not has_setup_orientation
+        ):
+            previous = self._loading_setup_orientation
+            self._loading_setup_orientation = True
+            try:
+                self._set_combo_data(self.orientationModeCombo, ORIENTATION_AUTO)
+            finally:
+                self._loading_setup_orientation = previous
 
     def _registry_changed(self):
         self._refresh_registry_controls()
@@ -1394,9 +1586,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "stagger": float(self.staggerSpin.value()),
             "localization_settings": deepcopy(self._localization_settings.to_dict()),
             "orientation_mode": str(self._combo_data(self.orientationModeCombo)),
-            "orientation": str(self._combo_data(self.orientationCombo)),
+            "orientation": (
+                self._setup_defaults.orientation
+                if str(self._combo_data(self.orientationModeCombo)) == ORIENTATION_SETUP
+                else (
+                    self._recorded_orientation
+                    if str(self._combo_data(self.orientationModeCombo)) == ORIENTATION_RECORDED
+                    else str(self._combo_data(self.orientationCombo))
+                )
+            ),
             "locked_orientation": locked_orientation.orientation.to_literal() if locked_orientation else "",
             "spot_width_mode": str(self._combo_data(self.spotModeCombo)),
+            "spot_width_source": str(self._fwhm_source),
             "spot_fwhm": float(self.fwhmSpin.value()),
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
@@ -1534,6 +1735,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         old_detector = self._detector_id
         self._current_data_obj = data_obj
         self._detector_id = detector_identity(data_obj, attrs)
+        self._setup_defaults = read_detector_defaults(self._detector_id)
+        from .setup_defaults import valid_orientation
+        self._recorded_orientation = valid_orientation(attrs.get("monalisa:scan_orientation"))
+        self._sync_locked_mode_availability()
+        if not self._orientation_user_override:
+            self._loading_setup_orientation = True
+            try:
+                self._set_combo_data(
+                    self.orientationModeCombo,
+                    (ORIENTATION_RECORDED if self._recorded_orientation else
+                     ORIENTATION_SETUP if self._setup_defaults.orientation else ORIENTATION_AUTO),
+                )
+            finally:
+                self._loading_setup_orientation = False
         (
             self._recorded_scan_summary,
             self._scanned_lateral_axes,
@@ -1601,6 +1816,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                     )
                 self.setPreviewStatus(provenance["status"])
             resolved_orientation = str(embedded.get("resolved_orientation") or "")
+            if valid_orientation(resolved_orientation) and not self._orientation_user_override:
+                self._recorded_orientation = resolved_orientation
+                self._loading_setup_orientation = True
+                try:
+                    self._set_combo_data(self.orientationModeCombo, ORIENTATION_RECORDED)
+                finally:
+                    self._loading_setup_orientation = False
             if resolved_orientation and self._registry is not None:
                 try:
                     self._registry.set_current_orientation(
@@ -1623,20 +1845,21 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 pass
         if embedded_fwhm_nm is not None and embedded_fwhm_nm > 0:
             self._set_combo_data(self.fwhmUnitCombo, "nm")
-            self.fwhmSpin.setValue(embedded_fwhm_nm)
+            self._set_fwhm_value(embedded_fwhm_nm, "Embedded result")
         elif embedded_fwhm_px is not None and embedded_fwhm_px > 0:
             self._set_combo_data(self.fwhmUnitCombo, "px")
-            self.fwhmSpin.setValue(embedded_fwhm_px)
+            self._set_fwhm_value(embedded_fwhm_px, "Embedded result")
         else:
-            for key in ("monalisa:spot_fwhm_nm", "monalisaSpotFwhmNm"):
-                try:
-                    fwhm = float(attrs.get(key, 0))
-                except (TypeError, ValueError):
-                    continue
-                if fwhm > 0:
-                    self._set_combo_data(self.fwhmUnitCombo, "nm")
-                    self.fwhmSpin.setValue(fwhm)
-                    break
+            recorded_fwhm = next(
+                (value for key in ("monalisa:spot_fwhm_nm", "monalisaSpotFwhmNm")
+                 if (value := positive_fwhm(attrs.get(key))) is not None), None
+            )
+            chosen = recorded_fwhm if recorded_fwhm is not None else self._setup_defaults.fwhm_nm
+            if chosen is not None:
+                self._set_combo_data(self.fwhmUnitCombo, "nm")
+                self._set_fwhm_value(
+                    chosen, "Recording" if recorded_fwhm is not None else "Setup default"
+                )
         self._refresh_registry_controls()
         self._update_ui()
 

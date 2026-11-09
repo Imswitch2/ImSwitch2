@@ -328,7 +328,7 @@ class MonalisaLiveSession(StreamingSession):
 
         orientation_indices = self._condition_frame_indices(0)
         manual_orientation = (
-            str(params.get("orientation_mode", "Auto")) == "Manual"
+            str(params.get("orientation_mode", "Auto")) in ("Manual", "Setup default", "Recorded")
             and params.get("orientation")
         )
         if manual_orientation:

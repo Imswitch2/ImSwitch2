@@ -3,12 +3,13 @@
 from types import SimpleNamespace
 
 from imswitch.imcontrol.model.managers.RecordingManager import RecordingWorker, SaveFormat
-from imswitch.imcontrol.model.managers.detectors.DetectorManager import configuredMonalisaSpotFwhm
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import configuredMonalisaSpotFwhm, configuredMonalisaScanOrientation
 
 
 def _worker(detector_properties):
     detector = SimpleNamespace(
-        monalisaSpotFwhmNm=configuredMonalisaSpotFwhm(detector_properties)
+        monalisaSpotFwhmNm=configuredMonalisaSpotFwhm(detector_properties),
+        monalisaScanOrientation=configuredMonalisaScanOrientation(detector_properties),
     )
     manager = SimpleNamespace(detectorsManager={"Camera": detector})
     worker = object.__new__(RecordingWorker)
@@ -35,3 +36,16 @@ def test_missing_or_invalid_detector_fwhm_is_not_invented():
             {"Camera": {}}
         )["Camera"]
         assert "monalisa:spot_fwhm_nm" not in attrs
+
+
+def test_detector_orientation_default_is_snapshotted_when_valid():
+    attrs = _worker({"monalisaScanOrientation": "-y+x"})._augment_attrs_with_recording_metadata(
+        {"Camera": {}}
+    )["Camera"]
+    assert attrs["monalisa:scan_orientation"] == "-y+x"
+
+
+def test_invalid_or_missing_scan_orientation_is_not_snapshotted():
+    for props in ({}, {"monalisaScanOrientation": "invalid"}, {"monalisaScanOrientation": None}):
+        attrs = _worker(props)._augment_attrs_with_recording_metadata({"Camera": {}})["Camera"]
+        assert "monalisa:scan_orientation" not in attrs

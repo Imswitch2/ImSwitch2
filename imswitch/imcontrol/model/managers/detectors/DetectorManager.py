@@ -78,6 +78,7 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 #: Setup-file detector property used as the default Gaussian MoNaLISA spot FWHM.
 #: It is intentionally a measured/configured quantity, not inferred from wavelength.
 MONALISA_SPOT_FWHM_KEY = 'monalisaSpotFwhmNm'
+MONALISA_SCAN_ORIENTATION_KEY = 'monalisaScanOrientation'
 
 #: Maximum frames retained per readChunk consumer queue. Only relevant for a
 #: consumer that registered but stopped polling while another consumer keeps
@@ -219,6 +220,20 @@ def configuredMonalisaSpotFwhm(managerProperties) -> Optional[float]:
     return value if value > 0 else None
 
 
+def configuredMonalisaScanOrientation(managerProperties) -> Optional[str]:
+    """Validate the optional detector-level MoNaLISA orientation literal."""
+    try:
+        value = managerProperties.get(MONALISA_SCAN_ORIENTATION_KEY)
+    except AttributeError:
+        return None
+    # Keep the supported literals here to avoid importing ImProcess from ImControl.
+    options = {
+        "+x+y", "+x-y", "-x+y", "-x-y",
+        "+y+x", "+y-x", "-y+x", "-y-x",
+    }
+    return value if isinstance(value, str) and value in options else None
+
+
 class ChunkConsumerOverflowError(RuntimeError):
     """A consumer fell behind and lost frames from its broker queue."""
 
@@ -310,6 +325,13 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
         return DetectorNumberParameter(
             group='Miscellaneous', value=value,
             valueUnits='µm', editable=True,
+        )
+
+    @property
+    def monalisaScanOrientation(self) -> Optional[str]:
+        """Optional detector/path default scan-to-camera orientation."""
+        return configuredMonalisaScanOrientation(
+            getattr(self._detectorInfo, 'managerProperties', None)
         )
 
     @property

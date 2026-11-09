@@ -6,12 +6,33 @@
   "when": {},
   "requires": [],
   "reads": [
-    {"key": "monalisaSpotFwhmNm", "fallback": "the MoNaLISA application default"}
+    {
+      "key": "monalisaSpotFwhmNm",
+      "fallback": "the MoNaLISA application default"
+    },
+    {
+      "key": "monalisaScanOrientation",
+      "fallback": "automatic orientation detection"
+    }
   ],
   "properties": {
     "monalisaSpotFwhmNm": {
       "x-imswitch-kind": "number",
       "description": "Default Gaussian MoNaLISA spot FWHM for this detector/path, in nm. Recorded with new acquisitions so offline reconstruction keeps the value that was configured at acquisition time."
+    },
+    "monalisaScanOrientation": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "+x+y",
+        "+x-y",
+        "-x+y",
+        "-x-y",
+        "+y+x",
+        "+y-x",
+        "-y+x",
+        "-y-x"
+      ],
+      "description": "Detector-specific default scan-to-camera orientation for Gaussian MoNaLISA. Use Auto/Manual in reconstruction to override; new recordings snapshot this value."
     }
   }
 }

@@ -48,7 +48,7 @@ def test_fast_mode_shows_cheap_corrections_but_hides_heavier_sections(qapp):
     assert widget.correctionsBox.isHidden() is False
     assert widget.outputBox.isHidden() is True
     assert widget.legacyBox.isHidden() is True
-    assert widget.spotModeCombo.isHidden() is True
+    assert widget.spotModeCombo.isHidden() is False
     assert widget.advancedButton.isHidden() is False
 
 
@@ -259,3 +259,54 @@ def test_expert_dialog_can_suggest_footprint_from_manual_lattice(qapp):
     assert dialog.values()["local_footprint_size"] == 11
     dialog.footprintShape.setCurrentText("circle")
     assert dialog.values()["local_footprint_shape"] == "circle"
+
+
+def test_calibrated_fwhm_can_be_fixed_then_saved_to_setup(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import read_detector_defaults
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({"detectors": {"CAM": {"managerProperties": {}}}}))
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    monkeypatch.setattr(module, "read_detector_defaults", lambda detector, path=path: read_detector_defaults(detector, path=path))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *args, **kwargs: QtWidgets.QMessageBox.Yes)
+    widget = MonalisaParamsWidget()
+    widget.load_from_attrs({"recording:detector_name": "CAM"})
+    widget._set_combo_data(widget.spotModeCombo, "Auto")
+    widget.set_auto_spot_sigma_px(1.5)
+    assert widget.useEstimatedFwhmButton.isEnabled()
+    widget._use_estimated_fwhm()
+    assert widget.get_values()["spot_width_mode"] == "Manual/default"
+    widget._save_fwhm_default()
+    assert read_detector_defaults("CAM", path=path).fwhm_nm == pytest.approx(widget.fwhmSpin.value())
+    assert widget.get_values()["spot_width_source"] == "Setup default"
+
+
+def test_orientation_setup_default_is_explicitly_saved_and_recorded_value_wins(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import read_detector_defaults
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({"detectors": {"CAM": {"managerProperties": {}}}}))
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    monkeypatch.setattr(module, "read_detector_defaults", lambda detector, path=path: read_detector_defaults(detector, path=path))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *args, **kwargs: QtWidgets.QMessageBox.Yes)
+    widget = MonalisaParamsWidget()
+    widget.load_from_attrs({"recording:detector_name": "CAM"})
+    widget._set_combo_data(widget.orientationModeCombo, "Manual")
+    widget._set_combo_data(widget.orientationCombo, "-x+y")
+    widget._save_orientation_default()
+    assert read_detector_defaults("CAM", path=path).orientation == "-x+y"
+    assert widget.get_values()["orientation_mode"] == "Setup default"
+    assert widget.get_values()["orientation"] == "-x+y"
+
+    # An older recording carries its own orientation; never substitute the
+    # newly configured setup orientation silently.
+    widget2 = MonalisaParamsWidget()
+    widget2.load_from_attrs({"recording:detector_name": "CAM", "monalisa:scan_orientation": "+y-x"})
+    assert widget2.get_values()["orientation_mode"] == "Recorded"
+    assert widget2.get_values()["orientation"] == "+y-x"
+    widget2._set_combo_data(widget2.orientationModeCombo, "Setup default")
+    assert widget2.get_values()["orientation"] == "-x+y"
