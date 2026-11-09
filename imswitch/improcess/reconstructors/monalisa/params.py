@@ -34,6 +34,9 @@ SPOT_AUTO = "Auto"
 ESTIMATOR_LOCAL = "local"
 ESTIMATOR_JOINT = "joint"
 ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT)
+JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
+JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
+JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
 FOOTPRINT_SQUARE = "square"
 FOOTPRINT_CIRCLE = "circle"
 FOOTPRINT_SHAPES = (FOOTPRINT_SQUARE, FOOTPRINT_CIRCLE)
@@ -82,6 +85,9 @@ DEFAULT_PARAMS = {
     "spot_fwhm_unit": "nm",
     "background": "constant",
     "estimator": ESTIMATOR_LOCAL,
+    # Preserve existing Joint behavior (2.5 sigma) unless Expert changes it.
+    "joint_footprint_mode": "auto",
+    "joint_footprint_radius_px": 4.5,
     "local_footprint_shape": FOOTPRINT_SQUARE,
     "local_footprint_mode": FOOTPRINT_FROM_LATTICE,
     "local_footprint_size": 9,
@@ -184,6 +190,7 @@ __all__ = [
     "ESTIMATOR_LOCAL", "ESTIMATOR_JOINT", "ESTIMATORS",
     "FOOTPRINT_SQUARE", "FOOTPRINT_CIRCLE", "FOOTPRINT_SHAPES",
     "FOOTPRINT_FROM_LATTICE", "FOOTPRINT_FIXED", "FOOTPRINT_MODES",
+    "JOINT_FOOTPRINT_MODES",
     "LOCALIZATION_AUTO",
     "LOCALIZATION_LOCKED",
     "LOCALIZATION_MANUAL",

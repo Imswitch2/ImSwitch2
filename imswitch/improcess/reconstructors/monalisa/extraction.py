@@ -147,6 +147,63 @@ def _disc_entries(
     )
 
 
+def _lattice_cell_entries(
+    x: np.ndarray,
+    y: np.ndarray,
+    frame_shape: tuple[int, int],
+    lattice,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Assign camera pixels to canonical DLL unit cells, as Local does.
+
+    The partition is made from lattice period/offset, *not* the potentially
+    refined fitting centres. The returned distances use the actual fitting
+    centres, however. Each returned pixel has precisely one owner/focus.
+    The geometry is restricted to an axis-aligned rectangular lattice.
+    """
+    if lattice is None:
+        raise ValueError("Joint lattice unit cells require a lattice")
+    try:
+        per_x, off_x, per_y, off_y = lattice.to_grid_params(tol=0.02)
+    except ValueError as exc:
+        raise ValueError("Joint lattice unit cells require an axis-aligned rectangular lattice") from exc
+    if min(per_x, per_y) <= 0:
+        raise ValueError("Invalid DLL grid period")
+    rows, cols = frame_shape
+    nr = 1 + int((rows - 1 - off_y) / per_y + .5)
+    nc = 1 + int((cols - 1 - off_x) / per_x + .5)
+    if nr < 1 or nc < 1:
+        raise ValueError("DLL grid does not intersect the camera")
+    ir = np.rint((y - off_y) / per_y).astype(np.int64)
+    ic = np.rint((x - off_x) / per_x).astype(np.int64)
+    grid_x = off_x + ic * per_x
+    grid_y = off_y + ir * per_y
+    assigned = (
+        (ir >= 0) & (ir < nr) & (ic >= 0) & (ic < nc)
+        & (np.abs(x - grid_x) < .45 * per_x)
+        & (np.abs(y - grid_y) < .45 * per_y)
+    )
+    focus_for_cell = np.full(nr * nc, -1, dtype=np.int64)
+    focus = np.flatnonzero(assigned)
+    cells = ir[focus] * nc + ic[focus]
+    if np.unique(cells).size != cells.size:
+        raise ValueError("Joint lattice support has duplicate focus cells")
+    focus_for_cell[cells] = focus
+
+    # The half-open floor(+0.5) convention is identical to Local's partition,
+    # including its handling of even lattice periods and fractional offsets.
+    yy = np.floor((np.arange(rows) - off_y) / per_y + .5).astype(np.int64)
+    xx = np.floor((np.arange(cols) - off_x) / per_x + .5).astype(np.int64)
+    inside = ((yy[:, None] >= 0) & (yy[:, None] < nr)
+              & (xx[None, :] >= 0) & (xx[None, :] < nc))
+    pixels = np.flatnonzero(inside)
+    cell_ids = (yy[:, None] * nc + xx[None, :]).ravel()[pixels]
+    owners = focus_for_cell[cell_ids]
+    keep = owners >= 0
+    pixel, owners = pixels[keep], owners[keep]
+    dist2 = (pixel % cols - x[owners])**2 + (pixel // cols - y[owners])**2
+    return owners, pixel, dist2
+
+
 def _haze_shape(dist2: np.ndarray, sigma: float) -> np.ndarray:
     """A wide Gaussian, shifted to reach zero at its support radius.
 
@@ -189,7 +246,10 @@ def _usable_pixels(num_pixels, pixel_mask, pixel_variance):
     return usable, variance
 
 
-def _joint_terms(x, y, sigma, frame_shape, fit_pixel, background, haze_sigma):
+def _joint_terms(
+    x, y, sigma, frame_shape, fit_pixel, background, haze_sigma,
+    *, lattice_owners=None,
+):
     """Rows and model terms of the joint fit: one row per fitted pixel.
 
     Every term is ``(kind, focus, row, value)``, the entries of the design
@@ -213,9 +273,15 @@ def _joint_terms(x, y, sigma, frame_shape, fit_pixel, background, haze_sigma):
         terms.append(("haze", focus, row, _haze_shape(dist2, float(haze_sigma))))
     if background != "none":
         # The constant of a focus holds over the pixels nearest to it.
-        _, owner = cKDTree(np.column_stack([x, y])).query(
-            np.column_stack([row_pixel % cols, row_pixel // cols])
-        )
+        if lattice_owners is None:
+            _, owner = cKDTree(np.column_stack([x, y])).query(
+                np.column_stack([row_pixel % cols, row_pixel // cols])
+            )
+        else:
+            # DLL-style cells own their background regardless of fitted centre.
+            owner = lattice_owners[row_pixel]
+            if np.any(owner < 0):
+                raise ValueError("Joint lattice background has unowned fit pixels")
         terms.append(
             ("constant", owner, np.arange(row_pixel.size), np.ones(row_pixel.size))
         )
@@ -342,6 +408,9 @@ class ExtractionOperator:
         frame_shape: tuple[int, int],
         *,
         reach_sigma: float = DEFAULT_REACH_SIGMA,
+        fit_radius_px: float | None = None,
+        footprint_mode: str = "auto",
+        lattice=None,
         background: str = "constant",
         haze_sigma: float | None = None,
         joint: bool = True,
@@ -357,8 +426,15 @@ class ExtractionOperator:
                 into it and the joint fit accounts for them.
             sigma: Spot width, one value or one per focus.
             frame_shape: ``(rows, cols)``.
-            reach_sigma: Footprint radius in units of each focus' sigma. The
-                fit uses the pixels within this radius of any focus.
+            reach_sigma: Fit-pixel radius in spot sigmas for "auto" (2.5 by
+                default). This is distinct from the 5.5-sigma model support.
+            fit_radius_px: Fixed circular fit-pixel radius, in camera pixels,
+                used when footprint_mode is "fixed".
+            footprint_mode: "auto" (sigma-scaled circle), "fixed" (circle of
+                given radius), or "lattice" (DLL rectangular unit-cell pixels).
+            lattice: Required for "lattice". The lattice defines pixel
+                ownership, while Gaussian centres remain the localized ones.
+                Only axis-aligned rectangular lattices are supported.
             background: ``"none"``, ``"constant"`` (one constant per focus,
                 over the pixels nearest to it) or ``"constant+haze"`` (plus
                 one wide Gaussian per focus).
@@ -377,10 +453,26 @@ class ExtractionOperator:
         x, y, sigma = _check_arguments(
             x, y, sigma, reach_sigma, background, haze_sigma
         )
+        footprint_mode = str(footprint_mode).strip().lower()
+        if footprint_mode not in ("auto", "fixed", "lattice"):
+            raise ValueError("Joint footprint must be auto, fixed, or lattice")
+        if fit_radius_px is not None:
+            fit_radius_px = float(fit_radius_px)
+            if not np.isfinite(fit_radius_px) or fit_radius_px <= 0:
+                raise ValueError("Joint fit radius must be finite and > 0")
+        if footprint_mode == "fixed" and fit_radius_px is None:
+            raise ValueError("Fixed Joint footprint requires a fit radius")
+        if footprint_mode == "lattice" and not joint:
+            raise ValueError("Joint lattice footprint requires joint extraction")
         rows, cols = (int(n) for n in frame_shape)
         usable, variance = _usable_pixels(rows * cols, pixel_mask, pixel_variance)
 
-        focus, pixel, dist2 = _disc_entries(x, y, reach_sigma * sigma, (rows, cols))
+        if footprint_mode == "lattice":
+            focus, pixel, dist2 = _lattice_cell_entries(x, y, (rows, cols), lattice)
+        else:
+            radius = (reach_sigma * sigma if footprint_mode == "auto" else
+                      np.full(x.size, fit_radius_px, dtype=float))
+            focus, pixel, dist2 = _disc_entries(x, y, radius, (rows, cols))
         keep = usable[pixel]
         focus, pixel, dist2 = focus[keep], pixel[keep], dist2[keep]
         pixels_per_focus = np.bincount(focus, minlength=x.size)
@@ -390,8 +482,13 @@ class ExtractionOperator:
             raise ValueError("No focus has enough footprint pixels inside the frame")
 
         if joint:
+            lattice_owners = None
+            if footprint_mode == "lattice":
+                lattice_owners = np.full(rows * cols, -1, dtype=np.int64)
+                lattice_owners[pixel] = focus
             row_pixel, terms = _joint_terms(
-                x, y, sigma, (rows, cols), pixel, background, haze_sigma
+                x, y, sigma, (rows, cols), pixel, background, haze_sigma,
+                lattice_owners=lattice_owners,
             )
             row = np.searchsorted(row_pixel, pixel)
         else:

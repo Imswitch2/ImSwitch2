@@ -56,7 +56,8 @@ PINHOLE_STACK_LIMIT_BYTES = 8 * 1024**3
 # The settings the extraction operator and spot model were built with. A
 # reused localization keeps those objects, so these settings must stay with it.
 _LOCALIZATION_FIELDS = (
-    "reach_sigma", "background", "haze_sigma_px", "joint",
+    "reach_sigma", "joint_footprint_mode", "joint_footprint_radius_px",
+    "background", "haze_sigma_px", "joint",
     "spot_mode", "spot_sigma_px", "period_band_px",
     "localization_refinement", "localization_settings",
 )
@@ -278,6 +279,8 @@ def pipeline_params(params: dict) -> PipelineParams:
         localization_settings = LocalizationSettings.from_dict(localization_settings)
     return PipelineParams(
         estimator=str(params.get("estimator", "joint")),
+        joint_footprint_mode=str(params.get("joint_footprint_mode", "auto")),
+        joint_fit_radius_px=float(params.get("joint_footprint_radius_px", 4.5)),
         local_footprint_mode=str(params.get("local_footprint_mode", "fixed")),
         local_footprint_shape=str(params.get("local_footprint_shape", "square")),
         local_footprint_size=int(params.get("local_footprint_size", 9)),

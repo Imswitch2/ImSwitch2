@@ -241,6 +241,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
             "sharpen_regularization": float(values["sharpen_regularization"]),
             "estimator": str(values["estimator"]),
+            "joint_footprint_mode": str(values["joint_footprint_mode"]),
+            "joint_footprint_radius_px": float(values["joint_footprint_radius_px"]),
             "local_footprint_mode": str(values["local_footprint_mode"]),
             "local_footprint_shape": str(values["local_footprint_shape"]),
             "local_footprint_size": int(values["local_footprint_size"]),
@@ -936,7 +938,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         ):
             self._footprint_user_override = True
         self._update_ui()
-        controlled = ("device", "placement_mode", "variance_weighting", "estimator")
+        controlled = (
+            "device", "placement_mode", "variance_weighting", "estimator",
+            "joint_footprint_mode", "joint_footprint_radius_px",
+        )
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
 
@@ -1788,6 +1793,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
             "estimator": str(self._advanced_values["estimator"]),
+            "joint_footprint_mode": str(self._advanced_values["joint_footprint_mode"]),
+            "joint_footprint_radius_px": float(self._advanced_values["joint_footprint_radius_px"]),
             "local_footprint_mode": str(self._advanced_values["local_footprint_mode"]),
             "local_footprint_shape": str(self._advanced_values["local_footprint_shape"]),
             "local_footprint_size": int(self._advanced_values["local_footprint_size"]),

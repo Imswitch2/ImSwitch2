@@ -373,3 +373,42 @@ def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch)
     assert values["local_footprint_mode"] == "from_lattice"
     assert values["local_footprint_shape"] == "circle"
     assert "Circle · From lattice" in new_widget.footprintSummaryLabel.text()
+
+
+def test_expert_joint_support_is_editable_without_new_widget(qapp):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+
+    widget = MonalisaParamsWidget()
+    dialog = AdvancedReconstructionDialog(widget._advanced_values)
+    assert dialog.jointSupport.currentData() == "auto"
+    assert dialog.jointRadius.isEnabled() is False
+    dialog.estimator.setCurrentText("joint")
+    assert dialog.jointSupport.isEnabled() is True
+    dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("fixed"))
+    assert dialog.jointRadius.isEnabled() is True
+    dialog.jointRadius.setValue(5.25)
+    assert dialog.values()["joint_footprint_mode"] == "fixed"
+    assert dialog.values()["joint_footprint_radius_px"] == 5.25
+    dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("lattice"))
+    assert dialog.jointRadius.isEnabled() is False
+    dialog.estimator.setCurrentText("local")
+    assert dialog.jointSupport.isEnabled() is False
+
+
+def test_editing_joint_support_marks_full_as_custom(qapp, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+
+    widget = MonalisaParamsWidget()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
+    assert widget.get_values()["preset"] == PRESET_FULL
+
+    def choose_lattice(dialog):
+        dialog.estimator.setCurrentText("joint")
+        dialog.jointSupport.setCurrentIndex(dialog.jointSupport.findData("lattice"))
+        return QtWidgets.QDialog.Accepted
+
+    monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", choose_lattice)
+    widget._open_advanced_reconstruction()
+    values = widget.get_values()
+    assert values["preset"] == PRESET_CUSTOM
+    assert values["joint_footprint_mode"] == "lattice"

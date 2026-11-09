@@ -89,7 +89,9 @@ class PipelineParams:
     """What remains to choose once the geometry is read from the data.
 
     Attributes:
-        reach_sigma: Footprint radius in spot sigmas.
+        reach_sigma: Automatic Joint fit-pixel radius in spot sigmas.
+        joint_footprint_mode: Joint pixel support selection: auto/fixed/lattice.
+        joint_fit_radius_px: Fixed Joint circular fit radius in camera pixels.
         background: ``"none"``, ``"constant"``, ``"constant+haze"``, or
             ``"auto"``: constant, plus haze when the mean frame calls for it.
         haze_sigma_px: Haze width; fitted to the mean frame when ``None``.
@@ -139,6 +141,8 @@ class PipelineParams:
     """
 
     reach_sigma: float = DEFAULT_REACH_SIGMA
+    joint_footprint_mode: str = "auto"
+    joint_fit_radius_px: float = 4.5
     background: str = "constant"
     haze_sigma_px: float | None = None
     joint: bool = True
@@ -435,6 +439,14 @@ def prepare_geometry(
         else float(first.shared_sigma)
     )
     margin = 3.0 * final_sigma
+    if params.estimator == "joint" and params.joint_footprint_mode == "lattice":
+        if len(localization.motif) != 1:
+            raise ValueError(
+                "Joint lattice unit cells require a single-motif axis-aligned rectangular lattice"
+            )
+        # Preserve neighboring canonical cells at camera boundaries so their
+        # ownership is not accidentally expanded into the nearest valid cell.
+        margin = max(margin, 0.6 * max(np.linalg.norm(lattice.matrix, axis=0)))
     x, y = localization.points_in_frame(rows, cols, margin=margin)
     if params.spot_sigma_px is not None:
         spot_model = SpotModel.uniform(x, y, final_sigma)
@@ -493,6 +505,10 @@ def prepare_geometry(
         operator = ExtractionOperator.build(
             spot_model.x, spot_model.y, sigma, (rows, cols),
             reach_sigma=params.reach_sigma,
+            footprint_mode=params.joint_footprint_mode,
+            fit_radius_px=(params.joint_fit_radius_px
+                           if params.joint_footprint_mode == "fixed" else None),
+            lattice=lattice if params.joint_footprint_mode == "lattice" else None,
             background=background,
             haze_sigma=haze_sigma if background == "constant+haze" else None,
             joint=params.joint,
@@ -541,6 +557,11 @@ def prepare_geometry(
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
         "estimator": estimator,
+        "joint_footprint_mode": params.joint_footprint_mode if estimator == "joint" else None,
+        "joint_fit_radius_px": (params.joint_fit_radius_px
+                                if estimator == "joint" and params.joint_footprint_mode == "fixed"
+                                else None),
+        "joint_fit_pixel_count": operator.num_fit_pixels if estimator == "joint" else None,
         "local_footprint_mode": params.local_footprint_mode if estimator == "local" else None,
         "local_footprint_shape": params.local_footprint_shape if estimator == "local" else None,
         "local_footprint_size": side if estimator == "local" else None,

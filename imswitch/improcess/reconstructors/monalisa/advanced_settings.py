@@ -136,12 +136,33 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         gaussian = QtWidgets.QGroupBox("Gaussian fitting")
         gaussianForm = QtWidgets.QFormLayout(gaussian)
         gaussianForm.addRow("Estimator", self.estimator)
+        self.jointSupport = QtWidgets.QComboBox()
+        self.jointSupport.addItem("Auto (2.5σ)", "auto")
+        self.jointSupport.addItem("Fixed radius", "fixed")
+        self.jointSupport.addItem("Lattice unit cells (DLL)", "lattice")
+        joint_mode = str(values.get("joint_footprint_mode", "auto"))
+        self.jointSupport.setCurrentIndex(max(0, self.jointSupport.findData(joint_mode)))
+        self.jointSupport.setToolTip(
+            "Pixels contributing to the Joint fit. Auto uses a 2.5σ circular radius; "
+            "Fixed uses camera pixels; Lattice uses DLL-style axis-aligned "
+            "rectangular cells. The Gaussian model support remains 5.5σ."
+        )
+        self.jointRadius = QtWidgets.QDoubleSpinBox()
+        self.jointRadius.setRange(0.1, 50.0)
+        self.jointRadius.setDecimals(2)
+        self.jointRadius.setSingleStep(0.25)
+        self.jointRadius.setSuffix(" px")
+        self.jointRadius.setValue(float(values.get("joint_footprint_radius_px", 4.5)))
+        self.jointRadius.setToolTip("Circular Joint fit-pixel radius (used only for Fixed support).")
+        gaussianForm.addRow("Joint support", self.jointSupport)
+        gaussianForm.addRow("Joint radius", self.jointRadius)
         gaussianForm.addRow("Local shape", self.footprintShape)
         gaussianForm.addRow("Local size mode", self.footprintMode)
         gaussianForm.addRow("Local side/diameter", footprintRow)
         gaussianForm.addRow("Local sampling", self.sampling)
         self.estimator.currentTextChanged.connect(self._update_local_enabled)
         self.footprintMode.currentIndexChanged.connect(self._update_local_enabled)
+        self.jointSupport.currentIndexChanged.connect(self._update_local_enabled)
         self.footprintSize.valueChanged.connect(self._odd_footprint_size)
         self._update_local_enabled()
 
@@ -170,6 +191,8 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             widget.setEnabled(local)
         self.footprintSize.setEnabled(local and self.footprintMode.currentData() == FOOTPRINT_FIXED)
         self.suggestButton.setEnabled(local and self._localization is not None)
+        self.jointSupport.setEnabled(not local)
+        self.jointRadius.setEnabled(not local and self.jointSupport.currentData() == "fixed")
 
     def _suggest_size(self):
         try:
@@ -185,6 +208,8 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
     def values(self) -> dict:
         return {
             "estimator": self.estimator.currentText(),
+            "joint_footprint_mode": str(self.jointSupport.currentData()),
+            "joint_footprint_radius_px": float(self.jointRadius.value()),
             "local_footprint_mode": str(self.footprintMode.currentData()),
             "local_footprint_shape": self.footprintShape.currentText(),
             "local_footprint_size": int(self.footprintSize.value()),
