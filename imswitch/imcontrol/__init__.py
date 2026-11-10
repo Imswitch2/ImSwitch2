@@ -30,10 +30,13 @@ def getMainViewAndController(moduleCommChannel, *_args,
 
     if overrideOptions is None:
         options, optionsDidNotExist = configfiletools.loadOptions()
-        if optionsDidNotExist:
-            options = pickSetup(options)  # Setup to use not set, let user pick
+        # A setup given with --setup is for this run only: no first-run pick,
+        # and an options file that did not exist still does not.
+        if configfiletools.setupForThisRun() is None:
+            if optionsDidNotExist:
+                options = pickSetup(options)  # Setup to use not set, let user pick
 
-        configfiletools.saveOptions(options)
+            configfiletools.saveOptions(options)
     else:
         options = overrideOptions
 
@@ -48,7 +51,10 @@ def getMainViewAndController(moduleCommChannel, *_args,
     else:
         setupInfo = overrideSetupInfo
 
-    logger.info(f'Setup used: {options.setupFileName}')
+    if configfiletools.setupForThisRun() is not None:
+        logger.info(f'Setup used: {options.setupFileName} (--setup, for this run only)')
+    else:
+        logger.info(f'Setup used: {options.setupFileName}')
 
     # The queue and working-set limits are per machine and read from these
     # options by every manager that bounds a buffer; adopt them before any

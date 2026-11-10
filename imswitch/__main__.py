@@ -12,12 +12,18 @@ from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher')
+    # No abbreviations: a restart that drops --setup looks for it spelled out.
+    parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher',
+                                     allow_abbrev=False)
     parser.add_argument('--debug', action='store_true',
                         help='Enable DEBUG-level log output from all managers.')
     parser.add_argument('--scale', type=float, default=None, metavar='FACTOR',
                         help='Scale the entire UI by this factor (e.g. 0.8 for 80%%). '
                              'Overrides the IMSWITCH_UI_SCALE environment variable.')
+    parser.add_argument('--setup', default=None, metavar='SETUP',
+                        help='Start with this hardware setup (a file in the '
+                             'imcontrol_setups folder) for this run only; the setup '
+                             'ImSwitch normally starts with is left as it is.')
     args, _unused = parser.parse_known_args()
     if args.debug:
         setLogLevel('DEBUG')
@@ -32,6 +38,16 @@ def main():
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
     app = prepareApp(scale=args.scale)
+
+    if args.setup is not None:
+        # After prepareApp: importing imcontrol pulls in the Qt bindings it picks.
+        from imswitch.imcontrol.model import configfiletools
+        try:
+            setupFileName = configfiletools.resolveSetupArgument(args.setup)
+        except ValueError as e:
+            logger.error(f'--setup: {e}')
+            parser.error(f'--setup: {e}')
+        configfiletools.useSetupForThisRun(setupFileName)
 
     enabledModuleIds = modulesconfigtools.getEnabledModuleIds()
     if 'imscripting' in enabledModuleIds:
