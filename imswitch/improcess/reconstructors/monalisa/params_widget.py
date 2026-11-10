@@ -173,6 +173,32 @@ class _WidthEstimateTask(QtCore.QRunnable):
         self.signals.finished.emit(result)
 
 
+class _ISMEstimateSignals(QtCore.QObject):
+    finished = QtCore.Signal(object)
+
+
+class _ISMEstimateTask(QtCore.QRunnable):
+    """Read-only raw-frame measurement on a background worker."""
+
+    def __init__(self, data_obj, params, serial):
+        super().__init__()
+        self.signals = _ISMEstimateSignals()
+        self.data_obj = data_obj
+        self.params = deepcopy(params)
+        self.serial = serial
+
+    def run(self):
+        try:
+            from .reconstructor import MonalisaReconstructor
+            estimate, status, localization = MonalisaReconstructor.estimate_ism_shift(
+                self.data_obj, self.params
+            )
+            result = (self.serial, self.data_obj, estimate, status, localization, "")
+        except Exception as exc:
+            result = (self.serial, self.data_obj, None, "", None, str(exc))
+        self.signals.finished.emit(result)
+
+
 class MonalisaParamsWidget(QtWidgets.QWidget):
     """Compact workflow-oriented controls for unified Gaussian MoNaLISA.
 
@@ -222,6 +248,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._fwhm_data_revision = 0
         self._fwhm_estimate_revision = None
         self._fwhm_estimate_signature = None
+        self._ism_estimate_serial = 0
+        self._ism_estimate_task = None
+        self._ism_estimate_busy = False
+        self._ism_estimate_revision = None
+        self._ism_estimate_signature = None
         self._applying_preset = False
         self._recorded_scan_summary = ""
         self._recorded_scan_axes: dict[str, dict[str, float | int | None]] = {}
@@ -663,8 +694,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         ism.addWidget(self.reassignmentCombo, 0, 1)
         ism.addWidget(QtWidgets.QLabel("Shift"), 0, 2)
         ism.addWidget(self.shiftFactorSpin, 0, 3)
-        ism.addWidget(self.asymmetricCheck, 0, 4)
-        ism.addWidget(self.pinholeCheck, 0, 5)
+        ism.addWidget(self.asymmetricCheck, 1, 0)
+        ism.addWidget(self.pinholeCheck, 1, 1)
+        self.estimateISMButton = QtWidgets.QPushButton("Estimate")
+        self.estimateISMButton.setToolTip(
+            "Measure the ISM shift from raw camera frames of the selected dataset, "
+            "without Gaussian fitting or reconstruction. Uses the selected "
+            "localization and resolved scan orientation; applies the result as Fixed."
+        )
+        ism.addWidget(self.estimateISMButton, 0, 4)
 
         self.asymmetricWidget = QtWidgets.QWidget()
         asym = QtWidgets.QHBoxLayout(self.asymmetricWidget)
@@ -675,12 +713,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftYSpin = self._double_spin(values.get("shift_factor_y", values["shift_factor"]), 0.0, 1.0, 3)
         self.shiftXSpin.setSingleStep(0.05)
         self.shiftYSpin.setSingleStep(0.05)
-        asym.addStretch(1)
         asym.addWidget(self.shiftXLabel)
         asym.addWidget(self.shiftXSpin)
         asym.addWidget(self.shiftYLabel)
         asym.addWidget(self.shiftYSpin)
-        ism.addWidget(self.asymmetricWidget, 1, 0, 1, 6)
+        ism.addWidget(self.asymmetricWidget, 1, 2, 1, 4)
         root.addWidget(self.ismBox)
 
         # Corrections --------------------------------------------------------
@@ -739,6 +776,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
         self.saveOrientationDefaultButton.clicked.connect(self._save_orientation_default)
         self.estimateFwhmButton.clicked.connect(self._estimate_fwhm)
+        self.estimateISMButton.clicked.connect(self._estimate_ism_shift)
         self.useEstimatedFwhmButton.triggered.connect(self._use_estimated_fwhm)
         self.saveFootprintDefaultButton.triggered.connect(self._save_footprint_default)
         self.useSetupFittingAction.triggered.connect(self._restore_fitting_default)
@@ -918,6 +956,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         )
         self.estimateFwhmButton.setText(
             "Estimating…" if self._fwhm_estimate_busy else "Estimate"
+        )
+        self.estimateISMButton.setEnabled(
+            not legacy and self._current_data_obj is not None and not self._ism_estimate_busy
+        )
+        self.estimateISMButton.setText(
+            "Estimating…" if self._ism_estimate_busy else "Estimate"
         )
         has_detector_setup = (
             self._detector_id != "unknown" and current_setup_path() is not None
@@ -1750,6 +1794,107 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if localization is not None and str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
             self.set_auto_localization(localization, status)
         self.setPreviewStatus(f"FWHM estimated: {value:.3f} {unit}. {status}")
+        self._update_ui()
+
+    @staticmethod
+    def _ism_calibration_signature(params: dict) -> str:
+        # Only geometry, localization and source selection matter. ISM mode,
+        # sharpening and Gaussian fitting do not affect the raw measurement.
+        keys = (
+            "preset", "pixel_size_nm", "localization_mode", "auto_localization",
+            "locked_localization", "manual_offset_x_px", "manual_offset_y_px",
+            "manual_period_x_px", "manual_period_y_px", "stagger_axis", "stagger",
+            "localization_settings", "orientation_mode", "orientation",
+            "locked_orientation", "_resolved_auto_orientation", "scan_steps_fast",
+            "scan_steps_slow", "scan_step_nm",
+        )
+        return json.dumps({key: params.get(key) for key in keys}, sort_keys=True, default=str)
+
+    def _ism_estimate_params(self) -> dict:
+        params = self.get_values()
+        if params["orientation_mode"] == ORIENTATION_AUTO:
+            # A resolved Auto orientation is only reusable for the same data.
+            # The visible combo is not authoritative: it could retain an old
+            # manual/setup orientation while Auto is still pending.
+            orientation = str(self._scan_result_summary.get("orientation") or "")
+            if not orientation and self._registry is not None:
+                item = self._registry.current_orientation(self._detector_id)
+                current = str(getattr(self._current_data_obj, "name", "") or "")
+                if item is not None and (
+                    not item.source_dataset or not current or item.source_dataset == current
+                ):
+                    orientation = item.orientation.to_literal()
+            params["_resolved_auto_orientation"] = orientation
+        return params
+
+    def _estimate_ism_shift(self):
+        if self._current_data_obj is None or self._ism_estimate_busy:
+            return
+        params = self._ism_estimate_params()
+        self._ism_estimate_serial += 1
+        self._ism_estimate_busy = True
+        self._ism_estimate_revision = self._fwhm_data_revision
+        self._ism_estimate_signature = self._ism_calibration_signature(params)
+        task = _ISMEstimateTask(self._current_data_obj, params, self._ism_estimate_serial)
+        task.signals.finished.connect(self._finish_ism_estimate)
+        self._ism_estimate_task = task
+        self._update_ui()
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    @QtCore.Slot(object)
+    def _finish_ism_estimate(self, result):
+        serial, data_obj, measurement, status, localization, error = result
+        if serial != self._ism_estimate_serial:
+            return
+        self._ism_estimate_busy = False
+        self._ism_estimate_task = None
+        if (
+            data_obj is not self._current_data_obj
+            or self._ism_estimate_revision != self._fwhm_data_revision
+            or self._ism_estimate_signature != self._ism_calibration_signature(
+                self._ism_estimate_params()
+            )
+        ):
+            self.setPreviewStatus("Discarded ISM estimate: source or scan geometry changed")
+            self._update_ui()
+            return
+        if error:
+            QtWidgets.QMessageBox.warning(self, "ISM shift estimation failed", error)
+            self._update_ui()
+            return
+        factor = measurement.factor
+        axis_values = {
+            "x": float(factor.alpha_x),
+            "y": float(factor.alpha_y),
+        }
+        axes = measurement.scanned_axes
+        scalar = (
+            axis_values[axes[0]] if len(axes) == 1
+            else float(factor.alpha)
+        )
+        # Never let QDoubleSpinBox silently clip an unphysical estimate.
+        relevant = [scalar] + [axis_values[a] for a in axes]
+        if not all(0.0 <= value <= 1.0 for value in relevant):
+            QtWidgets.QMessageBox.warning(
+                self, "ISM shift estimation failed",
+                "Measured shift factor is outside the physical range [0, 1]. "
+                "Check orientation, localization and recorded scan geometry.",
+            )
+            self._update_ui()
+            return
+        self.shiftFactorSpin.setValue(scalar)
+        self.shiftXSpin.setValue(axis_values["x"] if "x" in axes else 0.0)
+        self.shiftYSpin.setValue(axis_values["y"] if "y" in axes else 0.0)
+        self._set_combo_data(self.reassignmentCombo, "fixed")
+        # Like FWHM Estimate, the acceptance is user-driven and doesn't lock
+        # the detected localization or change its source mode.
+        if localization is not None and str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
+            self.set_auto_localization(localization, status)
+        self.setPreviewStatus(
+            f"ISM shift {scalar:.3f} ({'+'.join(a.upper() for a in axes)} scanned); "
+            f"X {factor.alpha_x:.3f}, Y {factor.alpha_y:.3f}; "
+            f"spread {factor.spread:.3f}. {status}"
+        )
         self._update_ui()
 
     def _use_estimated_fwhm(self):

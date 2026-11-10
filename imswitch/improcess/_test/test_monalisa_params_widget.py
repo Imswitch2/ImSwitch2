@@ -866,3 +866,56 @@ def test_native_title_click_collapses_new_fitting_section(qapp):
     assert widget.fittingBox.isExpanded() is False
     assert widget.fittingBox.header.isHidden() is False
     widget.close()
+
+
+def test_ism_estimate_is_in_ism_section_and_requires_selected_data(qapp):
+    widget = MonalisaParamsWidget()
+    assert widget.estimateISMButton.text() == "Estimate"
+    assert not widget.estimateISMButton.isEnabled()
+    widget._current_data_obj = object()
+    widget._update_ui()
+    assert widget.estimateISMButton.isEnabled()
+
+
+def test_ism_estimate_acceptance_sets_fixed_without_reconstruction(qapp):
+    from imswitch.improcess.reconstructors.monalisa.ism_calibration import ISMShiftEstimate
+    from imswitch.improcess.reconstructors.monalisa.reassignment import ShiftFactor
+    import numpy as np
+
+    widget = MonalisaParamsWidget()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
+    data_obj = object()
+    widget._current_data_obj = data_obj
+    widget._ism_estimate_serial = 1
+    widget._ism_estimate_revision = widget._fwhm_data_revision
+    widget._ism_estimate_signature = widget._ism_calibration_signature(widget._ism_estimate_params())
+    factor = ShiftFactor(
+        alpha=.4, alpha_x=.35, alpha_y=.45,
+        per_offset=np.array([[1., 0., .4, .9]]), spread=.02,
+    )
+    measurement = ISMShiftEstimate(factor, "+x+y", ("x", "y"), 0, 1)
+    widget._finish_ism_estimate((1, data_obj, measurement, "Raw-frame ISM", None, ""))
+    assert widget.reassignmentCombo.currentData() == "fixed"
+    assert widget.shiftFactorSpin.value() == .4
+    assert widget.shiftXSpin.value() == .35
+    assert widget.shiftYSpin.value() == .45
+    assert "ISM shift" in widget.previewStatusLabel.text()
+
+
+def test_ism_estimate_rejects_old_dataset_result(qapp):
+    from imswitch.improcess.reconstructors.monalisa.ism_calibration import ISMShiftEstimate
+    from imswitch.improcess.reconstructors.monalisa.reassignment import ShiftFactor
+    import numpy as np
+
+    widget = MonalisaParamsWidget()
+    previous_data = object()
+    widget._current_data_obj = object()
+    widget._ism_estimate_serial = 2
+    widget._ism_estimate_revision = widget._fwhm_data_revision
+    widget._ism_estimate_signature = widget._ism_calibration_signature(widget._ism_estimate_params())
+    factor = ShiftFactor(.3, .3, .3, np.array([[1., 0., .3, .9]]), .02)
+    measurement = ISMShiftEstimate(factor, "+x+y", ("x", "y"), 0, 1)
+    before = widget.shiftFactorSpin.value()
+    widget._finish_ism_estimate((2, previous_data, measurement, "", None, ""))
+    assert widget.shiftFactorSpin.value() == before
+    assert "Discarded ISM estimate" in widget.previewStatusLabel.text()

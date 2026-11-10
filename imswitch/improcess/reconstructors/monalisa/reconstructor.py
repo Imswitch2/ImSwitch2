@@ -414,6 +414,56 @@ class MonalisaReconstructor(StreamingReconstructor):
                 data_obj.checkAndUnloadData()
         return sigma, description, found
 
+    @classmethod
+    def estimate_ism_shift(cls, data_obj, params: dict | None = None):
+        """Estimate ISM displacement directly from camera frames, with no fit.
+
+        The selected localization and scan orientation are authoritative.
+        In Auto mode, an unresolved orientation is *not* guessed; the widget
+        supplies a prior Auto solution for this dataset when one exists.
+        Returns the measurement, a descriptive status and any newly detected
+        Auto localization. Nothing is committed to the session here.
+        """
+        from .ism_calibration import estimate_ism_shift
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        if str(merged.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError("ISM estimation is not available with Legacy DLL")
+        orientation = cls._orientation_literal(merged)
+        if orientation is None:
+            orientation = str(merged.get("_resolved_auto_orientation") or "")
+        if not orientation:
+            raise ValueError(
+                "Auto scanning orientation is not resolved. Select a recorded, "
+                "setup, locked or manual orientation before estimating ISM."
+            )
+
+        localization = cls._resolved_localization(merged)
+        found = None
+        if localization is None:
+            # Localize only when the user's Auto mode is still unresolved.
+            found, _, _ = cls().localize(data_obj, merged)
+            localization = found
+        preloaded = bool(getattr(data_obj, "dataLoaded", True))
+        try:
+            data_obj.checkAndLoadData()
+            frames = np.asarray(data_obj.data)
+            measurement = estimate_ism_shift(
+                frames, dict(getattr(data_obj, "attrs", {}) or {}),
+                getattr(data_obj, "acquisition_layout", None),
+                merged, localization, orientation,
+            )
+        finally:
+            if not preloaded and hasattr(data_obj, "checkAndUnloadData"):
+                data_obj.checkAndUnloadData()
+        status = (
+            f"Raw-frame ISM; orientation {measurement.orientation}; "
+            f"stack {measurement.stack_number + 1}/{measurement.num_stacks}; "
+            f"{len(measurement.factor.per_offset)} detector offsets"
+        )
+        return measurement, status, found
+
     @staticmethod
     def _orientation_literal(params: dict):
         mode = str(params.get("orientation_mode", ORIENTATION_AUTO))
