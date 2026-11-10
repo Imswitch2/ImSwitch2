@@ -79,3 +79,37 @@ def test_setup_and_recorded_orientation_resolve_without_auto_detection():
         MonalisaReconstructor._orientation_literal({
             "orientation_mode": ORIENTATION_SETUP, "orientation": "+x+x",
         })
+
+
+def test_gaussian_fitting_default_saves_estimator_and_footprint_atomically(tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import (
+        save_detector_fitting, SHARED_FOOTPRINT_MODE_KEY, ESTIMATOR_KEY,
+    )
+
+    path = _setup(tmp_path)
+    save_detector_fitting("CAM", "joint", "fixed", "circle", 10.5, path=path)
+    saved = read_detector_defaults("CAM", path=path)
+    assert (saved.estimator, saved.footprint_mode, saved.footprint_shape) == (
+        "joint", "fixed", "circle",
+    )
+    assert saved.footprint_size == pytest.approx(10.5)
+    doc = json.loads(path.read_text())
+    props = doc["detectors"]["CAM"]["managerProperties"]
+    assert props[ESTIMATOR_KEY] == "joint"
+    assert props[SHARED_FOOTPRINT_MODE_KEY] == "fixed"
+    assert props["untouched"] == {"x": 1}
+
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        save_detector_fitting("CAM", "invalid", "fixed", "circle", 10.5, path=path)
+    assert path.read_bytes() == before
+
+
+def test_older_footprint_default_has_no_implicit_estimator(tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import save_detector_footprint
+
+    path = _setup(tmp_path)
+    save_detector_footprint("CAM", "from_lattice", "square", 9.0, path=path)
+    defaults = read_detector_defaults("CAM", path=path)
+    assert defaults.estimator is None
+    assert defaults.footprint_mode == "from_lattice"

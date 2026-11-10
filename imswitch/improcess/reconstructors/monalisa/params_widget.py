@@ -6,7 +6,7 @@ from copy import deepcopy
 import json
 import re
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from .advanced_settings import AdvancedReconstructionDialog
 from .calibration import PatternLocalization, ScanOrientation
@@ -27,7 +27,6 @@ from .params import (
     PRESET_LEGACY,
     SPOT_AUTO,
     SPOT_MANUAL,
-    FOOTPRINT_FROM_LATTICE, FOOTPRINT_FIXED,
     apply_preset,
     default_params,
 )
@@ -36,12 +35,109 @@ from .scanning_settings import ScanningAdvancedDialog
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
 from .footprint_suggestion import suggest_local_footprint_size
-from .footprint_config import FitFootprint, footprint_from_params, migrate_footprint_params
+from .footprint_config import footprint_from_params, migrate_footprint_params
 from .setup_defaults import (
     DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
-    read_detector_defaults, save_detector_default, save_detector_footprint, positive_fwhm,
-    validate_footprint,
+    read_detector_defaults, save_detector_default, save_detector_fitting, positive_fwhm,
 )
+
+
+class _ThinFittingHeader(QtWidgets.QWidget):
+    """Results-splitter-style disclosure row with no native button chrome.
+
+    Mirrors ``_SessionSplitterHandle`` in ProcessingSessionFrame: a text-only
+    transparent toggle plus a single hairline painted after its text.  It does
+    *not* use the regular ``_CollapsibleSection`` widget, whose appearance is
+    visibly heavier than the Results splitter header.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self._summary = ""
+        self._status = ""
+        self._status_tooltip = ""
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.toggle = QtWidgets.QToolButton(self)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.toggle.setAutoRaise(True)
+        # The Session splitter is not inside a bold group; use the application
+        # font rather than inheriting any emphasis from the Spot model group.
+        self.toggle.setFont(QtWidgets.QApplication.font())
+        self.toggle.setCursor(QtCore.Qt.ArrowCursor)
+        self.toggle.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        # These rules match the Session Results splitter toggle. In particular,
+        # hover and pressed MUST remain transparent even with global Qt themes.
+        self.toggle.setStyleSheet(
+            "QToolButton { border: none; background: transparent; padding: 0 2px 0 0; }"
+            "QToolButton:hover { border: none; background: transparent; }"
+            "QToolButton:pressed { border: none; background: transparent; }"
+            "QToolButton:checked { border: none; background: transparent; }"
+        )
+        height = self.toggle.fontMetrics().height() + 2
+        self.toggle.setFixedHeight(height)
+        self.setFixedHeight(height)
+        self.toggle.toggled.connect(self._update_toggle_text)
+        layout.addWidget(self.toggle)
+        layout.addStretch(1)
+        self._update_toggle_text()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setHeight(self.fontMetrics().height() + 2)
+        return hint
+
+    def paintEvent(self, event):
+        # As with the Results splitter, paint only the thin divider. Never call
+        # a native frame/handle paint method (which could draw a raised surface).
+        painter = QtGui.QPainter(self)
+        color = self.palette().color(QtGui.QPalette.Mid)
+        color.setAlpha(150)
+        painter.setPen(QtGui.QPen(color, 1))
+        y = self.rect().center().y()
+        x = self.toggle.geometry().right() + 5
+        if x < self.width():
+            painter.drawLine(x, y, self.width() - 1, y)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_toggle_text()
+
+    def setSummary(self, summary: str) -> None:
+        self._summary = str(summary)
+        self._update_toggle_text()
+
+    def setStatus(self, status: str, tooltip: str = "") -> None:
+        self._status = str(status)
+        self._status_tooltip = str(tooltip)
+        self._update_toggle_text()
+
+    def _update_toggle_text(self, *_):
+        marker = "⌄" if self.toggle.isChecked() else "›"
+        summary = f"Fitting · {self._summary}" if self._summary else "Fitting"
+        full = f"{marker} {summary}"
+        # Keep room for the separator at narrow ImProcess panel widths.
+        available = max(55, self.width() - 28)
+        displayed = self.toggle.fontMetrics().elidedText(
+            full, QtCore.Qt.ElideRight, available
+        )
+        if self.toggle.text() != displayed:
+            self.toggle.setText(displayed)
+        self.toggle.setToolTip(
+            "Expand to edit estimator and footprint settings. " + summary
+            + ((". " + self._status_tooltip) if self._status_tooltip else "")
+        )
+        self.update()
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
@@ -247,6 +343,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "footprint_size_px": float(values["footprint_size_px"]),
             "footprint_sigma_factor": float(values["footprint_sigma_factor"]),
             "local_sampling": str(values["local_sampling"]),
+            "background": str(values["background"]),
         }
 
         self._build_ui(values)
@@ -484,62 +581,126 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addWidget(self.scanningBox)
 
         # Spot model ---------------------------------------------------------
+        # Everyday FWHM calibration stays immediately accessible. Less frequently
+        # edited fitting controls live in a collapsible inline section; this is
+        # deliberately not another Expert dialog.
         self.spotBox, spot = self._section("Spot model")
-        self.spotModeLabel = QtWidgets.QLabel("Mode")
-        self.spotModeCombo = self._combo([SPOT_MANUAL, SPOT_AUTO], values["spot_width_mode"])
-        spot.addWidget(self.spotModeLabel, 0, 0)
-        spot.addWidget(self.spotModeCombo, 0, 1)
+        self.fwhmLabel = QtWidgets.QLabel("FWHM")
+        self.spotModeCombo = self._combo(
+            [("Manual", SPOT_MANUAL), ("Auto", SPOT_AUTO)], values["spot_width_mode"]
+        )
+        self.spotModeCombo.setToolTip(
+            "Manual uses the entered FWHM; Auto estimates it during each reconstruction."
+        )
+        self.fwhmSpin = self._double_spin(values["spot_fwhm"], 0.001, 100000, 3)
+        self.fwhmSpin.setMaximumWidth(112)
+        self.fwhmUnitCombo = self._combo(["nm", "px"], values["spot_fwhm_unit"])
+        self.fwhmUnitCombo.setMaximumWidth(72)
         self.estimateFwhmButton = QtWidgets.QPushButton("Estimate")
         self.estimateFwhmButton.setToolTip(
-            "Estimate a shared FWHM from one representative scan of the selected dataset, "
-            "without reconstructing; switch to Manual and allow refinement."
+            "Estimate FWHM from the selected dataset without reconstructing. "
+            "The estimate becomes an editable Manual value."
         )
-        self.useEstimatedFwhmButton = QtWidgets.QPushButton("Use estimate")
-        self.useEstimatedFwhmButton.setToolTip(
-            "After Auto estimation during reconstruction, keep the displayed FWHM as a fixed value."
+        self.fwhmMenuButton = QtWidgets.QToolButton()
+        self.fwhmMenuButton.setText("⋯")
+        self.fwhmMenuButton.setToolTip("Restore or save the detector FWHM default")
+        self.fwhmMenu = QtWidgets.QMenu(self.fwhmMenuButton)
+        self.useEstimatedFwhmButton = self.fwhmMenu.addAction("Use last Auto estimate")
+        self.useSetupFwhmButton = self.fwhmMenu.addAction("Restore setup default")
+        self.fwhmMenu.addSeparator()
+        self.saveFwhmDefaultButton = self.fwhmMenu.addAction("Save as setup default…")
+        self.fwhmMenuButton.setMenu(self.fwhmMenu)
+        self.fwhmMenuButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        # Keep the source for existing calibration logic without consuming a
+        # second visible row; it is available from the FWHM menu tooltip.
+        self.fwhmSourceLabel = QtWidgets.QLabel("Application default", self.spotBox)
+        self.fwhmSourceLabel.hide()
+        spot.addWidget(self.fwhmLabel, 0, 0)
+        spot.addWidget(self.spotModeCombo, 0, 1)
+        spot.addWidget(self.fwhmSpin, 0, 2)
+        spot.addWidget(self.fwhmUnitCombo, 0, 3)
+        spot.addWidget(self.estimateFwhmButton, 0, 4)
+        spot.addWidget(self.fwhmMenuButton, 0, 5)
+
+        self._fitting_expanded = False
+        self.fittingHeader = _ThinFittingHeader(self.spotBox)
+        self.fittingToggle = self.fittingHeader.toggle
+        spot.addWidget(self.fittingHeader, 1, 0, 1, 6)
+
+        self.fittingDetailsWidget = QtWidgets.QWidget()
+        fitting = QtWidgets.QGridLayout(self.fittingDetailsWidget)
+        fitting.setContentsMargins(14, 0, 0, 4)
+        fitting.setHorizontalSpacing(6)
+        fitting.setVerticalSpacing(4)
+        self.estimatorCombo = self._combo(
+            [("Local", "local"), ("Joint", "joint")], values["estimator"]
         )
-        spot.addWidget(self.useEstimatedFwhmButton, 0, 2)
-        self.fwhmSourceLabel = QtWidgets.QLabel("Application default")
-        self.fwhmSourceLabel.setStyleSheet("color: palette(mid);")
-        spot.addWidget(self.fwhmSourceLabel, 0, 3, 1, 2)
-        self.fwhmSpin = self._double_spin(values["spot_fwhm"], 0.001, 100000, 3)
-        self.fwhmUnitCombo = self._combo(["nm", "px"], values["spot_fwhm_unit"])
-        self.backgroundLabel = QtWidgets.QLabel("Background")
-        self.backgroundCombo = self._combo(["constant", "none", "auto"], values["background"])
-        self.fwhmLabel = QtWidgets.QLabel("FWHM")
-        spot.addWidget(self.fwhmLabel, 1, 0)
-        spot.addWidget(self.fwhmSpin, 1, 1)
-        spot.addWidget(self.fwhmUnitCombo, 1, 2)
-        spot.addWidget(self.estimateFwhmButton, 1, 5)
-        spot.addWidget(self.backgroundLabel, 1, 3)
-        spot.addWidget(self.backgroundCombo, 1, 4)
-        self.useSetupFwhmButton = QtWidgets.QPushButton("Use setup")
-        self.useSetupFwhmButton.setToolTip(
-            "Apply the current detector setup FWHM, including when a recording contains an older value."
+        self.estimatorCombo.setToolTip(
+            "Local fits each spot independently; Joint models neighboring Gaussian signals together."
         )
-        self.saveFwhmDefaultButton = QtWidgets.QPushButton("Save default…")
-        self.saveFwhmDefaultButton.setToolTip(
-            "Save the selected fixed FWHM (nm) to the active hardware setup for this detector."
+        self.footprintShapeCombo = self._combo(
+            [("Square", "square"), ("Circle", "circle"), ("Lattice cells", "lattice")],
+            values["footprint_shape"],
         )
-        spot.addWidget(self.useSetupFwhmButton, 2, 1)
-        spot.addWidget(self.saveFwhmDefaultButton, 2, 2, 1, 2)
-        self.footprintTitle = QtWidgets.QLabel("Local footprint")
-        self.footprintSummaryLabel = QtWidgets.QLabel("Square · From lattice")
-        self.footprintSummaryLabel.setToolTip(
-            "Current Local footprint. The actual size is calculated from the selected "
-            "lattice when From lattice is enabled."
+        self.footprintShapeCombo.setToolTip(
+            "Footprint defines which camera pixels participate in the fit. "
+            "Lattice cells require axis-aligned rectangular, single-motif geometry."
         )
-        self.footprintEditButton = QtWidgets.QPushButton("Edit…")
-        self.footprintEditButton.setToolTip("Open the existing Expert settings for footprint shape and sizing.")
-        self.saveFootprintDefaultButton = QtWidgets.QPushButton("Save default…")
-        self.saveFootprintDefaultButton.setToolTip(
-            "Save the Local footprint shape, size mode and fixed size in the detector setup."
+        self.footprintModeCombo = self._combo(
+            [("From lattice", "from_lattice"), ("Fixed", "fixed"),
+             ("Spot-width relative", "fwhm")], values["footprint_mode"]
         )
-        spot.addWidget(self.footprintTitle, 3, 0)
-        spot.addWidget(self.footprintSummaryLabel, 3, 1, 1, 2)
-        spot.addWidget(self.footprintEditButton, 3, 3)
-        spot.addWidget(self.saveFootprintDefaultButton, 3, 4)
-        spot.setColumnStretch(5, 1)
+        self.footprintModeCombo.setToolTip(
+            "From lattice adapts to the localized period; Fixed uses a numeric side/diameter; "
+            "Spot-width relative uses an editable fit radius in multiples of spot sigma "
+            "(the original Joint Auto support is Circle with radius 2.5σ)."
+        )
+        self.footprintSizeSpin = self._double_spin(
+            values["footprint_size_px"], 0.1, 255.0, 2, " px"
+        )
+        self.footprintSigmaSpin = self._double_spin(
+            values["footprint_sigma_factor"], 0.1, 100.0, 3, " σ"
+        )
+        self.footprintSizeSpin.setMaximumWidth(110)
+        self.footprintSigmaSpin.setMaximumWidth(110)
+        self.footprintSizeSpin.setToolTip(
+            "Fixed size: square side (odd integer) or circle diameter in camera pixels."
+        )
+        self.footprintSigmaSpin.setToolTip("Fitting radius in multiples of spot sigma.")
+        self.fitCalculatedSizeLabel = QtWidgets.QLabel("Auto size")
+        self.fitCalculatedSizeLabel.setStyleSheet("color: palette(mid);")
+        self.fitCalculatedSizeLabel.setToolTip("Size will be resolved from the selected localization")
+        self.footprintValueStack = QtWidgets.QStackedWidget()
+        self.footprintValueStack.addWidget(self.footprintSizeSpin)
+        self.footprintValueStack.addWidget(self.footprintSigmaSpin)
+        self.footprintValueStack.addWidget(self.fitCalculatedSizeLabel)
+        self.footprintValueStack.addWidget(QtWidgets.QWidget())  # lattice cells: no size
+        self.fittingMenuButton = QtWidgets.QToolButton()
+        self.fittingMenuButton.setText("⋯")
+        self.fittingMenuButton.setToolTip("Restore or save detector Gaussian fitting defaults")
+        self.fittingMenu = QtWidgets.QMenu(self.fittingMenuButton)
+        self.useSetupFittingAction = self.fittingMenu.addAction("Restore setup default")
+        self.fittingMenu.addSeparator()
+        self.saveFootprintDefaultButton = self.fittingMenu.addAction("Save fitting as setup default…")
+        self.fittingMenuButton.setMenu(self.fittingMenu)
+        self.fittingMenuButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        # Internal status only; the detailed status remains in the Fitting
+        # header tooltip rather than occupying a separate row or suffix.
+        self.footprintSourceLabel = QtWidgets.QLabel("Application default", self.fittingDetailsWidget)
+        self.footprintSourceLabel.hide()
+        fitting.addWidget(self.estimatorCombo, 0, 0)
+        fitting.addWidget(self.footprintShapeCombo, 0, 1)
+        fitting.addWidget(self.footprintModeCombo, 0, 2)
+        fitting.addWidget(self.footprintValueStack, 0, 3)
+        fitting.addWidget(self.fittingMenuButton, 0, 4)
+        fitting.setColumnStretch(0, 1)
+        fitting.setColumnStretch(1, 1)
+        fitting.setColumnStretch(2, 1)
+        self.fittingDetailsWidget.setVisible(False)
+        spot.addWidget(self.fittingDetailsWidget, 2, 0, 1, 6)
+        spot.setColumnStretch(1, 1)
+        spot.setColumnStretch(2, 1)
+        spot.setColumnStretch(3, 1)
         root.addWidget(self.spotBox)
 
         # Classic DLL -------------------------------------------------------
@@ -674,11 +835,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
         self.saveOrientationDefaultButton.clicked.connect(self._save_orientation_default)
         self.estimateFwhmButton.clicked.connect(self._estimate_fwhm)
-        self.useEstimatedFwhmButton.clicked.connect(self._use_estimated_fwhm)
-        self.footprintEditButton.clicked.connect(self._open_advanced_reconstruction)
-        self.saveFootprintDefaultButton.clicked.connect(self._save_footprint_default)
-        self.useSetupFwhmButton.clicked.connect(self._use_setup_fwhm)
-        self.saveFwhmDefaultButton.clicked.connect(self._save_fwhm_default)
+        self.useEstimatedFwhmButton.triggered.connect(self._use_estimated_fwhm)
+        self.saveFootprintDefaultButton.triggered.connect(self._save_footprint_default)
+        self.useSetupFittingAction.triggered.connect(self._restore_fitting_default)
+        self.useSetupFwhmButton.triggered.connect(self._use_setup_fwhm)
+        self.saveFwhmDefaultButton.triggered.connect(self._save_fwhm_default)
+        self.fittingToggle.toggled.connect(self._set_fitting_expanded)
+        for combo in (self.estimatorCombo, self.footprintShapeCombo):
+            combo.currentIndexChanged.connect(self._fitting_changed)
+        self.footprintModeCombo.currentIndexChanged.connect(self._fitting_changed)
+        self.footprintSizeSpin.valueChanged.connect(self._fitting_changed)
+        self.footprintSigmaSpin.valueChanged.connect(self._fitting_changed)
         self.fwhmSpin.valueChanged.connect(self._fwhm_changed)
         self.scanningAdvancedButton.clicked.connect(self._open_scanning_advanced)
         self.advancedButton.clicked.connect(self._open_advanced_reconstruction)
@@ -776,11 +943,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.correctionsBox.setVisible(not legacy)
         self.outputBox.setVisible(not fast and not legacy)
         self.legacyBox.setVisible(legacy)
-        # Width estimation is a calibration tool, also usable in Normal mode.
-        self.spotModeLabel.setVisible(not legacy)
+        # Spot width is useful for Legacy too; fitting is Gaussian-only.
         self.spotModeCombo.setVisible(not legacy)
-        self.backgroundLabel.setVisible(not legacy)
-        self.backgroundCombo.setVisible(not legacy)
+        self.fittingHeader.setVisible(not legacy)
+        self.fittingDetailsWidget.setVisible(not legacy and self._fitting_expanded)
         self.fwhmUnitCombo.setEnabled(True)
         gaussian_bg = str(self._combo_data(self.legacyBackgroundCombo)) == "Gaussian"
         self.legacyGaussianSizeLabel.setEnabled(gaussian_bg)
@@ -855,16 +1021,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             not spot_auto and has_detector_setup and not legacy
         )
         self.saveFootprintDefaultButton.setEnabled(not legacy and has_detector_setup)
+        self.useSetupFittingAction.setEnabled(
+            not legacy and (self._setup_defaults.footprint_mode is not None
+                            or self._setup_defaults.estimator is not None)
+        )
         self.saveOrientationDefaultButton.setEnabled(
             not legacy and has_detector_setup and self._lockable_orientation() is not None
         )
         self.fwhmSourceLabel.setText(self._fwhm_source)
-        for widget in (
-            self.footprintTitle, self.footprintSummaryLabel, self.footprintEditButton,
-            self.saveFootprintDefaultButton,
-        ):
-            widget.setVisible(not legacy)
+        self.fwhmMenuButton.setToolTip(
+            f"FWHM source: {self._fwhm_source}. Restore or save the detector FWHM default."
+        )
+        self._sync_fitting_controls()
         self._update_footprint_summary()
+        self._update_fitting_summary()
         # The unit remains editable in Auto: changing units changes only how
         # the resolved value is displayed, not how it was estimated.
         self.fwhmUnitCombo.setEnabled(True)
@@ -932,13 +1102,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._advanced_values.update(dialog.values())
-        footprint_keys = ("footprint_shape", "footprint_mode", "footprint_size_px",
-                          "footprint_sigma_factor")
-        if any(self._advanced_values[key] != before[key] for key in footprint_keys):
-            self._footprint_user_override = True
         self._update_ui()
-        controlled = ("device", "placement_mode", "variance_weighting", "estimator",
-                      *footprint_keys)
+        controlled = ("device", "placement_mode", "variance_weighting")
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
 
@@ -1293,23 +1458,163 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     # ----------------------------------------------------------- spot / ISM
-    def _update_footprint_summary(self):
-        fit = footprint_from_params(self._advanced_values)
-        shape = fit.shape.capitalize() if fit.shape != "lattice" else "Lattice unit cells"
-        if fit.shape == "lattice":
-            detail = "DLL pixel ownership"
-        elif fit.mode == "fixed":
-            detail = f"Fixed {fit.size_px:g} px"
-        elif fit.mode == "fwhm":
-            detail = f"Radius {fit.sigma_factor:g}σ"
+    def _sync_fitting_controls(self) -> None:
+        """Reflect preset/setup changes without recursively marking Custom."""
+        for widget, value in (
+            (self.estimatorCombo, self._advanced_values["estimator"]),
+            (self.footprintShapeCombo, self._advanced_values["footprint_shape"]),
+            (self.footprintModeCombo, self._advanced_values["footprint_mode"]),
+        ):
+            blocked = widget.blockSignals(True)
+            try:
+                self._set_combo_data(widget, value)
+            finally:
+                widget.blockSignals(blocked)
+        for widget, value in (
+            (self.footprintSizeSpin, self._advanced_values["footprint_size_px"]),
+            (self.footprintSigmaSpin, self._advanced_values["footprint_sigma_factor"]),
+        ):
+            blocked = widget.blockSignals(True)
+            try:
+                widget.setValue(float(value))
+            finally:
+                widget.blockSignals(blocked)
+        shape = str(self._advanced_values["footprint_shape"])
+        mode = str(self._advanced_values["footprint_mode"])
+        if shape == "square":
+            self.footprintSizeSpin.setDecimals(0)
+            self.footprintSizeSpin.setSingleStep(2.0)
         else:
+            self.footprintSizeSpin.setDecimals(2)
+            self.footprintSizeSpin.setSingleStep(1.0)
+        active = shape != "lattice"
+        self.footprintModeCombo.setEnabled(active)
+        self.footprintValueStack.setCurrentIndex(
+            3 if not active else
+            0 if mode == "fixed" else 1 if mode == "fwhm" else 2
+        )
+        if active and mode == "from_lattice":
             loc = self._lockable_localization()
             try:
-                size = suggest_local_footprint_size(loc[0], fit.shape) if loc else None
-            except ValueError:
-                size = None
-            detail = f"From lattice ({size} px)" if size else "From lattice"
-        self.footprintSummaryLabel.setText(f"{shape} · {detail}")
+                proposed = suggest_local_footprint_size(loc[0], shape) if loc else None
+            except (ValueError, TypeError):
+                proposed = None
+            self.footprintModeCombo.setToolTip(
+                f"Resolved footprint size: {proposed} px" if proposed else
+                "Size is calculated from localization when reconstruction starts."
+            )
+            self.fitCalculatedSizeLabel.setText(f"{proposed} px" if proposed else "Auto size")
+
+    def _set_fitting_expanded(self, expanded: bool) -> None:
+        """Keep the inline fitting editor collapsed unless the user requests it."""
+        self._fitting_expanded = bool(expanded)
+        self.fittingHeader._update_toggle_text()
+        self.fittingDetailsWidget.setVisible(
+            self._fitting_expanded and self._mode_value() != PRESET_LEGACY
+        )
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
+
+    def _fitting_changed(self, *_):
+        """Update the existing scientific configuration directly from the main panel."""
+        if self._applying_preset:
+            return
+        shape = str(self._combo_data(self.footprintShapeCombo))
+        mode = str(self._combo_data(self.footprintModeCombo))
+        size = float(self.footprintSizeSpin.value())
+        if shape == "square" and mode == "fixed":
+            # The extraction backend requires odd square sides. Quantize before
+            # updating shared params so interactive edits never create invalid jobs.
+            odd = max(3, min(255, int(round(size))))
+            if odd % 2 == 0:
+                odd = odd + 1 if odd < 255 else odd - 1
+            size = float(odd)
+        if shape == "lattice":
+            mode = "from_lattice"  # sizing has no meaning for unit-cell ownership
+        candidate = dict(self._advanced_values)
+        candidate.update({
+            "estimator": str(self._combo_data(self.estimatorCombo)),
+            "footprint_shape": shape,
+            "footprint_mode": mode,
+            "footprint_size_px": size,
+            "footprint_sigma_factor": float(self.footprintSigmaSpin.value()),
+        })
+        try:
+            footprint_from_params(candidate)
+        except ValueError:
+            self._update_ui()
+            return
+        if any(candidate[key] != self._advanced_values[key] for key in (
+            "estimator", "footprint_shape", "footprint_mode", "footprint_size_px",
+            "footprint_sigma_factor",
+        )):
+            self._advanced_values.update(candidate)
+            self._footprint_user_override = True
+            self._controlled_changed()
+        else:
+            self._update_ui()
+
+    def _update_footprint_summary(self):
+        fit = footprint_from_params(self._advanced_values)
+        saved = self._setup_defaults
+        if saved.footprint_mode is None and saved.estimator is None:
+            status = ("Modified · not saved" if self._footprint_user_override
+                      else "Application default")
+        else:
+            same = (fit.shape == saved.footprint_shape and
+                    (fit.shape == "lattice" or fit.mode == saved.footprint_mode))
+            if same and fit.shape != "lattice":
+                if fit.mode == "fixed":
+                    same = fit.size_px == saved.footprint_size
+                elif fit.mode == "fwhm":
+                    same = fit.sigma_factor == saved.footprint_sigma_factor
+            if saved.estimator is not None:
+                same = same and self._advanced_values["estimator"] == saved.estimator
+            status = "Setup default" if same else "Modified from setup"
+        self.footprintSourceLabel.setText(status)
+        self.footprintSourceLabel.setToolTip(
+            "Save fitting default stores estimator and footprint together for this detector."
+        )
+        compact_status = (
+            "Setup" if status == "Setup default" else
+            "Modified" if status.startswith("Modified") else ""
+        )
+        self.fittingHeader.setStatus(
+            compact_status, status + ". " + self.footprintSourceLabel.toolTip()
+        )
+
+    def _update_fitting_summary(self) -> None:
+        """Show the actual scientific selection even while the editor is closed."""
+        fit = footprint_from_params(self._advanced_values)
+        estimator = str(self._advanced_values["estimator"]).capitalize()
+        if fit.shape == "lattice":
+            description = "Lattice cells"
+        else:
+            shape = fit.shape.capitalize()
+            if fit.mode == "from_lattice":
+                resolved = self.fitCalculatedSizeLabel.text()
+                size = f" ({resolved})" if resolved and resolved != "Auto size" else ""
+                description = f"{shape} · From lattice{size}"
+            elif fit.mode == "fixed":
+                description = f"{shape} · {fit.size_px:g} px"
+            else:
+                description = f"{shape} · {fit.sigma_factor:g}σ radius"
+        self.fittingHeader.setSummary(f"{estimator} · {description}")
+
+    def _restore_fitting_default(self):
+        saved = self._setup_defaults
+        if saved.footprint_mode is None and saved.estimator is None:
+            return
+        if saved.footprint_mode is not None:
+            self._advanced_values.update({
+                "footprint_shape": saved.footprint_shape,
+                "footprint_mode": saved.footprint_mode,
+                "footprint_size_px": saved.footprint_size,
+                "footprint_sigma_factor": saved.footprint_sigma_factor,
+            })
+        if saved.estimator is not None:
+            self._advanced_values["estimator"] = saved.estimator
+        self._footprint_user_override = False
+        self._controlled_changed()
 
     def _spot_unit_changed(self, *_):
         new_unit = str(self._combo_data(self.fwhmUnitCombo))
@@ -1451,6 +1756,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._confirm_save_setup(FWHM_KEY, fwhm_nm, f"FWHM = {fwhm_nm:g} nm")
 
     def _save_footprint_default(self):
+        """Save *both* estimator and footprint; separate from FWHM defaults."""
         path = current_setup_path()
         if path is None or self._detector_id == "unknown":
             QtWidgets.QMessageBox.warning(
@@ -1458,26 +1764,30 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             )
             return
         fit = footprint_from_params(self._advanced_values)
+        estimator = str(self._advanced_values["estimator"])
+        detail = (
+            f"{estimator.capitalize()} Gaussian, {fit.shape}, {fit.mode}"
+            + (f", {fit.size_px:g} px" if fit.mode == "fixed" and fit.shape != "lattice" else "")
+            + (f", {fit.sigma_factor:g}σ radius" if fit.mode == "fwhm" and fit.shape != "lattice" else "")
+        )
         answer = QtWidgets.QMessageBox.question(
-            self, "Save MoNaLISA footprint default?",
-            f"Save {fit.shape}, {fit.mode}, size {fit.size_px:g} px, "
-            f"radius factor {fit.sigma_factor:g}σ for detector "
-            f"'{self._detector_id}' in:\n{path}\n\n"
-            "Only the fitting-footprint setup properties are changed.",
+            self, "Save Gaussian fitting setup default?",
+            f"Save {detail} for detector '{self._detector_id}' in:\n{path}\n\n"
+            "Only the Gaussian estimator and fit-footprint properties will change.",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
         try:
-            save_detector_footprint(self._detector_id, fit.mode, fit.shape,
-                                    fit.size_px, sigma_factor=fit.sigma_factor, path=path)
+            save_detector_fitting(self._detector_id, estimator, fit.mode, fit.shape,
+                                  fit.size_px, sigma_factor=fit.sigma_factor, path=path)
         except (OSError, ValueError) as exc:
-            QtWidgets.QMessageBox.warning(self, "Could not save footprint", str(exc))
+            QtWidgets.QMessageBox.warning(self, "Could not save fitting defaults", str(exc))
             return
         self._setup_defaults = read_detector_defaults(self._detector_id, path=path)
         self._footprint_user_override = False
-        self.setPreviewStatus("Saved fitting footprint preference to active setup")
+        self.setPreviewStatus("Saved Gaussian estimator and footprint to active setup")
         self._update_ui()
 
     def _save_orientation_default(self):
@@ -1792,7 +2102,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_width_source": str(self._fwhm_source),
             "spot_fwhm": float(self.fwhmSpin.value()),
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
-            "background": str(self._combo_data(self.backgroundCombo)),
+            "background": str(self._advanced_values["background"]),
             "estimator": str(self._advanced_values["estimator"]),
             "footprint_shape": str(self._advanced_values["footprint_shape"]),
             "footprint_mode": str(self._advanced_values["footprint_mode"]),
@@ -1940,6 +2250,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 "footprint_size_px": self._setup_defaults.footprint_size,
                 "footprint_sigma_factor": self._setup_defaults.footprint_sigma_factor,
             })
+        if not self._footprint_user_override and self._setup_defaults.estimator is not None:
+            self._advanced_values["estimator"] = self._setup_defaults.estimator
         from .setup_defaults import valid_orientation
         self._recorded_orientation = valid_orientation(attrs.get("monalisa:scan_orientation"))
         self._sync_locked_mode_availability()

@@ -17,6 +17,10 @@
     {
       "key": "monalisaLocalFootprintMode",
       "fallback": "from_lattice for new settings; old saved settings retain fixed size"
+    },
+    {
+      "key": "monalisaFitEstimator",
+      "fallback": "local for new configurations; historical recorded settings remain unchanged"
     }
   ],
   "properties": {
@@ -59,6 +63,42 @@
       "minimum": 3,
       "maximum": 255,
       "description": "Odd local footprint size in camera pixels, used only for Fixed sizing."
+    },
+    "monalisaFitEstimator": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "local",
+        "joint"
+      ],
+      "description": "Default Gaussian extraction method used with the shared fit footprint."
+    },
+    "monalisaFitFootprintShape": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "square",
+        "circle",
+        "lattice"
+      ],
+      "description": "Shape of the shared Gaussian fitting footprint."
+    },
+    "monalisaFitFootprintMode": {
+      "x-imswitch-kind": "string",
+      "enum": [
+        "from_lattice",
+        "fixed",
+        "fwhm"
+      ],
+      "description": "Sizing rule; ignored for lattice unit-cell ownership."
+    },
+    "monalisaFitFootprintSizePx": {
+      "x-imswitch-kind": "number",
+      "minimum": 0.1,
+      "description": "Fixed square side or circular diameter in camera pixels."
+    },
+    "monalisaFitFootprintSigmaFactor": {
+      "x-imswitch-kind": "number",
+      "minimum": 0.1,
+      "description": "Radius relative to spot sigma in FWHM-relative sizing."
     }
   }
 }

@@ -246,20 +246,20 @@ def test_embedded_localization_counts_as_current_auto_result(qapp):
     assert "Embedded localization" in widget.previewStatusLabel.text()
 
 
-def test_expert_dialog_can_suggest_footprint_from_manual_lattice(qapp):
-    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
-    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
-
+def test_fitting_settings_are_editable_in_main_panel(qapp):
     widget = MonalisaParamsWidget()
-    localization = PatternLocalization.manual_grid(11.05, 11.05, 2, 3)
-    dialog = AdvancedReconstructionDialog(widget._advanced_values, localization=localization)
-    assert dialog.estimator.currentText() == "local"
-    dialog.footprintSize.setValue(5)
-    dialog.suggestButton.click()
-    assert dialog.values()["footprint_size_px"] == 11
-    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("circle"))
-    assert dialog.values()["footprint_shape"] == "circle"
-
+    assert widget._combo_data(widget.estimatorCombo) == "local"
+    assert widget._combo_data(widget.footprintShapeCombo) == "square"
+    assert widget._combo_data(widget.footprintModeCombo) == "from_lattice"
+    assert widget.fitCalculatedSizeLabel.isVisible() is False or widget.fitCalculatedSizeLabel.text() == "Auto size"
+    widget._set_combo_data(widget.footprintModeCombo, "fixed")
+    assert widget.footprintSizeSpin.isHidden() is False
+    widget.footprintSizeSpin.setValue(11)
+    assert widget.get_values()["footprint_size_px"] == 11
+    widget._set_combo_data(widget.footprintShapeCombo, "circle")
+    widget.footprintSizeSpin.setValue(10.5)
+    assert widget.get_values()["footprint_size_px"] == 10.5
+    assert widget.get_values()["preset"] == PRESET_CUSTOM
 
 def test_calibrated_fwhm_can_be_fixed_then_saved_to_setup(qapp, tmp_path, monkeypatch):
     import json
@@ -340,7 +340,7 @@ def test_pre_reconstruction_estimate_keeps_manual_editing_and_rejects_stale_data
     assert widget.fwhmSpin.value() == 200.0
 
 
-def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch):
+def test_saved_fitting_defaults_include_estimator(qapp, tmp_path, monkeypatch):
     import json
     from imswitch.improcess.reconstructors.monalisa import params_widget as module
     from imswitch.improcess.reconstructors.monalisa.setup_defaults import read_detector_defaults
@@ -357,60 +357,265 @@ def test_expert_footprint_setup_default_is_reusable(qapp, tmp_path, monkeypatch)
     )
     widget = MonalisaParamsWidget()
     widget.load_from_attrs({"recording:detector_name": "CAM"})
-    widget._advanced_values.update({
-        "footprint_mode": "from_lattice",
-        "footprint_shape": "circle",
-        "footprint_size_px": 7.0,
-    })
+    widget._set_combo_data(widget.estimatorCombo, "joint")
+    widget._set_combo_data(widget.footprintShapeCombo, "circle")
     widget._save_footprint_default()
     saved = read_detector_defaults("CAM", path=path)
-    assert (saved.footprint_mode, saved.footprint_shape, saved.footprint_size) == (
-        "from_lattice", "circle", 7,
+    assert (saved.estimator, saved.footprint_mode, saved.footprint_shape) == (
+        "joint", "from_lattice", "circle",
     )
     new_widget = MonalisaParamsWidget()
     new_widget.load_from_attrs({"recording:detector_name": "CAM"})
-    values = new_widget.get_values()
-    assert values["footprint_mode"] == "from_lattice"
-    assert values["footprint_shape"] == "circle"
-    assert "Circle · From lattice" in new_widget.footprintSummaryLabel.text()
+    assert new_widget.get_values()["estimator"] == "joint"
+    assert new_widget.get_values()["footprint_shape"] == "circle"
+    new_widget._set_combo_data(new_widget.estimatorCombo, "local")
+    assert "Modified" in new_widget.footprintSourceLabel.text()
+    new_widget.useSetupFittingAction.trigger()
+    assert new_widget.get_values()["estimator"] == "joint"
+    assert new_widget.footprintSourceLabel.text() == "Setup default"
 
-
-def test_expert_joint_support_is_editable_without_new_widget(qapp):
-    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
-
+def test_joint_support_is_editable_in_main_spot_model(qapp):
     widget = MonalisaParamsWidget()
-    dialog = AdvancedReconstructionDialog(widget._advanced_values)
-    assert dialog.footprintMode.currentData() == "from_lattice"
-    assert dialog.footprintShape.currentData() == "square"
-    dialog.estimator.setCurrentText("joint")
-    assert dialog.footprintShape.isEnabled() is True
-    dialog.footprintMode.setCurrentIndex(dialog.footprintMode.findData("fixed"))
-    assert dialog.footprintSize.isEnabled() is True
-    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("circle"))
-    dialog.footprintSize.setValue(10.5)
-    assert dialog.values()["footprint_mode"] == "fixed"
-    assert dialog.values()["footprint_size_px"] == 10.5
-    dialog.estimator.setCurrentText("local")
-    assert dialog.values()["footprint_size_px"] == 10.5  # one shared choice
-    dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("lattice"))
-    assert dialog.footprintMode.isEnabled() is False
-    assert dialog.sampling.isEnabled() is False
+    widget._set_combo_data(widget.estimatorCombo, "joint")
+    widget._set_combo_data(widget.footprintModeCombo, "fixed")
+    widget._set_combo_data(widget.footprintShapeCombo, "circle")
+    widget.footprintSizeSpin.setValue(10.5)
+    assert widget.get_values()["footprint_size_px"] == 10.5
+    widget._set_combo_data(widget.estimatorCombo, "local")
+    assert widget.get_values()["footprint_size_px"] == 10.5
+    widget._set_combo_data(widget.footprintShapeCombo, "lattice")
+    assert widget.footprintModeCombo.isEnabled() is False
+    assert widget.footprintSizeSpin.isHidden() is True
+    assert widget.footprintSigmaSpin.isHidden() is True
 
-
-def test_editing_joint_support_marks_full_as_custom(qapp, monkeypatch):
-    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
-
+def test_editing_joint_support_marks_full_as_custom(qapp):
     widget = MonalisaParamsWidget()
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
     assert widget.get_values()["preset"] == PRESET_FULL
-
-    def choose_lattice(dialog):
-        dialog.estimator.setCurrentText("joint")
-        dialog.footprintShape.setCurrentIndex(dialog.footprintShape.findData("lattice"))
-        return QtWidgets.QDialog.Accepted
-
-    monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", choose_lattice)
-    widget._open_advanced_reconstruction()
+    widget._set_combo_data(widget.footprintShapeCombo, "lattice")
     values = widget.get_values()
     assert values["preset"] == PRESET_CUSTOM
     assert values["footprint_shape"] == "lattice"
+
+def test_spot_model_keeps_fwhm_editable_and_inline_fitting_header(qapp):
+    widget = MonalisaParamsWidget()
+    layout = widget.spotBox.layout()
+    assert layout.itemAtPosition(0, 0).widget() is widget.fwhmLabel
+    assert layout.itemAtPosition(0, 4).widget() is widget.estimateFwhmButton
+    assert layout.itemAtPosition(0, 5).widget() is widget.fwhmMenuButton
+    assert layout.itemAtPosition(1, 0).widget() is widget.fittingHeader
+    assert layout.itemAtPosition(2, 0).widget() is widget.fittingDetailsWidget
+    assert widget.fittingMenuButton.menu() is widget.fittingMenu
+    assert widget.fwhmMenuButton.menu() is widget.fwhmMenu
+    assert widget.get_values() == default_params()
+
+
+def test_expert_background_roundtrips_without_changing_preset(qapp, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+
+    widget = MonalisaParamsWidget()
+    assert widget.get_values()["background"] == "constant"
+
+    def accept_background(dialog):
+        dialog.background.setCurrentText("none")
+        return QtWidgets.QDialog.Accepted
+
+    monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", accept_background)
+    widget._open_advanced_reconstruction()
+    assert widget.get_values()["background"] == "none"
+    # Background did not control the preset before Patch A either.
+    assert widget.get_values()["preset"] == PRESET_FAST
+
+
+def test_fitting_status_compares_saved_estimator_and_footprint(qapp):
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import DetectorSetupDefaults
+
+    widget = MonalisaParamsWidget()
+    widget._setup_defaults = DetectorSetupDefaults(
+        detector="CAM", footprint_mode="from_lattice", footprint_shape="square",
+        footprint_size=9.0, estimator="joint",
+    )
+    widget._advanced_values["estimator"] = "joint"
+    widget._update_ui()
+    assert widget.footprintSourceLabel.text() == "Setup default"
+    widget._advanced_values["footprint_size_px"] = 15.0
+    widget._update_ui()
+    assert widget.footprintSourceLabel.text() == "Setup default"  # unused fixed size
+    widget._advanced_values["estimator"] = "local"
+    widget._update_ui()
+    assert widget.footprintSourceLabel.text() == "Modified from setup"
+
+def test_legacy_hides_gaussian_fitting_but_keeps_spot_width(qapp):
+    widget = MonalisaParamsWidget()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
+    assert widget.fwhmSpin.isHidden() is False
+    assert widget.fittingHeader.isHidden() is True
+    assert widget.estimatorCombo.isHidden() is True
+    assert widget.footprintSourceLabel.isHidden() is True
+    assert widget.footprintSizeSpin.isHidden() is True
+    assert widget.get_values()["background"] == "constant"
+
+
+def test_footprint_value_field_only_shows_for_relevant_sizing(qapp):
+    widget = MonalisaParamsWidget()
+    assert widget.footprintValueStack.currentIndex() == 2  # From lattice
+    widget._set_combo_data(widget.footprintModeCombo, "fixed")
+    assert widget.footprintValueStack.currentIndex() == 0
+    widget._set_combo_data(widget.footprintModeCombo, "fwhm")
+    assert widget.footprintValueStack.currentIndex() == 1
+    widget._set_combo_data(widget.footprintShapeCombo, "lattice")
+    assert widget.footprintValueStack.currentIndex() == 3  # no size for cells
+
+
+def test_expert_only_contains_specialist_numerical_settings(qapp):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+    widget = MonalisaParamsWidget()
+    dialog = AdvancedReconstructionDialog(widget._advanced_values)
+    assert hasattr(dialog, "background")
+    assert hasattr(dialog, "sampling")
+    assert not hasattr(dialog, "footprintShape")
+    assert not hasattr(dialog, "estimator")
+    assert "estimator" not in dialog.values()
+
+
+def test_spot_model_source_badges_do_not_consume_space(qapp):
+    widget = MonalisaParamsWidget()
+    spot = widget.spotBox.layout()
+    fitting = widget.fittingDetailsWidget.layout()
+    assert widget.spotModeCombo.findText("Manual") >= 0  # real mode selector stays
+    assert widget.fwhmSourceLabel.isHidden()
+    assert widget.footprintSourceLabel.isHidden()
+    assert spot.itemAtPosition(1, 0).widget() is widget.fittingHeader
+    assert spot.itemAtPosition(2, 0).widget() is widget.fittingDetailsWidget
+    assert fitting.itemAtPosition(1, 0) is None
+    assert "Application default" not in widget.fittingToggle.text()
+    assert "FWHM source:" in widget.fwhmMenuButton.toolTip()
+
+
+def test_spot_model_keeps_fwhm_visible_and_collapses_only_fitting(qapp):
+    widget = MonalisaParamsWidget()
+    assert widget.fittingToggle.isChecked() is False
+    assert widget.fittingDetailsWidget.isHidden() is True
+    assert widget.fwhmSpin.isHidden() is False
+    assert widget.estimateFwhmButton.isHidden() is False
+    assert widget.fittingHeader._summary.startswith("Local · Square · From lattice")
+    assert widget.fittingHeader._status == ""  # no redundant startup badge
+
+    widget.fittingToggle.click()
+    assert widget.fittingToggle.isChecked() is True
+    assert widget.fittingDetailsWidget.isHidden() is False
+    assert widget.estimatorCombo.isHidden() is False
+    widget.fwhmSpin.setValue(230.0)
+    assert widget.get_values()["spot_fwhm"] == pytest.approx(230.0)
+
+    widget.fittingToggle.click()
+    assert widget.fittingDetailsWidget.isHidden() is True
+    assert widget.fwhmSpin.isHidden() is False
+    assert "From lattice" in widget.fittingHeader._summary
+
+
+def test_original_joint_auto_2p5_sigma_is_editable_relative_support(qapp):
+    widget = MonalisaParamsWidget()
+    widget.fittingToggle.click()
+    widget._set_combo_data(widget.estimatorCombo, "joint")
+    widget._set_combo_data(widget.footprintShapeCombo, "circle")
+    widget._set_combo_data(widget.footprintModeCombo, "fwhm")
+    assert widget.footprintModeCombo.count() == 3
+    assert widget.footprintModeCombo.findText("Auto (2.5σ)") == -1
+    result = widget.get_values()
+    assert result["estimator"] == "joint"
+    assert result["footprint_shape"] == "circle"
+    assert result["footprint_mode"] == "fwhm"
+    assert result["footprint_sigma_factor"] == pytest.approx(2.5)
+    assert widget.footprintValueStack.currentIndex() == 1
+    assert widget.footprintSigmaSpin.isHidden() is False
+    assert "Circle · 2.5σ radius" in widget.fittingHeader._summary
+
+    # Same controls for any factor and for Local. The mode never changes when
+    # the factor crosses 2.5, including exactly 2.5 again.
+    widget.footprintSigmaSpin.setValue(3.0)
+    assert widget.get_values()["footprint_sigma_factor"] == pytest.approx(3.0)
+    assert widget._combo_data(widget.footprintModeCombo) == "fwhm"
+    widget._set_combo_data(widget.estimatorCombo, "local")
+    widget.footprintSigmaSpin.setValue(2.5)
+    assert widget._combo_data(widget.footprintModeCombo) == "fwhm"
+    assert widget.footprintValueStack.currentIndex() == 1
+    assert widget.footprintSigmaSpin.isHidden() is False
+    widget._set_combo_data(widget.footprintShapeCombo, "square")
+    assert widget.get_values()["footprint_shape"] == "square"
+    assert widget.get_values()["footprint_mode"] == "fwhm"
+
+
+def test_fitting_collapse_matches_results_splitter_header(qapp):
+    widget = MonalisaParamsWidget()
+    header = widget.fittingHeader
+    toggle = widget.fittingToggle
+    assert toggle is header.toggle
+    assert widget.spotBox.layout().itemAtPosition(1, 0).widget() is header
+    assert toggle.autoRaise() is True
+    assert toggle.toolButtonStyle() == QtCore.Qt.ToolButtonTextOnly
+    assert toggle.sizePolicy().verticalPolicy() == QtWidgets.QSizePolicy.Fixed
+    assert header.layout().contentsMargins().top() == 0
+    assert header.layout().contentsMargins().bottom() == 0
+    assert header.height() == toggle.fontMetrics().height() + 2
+    assert toggle.text().startswith("› Fitting · Local · Square · From lattice")
+    # The actual Results splitter uses all-transparent button states, not the
+    # native arrow-button and alternate-base hover used before this hotfix.
+    css = toggle.styleSheet().replace(" ", "")
+    assert "QToolButton:hover{border:none;background:transparent;}" in css
+    assert "QToolButton:pressed{border:none;background:transparent;}" in css
+    assert "QToolButton:checked{border:none;background:transparent;}" in css
+    assert widget.fittingDetailsWidget.isHidden()
+    toggle.click()
+    assert not widget.fittingDetailsWidget.isHidden()
+    assert toggle.text().startswith("⌄ Fitting")
+    toggle.click()
+    assert widget.fittingDetailsWidget.isHidden()
+    assert toggle.text().startswith("› Fitting")
+
+
+def test_collapsed_fitting_summary_tracks_saved_and_modified_defaults(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import read_detector_defaults
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({"detectors": {"CAM": {"managerProperties": {}}}}))
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    monkeypatch.setattr(module, "read_detector_defaults",
+                        lambda detector, path=path: read_detector_defaults(detector, path=path))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        lambda *args, **kwargs: QtWidgets.QMessageBox.Yes)
+    widget = MonalisaParamsWidget()
+    widget.load_from_attrs({"recording:detector_name": "CAM"})
+    widget._set_combo_data(widget.estimatorCombo, "joint")
+    widget._set_combo_data(widget.footprintShapeCombo, "circle")
+    widget._set_combo_data(widget.footprintModeCombo, "fwhm")
+    widget._save_footprint_default()
+    assert widget.fittingHeader._status == "Setup"
+    assert "Setup" not in widget.fittingToggle.text()
+    saved = read_detector_defaults("CAM", path=path)
+    assert (saved.estimator, saved.footprint_shape, saved.footprint_mode) == ("joint", "circle", "fwhm")
+    assert saved.footprint_sigma_factor == pytest.approx(2.5)
+    widget._set_combo_data(widget.footprintModeCombo, "fixed")
+    assert widget.fittingHeader._status == "Modified"
+    assert "Modified" not in widget.fittingToggle.text()
+    widget.useSetupFittingAction.trigger()
+    assert widget.fittingHeader._status == "Setup"
+    assert "Circle · 2.5σ radius" in widget.fittingHeader._summary
+
+
+def test_saved_circle_relative_2p5_uses_editable_field(qapp):
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import DetectorSetupDefaults
+
+    widget = MonalisaParamsWidget()
+    widget._setup_defaults = DetectorSetupDefaults(
+        detector="CAM", footprint_mode="fwhm", footprint_shape="circle",
+        footprint_sigma_factor=2.5, estimator="joint",
+    )
+    widget._restore_fitting_default()
+    assert widget.get_values()["footprint_mode"] == "fwhm"
+    assert widget.get_values()["footprint_sigma_factor"] == pytest.approx(2.5)
+    assert widget._combo_data(widget.footprintModeCombo) == "fwhm"
+    assert widget.footprintValueStack.currentIndex() == 1
+    assert "2.5σ radius" in widget.fittingHeader._summary

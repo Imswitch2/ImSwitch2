@@ -25,6 +25,7 @@ SHARED_FOOTPRINT_MODE_KEY = "monalisaFitFootprintMode"
 SHARED_FOOTPRINT_SHAPE_KEY = "monalisaFitFootprintShape"
 SHARED_FOOTPRINT_SIZE_KEY = "monalisaFitFootprintSizePx"
 SHARED_FOOTPRINT_SIGMA_KEY = "monalisaFitFootprintSigmaFactor"
+ESTIMATOR_KEY = "monalisaFitEstimator"
 
 
 def validate_footprint(mode, shape, size) -> tuple[str, str, int] | None:
@@ -48,6 +49,7 @@ class DetectorSetupDefaults:
     footprint_shape: str | None = None
     footprint_size: float | None = None
     footprint_sigma_factor: float = 2.5
+    estimator: str | None = None
 
 
 def positive_fwhm(value) -> float | None:
@@ -133,6 +135,7 @@ def read_detector_defaults(detector: str, *, path: Path | None = None) -> Detect
         footprint_shape=footprint.shape if footprint else None,
         footprint_size=footprint.size_px if footprint else None,
         footprint_sigma_factor=footprint.sigma_factor if footprint else 2.5,
+        estimator=(props.get(ESTIMATOR_KEY) if props and props.get(ESTIMATOR_KEY) in ("local", "joint") else None),
     )
 
 
@@ -150,6 +153,27 @@ def save_detector_footprint(
     except (ValueError, TypeError) as exc:
         raise ValueError("Invalid fitting footprint preference") from exc
     return _save_detector_properties(detector, {
+        SHARED_FOOTPRINT_SHAPE_KEY: fit.shape,
+        SHARED_FOOTPRINT_MODE_KEY: fit.mode,
+        SHARED_FOOTPRINT_SIZE_KEY: fit.size_px,
+        SHARED_FOOTPRINT_SIGMA_KEY: fit.sigma_factor,
+    }, path=path)
+
+
+
+def save_detector_fitting(
+    detector: str, estimator: str, mode: str, shape: str, size: float, *,
+    sigma_factor: float = 2.5, path: Path | None = None,
+) -> Path:
+    """Atomically save estimator and footprint as one detector fitting default."""
+    if estimator not in ("local", "joint"):
+        raise ValueError(f"Invalid Gaussian estimator: {estimator!r}")
+    try:
+        fit = FitFootprint(shape, mode, float(size), float(sigma_factor)).validate()
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Invalid fitting footprint preference") from exc
+    return _save_detector_properties(detector, {
+        ESTIMATOR_KEY: estimator,
         SHARED_FOOTPRINT_SHAPE_KEY: fit.shape,
         SHARED_FOOTPRINT_MODE_KEY: fit.mode,
         SHARED_FOOTPRINT_SIZE_KEY: fit.size_px,
