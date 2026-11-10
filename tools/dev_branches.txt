@@ -30,3 +30,4 @@ smart-pipeline                     # smart microscopy pipeline designer, Phases 
                                    #    fiji's from_result inputs/interactive and unbound_inputs/part_from_input
                                    #    moved into them; changelog rebuilt: main's entries under v0.4.0, the
                                    #    unmerged branches' under Unreleased; processor table keeps psf-bead-select)
+feat/setup-cli-flag                # --setup <file> / --setup choose: a hardware setup for one run; PR to open

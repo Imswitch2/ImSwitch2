@@ -2,6 +2,7 @@ import dataclasses
 import glob
 import json
 import os
+import sys
 from pathlib import Path
 
 from imswitch.imcommon.model import dirtools
@@ -80,25 +81,45 @@ def saveSetupInfo(options, setupInfo):
 
 
 def loadOptions():
+    """ The options, naming the setup this run uses: the one given with
+    ``--setup`` (see useSetupForThisRun), otherwise the options file's. """
     global _options
 
-    if _options is not None:
-        return _options, False
-
     optionsDidNotExist = False
-    if not os.path.isfile(_optionsFilePath):
-        _options = Options(
-            setupFileName=_defaultSetupFileName(getSetupList())
-        )
-        optionsDidNotExist = True
-    else:
-        with open(_optionsFilePath, 'r') as optionsFile:
-            _options = Options.from_json(optionsFile.read(), infer_missing=True)
+    if _options is None:
+        if not os.path.isfile(_optionsFilePath):
+            _options = Options(
+                setupFileName=_defaultSetupFileName(getSetupList())
+            )
+            optionsDidNotExist = True
+        else:
+            with open(_optionsFilePath, 'r') as optionsFile:
+                _options = Options.from_json(optionsFile.read(), infer_missing=True)
 
+    if _setupForThisRun is not None:
+        return dataclasses.replace(_options, setupFileName=_setupForThisRun), optionsDidNotExist
     return _options, optionsDidNotExist
 
 
 def saveOptions(options):
+    """ Write the options file. While a ``--setup`` setup is in force the file
+    keeps naming the setup it named; only saveSetupChoice() changes that. """
+    if _setupForThisRun is not None:
+        loadOptions()
+        options = dataclasses.replace(options, setupFileName=_options.setupFileName)
+    _writeOptions(options)
+
+
+def saveSetupChoice(setupFileName):
+    """ Make ``setupFileName`` the setup ImSwitch starts with, as picking a
+    setup does. A setup given with ``--setup`` stays in force until this run
+    ends, so restart with restartArgumentsForSetupChoice() to come up with the
+    choice. """
+    loadOptions()
+    _writeOptions(dataclasses.replace(_options, setupFileName=setupFileName))
+
+
+def _writeOptions(options):
     global _options
 
     _options = options
@@ -106,12 +127,68 @@ def saveOptions(options):
         optionsFile.write(_options.to_json(indent=4))
 
 
+def resolveSetupArgument(value):
+    """ The setup file ``imswitch --setup <value>`` asks for: ``value`` is the
+    name of a file in the setups folder, with or without ``.json``, or its
+    path. Raises ValueError, saying what there is to choose from, otherwise. """
+    name = value.strip()
+    if os.path.dirname(name):
+        path = os.path.realpath(name)
+        if os.path.normcase(os.path.dirname(path)) != os.path.normcase(os.path.realpath(_setupFilesDir)):
+            raise ValueError(f'"{value}" is not in the setups folder {_setupFilesDir}; '
+                             f'copy it there first.')
+        name = os.path.basename(path)
+    if not name.lower().endswith('.json'):
+        name += '.json'
+
+    setups = getSetupList()
+    for setup in setups:
+        if os.path.normcase(setup) == os.path.normcase(name):
+            return setup
+    raise ValueError(f'There is no setup "{name}" in {_setupFilesDir}. '
+                     f'Available: {", ".join(setups) or "none"}.')
+
+
+def useSetupForThisRun(setupFileName):
+    """ Run with ``setupFileName`` (``imswitch --setup``) while the options
+    file keeps naming the setup ImSwitch normally starts with.
+
+    loadOptions() names it from now on, so a change saved to the running
+    setup lands in its file, and saveOptions() leaves the options file's
+    setup as it is. """
+    global _setupForThisRun
+    _setupForThisRun = setupFileName
+
+
+def setupForThisRun():
+    """ The setup given with ``--setup``, or None. """
+    return _setupForThisRun
+
+
+def restartArgumentsForSetupChoice():
+    """ This run's command-line arguments without ``--setup``, which would
+    otherwise override the setup just chosen when ImSwitch comes back up. """
+    arguments = []
+    skipValue = False
+    for argument in sys.argv[1:]:
+        if skipValue:
+            skipValue = False
+        elif argument == SETUP_ARGUMENT:
+            skipValue = True
+        elif not argument.startswith(SETUP_ARGUMENT + '='):
+            arguments.append(argument)
+    return arguments
+
+
+SETUP_ARGUMENT = '--setup'
+
 dirtools.initUserFilesIfNeeded()
 _setupFilesDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_setups')
 os.makedirs(_setupFilesDir, exist_ok=True)
 _optionsFilePath = os.path.join(dirtools.UserFileDirs.Config, 'imcontrol_options.json')
 
-_options = None
+_options = None  # as the options file holds them
+_setupForThisRun = None
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

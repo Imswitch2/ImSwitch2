@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import os
+import sys
 import traceback
 
 import imswitch
@@ -10,14 +11,24 @@ from imswitch.imcommon.model import dirtools, modulesconfigtools, pythontools, i
 from imswitch.imcommon.model.logging import attachLogFile, setLogLevel
 from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
+# --setup value that asks for the setup in a dialog instead of naming it.
+_CHOOSE_SETUP = 'choose'
+
 
 def main():
-    parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher')
+    # No abbreviations: a restart that drops --setup looks for it spelled out.
+    parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher',
+                                     allow_abbrev=False)
     parser.add_argument('--debug', action='store_true',
                         help='Enable DEBUG-level log output from all managers.')
     parser.add_argument('--scale', type=float, default=None, metavar='FACTOR',
                         help='Scale the entire UI by this factor (e.g. 0.8 for 80%%). '
                              'Overrides the IMSWITCH_UI_SCALE environment variable.')
+    parser.add_argument('--setup', default=None, metavar='SETUP',
+                        help='Start with this hardware setup (a file in the '
+                             'imcontrol_setups folder) for this run only; the setup '
+                             'ImSwitch normally starts with is left as it is. '
+                             f'"{_CHOOSE_SETUP}" asks for it in the setup dialog.')
     args, _unused = parser.parse_known_args()
     if args.debug:
         setLogLevel('DEBUG')
@@ -32,6 +43,19 @@ def main():
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
     app = prepareApp(scale=args.scale)
+
+    if args.setup is not None:
+        # After prepareApp: importing imcontrol pulls in the Qt bindings it picks.
+        from imswitch.imcontrol.model import configfiletools
+        if args.setup == _CHOOSE_SETUP:
+            setupFileName = _chooseSetup(configfiletools, logger)
+        else:
+            try:
+                setupFileName = configfiletools.resolveSetupArgument(args.setup)
+            except ValueError as e:
+                logger.error(f'--setup: {e}')
+                parser.error(f'--setup: {e}')
+        configfiletools.useSetupForThisRun(setupFileName)
 
     enabledModuleIds = modulesconfigtools.getEnabledModuleIds()
     if 'imscripting' in enabledModuleIds:
@@ -102,6 +126,26 @@ def main():
             app.processEvents()  # Draw window before continuing
 
     launchApp(app, multiModuleWindow, moduleMainControllers.values())
+
+
+def _chooseSetup(configfiletools, logger):
+    """ The setup picked in the setup dialog for ``--setup choose``, with the
+    setup ImSwitch normally starts with preselected. The command line then
+    names it, so a restart comes back with it rather than asking again. """
+    from imswitch.imcontrol.view.PickSetupDialog import askForSetup
+
+    setupFileName = askForSetup(
+        configfiletools.getSetupList(),
+        configfiletools.loadOptions()[0].setupFileName,
+        information='Select the hardware setup for this run (the setup ImSwitch '
+                    'normally starts with stays as it is):',
+    )
+    if not setupFileName:
+        logger.critical('User did not pick a setup to use')
+        sys.exit()
+    sys.argv[1:] = configfiletools.restartArgumentsForSetupChoice() + [
+        configfiletools.SETUP_ARGUMENT, setupFileName]
+    return setupFileName
 
 
 if __name__ == '__main__':
