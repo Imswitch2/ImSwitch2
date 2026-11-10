@@ -43,6 +43,7 @@ from .extraction import (
 )
 from .lattice import Lattice, detect_lattice
 from .localization_settings import LocalizationSettings
+from .dll_equivalent import DllFastExtractionOperator
 from .placement import (
     COMMENSURATE_TOLERANCE,
     DEFAULT_SMOOTHING,
@@ -148,6 +149,7 @@ class PipelineParams:
     haze_sigma_px: float | None = None
     joint: bool = True
     estimator: str = "joint"
+    pixel_size_nm: float | None = None
     local_footprint_mode: str = "fixed"
     local_footprint_shape: str = "square"
     local_footprint_size: int = 9
@@ -195,7 +197,7 @@ class StackGeometry:
     localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
-    operator: ExtractionOperator | LocalExtractionOperator
+    operator: ExtractionOperator | LocalExtractionOperator | DllFastExtractionOperator
     raster: OutputRaster
     step: np.ndarray
     index_matrix: np.ndarray
@@ -446,10 +448,10 @@ def prepare_geometry(
     )
     margin = 3.0 * final_sigma
     fit = footprint_from_params(vars(params), estimator=params.estimator)
-    if fit.shape == "lattice":
+    if fit.shape == "lattice" or params.estimator == "dll_python":
         if len(localization.motif) != 1:
             raise ValueError(
-                "Joint lattice unit cells require a single-motif axis-aligned rectangular lattice"
+                "Unit cells require a single-motif axis-aligned rectangular lattice"
             )
         # Preserve neighboring canonical cells at camera boundaries so their
         # ownership is not accidentally expanded into the nearest valid cell.
@@ -512,6 +514,17 @@ def prepare_geometry(
             pinhole_radius_px=(resolved_size / 2.0 if resolved_size is not None else 1.0),
             sampling=sampling, lattice=lattice if fit.shape == "lattice" else None,
             focus_coordinates="localized",
+        )
+    elif estimator == "dll_python":
+        if background != "constant":
+            raise ValueError("DLL-equivalent requires the 9999-nm constant background basis")
+        if pixel_mask is not None:
+            raise ValueError("DLL-equivalent does not support camera pixel masks")
+        if params.variance_weighting or params.reassignment != "off" or params.pinhole_stack != "off":
+            raise ValueError("DLL-equivalent does not support variance weighting, ISM or pinhole stacks")
+        operator = DllFastExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            lattice=lattice, background=background, pixel_size_nm=params.pixel_size_nm,
         )
     elif estimator == "joint":
         if fit.shape == "lattice":
@@ -579,6 +592,10 @@ def prepare_geometry(
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
         "estimator": estimator,
+        "dll_equivalent_model": (
+            "independent DLL unit cells; integrated Gaussian (2πσ²); "
+            "9999 nm background; CPU extraction" if estimator == "dll_python" else None
+        ),
         "footprint_shape": fit.shape,
         "footprint_mode": fit.mode,
         "footprint_size_px": fit.size_px,

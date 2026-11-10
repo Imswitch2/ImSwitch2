@@ -280,6 +280,7 @@ def pipeline_params(params: dict) -> PipelineParams:
         localization_settings = LocalizationSettings.from_dict(localization_settings)
     return PipelineParams(
         estimator=str(params.get("estimator", "joint")),
+        pixel_size_nm=float(params.get("pixel_size_nm", 0.0)),
         footprint_shape=params.get("footprint_shape"),
         footprint_mode=params.get("footprint_mode"),
         footprint_size_px=float(params.get("footprint_size_px", 9.0)),

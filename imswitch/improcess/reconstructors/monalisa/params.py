@@ -10,11 +10,12 @@ from .spot_settings import DEFAULT_SPOT_FWHM_NM
 
 PRESET_FAST = "Fast"
 PRESET_FULL = "Full"
+PRESET_DLL = "DLL-equivalent"
 PRESET_LEGACY = "Legacy DLL"
 PRESET_CUSTOM = "Custom"
 # Only Gaussian processing profiles are selectable in the unified interface.
 # Legacy DLL remains readable for old jobs and has a separate reconstructor.
-PRESETS = (PRESET_FAST, PRESET_FULL)
+PRESETS = (PRESET_FAST, PRESET_FULL, PRESET_DLL)
 
 FULL_OPTION_DEFAULTS = {
     "reassignment": "auto",
@@ -47,7 +48,8 @@ SPOT_AUTO = "Auto"
 # Gaussian estimators. The exact string values are persisted in results/jobs.
 ESTIMATOR_LOCAL = "local"
 ESTIMATOR_JOINT = "joint"
-ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT)
+ESTIMATOR_DLL = "dll_python"
+ESTIMATORS = (ESTIMATOR_LOCAL, ESTIMATOR_JOINT, ESTIMATOR_DLL)
 JOINT_FOOTPRINT_MODES = ("auto", "fixed", "lattice")
 FOOTPRINT_SQUARE = "square"
 FOOTPRINT_CIRCLE = "circle"
@@ -62,6 +64,8 @@ PLACEMENT_INTERPOLATE = "Interpolate"
 
 DEFAULT_PARAMS = {
     "preset": PRESET_FAST,
+    # Remember the last Gaussian profile across DLL-equivalent selection.
+    "gaussian_mode": PRESET_FAST,
     "device": "GPU",
     "pixel_size_nm": 77.0,
     "localization_mode": LOCALIZATION_AUTO,
@@ -96,6 +100,7 @@ DEFAULT_PARAMS = {
     "spot_fwhm_unit": "nm",
     "background": "constant",
     "estimator": ESTIMATOR_LOCAL,
+    "gaussian_estimator": ESTIMATOR_LOCAL,
     # Legacy per-estimator footprint keys are NOT part of the current
     # parameter contract. Old results are still interpreted by
     # footprint_from_params() before defaults are merged.
@@ -142,6 +147,7 @@ def default_params() -> dict:
 PRESET_VALUES = {
     PRESET_FAST: {"reassignment": "off", "pinhole_stack": False, "sharpen": False},
     PRESET_FULL: deepcopy(FULL_OPTION_DEFAULTS),
+    PRESET_DLL: {"reassignment": "off", "pinhole_stack": False, "sharpen": False},
 }
 PRESET_CONTROLLED_KEYS = frozenset(FULL_OPTION_KEYS)
 
@@ -170,7 +176,7 @@ def normalize_preset(params: dict) -> str:
             or bool(params.get("pinhole_stack", False))
             or bool(params.get("sharpen", False))
         ) else PRESET_FAST)
-    if preset not in (PRESET_FAST, PRESET_FULL, PRESET_LEGACY):
+    if preset not in (PRESET_FAST, PRESET_FULL, PRESET_DLL, PRESET_LEGACY):
         raise ValueError(f"Unknown MoNaLISA preset {preset!r}")
     return preset
 
@@ -195,6 +201,16 @@ def effective_mode_params(params: dict) -> dict:
     elif mode == PRESET_FULL:
         for key in FULL_OPTION_KEYS:
             out.setdefault(key, out["full_options"][key])
+    elif mode == PRESET_DLL:
+        # Effective DLL conventions are fixed; never silently turn its unit
+        # cell signals into Joint amplitudes or run optional Gaussian stages.
+        # The user-facing Gaussian estimator is retained independently.
+        if str(out.get("estimator", ESTIMATOR_LOCAL)) != ESTIMATOR_DLL:
+            out["gaussian_estimator"] = out.get("estimator", ESTIMATOR_LOCAL)
+        out["estimator"] = ESTIMATOR_DLL
+        out.update(PRESET_VALUES[PRESET_DLL])
+        out["variance_weighting"] = False
+        out["background"] = "constant"
     return out
 
 
@@ -223,17 +239,28 @@ def apply_preset(params: dict, preset: str) -> dict:
         # The effective fields reflect the last UI/headless edits made in Full.
         full.update({key: out[key] for key in FULL_OPTION_KEYS if key in out})
     out["full_options"] = full
+    if previous in (PRESET_FAST, PRESET_FULL):
+        out["gaussian_mode"] = previous
+        if str(out.get("estimator", ESTIMATOR_LOCAL)) != ESTIMATOR_DLL:
+            out["gaussian_estimator"] = out["estimator"]
     out["preset"] = target
     if target == PRESET_FULL:
         out.update(full)
+    elif target == PRESET_DLL:
+        out.update(PRESET_VALUES[PRESET_DLL])
+        out["variance_weighting"] = False
+        out["background"] = "constant"
+        out["estimator"] = ESTIMATOR_DLL
     else:
         out.update(PRESET_VALUES[PRESET_FAST])
+    if previous == PRESET_DLL and target in (PRESET_FAST, PRESET_FULL):
+        out["estimator"] = out.get("gaussian_estimator", ESTIMATOR_LOCAL)
     return out
 
 
 __all__ = [
     "DEFAULT_PARAMS",
-    "ESTIMATOR_LOCAL", "ESTIMATOR_JOINT", "ESTIMATORS",
+    "ESTIMATOR_LOCAL", "ESTIMATOR_JOINT", "ESTIMATOR_DLL", "ESTIMATORS",
     "FOOTPRINT_SQUARE", "FOOTPRINT_CIRCLE", "FOOTPRINT_SHAPES",
     "FOOTPRINT_FROM_LATTICE", "FOOTPRINT_FIXED", "FOOTPRINT_MODES",
     "JOINT_FOOTPRINT_MODES",
@@ -255,6 +282,7 @@ __all__ = [
     "PRESET_CUSTOM",
     "PRESET_FAST",
     "PRESET_FULL",
+    "PRESET_DLL",
     "PRESET_LEGACY",
     "PRESET_VALUES",
     "PRESETS",

@@ -24,6 +24,7 @@ from .params import (
     ORIENTATION_MANUAL,
     PRESET_FAST,
     PRESET_FULL,
+    PRESET_DLL,
     PRESET_LEGACY,
     FULL_OPTION_DEFAULTS,
     SPOT_AUTO,
@@ -217,6 +218,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     _MODE_LABELS = (
         ("Normal", PRESET_FAST),
         ("Full", PRESET_FULL),
+        ("DLL-equivalent", PRESET_DLL),
     )
     _ISM_LABELS = (("Off", "off"), ("Auto", "auto"), ("Manual", "fixed"))
 
@@ -257,6 +259,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._ism_estimate_revision = None
         self._ism_estimate_signature = None
         self._applying_preset = False
+        self._last_gaussian_mode = PRESET_FAST
         self._recorded_scan_summary = ""
         self._recorded_scan_axes: dict[str, dict[str, float | int | None]] = {}
         self._scan_result_summary: dict[str, object] = {}
@@ -375,7 +378,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "Normal and Full share localization, FWHM, fitting and corrections. "
             "Full additionally enables ISM (Auto by default), pinhole stacks "
             "and optional sharpening. Returning to Normal remembers Full settings. "
-            "For the classic DLL choose the separate Legacy DLL reconstructor."
+            "DLL-equivalent uses the recovered CPU unit-cell extraction model and "
+            "the common scan/calibration pipeline, but disables ISM, sharpening "
+            "and variance weighting. For the original DLL use the separate "
+            "Legacy DLL reconstructor."
         )
         modeRow.addWidget(self.modeCombo, 1)
         self.advancedButton = QtWidgets.QPushButton("Expert…")
@@ -826,9 +832,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._set_combo_data(self.modeCombo, value)
 
     def _mode_changed(self, *_):
-        """Mode only selects optional processing; never rewrite calibration."""
+        """Preserve the Gaussian profile while entering DLL-equivalent mode."""
         if self._applying_preset:
             return
+        selected = self._mode_value()
+        if selected in (PRESET_FAST, PRESET_FULL):
+            self._last_gaussian_mode = selected
         self._update_ui()
         self.sigModeChanged.emit(str(self._mode_value()))
 
@@ -857,14 +866,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         mode = self._mode_value()
         fast = mode == PRESET_FAST
         legacy = mode == PRESET_LEGACY
+        dll = mode == PRESET_DLL
         self.advancedButton.setVisible(not legacy)
-        self.ismBox.setVisible(not fast and not legacy)
+        self.ismBox.setVisible(not fast and not legacy and not dll)
         self.correctionsBox.setVisible(not legacy)
-        self.outputBox.setVisible(not fast and not legacy)
+        self.outputBox.setVisible(not fast and not legacy and not dll)
         self.legacyBox.setVisible(legacy)
         # Spot width is useful for Legacy too; fitting is Gaussian-only.
         self.spotModeCombo.setVisible(not legacy)
-        self.fittingBox.setVisible(not legacy)
+        self.fittingBox.setVisible(not legacy and not dll)
+        self.advancedButton.setToolTip(
+            "DLL-equivalent uses a fixed CPU unit-cell Gaussian/background model; "
+            "other expert settings remain stored for Normal/Full."
+            if dll else "Advanced reconstruction settings"
+        )
         self.fwhmUnitCombo.setEnabled(True)
         gaussian_bg = str(self._combo_data(self.legacyBackgroundCombo)) == "Gaussian"
         self.legacyGaussianSizeLabel.setEnabled(gaussian_bg)
@@ -928,7 +943,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "Estimating…" if self._fwhm_estimate_busy else "Estimate"
         )
         self.estimateISMButton.setEnabled(
-            not legacy and self._current_data_obj is not None and not self._ism_estimate_busy
+            not legacy and not dll and self._current_data_obj is not None and not self._ism_estimate_busy
         )
         self.estimateISMButton.setText(
             "Estimating…" if self._ism_estimate_busy else "Estimate"
@@ -1131,7 +1146,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                        if self._registry is not None and self._selected_locked_localization_id else None)
             localization = profile.localization if profile is not None else None
         dialog = AdvancedReconstructionDialog(
-            self._advanced_values, self, localization=localization
+            self._advanced_values, self, localization=localization,
+            dll_equivalent=self._mode_value() == PRESET_DLL,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
@@ -2211,6 +2227,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         locked_orientation = self._registry.locked_orientation(self._detector_id) if self._registry else None
         values = {
             "preset": self._mode_value(),
+            "gaussian_mode": self._last_gaussian_mode,
             "device": str(self._advanced_values["device"]),
             "pixel_size_nm": float(self._advanced_values["pixel_size_nm"]),
             "localization_mode": str(self._combo_data(self.localizationModeCombo)),
@@ -2242,7 +2259,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm": float(self.fwhmSpin.value()),
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._advanced_values["background"]),
-            "estimator": str(self._advanced_values["estimator"]),
+            "estimator": ("dll_python" if self._mode_value() == PRESET_DLL
+                          else str(self._advanced_values["estimator"])),
+            "gaussian_estimator": str(self._advanced_values["estimator"]),
             "footprint_shape": str(self._advanced_values["footprint_shape"]),
             "footprint_mode": str(self._advanced_values["footprint_mode"]),
             "footprint_size_px": float(self._advanced_values["footprint_size_px"]),
@@ -2275,6 +2294,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         values["full_options"] = full
         if values["preset"] != PRESET_FULL:
             values.update(reassignment="off", pinhole_stack=False, sharpen=False)
+        if values["preset"] == PRESET_DLL:
+            values.update(background="constant", variance_weighting=False)
         return values
 
     def set_pattern_params(self, row_offset: float, col_offset: float, row_period: float, col_period: float):

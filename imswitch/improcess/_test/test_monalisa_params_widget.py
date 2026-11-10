@@ -134,10 +134,10 @@ def test_full_defaults_to_auto_ism_without_rewriting_fwhm_or_fitting(qapp):
 
 
 
-def test_only_gaussian_profiles_appear_in_the_existing_mode_combo(qapp):
+def test_three_profiles_appear_in_the_existing_mode_combo(qapp):
     widget = MonalisaParamsWidget()
     assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
-        "Normal", "Full",
+        "Normal", "Full", "DLL-equivalent",
     ]
     assert widget.legacyBox.isHidden()
     assert widget.fittingBox.isHidden() is False
@@ -1009,3 +1009,52 @@ def test_ism_estimate_rejects_old_dataset_result(qapp):
     widget._finish_ism_estimate((2, previous_data, measurement, "", None, ""))
     assert widget.shiftFactorSpin.value() == before
     assert "Discarded ISM estimate" in widget.previewStatusLabel.text()
+
+
+def test_dll_mode_shares_calibrations_and_restores_gaussian_settings(qapp):
+    widget = MonalisaParamsWidget()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
+    widget._set_combo_data(widget.reassignmentCombo, "fixed")
+    widget.shiftFactorSpin.setValue(.39)
+    widget.sharpenCheck.setChecked(True)
+    widget._advanced_values["estimator"] = "joint"
+    widget.fwhmSpin.setValue(240.)
+    widget.intensityCheck.setChecked(True)
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("DLL-equivalent"))
+    values = widget.get_values()
+    assert values["gaussian_mode"] == PRESET_FULL
+    assert values["gaussian_estimator"] == "joint"
+    assert values["estimator"] == "dll_python"
+    assert values["spot_fwhm"] == 240.
+    assert values["intensity_correction"] is True
+    assert values["reassignment"] == "off"
+    assert values["sharpen"] is False
+    assert values["variance_weighting"] is False
+    assert widget.ismBox.isHidden() and widget.outputBox.isHidden()
+    assert widget.fittingBox.isHidden()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
+    restored = widget.get_values()
+    assert restored["estimator"] == "joint"
+    assert restored["reassignment"] == "fixed"
+    assert restored["shift_factor"] == pytest.approx(.39)
+    assert restored["sharpen"] is True
+    assert restored["spot_fwhm"] == 240.
+
+
+def test_dll_mode_expert_disables_only_irrelevant_numerics(qapp):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+
+    widget = MonalisaParamsWidget()
+    dialog = AdvancedReconstructionDialog(widget._advanced_values, dll_equivalent=True)
+    assert not dialog.background.isEnabled()
+    assert not dialog.sampling.isEnabled()
+    assert not dialog.variance.isEnabled()
+    assert not dialog.sharpenSigma.isEnabled()
+    assert dialog.pixelNm.isEnabled()
+    assert dialog.placement.isEnabled()
+    dialog.close()
+
+    normal_dialog = AdvancedReconstructionDialog(widget._advanced_values)
+    assert normal_dialog.background.isEnabled()
+    assert normal_dialog.variance.isEnabled()
+    normal_dialog.close()

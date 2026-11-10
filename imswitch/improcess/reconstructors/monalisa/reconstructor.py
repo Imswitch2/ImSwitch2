@@ -27,9 +27,9 @@ from .params import (
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, ORIENTATION_SETUP, ORIENTATION_RECORDED,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
-    PRESET_FAST, PRESET_FULL, PRESET_LEGACY, PRESETS, effective_mode_params,
+    PRESET_FAST, PRESET_FULL, PRESET_DLL, PRESET_LEGACY, PRESETS, effective_mode_params,
     SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES, FOOTPRINT_MODES,
-    ESTIMATOR_JOINT, default_params as unified_default_params,
+    ESTIMATOR_JOINT, ESTIMATOR_DLL, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
 from .spot_settings import fwhm_to_sigma_px, sigma_px_to_fwhm
@@ -97,6 +97,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         defaults = cls.default_params()
         return (
             ParamField('preset', 'select', defaults['preset'], label='Mode', options=tuple(PRESETS)),
+            ParamField('gaussian_mode', 'select', defaults['gaussian_mode'], label='Last Gaussian mode', options=(PRESET_FAST, PRESET_FULL), group='Advanced', advanced=True),
+            ParamField('gaussian_estimator', 'select', defaults['gaussian_estimator'], label='Remembered Gaussian estimator', options=('local', 'joint'), group='Advanced', advanced=True),
             ParamField('full_options', 'json', defaults['full_options'], label='Remembered Full options', group='Advanced', advanced=True),
             ParamField('device', 'select', defaults['device'], label='CPU/GPU', options=('GPU', 'CPU'), group='Advanced', advanced=True),
             ParamField('pixel_size_nm', 'float', defaults['pixel_size_nm'], label='Camera pixel', suffix='nm', min=0.0, group='Advanced', advanced=True),
@@ -711,6 +713,10 @@ class MonalisaReconstructor(StreamingReconstructor):
         localization = self._resolved_localization(merged)
         orientation = self._orientation_literal(merged)
 
+        if merged["preset"] == PRESET_DLL:
+            # The WIP reference operator replaces extraction only; all shared
+            # localization, scan geometry and compatible corrections remain.
+            merged["estimator"] = ESTIMATOR_DLL
         spot_sigma_px = self._spot_sigma_for_params(merged)
 
         placement = str(merged.get("placement_mode", PLACEMENT_AUTO)).lower()

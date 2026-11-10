@@ -609,6 +609,8 @@ class MonalisaLiveSession(StreamingSession):
                 "Legacy DLL mode is offline-only; use the separate classic "
                 "reconstructor for offline processing."
             )
+        if str(params.get("preset", "")) == "DLL-equivalent":
+            raise ValueError("DLL-equivalent extraction is offline-only")
         if str(params.get("preset", "")) == "Full":
             raise ValueError(
                 "Full mode is offline-only. Select Normal for streaming; "

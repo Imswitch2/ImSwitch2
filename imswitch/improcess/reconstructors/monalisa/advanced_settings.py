@@ -15,7 +15,7 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
     scanning or the spot model in the interactive panel.
     """
 
-    def __init__(self, values: dict, parent=None, *, localization=None):
+    def __init__(self, values: dict, parent=None, *, localization=None, dll_equivalent=False):
         super().__init__(parent)
         self.setWindowTitle("Expert reconstruction parameters")
         self._localization = localization
@@ -113,6 +113,16 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         gaussianForm = QtWidgets.QFormLayout(gaussian)
         gaussianForm.addRow("Background", self.background)
         gaussianForm.addRow("Local sampling", self.sampling)
+
+        if dll_equivalent:
+            # The DLL-equivalent mode fixes the Gaussian numerical model and
+            # does not perform amplitude-variance fitting or sharpening.
+            # Placement and camera-pixel calibration remain configurable.
+            for group in (gaussian, sharpening):
+                group.setEnabled(False)
+                group.setToolTip("Not used by DLL-equivalent reconstruction")
+            self.variance.setEnabled(False)
+            self.variance.setToolTip("DLL-equivalent has no amplitude-variance solve")
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel

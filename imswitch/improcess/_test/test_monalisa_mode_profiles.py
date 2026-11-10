@@ -14,7 +14,7 @@ from imswitch.improcess.reconstructors.monalisa.params import (
 
 
 def test_new_modes_use_existing_combo_contract_and_full_defaults():
-    assert PRESETS == (PRESET_FAST, PRESET_FULL)
+    assert PRESETS == (PRESET_FAST, PRESET_FULL, "DLL-equivalent")
     start = default_params()
     assert start["preset"] == PRESET_FAST
     assert start["reassignment"] == "off"
@@ -38,7 +38,7 @@ def test_switching_only_changes_optional_processing():
         cell_offsets=True, variance_weighting=True, placement_mode="Interpolate",
         device="CPU",
     )
-    independent = set(params) - set(FULL_OPTION_DEFAULTS) - {"full_options", "preset"}
+    independent = set(params) - set(FULL_OPTION_DEFAULTS) - {"full_options", "preset", "gaussian_mode", "gaussian_estimator"}
     full = apply_preset(params, PRESET_FULL)
     normal = apply_preset(full, PRESET_FAST)
     restored = apply_preset(normal, PRESET_FULL)
@@ -72,7 +72,7 @@ def test_full_off_is_effectively_identical_to_fast():
     full_effective = effective_mode_params(params)
     fast_effective = effective_mode_params(fast)
     for key in default_params():
-        if key in ("preset", "full_options"):
+        if key in ("preset", "full_options", "gaussian_mode", "gaussian_estimator"):
             continue
         assert full_effective[key] == fast_effective[key], key
 
