@@ -42,17 +42,17 @@ from .setup_defaults import (
 )
 
 
-class _ThinFittingHeader(QtWidgets.QWidget):
-    """Results-splitter-style disclosure row with no native button chrome.
+class _ThinDisclosureHeader(QtWidgets.QWidget):
+    """Results-splitter-style disclosure row, shared by compact sections.
 
     Mirrors ``_SessionSplitterHandle`` in ProcessingSessionFrame: a text-only
-    transparent toggle plus a single hairline painted after its text.  It does
-    *not* use the regular ``_CollapsibleSection`` widget, whose appearance is
-    visibly heavier than the Results splitter header.
+    transparent toggle and one hairline to the right of its text. There is no
+    native section chrome or hover background.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, title="Fitting"):
         super().__init__(parent)
+        self._title = str(title)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent; border: none;")
@@ -124,7 +124,7 @@ class _ThinFittingHeader(QtWidgets.QWidget):
 
     def _update_toggle_text(self, *_):
         marker = "⌄" if self.toggle.isChecked() else "›"
-        summary = f"Fitting · {self._summary}" if self._summary else "Fitting"
+        summary = f"{self._title} · {self._summary}" if self._summary else self._title
         full = f"{marker} {summary}"
         # Keep room for the separator at narrow ImProcess panel widths.
         available = max(55, self.width() - 28)
@@ -134,7 +134,7 @@ class _ThinFittingHeader(QtWidgets.QWidget):
         if self.toggle.text() != displayed:
             self.toggle.setText(displayed)
         self.toggle.setToolTip(
-            "Expand to edit estimator and footprint settings. " + summary
+            f"Expand/collapse {self._title}. " + summary
             + ((". " + self._status_tooltip) if self._status_tooltip else "")
         )
         self.update()
@@ -412,6 +412,29 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                     item.setToolTip(str(tooltip or ""))
                 return
 
+    @staticmethod
+    def _compact_section(title: str, *, expanded: bool):
+        """Create the same thin disclosure used for Fitting, with inline content.
+
+        The header owns only expansion: all scientific actions stay inside the
+        details widget. Hidden details retain their state and signal wiring.
+        """
+        box = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(box)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        header = _ThinDisclosureHeader(box, title=title)
+        outer.addWidget(header)
+        details = QtWidgets.QWidget(box)
+        grid = QtWidgets.QGridLayout(details)
+        grid.setContentsMargins(6, 3, 6, 3)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        outer.addWidget(details)
+        header.toggle.setChecked(bool(expanded))
+        details.setVisible(bool(expanded))
+        return box, grid, header, details
+
     def _build_ui(self, values: dict) -> None:
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -449,7 +472,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addLayout(modeRow)
 
         # Localization -------------------------------------------------------
-        self.localizationBox, loc = self._section("Localization")
+        self.localizationBox, loc, self.localizationHeader, self.localizationDetailsWidget = (
+            self._compact_section(
+                "Localization", expanded=values["localization_mode"] != LOCALIZATION_LOCKED
+            )
+        )
+        self.localizationToggle = self.localizationHeader.toggle
         self.localizationModeCombo = self._combo(
             [LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL],
             values["localization_mode"],
@@ -532,7 +560,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addWidget(self.localizationBox)
 
         # Scanning -----------------------------------------------------------
-        self.scanningBox, scan = self._section("Scanning")
+        self.scanningBox, scan, self.scanningHeader, self.scanningDetailsWidget = (
+            self._compact_section("Scanning", expanded=False)
+        )
+        self.scanningToggle = self.scanningHeader.toggle
         self.orientationModeCombo = self._combo(
             [ORIENTATION_AUTO, ORIENTATION_RECORDED, ORIENTATION_SETUP, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
             values["orientation_mode"],
@@ -623,7 +654,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.addWidget(self.fwhmMenuButton, 0, 5)
 
         self._fitting_expanded = False
-        self.fittingHeader = _ThinFittingHeader(self.spotBox)
+        self.fittingHeader = _ThinDisclosureHeader(self.spotBox)
         self.fittingToggle = self.fittingHeader.toggle
         spot.addWidget(self.fittingHeader, 1, 0, 1, 6)
 
@@ -841,6 +872,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.useSetupFwhmButton.triggered.connect(self._use_setup_fwhm)
         self.saveFwhmDefaultButton.triggered.connect(self._save_fwhm_default)
         self.fittingToggle.toggled.connect(self._set_fitting_expanded)
+        self.localizationToggle.toggled.connect(
+            lambda expanded: self._set_compact_expanded(self.localizationDetailsWidget, expanded)
+        )
+        self.scanningToggle.toggled.connect(
+            lambda expanded: self._set_compact_expanded(self.scanningDetailsWidget, expanded)
+        )
+        self.orientationCombo.currentIndexChanged.connect(self._refresh_orientation_display)
         for combo in (self.estimatorCombo, self.footprintShapeCombo):
             combo.currentIndexChanged.connect(self._fitting_changed)
         self.footprintModeCombo.currentIndexChanged.connect(self._fitting_changed)
@@ -855,9 +893,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.staggerSpin,
         ):
             control.valueChanged.connect(lambda *_: self.sigDetectionParamsChanged.emit())
+            control.valueChanged.connect(self._update_localization_summary)
         self.staggerAxisCombo.currentIndexChanged.connect(
             lambda *_: self.sigDetectionParamsChanged.emit()
         )
+        self.staggerAxisCombo.currentIndexChanged.connect(self._update_localization_summary)
         self.fwhmUnitCombo.currentIndexChanged.connect(self._spot_unit_changed)
         self.asymmetricCheck.toggled.connect(lambda *_: self._update_ui())
         self.reassignmentCombo.currentIndexChanged.connect(lambda *_: self._update_ui())
@@ -1035,6 +1075,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._sync_fitting_controls()
         self._update_footprint_summary()
         self._update_fitting_summary()
+        self._update_localization_summary()
+        self._update_scanning_header_summary()
         # The unit remains editable in Auto: changing units changes only how
         # the resolved value is displayed, not how it was estimated.
         self.fwhmUnitCombo.setEnabled(True)
@@ -1060,6 +1102,81 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftXLabel.setEnabled(True)
         self.shiftYLabel.setEnabled(True)
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
+
+    def _set_compact_expanded(self, details: QtWidgets.QWidget, expanded: bool) -> None:
+        """Toggle only presentation; preserve settings and calibration state."""
+        details.setVisible(bool(expanded))
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
+
+    def _update_localization_summary(self, *_):
+        mode = str(self._combo_data(self.localizationModeCombo))
+        if mode == LOCALIZATION_LOCKED:
+            profile = (
+                self._registry.localization_profile(self._selected_locked_localization_id)
+                if self._registry is not None and self._selected_locked_localization_id
+                else None
+            )
+            if profile is not None and profile.detector == self._detector_id:
+                description = f"Locked · {profile.name}"
+            else:
+                description = "Locked · Select profile"
+        elif mode == LOCALIZATION_MANUAL:
+            description = (
+                f"Manual · {self.periodXSpin.value():g} × "
+                f"{self.periodYSpin.value():g} px"
+            )
+        elif self._localization_busy:
+            description = "Auto · Localizing…"
+        elif self.has_auto_localization_for_current_data():
+            description = "Auto · Ready"
+        else:
+            description = "Auto · Pending"
+        self.localizationHeader.setSummary(description)
+        self.localizationHeader.setStatus("", self.previewStatusLabel.text())
+
+    def _update_scanning_header_summary(self) -> None:
+        # Display the *selected* source. Do not advertise a stale orientation
+        # from a previously reconstructed dataset when the current one is Auto.
+        mode = str(self._combo_data(self.orientationModeCombo))
+        legacy = self._mode_value() == PRESET_LEGACY
+        if legacy:
+            summary = "Legacy DLL · Recorded scan"
+        else:
+            orientation = None
+            if mode == ORIENTATION_MANUAL:
+                orientation = str(self._combo_data(self.orientationCombo))
+            elif mode == ORIENTATION_SETUP:
+                orientation = self._setup_defaults.orientation
+            elif mode == ORIENTATION_RECORDED:
+                orientation = self._recorded_orientation
+            elif mode == ORIENTATION_LOCKED and self._registry is not None:
+                item = self._registry.locked_orientation(self._detector_id)
+                orientation = item.orientation.to_literal() if item is not None else None
+            elif mode == ORIENTATION_AUTO:
+                if self._registry is not None:
+                    item = self._registry.current_orientation(self._detector_id)
+                    current_name = str(getattr(self._current_data_obj, "name", "") or "")
+                    if item is not None and (
+                        not item.source_dataset or not current_name
+                        or item.source_dataset == current_name
+                    ):
+                        orientation = item.orientation.to_literal()
+                if not orientation:
+                    orientation = str(self._scan_result_summary.get("orientation") or "") or None
+            source = "Setup" if mode == ORIENTATION_SETUP else mode
+            summary = f"{orientation} · {source}" if orientation else f"{source} · Pending"
+        axes = "".join(
+            axis.upper() for axis in "xyz"
+            if int((self._recorded_scan_axes.get(axis) or {}).get("count") or 0) > 1
+        )
+        if axes:
+            summary += f" · {axes}"
+        self.scanningHeader.setSummary(summary)
+        detail = " ".join(part for part in (
+            self._recorded_scan_summary,
+            self.scanStatusLabel.text(),
+        ) if part)
+        self.scanningHeader.setStatus("", detail)
 
     def _refresh_scroll_minimum(self) -> None:
         """Keep the full workflow reachable instead of vertically compressing labels."""
@@ -1235,6 +1352,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._refresh_registry_controls()
         self._set_combo_data(self.localizationModeCombo, LOCALIZATION_LOCKED)
         self.setPreviewStatus(f"Locked localization as {profile.name}")
+        self.localizationToggle.setChecked(False)
 
     def _locked_localization_changed(self, *_):
         self._selected_locked_localization_id = str(self._combo_data(self.lockedLocalizationCombo) or "")
@@ -1340,6 +1458,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 self.orientationCombo.blockSignals(old)
         self.orientationResultLabel.setText(value if value else "—")
         self._update_scan_summary()
+        self._update_scanning_header_summary()
 
     @staticmethod
     def _format_nm(value: float | None) -> str:
@@ -1370,6 +1489,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.scanSummaryLabel.setToolTip(self._recorded_scan_summary)
             self.scanStatusLabel.clear()
             self.scanStatusLabel.setVisible(False)
+            self._update_scanning_header_summary()
             return
 
         orientation = str(self._scan_result_summary.get("orientation") or "") or None
@@ -1455,6 +1575,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.scanStatusLabel.setVisible(bool(status))
         tooltip = str(summary.get("diagnostic_tooltip") or "")
         self.scanStatusLabel.setToolTip(tooltip)
+        self._update_scanning_header_summary()
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     # ----------------------------------------------------------- spot / ISM
@@ -2142,6 +2263,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def setPreviewStatus(self, text: str) -> None:
         self.previewStatusLabel.setText(str(text))
+        self._update_localization_summary()
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def set_localization_job_state(self, running: bool, status: str = "") -> None:

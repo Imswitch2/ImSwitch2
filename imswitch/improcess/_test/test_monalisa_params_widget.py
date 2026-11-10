@@ -619,3 +619,91 @@ def test_saved_circle_relative_2p5_uses_editable_field(qapp):
     assert widget._combo_data(widget.footprintModeCombo) == "fwhm"
     assert widget.footprintValueStack.currentIndex() == 1
     assert "2.5σ radius" in widget.fittingHeader._summary
+
+
+def test_localization_and_scanning_use_thin_disclosures_without_header_actions(qapp):
+    widget = MonalisaParamsWidget()
+
+    # Auto localization remains immediately usable on first opening. Scanning
+    # is deliberately collapsed, while FWHM and fitting retain Patch F layout.
+    assert widget.localizationToggle.isChecked() is True
+    assert widget.localizationDetailsWidget.isHidden() is False
+    assert widget.scanningToggle.isChecked() is False
+    assert widget.scanningDetailsWidget.isHidden() is True
+    assert "Auto · Pending" in widget.localizationHeader._summary
+    assert "Auto" in widget.scanningHeader._summary
+    assert widget.fittingToggle.isChecked() is False
+    assert widget.estimateFwhmButton.isHidden() is False
+
+    for header in (widget.localizationHeader, widget.scanningHeader, widget.fittingHeader):
+        assert header.toggle.autoRaise() is True
+        assert header.toggle.toolButtonStyle() == QtCore.Qt.ToolButtonTextOnly
+        style = header.toggle.styleSheet()
+        assert "QToolButton:hover" in style and "background: transparent" in style
+        assert "palette(alternate-base)" not in style
+        assert header.layout().count() == 2  # disclosure and hairline stretch; no actions
+        assert header.height() == header.toggle.height()
+
+
+def test_compact_sections_are_pure_presentation_and_keep_editable_controls(qapp):
+    widget = MonalisaParamsWidget()
+    original = widget.get_values()
+    widget.localizationToggle.click()
+    widget.scanningToggle.click()
+    assert widget.localizationDetailsWidget.isHidden() is True
+    assert widget.scanningDetailsWidget.isHidden() is False
+    assert widget.get_values() == original
+
+    widget.localizationToggle.click()
+    widget._set_combo_data(widget.localizationModeCombo, "Manual")
+    widget.periodXSpin.setValue(12.0)
+    assert "Manual · 12 ×" in widget.localizationHeader._summary
+    assert widget.get_values()["manual_period_x_px"] == 12.0
+
+    widget._set_combo_data(widget.orientationModeCombo, "Manual")
+    widget._set_combo_data(widget.orientationCombo, "-x+y")
+    assert "-x+y · Manual" in widget.scanningHeader._summary
+    widget.scanningToggle.click()
+    assert widget.scanningDetailsWidget.isHidden() is True
+    assert "-x+y · Manual" in widget.scanningHeader._summary
+    assert widget.get_values()["orientation"] == "-x+y"
+
+
+def test_collapsed_scanning_summary_tracks_recording_and_setup_source(qapp):
+    widget = MonalisaParamsWidget()
+    widget._recorded_orientation = "+y-x"
+    widget._recorded_scan_axes = {
+        "y": {"count": 30, "step_nm": 62.0},
+        "z": {"count": 17, "step_nm": 150.0},
+    }
+    widget._set_combo_data(widget.orientationModeCombo, "Recorded")
+    assert "+y-x · Recorded · YZ" in widget.scanningHeader._summary
+    assert widget.scanningDetailsWidget.isHidden() is True
+    widget._set_combo_data(widget.orientationModeCombo, "Auto")
+    assert "Recorded" not in widget.scanningHeader._summary
+
+
+def test_lock_localization_updates_header_and_collapses_details(qapp, tmp_path, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    widget.set_auto_localization(
+        PatternLocalization.manual_grid(
+            period_x=10.0, period_y=12.0, offset_x=1.0, offset_y=2.0,
+            source="auto",
+        ),
+        "ready",
+    )
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog, "getText", lambda *args, **kwargs: ("Hex 750", True)
+    )
+    widget._lock_current_localization()
+    assert "Locked · Hex 750" in widget.localizationHeader._summary
+    assert widget.localizationDetailsWidget.isHidden() is True
+    assert widget._combo_data(widget.localizationModeCombo) == "Locked"
+    # Expansion is still a user-controlled presentation choice after locking.
+    widget.localizationToggle.click()
+    assert widget.localizationDetailsWidget.isHidden() is False
+    assert widget.lockedLocalizationCombo.currentText() == "Hex 750"
