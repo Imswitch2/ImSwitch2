@@ -98,11 +98,15 @@ def test_pipeline_dispatch_respects_explicit_method_and_footprint():
     assert isinstance(geo_joint.operator, ExtractionOperator)
 
 
-def test_local_rejects_reassignment_instead_of_silently_using_joint():
+def test_local_reassignment_keeps_local_estimator():
     loc = PatternLocalization.manual_grid(11, 11, 4, 4)
     params = PipelineParams(
         estimator="local", spot_sigma_px=1.8, localization_refinement="fast",
         reassignment="auto", variance_weighting=False,
     )
-    with pytest.raises(ValueError, match="require Joint"):
-        prepare_geometry(np.zeros((48, 48)), np.eye(2), np.array([[0, 0]]), params, localization=loc)
+    geometry = prepare_geometry(
+        np.zeros((48, 48)), np.eye(2), np.array([[0, 0]]), params,
+        localization=loc,
+    )
+    assert isinstance(geometry.operator, LocalExtractionOperator)
+    assert geometry.operator.footprints.focus.size > 0

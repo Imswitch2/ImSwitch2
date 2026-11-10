@@ -6,8 +6,9 @@ from copy import deepcopy
 import json
 import re
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
+from .collapsible_section import CompactSection
 from .advanced_settings import AdvancedReconstructionDialog
 from .calibration import PatternLocalization, ScanOrientation
 from .localization_settings import DEFAULT_LOCALIZATION_SETTINGS, LocalizationSettings, PeriodPrior
@@ -40,104 +41,6 @@ from .setup_defaults import (
     DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
     read_detector_defaults, save_detector_default, save_detector_fitting, positive_fwhm,
 )
-
-
-class _ThinDisclosureHeader(QtWidgets.QWidget):
-    """Results-splitter-style disclosure row, shared by compact sections.
-
-    Mirrors ``_SessionSplitterHandle`` in ProcessingSessionFrame: a text-only
-    transparent toggle and one hairline to the right of its text. There is no
-    native section chrome or hover background.
-    """
-
-    def __init__(self, parent=None, *, title="Fitting"):
-        super().__init__(parent)
-        self._title = str(title)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setAutoFillBackground(False)
-        self.setStyleSheet("background: transparent; border: none;")
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
-        self._summary = ""
-        self._status = ""
-        self._status_tooltip = ""
-
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.toggle = QtWidgets.QToolButton(self)
-        self.toggle.setCheckable(True)
-        self.toggle.setChecked(False)
-        self.toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-        self.toggle.setAutoRaise(True)
-        # The Session splitter is not inside a bold group; use the application
-        # font rather than inheriting any emphasis from the Spot model group.
-        self.toggle.setFont(QtWidgets.QApplication.font())
-        self.toggle.setCursor(QtCore.Qt.ArrowCursor)
-        self.toggle.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        # These rules match the Session Results splitter toggle. In particular,
-        # hover and pressed MUST remain transparent even with global Qt themes.
-        self.toggle.setStyleSheet(
-            "QToolButton { border: none; background: transparent; padding: 0 2px 0 0; }"
-            "QToolButton:hover { border: none; background: transparent; }"
-            "QToolButton:pressed { border: none; background: transparent; }"
-            "QToolButton:checked { border: none; background: transparent; }"
-        )
-        height = self.toggle.fontMetrics().height() + 2
-        self.toggle.setFixedHeight(height)
-        self.setFixedHeight(height)
-        self.toggle.toggled.connect(self._update_toggle_text)
-        layout.addWidget(self.toggle)
-        layout.addStretch(1)
-        self._update_toggle_text()
-
-    def sizeHint(self):
-        hint = super().sizeHint()
-        hint.setHeight(self.fontMetrics().height() + 2)
-        return hint
-
-    def paintEvent(self, event):
-        # As with the Results splitter, paint only the thin divider. Never call
-        # a native frame/handle paint method (which could draw a raised surface).
-        painter = QtGui.QPainter(self)
-        color = self.palette().color(QtGui.QPalette.Mid)
-        color.setAlpha(150)
-        painter.setPen(QtGui.QPen(color, 1))
-        y = self.rect().center().y()
-        x = self.toggle.geometry().right() + 5
-        if x < self.width():
-            painter.drawLine(x, y, self.width() - 1, y)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_toggle_text()
-
-    def setSummary(self, summary: str) -> None:
-        self._summary = str(summary)
-        self._update_toggle_text()
-
-    def setStatus(self, status: str, tooltip: str = "") -> None:
-        self._status = str(status)
-        self._status_tooltip = str(tooltip)
-        self._update_toggle_text()
-
-    def _update_toggle_text(self, *_):
-        marker = "⌄" if self.toggle.isChecked() else "›"
-        summary = f"{self._title} · {self._summary}" if self._summary else self._title
-        full = f"{marker} {summary}"
-        # Keep room for the separator at narrow ImProcess panel widths.
-        available = max(55, self.width() - 28)
-        displayed = self.toggle.fontMetrics().elidedText(
-            full, QtCore.Qt.ElideRight, available
-        )
-        if self.toggle.text() != displayed:
-            self.toggle.setText(displayed)
-        self.toggle.setToolTip(
-            f"Expand/collapse {self._title}. " + summary
-            + ((". " + self._status_tooltip) if self._status_tooltip else "")
-        )
-        self.update()
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
@@ -356,14 +259,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._offer_recovery_if_needed)
 
     # --------------------------------------------------------------- builders
-    @staticmethod
-    def _section(title: str):
-        box = QtWidgets.QGroupBox(title)
-        grid = QtWidgets.QGridLayout(box)
-        grid.setContentsMargins(6, 6, 6, 6)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(4)
-        return box, grid
+    def _section(self, title: str, *, expanded: bool = True):
+        section = CompactSection(title, expanded=expanded)
+        section.expandedChanged.connect(lambda _expanded: self._refresh_scroll_minimum())
+        return section, section.grid
 
     @staticmethod
     def _double_spin(value, minimum=-1e9, maximum=1e9, decimals=3, suffix=""):
@@ -412,28 +311,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                     item.setToolTip(str(tooltip or ""))
                 return
 
-    @staticmethod
-    def _compact_section(title: str, *, expanded: bool):
-        """Create the same thin disclosure used for Fitting, with inline content.
-
-        The header owns only expansion: all scientific actions stay inside the
-        details widget. Hidden details retain their state and signal wiring.
-        """
-        box = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(box)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
-        header = _ThinDisclosureHeader(box, title=title)
-        outer.addWidget(header)
-        details = QtWidgets.QWidget(box)
-        grid = QtWidgets.QGridLayout(details)
-        grid.setContentsMargins(6, 3, 6, 3)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(4)
-        outer.addWidget(details)
-        header.toggle.setChecked(bool(expanded))
-        details.setVisible(bool(expanded))
-        return box, grid, header, details
+    def _compact_section(self, title: str, *, expanded: bool):
+        section, grid = self._section(title, expanded=expanded)
+        return section, grid, section.header, section.details
 
     def _build_ui(self, values: dict) -> None:
         outer = QtWidgets.QVBoxLayout(self)
@@ -611,11 +491,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         scan.addWidget(self.scanStatusLabel, 2, 0, 1, 6)
         root.addWidget(self.scanningBox)
 
-        # Spot model ---------------------------------------------------------
-        # Everyday FWHM calibration stays immediately accessible. Less frequently
-        # edited fitting controls live in a collapsible inline section; this is
-        # deliberately not another Expert dialog.
-        self.spotBox, spot = self._section("Spot model")
+        # Spot width ---------------------------------------------------------
+        # Keep the FWHM estimate/manual/setup workflow visible by default.
+        self.spotBox, spot = self._section("Spot width", expanded=True)
         self.fwhmLabel = QtWidgets.QLabel("FWHM")
         self.spotModeCombo = self._combo(
             [("Manual", SPOT_MANUAL), ("Auto", SPOT_AUTO)], values["spot_width_mode"]
@@ -653,16 +531,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.addWidget(self.estimateFwhmButton, 0, 4)
         spot.addWidget(self.fwhmMenuButton, 0, 5)
 
+        # Fitting is an independent top-level section, not nested inside FWHM.
         self._fitting_expanded = False
-        self.fittingHeader = _ThinDisclosureHeader(self.spotBox)
-        self.fittingToggle = self.fittingHeader.toggle
-        spot.addWidget(self.fittingHeader, 1, 0, 1, 6)
-
-        self.fittingDetailsWidget = QtWidgets.QWidget()
-        fitting = QtWidgets.QGridLayout(self.fittingDetailsWidget)
-        fitting.setContentsMargins(14, 0, 0, 4)
-        fitting.setHorizontalSpacing(6)
-        fitting.setVerticalSpacing(4)
+        self.fittingBox, fitting = self._section("Fitting", expanded=False)
+        self.fittingHeader = self.fittingBox.header
+        self.fittingToggle = self.fittingBox.toggle
+        self.fittingDetailsWidget = self.fittingBox.details
         self.estimatorCombo = self._combo(
             [("Local", "local"), ("Joint", "joint")], values["estimator"]
         )
@@ -727,15 +601,14 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         fitting.setColumnStretch(0, 1)
         fitting.setColumnStretch(1, 1)
         fitting.setColumnStretch(2, 1)
-        self.fittingDetailsWidget.setVisible(False)
-        spot.addWidget(self.fittingDetailsWidget, 2, 0, 1, 6)
         spot.setColumnStretch(1, 1)
         spot.setColumnStretch(2, 1)
         spot.setColumnStretch(3, 1)
         root.addWidget(self.spotBox)
+        root.addWidget(self.fittingBox)
 
         # Classic DLL -------------------------------------------------------
-        self.legacyBox, legacy = self._section("Legacy DLL")
+        self.legacyBox, legacy = self._section("Legacy DLL", expanded=True)
         self.legacyBleachingCheck = QtWidgets.QCheckBox("Bleaching correction")
         self.legacyBleachingCheck.setChecked(bool(values["legacy_bleaching_correction"]))
         self.legacyBleachingCheck.setToolTip(
@@ -778,7 +651,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addWidget(self.legacyBox)
 
         # ISM ---------------------------------------------------------------
-        self.ismBox, ism = self._section("ISM")
+        self.ismBox, ism = self._section("ISM", expanded=True)
         self.reassignmentCombo = self._combo(self._ISM_LABELS, values["reassignment"])
         self.shiftFactorSpin = self._double_spin(values["shift_factor"], 0.0, 1.0, 3)
         self.shiftFactorSpin.setSingleStep(0.05)
@@ -811,7 +684,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addWidget(self.ismBox)
 
         # Corrections --------------------------------------------------------
-        self.correctionsBox, corrections = self._section("Corrections")
+        self.correctionsBox, corrections = self._section("Corrections", expanded=True)
         self.intensityCheck = QtWidgets.QCheckBox("Intensity correction")
         self.intensityCheck.setChecked(bool(values["intensity_correction"]))
         self.intensityCheck.setToolTip(
@@ -828,7 +701,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         root.addWidget(self.correctionsBox)
 
         # Output -------------------------------------------------------------
-        self.outputBox, output = self._section("Output")
+        self.outputBox, output = self._section("Output", expanded=True)
         self.sharpenCheck = QtWidgets.QCheckBox("Sharpened image")
         self.sharpenCheck.setChecked(bool(values["sharpen"]))
         output.addWidget(self.sharpenCheck, 0, 0)
@@ -872,12 +745,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.useSetupFwhmButton.triggered.connect(self._use_setup_fwhm)
         self.saveFwhmDefaultButton.triggered.connect(self._save_fwhm_default)
         self.fittingToggle.toggled.connect(self._set_fitting_expanded)
-        self.localizationToggle.toggled.connect(
-            lambda expanded: self._set_compact_expanded(self.localizationDetailsWidget, expanded)
-        )
-        self.scanningToggle.toggled.connect(
-            lambda expanded: self._set_compact_expanded(self.scanningDetailsWidget, expanded)
-        )
+        for control in (self.shiftFactorSpin, self.shiftXSpin, self.shiftYSpin, self.legacyGaussianSizeSpin):
+            control.valueChanged.connect(self._update_section_summaries)
+        for control in (self.legacyBleachingCheck, self.pinholeCheck):
+            control.toggled.connect(self._update_section_summaries)
         self.orientationCombo.currentIndexChanged.connect(self._refresh_orientation_display)
         for combo in (self.estimatorCombo, self.footprintShapeCombo):
             combo.currentIndexChanged.connect(self._fitting_changed)
@@ -985,8 +856,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.legacyBox.setVisible(legacy)
         # Spot width is useful for Legacy too; fitting is Gaussian-only.
         self.spotModeCombo.setVisible(not legacy)
-        self.fittingHeader.setVisible(not legacy)
-        self.fittingDetailsWidget.setVisible(not legacy and self._fitting_expanded)
+        self.fittingBox.setVisible(not legacy)
         self.fwhmUnitCombo.setEnabled(True)
         gaussian_bg = str(self._combo_data(self.legacyBackgroundCombo)) == "Gaussian"
         self.legacyGaussianSizeLabel.setEnabled(gaussian_bg)
@@ -1077,6 +947,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._update_fitting_summary()
         self._update_localization_summary()
         self._update_scanning_header_summary()
+        self._update_section_summaries()
         # The unit remains editable in Auto: changing units changes only how
         # the resolved value is displayed, not how it was estimated.
         self.fwhmUnitCombo.setEnabled(True)
@@ -1101,11 +972,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftYSpin.setEnabled(manual_ism)
         self.shiftXLabel.setEnabled(True)
         self.shiftYLabel.setEnabled(True)
-        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
-
-    def _set_compact_expanded(self, details: QtWidgets.QWidget, expanded: bool) -> None:
-        """Toggle only presentation; preserve settings and calibration state."""
-        details.setVisible(bool(expanded))
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def _update_localization_summary(self, *_):
@@ -1177,6 +1043,43 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.scanStatusLabel.text(),
         ) if part)
         self.scanningHeader.setStatus("", detail)
+
+    def _update_section_summaries(self, *_):
+        """Summaries describe actual settings without changing their values."""
+        width_mode = str(self._combo_data(self.spotModeCombo))
+        width_unit = str(self._combo_data(self.fwhmUnitCombo))
+        width = f"{self.fwhmSpin.value():g} {width_unit}"
+        self.spotBox.setSummary(f"{width} · {width_mode}")
+
+        legacy_parts = [str(self._combo_data(self.legacyBackgroundCombo)) + " background"]
+        if self.legacyBleachingCheck.isChecked():
+            legacy_parts.append("Bleaching")
+        self.legacyBox.setSummary(" · ".join(legacy_parts))
+
+        reassignment = str(self._combo_data(self.reassignmentCombo))
+        if reassignment == "fixed":
+            if self.asymmetricCheck.isChecked() and len(self._scanned_lateral_axes) > 1:
+                reassignment = (
+                    f"Manual · X {self.shiftXSpin.value():g}"
+                    f" / Y {self.shiftYSpin.value():g}"
+                )
+            else:
+                reassignment = f"Manual · {self.shiftFactorSpin.value():g}"
+        elif reassignment == "auto":
+            reassignment = "Auto"
+        else:
+            reassignment = "Off"
+        if self.pinholeCheck.isChecked():
+            reassignment += " · Pinhole stack"
+        self.ismBox.setSummary(reassignment)
+
+        corrections = []
+        if self.intensityCheck.isChecked():
+            corrections.append("Intensity")
+        if self.cellOffsetsCheck.isChecked():
+            corrections.append("Cell offsets")
+        self.correctionsBox.setSummary(" · ".join(corrections) if corrections else "Off")
+        self.outputBox.setSummary("Sharpening On" if self.sharpenCheck.isChecked() else "Sharpening Off")
 
     def _refresh_scroll_minimum(self) -> None:
         """Keep the full workflow reachable instead of vertically compressing labels."""
@@ -1629,10 +1532,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     def _set_fitting_expanded(self, expanded: bool) -> None:
         """Keep the inline fitting editor collapsed unless the user requests it."""
         self._fitting_expanded = bool(expanded)
-        self.fittingHeader._update_toggle_text()
-        self.fittingDetailsWidget.setVisible(
-            self._fitting_expanded and self._mode_value() != PRESET_LEGACY
-        )
+        # CompactSection performs the header/frame swap itself. This callback
+        # retains the existing flag for compatibility with the widget state.
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def _fitting_changed(self, *_):
@@ -1755,6 +1656,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             finally:
                 self.fwhmSpin.blockSignals(old)
         self._spot_unit = new_unit
+        self._update_section_summaries()
 
     def set_auto_spot_sigma_px(self, sigma_px: float) -> None:
         if str(self._combo_data(self.spotModeCombo)) != SPOT_AUTO:
@@ -1777,6 +1679,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if not self._programmatic_fwhm and str(self._combo_data(self.spotModeCombo)) != SPOT_AUTO:
             self._fwhm_source = "Manual"
             self.fwhmSourceLabel.setText(self._fwhm_source)
+        self._update_section_summaries()
 
     def _set_fwhm_value(self, value: float, source: str) -> None:
         self._programmatic_fwhm = True

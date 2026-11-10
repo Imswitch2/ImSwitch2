@@ -490,8 +490,14 @@ def prepare_geometry(
             raise ValueError("Local Gaussian extraction does not support pixel masks")
         if params.variance_weighting:
             raise ValueError("Variance weighting requires Joint Gaussian extraction")
-        if params.reassignment != "off" or params.pinhole_stack != "off":
-            raise ValueError("Reassignment and pinhole stacks require Joint extraction")
+        # ISM uses the original sensor pixels. Local bilinear interpolation
+        # changes those observations, so only native camera sampling can feed
+        # the shared reassignment stage. Raw pinhole stacks are independent of
+        # the Gaussian estimator and need no such restriction.
+        if params.reassignment != "off" and params.local_sampling != "camera_pixels":
+            raise ValueError(
+                "Local reassignment requires original camera-pixel sampling"
+            )
         # Unit-cell support uses actual camera pixels; Local's existing DLL
         # geometry path already implements this without changing its solver.
         if fit.shape == "lattice" and params.local_sampling != "camera_pixels":

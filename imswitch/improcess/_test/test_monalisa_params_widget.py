@@ -397,14 +397,16 @@ def test_editing_joint_support_marks_full_as_custom(qapp):
     assert values["preset"] == PRESET_CUSTOM
     assert values["footprint_shape"] == "lattice"
 
-def test_spot_model_keeps_fwhm_editable_and_inline_fitting_header(qapp):
+def test_spot_width_and_fitting_are_independent_top_level_sections(qapp):
     widget = MonalisaParamsWidget()
-    layout = widget.spotBox.layout()
+    layout = widget.spotBox.grid
+    assert widget.spotBox.details.title().startswith("⌄ Spot width")
     assert layout.itemAtPosition(0, 0).widget() is widget.fwhmLabel
     assert layout.itemAtPosition(0, 4).widget() is widget.estimateFwhmButton
     assert layout.itemAtPosition(0, 5).widget() is widget.fwhmMenuButton
-    assert layout.itemAtPosition(1, 0).widget() is widget.fittingHeader
-    assert layout.itemAtPosition(2, 0).widget() is widget.fittingDetailsWidget
+    assert layout.itemAtPosition(1, 0) is None  # no nested fitting header
+    assert widget.fittingBox.parent() is widget._scrollContent
+    assert widget.fittingDetailsWidget is widget.fittingBox.details
     assert widget.fittingMenuButton.menu() is widget.fittingMenu
     assert widget.fwhmMenuButton.menu() is widget.fwhmMenu
     assert widget.get_values() == default_params()
@@ -449,10 +451,9 @@ def test_legacy_hides_gaussian_fitting_but_keeps_spot_width(qapp):
     widget = MonalisaParamsWidget()
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
     assert widget.fwhmSpin.isHidden() is False
-    assert widget.fittingHeader.isHidden() is True
-    assert widget.estimatorCombo.isHidden() is True
+    assert widget.fittingBox.isHidden() is True
     assert widget.footprintSourceLabel.isHidden() is True
-    assert widget.footprintSizeSpin.isHidden() is True
+    assert widget.fittingBox.isVisibleTo(widget) is False
     assert widget.get_values()["background"] == "constant"
 
 
@@ -480,13 +481,14 @@ def test_expert_only_contains_specialist_numerical_settings(qapp):
 
 def test_spot_model_source_badges_do_not_consume_space(qapp):
     widget = MonalisaParamsWidget()
-    spot = widget.spotBox.layout()
+    spot = widget.spotBox.grid
     fitting = widget.fittingDetailsWidget.layout()
     assert widget.spotModeCombo.findText("Manual") >= 0  # real mode selector stays
     assert widget.fwhmSourceLabel.isHidden()
     assert widget.footprintSourceLabel.isHidden()
-    assert spot.itemAtPosition(1, 0).widget() is widget.fittingHeader
-    assert spot.itemAtPosition(2, 0).widget() is widget.fittingDetailsWidget
+    assert spot.itemAtPosition(1, 0) is None
+    assert widget.fittingBox.header is widget.fittingHeader
+    assert widget.fittingBox.details is widget.fittingDetailsWidget
     assert fitting.itemAtPosition(1, 0) is None
     assert "Application default" not in widget.fittingToggle.text()
     assert "FWHM source:" in widget.fwhmMenuButton.toolTip()
@@ -551,14 +553,15 @@ def test_fitting_collapse_matches_results_splitter_header(qapp):
     header = widget.fittingHeader
     toggle = widget.fittingToggle
     assert toggle is header.toggle
-    assert widget.spotBox.layout().itemAtPosition(1, 0).widget() is header
+    assert widget.fittingBox.header is header
     assert toggle.autoRaise() is True
     assert toggle.toolButtonStyle() == QtCore.Qt.ToolButtonTextOnly
     assert toggle.sizePolicy().verticalPolicy() == QtWidgets.QSizePolicy.Fixed
     assert header.layout().contentsMargins().top() == 0
     assert header.layout().contentsMargins().bottom() == 0
     assert header.height() == toggle.fontMetrics().height() + 2
-    assert toggle.text().startswith("› Fitting · Local · Square · From lattice")
+    assert toggle.text().startswith("› Fitting")
+    assert "Local · Square · From lattice" in header._summary_label.text()
     # The actual Results splitter uses all-transparent button states, not the
     # native arrow-button and alternate-base hover used before this hotfix.
     css = toggle.styleSheet().replace(" ", "")
@@ -625,7 +628,7 @@ def test_localization_and_scanning_use_thin_disclosures_without_header_actions(q
     widget = MonalisaParamsWidget()
 
     # Auto localization remains immediately usable on first opening. Scanning
-    # is deliberately collapsed, while FWHM and fitting retain Patch F layout.
+    # is deliberately collapsed, and FWHM and fitting use separate sections.
     assert widget.localizationToggle.isChecked() is True
     assert widget.localizationDetailsWidget.isHidden() is False
     assert widget.scanningToggle.isChecked() is False
@@ -641,7 +644,8 @@ def test_localization_and_scanning_use_thin_disclosures_without_header_actions(q
         style = header.toggle.styleSheet()
         assert "QToolButton:hover" in style and "background: transparent" in style
         assert "palette(alternate-base)" not in style
-        assert header.layout().count() == 2  # disclosure and hairline stretch; no actions
+        assert header.layout().count() == 3
+        # No header action buttons; Localization/Scanning have separate muted summaries.
         assert header.height() == header.toggle.height()
 
 
@@ -707,3 +711,158 @@ def test_lock_localization_updates_header_and_collapses_details(qapp, tmp_path, 
     widget.localizationToggle.click()
     assert widget.localizationDetailsWidget.isHidden() is False
     assert widget.lockedLocalizationCombo.currentText() == "Hex 750"
+
+
+def test_compact_sections_use_native_groupbox_frames_only_when_expanded(qapp):
+    """Localization/Scanning must paint exactly like Spot model and Corrections."""
+    widget = MonalisaParamsWidget()
+    assert isinstance(widget.localizationDetailsWidget, QtWidgets.QGroupBox)
+    assert isinstance(widget.scanningDetailsWidget, QtWidgets.QGroupBox)
+    for header, details in (
+        (widget.localizationHeader, widget.localizationDetailsWidget),
+        (widget.scanningHeader, widget.scanningDetailsWidget),
+    ):
+        assert header._show_rule is False
+        assert header._summary_label is not None
+        assert header.toggle.font().bold() is True
+        assert header._summary_label.font().bold() is False
+        assert details.styleSheet() == widget.spotBox.details.styleSheet() == ""
+        assert details.layout().contentsMargins() == widget.spotBox.details.layout().contentsMargins()
+        assert "border" not in details.styleSheet()
+        assert details.title().startswith("⌄ ")
+        assert details._summary == header._summary
+        assert details.toolTip().startswith("Click title to collapse.")
+
+    assert widget.localizationHeader.isHidden() is True
+    assert widget.localizationDetailsWidget.isHidden() is False
+    assert widget.scanningHeader.isHidden() is False
+    assert widget.scanningDetailsWidget.isHidden() is True
+    # Both views are alternatives, never two stacked headers and borders.
+    widget.scanningToggle.click()
+    assert widget.scanningHeader.isHidden() is True
+    assert widget.scanningDetailsWidget.isHidden() is False
+    widget.scanningDetailsWidget.collapseRequested.emit()
+    assert widget.scanningHeader.isHidden() is False
+    assert widget.scanningDetailsWidget.isHidden() is True
+
+
+def test_native_section_titles_follow_current_summary_and_collapse(qapp):
+    widget = MonalisaParamsWidget()
+    parameters = widget.get_values()
+    widget._set_combo_data(widget.localizationModeCombo, "Manual")
+    assert "Manual" in widget.localizationDetailsWidget.title()
+    widget.localizationDetailsWidget.collapseRequested.emit()
+    assert widget.localizationToggle.isChecked() is False
+    assert widget.localizationDetailsWidget.isHidden() is True
+    assert widget.localizationHeader.isHidden() is False
+    widget.localizationToggle.click()
+    assert widget.localizationDetailsWidget.isHidden() is False
+    assert widget.localizationHeader.isHidden() is True
+    # Expanding/collapsing does not itself alter scientific parameters.
+    assert widget.get_values()["estimator"] == parameters["estimator"]
+    assert widget.get_values()["footprint_mode"] == parameters["footprint_mode"]
+
+
+def test_clicking_native_groupbox_title_collapses_section(qapp):
+    """The expanded frame itself must provide a discoverable collapse action."""
+    from qtpy import QtTest
+
+    widget = MonalisaParamsWidget()
+    widget.show()
+    qapp.processEvents()
+    details = widget.localizationDetailsWidget
+    option = QtWidgets.QStyleOptionGroupBox()
+    details.initStyleOption(option)
+    title_rect = details.style().subControlRect(
+        QtWidgets.QStyle.CC_GroupBox,
+        option,
+        QtWidgets.QStyle.SC_GroupBoxLabel,
+        details,
+    )
+    assert title_rect.isValid() and not title_rect.isEmpty()
+    QtTest.QTest.mouseClick(details, QtCore.Qt.LeftButton, pos=title_rect.center())
+    qapp.processEvents()
+    assert widget.localizationToggle.isChecked() is False
+    assert details.isHidden() is True
+    widget.close()
+
+
+def test_all_monalisa_sections_share_native_expanded_frame_and_thin_collapsed_header(qapp):
+    from imswitch.improcess.reconstructors.monalisa.collapsible_section import CompactSection
+
+    widget = MonalisaParamsWidget()
+    sections = (
+        widget.localizationBox, widget.scanningBox, widget.spotBox,
+        widget.fittingBox, widget.legacyBox, widget.ismBox,
+        widget.correctionsBox, widget.outputBox,
+    )
+    assert all(isinstance(section, CompactSection) for section in sections)
+    for section in sections:
+        assert section.header._show_rule is False
+        assert section.header.toggle.font().bold() is True
+        assert section.header.toggle.autoRaise() is True
+        assert section.details.styleSheet() == ""
+        assert section.details.layout().contentsMargins() == widget.spotBox.details.layout().contentsMargins()
+        assert section.header.isHidden() == section.isExpanded()
+        assert section.details.isHidden() != section.isExpanded()
+        assert "background: transparent" in section.toggle.styleSheet()
+
+    assert widget.spotBox.isExpanded() is True  # Estimate is available immediately
+    assert widget.fittingBox.isExpanded() is False
+    assert widget.scanningBox.isExpanded() is False
+    assert widget.correctionsBox.isExpanded() is True  # keep familiar checkbox access
+
+
+def test_compact_sections_retain_scientific_parameters_and_live_summaries(qapp):
+    widget = MonalisaParamsWidget()
+    original = widget.get_values()
+    for section in (widget.spotBox, widget.fittingBox, widget.correctionsBox, widget.outputBox):
+        section.setExpanded(not section.isExpanded())
+        section.setExpanded(not section.isExpanded())
+    assert widget.get_values() == original
+
+    widget.fwhmSpin.setValue(230.0)
+    assert "230 nm" in widget.spotBox.header._summary
+    widget.intensityCheck.setChecked(True)
+    assert "Intensity" in widget.correctionsBox.header._summary
+    widget.sharpenCheck.setChecked(True)
+    assert "Sharpening On" in widget.outputBox.header._summary
+    widget._set_combo_data(widget.reassignmentCombo, "fixed")
+    widget.shiftFactorSpin.setValue(0.4)
+    assert "Manual · 0.4" in widget.ismBox.header._summary
+    widget._set_combo_data(widget.legacyBackgroundCombo, "Gaussian")
+    assert "Gaussian background" in widget.legacyBox.header._summary
+
+
+def test_mode_visibility_and_expansion_are_independent(qapp):
+    widget = MonalisaParamsWidget()
+    widget.fittingBox.setExpanded(True)
+    widget.correctionsBox.setExpanded(False)
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
+    assert widget.fittingBox.isHidden() is True
+    assert widget.legacyBox.isHidden() is False
+    assert widget.legacyBox.isExpanded() is True
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Normal"))
+    assert widget.fittingBox.isHidden() is False
+    assert widget.fittingBox.isExpanded() is True
+    assert widget.correctionsBox.isExpanded() is False
+    assert widget.legacyBox.isHidden() is True
+
+
+def test_native_title_click_collapses_new_fitting_section(qapp):
+    from qtpy import QtTest
+    widget = MonalisaParamsWidget()
+    widget.fittingBox.setExpanded(True)
+    widget.show()
+    qapp.processEvents()
+    group = widget.fittingBox.details
+    option = QtWidgets.QStyleOptionGroupBox()
+    group.initStyleOption(option)
+    rect = group.style().subControlRect(QtWidgets.QStyle.CC_GroupBox, option,
+                                        QtWidgets.QStyle.SC_GroupBoxLabel, group)
+    assert rect.isValid() and not rect.isEmpty()
+    QtTest.QTest.mouseClick(group, QtCore.Qt.LeftButton, pos=rect.center())
+    qapp.processEvents()
+    assert widget.fittingBox.isExpanded() is False
+    assert widget.fittingBox.header.isHidden() is False
+    widget.close()

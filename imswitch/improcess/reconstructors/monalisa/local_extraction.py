@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .extraction import CUPY_AVAILABLE, ExtractionResult, cp
+from .extraction import CUPY_AVAILABLE, ExtractionResult, Footprints, cp
 
 
 class LocalExtractionOperator:
@@ -25,9 +25,10 @@ class LocalExtractionOperator:
     It retains the selected local footprint, not MATLAB's lattice-unit-cell
     partition; this is a sampling comparison, not a full MATLAB port.
 
-    The local estimator deliberately implements only the coefficient planes
-    needed by Fast reconstruction.  It has no joint residual state for
-    reassignment or variance diagnostics.
+    The local estimator extracts each focus independently. For native camera
+    sampling it also exposes per-focus sensor pixels for ISM reassignment,
+    subtracting the local fitted background without deblending neighbors.
+    Variance diagnostics and joint residuals remain unavailable.
     """
 
     def __init__(
@@ -63,6 +64,7 @@ class LocalExtractionOperator:
 
         self.frame_shape = (rows, cols)
         self.num_foci = int(x.size)
+        self._ism_footprints = None
         self.background = str(background)
         self.focus_coordinates = str(focus_coordinates).strip().lower()
         if self.focus_coordinates not in ("localized", "dll_grid"):
@@ -113,6 +115,13 @@ class LocalExtractionOperator:
         self.integrated = bool(integrated)
         amp_scale = (2 * np.pi * sigma**2) if integrated else 1.0
         bg_scale = ((2 * np.pi * bg_sigma**2) if integrated and bg_sigma is not None else 1.0)
+        # Model normalization is needed to preserve zero-shift ISM amplitude
+        # units (peak or integrated) without re-solving the Local fit.
+        self._ism_amplitude_scale = float(amp_scale)
+        self._ism_background_scale = float(bg_scale)
+        self._ism_background_sigma = bg_sigma
+        self._ism_sigma = sigma
+        self._ism_x, self._ism_y = x.copy(), y.copy()
         self.sampling = str(sampling).strip().lower()
         if self.sampling not in ("bilinear", "camera_pixels"):
             raise ValueError("Local sampling must be 'bilinear' or 'camera_pixels'")
@@ -199,6 +208,7 @@ class LocalExtractionOperator:
                 self._native_background_weights = None
             self._native_pixel_index = pixel_index
             self.valid &= usable
+            self._native_keep = keep & self.valid[:, None]
             self.pixels_per_focus = np.where(self.valid, lengths, 0).astype(int)
             self._points_per_focus = width
             self._device_arrays = None
@@ -276,6 +286,7 @@ class LocalExtractionOperator:
                 )
                 self._native_background_weights = None
             self.valid &= fit_valid
+            self._native_keep = keep & self.valid[:, None]
             self.pixels_per_focus = np.where(self.valid, count, 0).astype(int)
         else:
             # Historical get_interp_coords() clips the requested sample
@@ -512,6 +523,75 @@ class LocalExtractionOperator:
         return self.apply_fast_device(
             frames, device=device, chunk=chunk, preselect_host=preselect_host
         )
+
+    @property
+    def footprints(self) -> Footprints:
+        """Native sensor-pixel support for each valid independently fitted focus.
+
+        Expose the same contract as the Joint operator, but without claiming
+        that neighboring Gaussian contributions have been deblended. Invalid
+        and clipped/padded pixels never enter the ISM splat.
+        """
+        if self.sampling != "camera_pixels":
+            raise ValueError(
+                "Local reassignment requires original camera-pixel sampling"
+            )
+        if self._ism_footprints is None:
+            focus, within = np.nonzero(self._native_keep)
+            pixels = self._native_pixel_index[focus, within]
+            py, px = np.divmod(pixels, self.frame_shape[1])
+            dx = px.astype(float) - self._ism_x[focus]
+            dy = py.astype(float) - self._ism_y[focus]
+            gaussian = np.exp(-(dx**2 + dy**2) / (2.0 * self._ism_sigma**2))
+            weight = gaussian / self._ism_amplitude_scale
+            self._ism_pixel_index = pixels
+            self._ism_footprints = Footprints(
+                focus=focus.astype(np.int64),
+                row=np.arange(focus.size, dtype=np.int64),
+                dx=dx, dy=dy, weight=weight,
+            )
+        return self._ism_footprints
+
+    def footprint_values(
+        self, frames: np.ndarray, extracted: ExtractionResult | None = None,
+    ) -> np.ndarray:
+        """Native pixels minus each Local fit's estimated background.
+
+        Uses the amplitudes/backgrounds already extracted upstream, without
+        another Gaussian solve. Unlike Joint extraction, neighboring foci are
+        *not* subtracted; that difference must be evaluated on overlapping
+        spot data. The returned values have shape (frames, footprint entries).
+        """
+        entries = self.footprints  # validates sampling and caches valid pixels
+        frames = np.asarray(frames)
+        if frames.ndim == 2:
+            frames = frames[None]
+        if frames.ndim != 3 or tuple(frames.shape[1:]) != self.frame_shape:
+            raise ValueError(
+                f"Expected frames of shape (K, {self.frame_shape[0]}, "
+                f"{self.frame_shape[1]}), got {frames.shape}"
+            )
+        if extracted is None:
+            extracted = self.apply_device(frames, device="CPU")
+        amplitudes = np.asarray(extracted.amplitude)
+        if amplitudes.shape != (frames.shape[0], self.num_foci):
+            raise ValueError("Local extracted amplitudes do not match supplied frames")
+        values = frames.reshape(frames.shape[0], -1)[:, self._ism_pixel_index].astype(float)
+        if self.background != "none":
+            if extracted.background is None:
+                raise ValueError("Local ISM needs the fitted background coefficients")
+            background = np.asarray(extracted.background)
+            if background.shape != amplitudes.shape:
+                raise ValueError("Local extracted backgrounds do not match supplied frames")
+            if self._ism_background_sigma is not None:
+                basis = np.exp(
+                    -(entries.dx**2 + entries.dy**2)
+                    / (2.0 * self._ism_background_sigma**2)
+                ) / self._ism_background_scale
+            else:
+                basis = 1.0
+            values -= background[:, entries.focus] * basis
+        return values
 
     @property
     def variance_gain(self) -> np.ndarray:
