@@ -81,3 +81,39 @@ def test_loaded_single_file_timelapse_keeps_group_dataset_names():
         ("lapse_CAM.hdf5", "scan0/Camera", "/raw/lapse_CAM.hdf5"),
         ("lapse_CAM.hdf5", "scan1/Camera", "/raw/lapse_CAM.hdf5"),
     ]
+
+
+def test_a_session_timelapse_added_from_loaded_data_adds_every_timepoint():
+    """Add data on a Session lapse adds its timepoints, as Session's own
+    "Load as Multi-data" does -- it used to add only the primary file."""
+    from imswitch.improcess.controller.FileIOController import FileIOController
+    from imswitch.improcess.controller.ProcessingSessionController import (
+        ProcessingSessionController,
+    )
+
+    ctl = _controller()
+    refs = tuple(
+        SimpleNamespace(path=Path(f"scan{index}_CAM.hdf5"), dataset="Camera")
+        for index in range(3)
+    )
+    dataset = SimpleNamespace(
+        id="lapse", kind="time-lapse", source_refs=refs,
+        primary_path=refs[0].path, primary_dataset="Camera",
+    )
+    ctl._registerLoadedDataObj = lambda data_obj: (data_obj, dataset)
+    ctl._main = SimpleNamespace(processingSessionController=SimpleNamespace(
+        _multidata_source=ProcessingSessionController._multidata_source,
+    ))
+    route = FileIOController._routeCatalogDataObj.__get__(ctl)
+
+    outcome = route(
+        SimpleNamespace(sourceKind=TIME_LAPSE_SOURCE_KIND),
+        prefer_as_current=False, add_to_multidata=True,
+    )
+
+    assert outcome == "multidata"
+    assert [made[:2] for made in ctl.multiDataFrameController.made] == [
+        ("scan0_CAM.hdf5", "Camera"),
+        ("scan1_CAM.hdf5", "Camera"),
+        ("scan2_CAM.hdf5", "Camera"),
+    ]

@@ -11,13 +11,18 @@ def _worker(detector_properties):
         monalisaSpotFwhmNm=configuredMonalisaSpotFwhm(detector_properties)
     )
     manager = SimpleNamespace(detectorsManager={"Camera": detector})
-    worker = object.__new__(RecordingWorker)
+    worker = RecordingWorker.__new__(RecordingWorker)
     worker._RecordingWorker__recordingManager = manager
     worker.saveFormat = SaveFormat.HDF5
     worker.recLapseTotal = 1
     worker.recLapseIndex = 0
     worker.singleLapseFile = False
     worker.acquisitionLayouts = {}
+    # An uninitialised QObject raises RuntimeError, not AttributeError, for a
+    # missing attribute, so getattr() defaults cannot stand in for these.
+    worker.recLapseIntervalS = None
+    worker.recLapseScheduledTime = None
+    worker.recordingGeneration = 0
     return worker
 
 

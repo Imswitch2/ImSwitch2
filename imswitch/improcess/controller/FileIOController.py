@@ -991,14 +991,19 @@ class FileIOController(ImProcessWidgetController):
             if session_dataset is not None:
                 controller = getattr(self._main, 'processingSessionController', None)
                 helper = getattr(controller, '_multidata_source', None)
-                source = helper(
-                    session_dataset.primary_path, session_dataset.primary_dataset
-                ) if callable(helper) else None
-                if source is not None:
-                    path, dataset_name = source
-                    self.multiDataFrameController.makeAndAddDataObj(
-                        os.path.basename(path) or path, dataset_name, path=path
-                    )
+                # A Session lapse adds every timepoint, as Session's own "Load
+                # as Multi-data" does -- not only the lapse's primary file.
+                if getattr(session_dataset, 'kind', '') == 'time-lapse':
+                    sources = [(ref.path, ref.dataset) for ref in session_dataset.source_refs]
+                else:
+                    sources = [(session_dataset.primary_path, session_dataset.primary_dataset)]
+                for source_path, source_dataset in sources:
+                    source = helper(source_path, source_dataset) if callable(helper) else None
+                    if source is not None:
+                        path, dataset_name = source
+                        self.multiDataFrameController.makeAndAddDataObj(
+                            os.path.basename(path) or path, dataset_name, path=path
+                        )
             else:
                 self._addDataObjToWorkingSet(data_obj)
         if prefer_as_current:

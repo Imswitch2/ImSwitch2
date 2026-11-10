@@ -67,6 +67,7 @@ from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
     GalvoScanDesigner,
 )
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.acquisition_layout_resolver import (
     resolve_acquisition_layout,
 )
@@ -496,7 +497,9 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
     # looked only at the container root, where a lapse recording has no
     # datasets, and reported every one of these files as empty.
     assert DataObj.getDatasetNames(str(path)) == ['scan0/Camera', 'scan1/Camera']
-    with h5py.File(path, 'r') as h5file:
+    # The DataObj below opens the file through ImProcess's shared SWMR read
+    # policy; a plain read handle held open meanwhile would conflict with it.
+    with open_raw_hdf5(path) as h5file:
         assert sorted(h5file.keys()) == ['scan0', 'scan1']
         for index in range(total):
             dataset = h5file[f'scan{index}']['Camera']['data']

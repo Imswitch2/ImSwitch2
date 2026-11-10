@@ -54,7 +54,9 @@ class ResultPublication:
         self.coverage = ResultCoverage(plan)
         self.published = None
         self._finalized = False
-        self._annotated_ids: set[int] = set()
+        # Annotated results are marked rather than remembered by id(): only the
+        # newest snapshot stays alive, so a freed one's id can come back.
+        self._annotation_token = object()
         self._assembler = None
         self._input_provenance = []
         self._provisional_view = None
@@ -64,10 +66,10 @@ class ResultPublication:
         if result is None:
             return
         result._improcess_queue_job_id = self.plan.job_id
-        if id(result) not in self._annotated_ids:
+        if getattr(result, "_improcess_annotated_by", None) is not self._annotation_token:
             self.hooks.annotate_scope(result, self.plan.scope, self.plan.total_timepoints)
             self.hooks.claim(result)
-            self._annotated_ids.add(id(result))
+            result._improcess_annotated_by = self._annotation_token
         metadata = getattr(result, "metadata", None)
         if not isinstance(metadata, dict):
             metadata = {}

@@ -301,7 +301,9 @@ class UnifiedFastStreamingSession(StreamingSession):
 
         incremental = self._incremental
         calibrated = incremental.calibrated
-        scan = self._scan
+        # The scan with the panel's step override applied, as the finite path
+        # and the stream plan use it; the raw layout scan would drop that step.
+        scan = calibrated.source_scan or self._scan
         results = (
             incremental.finalize_stacks()
             if isinstance(incremental, IncrementalFastMultiAccumulator)

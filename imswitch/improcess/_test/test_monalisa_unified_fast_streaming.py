@@ -129,6 +129,28 @@ def test_layout_general_fast_complete_scans_match_finite(axes, interleaved):
     session.close()
 
 
+def test_a_panel_scan_step_sets_the_streamed_scale_as_it_does_the_finite_one():
+    """With no camera pixel size, the panel's step gives the output pixel.
+
+    The stream plan and the finite path both take the step from the panel; the
+    finalized timepoints used the recorded steps instead, so T1 no longer
+    matched T0's calibration and an Auto run failed to assemble.
+    """
+    frames, layout, per_t = _multi_plane_fixture(("x", "y", "z"), nt=2)
+    params = {**_params(), "pixel_size_nm": 0., "scan_step_nm": 100.,
+              "spot_fwhm": 4.0, "spot_fwhm_unit": "px"}
+    plugin = MonalisaReconstructor()
+    finite = plugin.process(_source(frames, layout), params)
+    session, plan = _start(plugin, frames[:1], params, layout, nt=2,
+                           frames_per_timepoint=per_t)
+    session.push(frames[1:per_t], 1, per_t)
+    session.push(frames[per_t:], per_t, 2 * per_t)
+    result = session.finish()
+    assert finite.axis_scales[-2:] == [100., 100.]
+    assert result.axis_scales == plan.axis_scales == finite.axis_scales
+    session.close()
+
+
 def test_interleaved_z_group_views_preserve_gain_chronology():
     """Group-local gain positions must match finite's selected indices."""
     from imswitch.improcess.reconstructors.monalisa_lattice.scan import (

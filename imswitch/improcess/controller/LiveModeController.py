@@ -218,8 +218,9 @@ class LiveModeController(ImProcessWidgetController):
 
         if self._directory_watcher is not None and getattr(self, "_owns_directory_watcher", True):
             self._directory_watcher.reset()
-        else:
-            getattr(self, "_live_seen_entries", set()).clear()
+        # Cleared with an owned watcher too: _on_entry_found drops anything in
+        # this set, so the watcher's re-emitted entries would never run again.
+        getattr(self, "_live_seen_entries", set()).clear()
         if self._job_queue is not None:
             self._job_queue.reset()
         self._logger.info(

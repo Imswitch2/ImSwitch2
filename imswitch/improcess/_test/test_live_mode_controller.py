@@ -30,7 +30,8 @@ class _FakeLive(QtCore.QObject):
         self.stops = 0
         self.stop_kwargs = []
 
-    def start(self, reconstructor, source, params, source_arg=None, name=None):
+    def start(self, reconstructor, source, params, source_arg=None, name=None,
+              source_dataset_name=None):
         self.start_calls.append(source_arg)
         self.start_names.append(name)
         return self.start_return
@@ -93,7 +94,11 @@ def _controller(reconstructor=None):
     return c
 
 
-def test_matching_session_directory_watcher_is_shared_and_not_stopped(tmp_path):
+def test_live_mode_owns_its_watcher_and_leaves_a_borrowed_one_running(tmp_path):
+    """Live mode never borrows the Session watcher: Review tears it down.
+
+    A watcher it does not own is still left running when Live mode stops.
+    """
     from imswitch.improcess.live.discovery import DirectoryWatcher
 
     watcher = DirectoryWatcher(str(tmp_path), poll_interval_ms=50)
@@ -104,7 +109,7 @@ def test_matching_session_directory_watcher_is_shared_and_not_stopped(tmp_path):
         directoryWatcher=watcher,
     )
 
-    assert c._session_watcher_for(str(tmp_path)) is watcher
+    assert c._session_watcher_for(str(tmp_path)) is None
 
     c._directory_watcher = watcher
     c._owns_directory_watcher = False
@@ -337,6 +342,30 @@ def test_rerun_after_reset_gets_its_own_indexed_name(tmp_path):
     assert c._live_rec_ctr.start_names == [
         "timelapse_00", "timelapse_00.1", "timelapse_00.2"
     ]
+
+
+def test_reset_with_an_owned_watcher_runs_every_entry_again(tmp_path):
+    """Reset re-runs the folder through the watcher Live mode actually owns.
+
+    ``_on_entry_found`` keeps its own record of what it queued. Reset cleared
+    it only when there was no owned watcher, so with one -- the only kind
+    legacy Live has -- every re-discovered entry was dropped as already seen.
+    """
+    from imswitch.improcess.live.discovery import DirectoryWatcher
+
+    _store(tmp_path / "timelapse_00")
+    c = _controller()
+    c._directory_watcher = DirectoryWatcher(str(tmp_path))
+    c._watched_folder = str(tmp_path)
+    for entry in c._directory_watcher.scan_once():
+        c._on_entry_found(entry)
+    c._on_job_finished()
+
+    c._on_reset_clicked()
+    for entry in c._directory_watcher.scan_once():
+        c._on_entry_found(entry)
+
+    assert c._live_rec_ctr.start_names == ["timelapse_00", "timelapse_00.1"]
 
 
 def test_first_run_of_a_folder_keeps_its_bare_name(tmp_path):

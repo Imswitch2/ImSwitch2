@@ -154,6 +154,25 @@ def test_initial_snapshot_and_planes_are_same_published_job():
     assert result._improcess_queue_job_id == "job-17"
 
 
+def test_every_new_snapshot_is_claimed_although_freed_ids_come_back():
+    """Only the newest snapshot stays alive, so CPython reuses freed ids.
+
+    Remembering annotated results by id() skipped the scope and the Session
+    claim for a new snapshot that happened to get a freed one's address. The
+    hooks keep no reference to a result, as the queue's do not.
+    """
+    claimed = []
+    publisher = ResultPublication(
+        ResultAssemblyPlan.for_timepoints(
+            "job-17", "scan-03", scope=TimepointScope.range(0, 50), total=50,
+        ),
+        PublicationHooks(claim=lambda result: claimed.append(result.name)),
+    )
+    for index in range(50):
+        publisher.snapshot(_result(f"snapshot-{index}"))
+    assert claimed == [f"snapshot-{index}" for index in range(50)]
+
+
 def test_complete_reuses_one_viewer_entry_and_finalizes_once():
     publisher, events = _publication()
     preview = _result()
