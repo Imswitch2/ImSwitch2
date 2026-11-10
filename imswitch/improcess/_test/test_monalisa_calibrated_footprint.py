@@ -18,8 +18,8 @@ from imswitch.improcess._test._monalisa_synthetic import render_spots
 def test_default_from_lattice_and_full_does_not_enable_variance_weighting():
     normal = default_params()
     full = apply_preset(normal, PRESET_FULL)
-    assert normal['local_footprint_mode'] == FOOTPRINT_FROM_LATTICE
-    assert normal['local_footprint_shape'] == 'square'
+    assert normal['footprint_mode'] == FOOTPRINT_FROM_LATTICE
+    assert normal['footprint_shape'] == 'square'
     assert full['variance_weighting'] is False
 
 

@@ -580,22 +580,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
     @QtCore.Slot(str)
     def _set_monalisa_update_enabled(self, mode):
         try:
-            fast = str(mode) == "Fast"
-            placement_only = fast
-            reason = "Update reconstruction is currently available only in Fast mode."
-            if fast:
-                widget = getattr(self, "_previewWidget", None)
-                values = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
-                corrected = bool(values.get("intensity_correction", False)) or bool(
-                    values.get("cell_offsets", False)
-                )
-                placement_only = not corrected
-                reason = (
-                    "Re-place the retained Fast extraction after changing scan orientation."
-                    if placement_only
-                    else "Fast corrections require a full reconstruction; placement-only update is unavailable."
-                )
+            from imswitch.improcess.reconstructors.monalisa.params import effective_mode_params
+            widget = getattr(self, "_previewWidget", None)
+            params = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
+            effective = effective_mode_params(params)
+            stages = (
+                str(effective.get("reassignment", "off")) != "off",
+                bool(effective.get("pinhole_stack", False)),
+                bool(effective.get("sharpen", False)),
+                bool(effective.get("variance_weighting", False)),
+                bool(effective.get("intensity_correction", False)),
+                bool(effective.get("cell_offsets", False)),
+            )
+            placement_only = not any(stages) and str(mode) in ("Fast", "Full")
+            reason = (
+                "Re-place retained amplitudes after changing scan orientation."
+                if placement_only else
+                "Placement-only update requires ISM, sharpening and corrections off."
+            )
             self._widget.setUpdateReconstructionEnabled(placement_only, reason)
+            # Full mode explicitly opts into offline-only processing. The
+            # legacy live engine applies additional per-option checks on start.
+            self._widget.setDirectoryWatcherAvailable(str(mode) == "Fast")
         except Exception:
             pass
 

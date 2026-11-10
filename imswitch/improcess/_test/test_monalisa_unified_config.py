@@ -24,26 +24,21 @@ from imswitch.improcess.reconstructors.monalisa.spot_settings import (
 )
 
 
-def test_fast_and_full_presets_only_change_processing_options():
+def test_fast_and_full_presets_only_change_optional_processing():
     base = default_params()
     fast = apply_preset(base, PRESET_FAST)
     full = apply_preset(base, PRESET_FULL)
-
-    for key in ("localization_mode", "orientation_mode", "spot_fwhm"):
-        assert fast[key] == full[key] == base[key]
-    assert fast["spot_width_mode"] == "Manual/default"
-    assert full["spot_width_mode"] == "Auto"
-    assert fast["intensity_correction"] is False
-    assert fast["cell_offsets"] is False
+    for key in (
+        "localization_mode", "localization_refinement", "orientation_mode",
+        "spot_fwhm", "spot_width_mode", "estimator", "footprint_shape",
+        "intensity_correction", "cell_offsets", "variance_weighting",
+        "device", "placement_mode",
+    ):
+        assert fast[key] == full[key] == base[key], key
     assert fast["reassignment"] == "off"
-    assert fast["localization_refinement"] == LOCALIZATION_REFINEMENT_FAST
-    assert full["intensity_correction"] is True
-    assert full["cell_offsets"] is True
     assert full["reassignment"] == "auto"
-    assert full["localization_refinement"] == LOCALIZATION_REFINEMENT_FULL
     assert fast["sharpen"] is full["sharpen"] is False
     assert "relocalize_each_data_item" not in fast
-
 
 
 def test_legacy_preset_keeps_general_gaussian_stages_inert():
@@ -265,13 +260,15 @@ def test_fast_auto_localization_skips_spot_refinement(monkeypatch):
     assert finding.spot.shared_sigma == pytest.approx(1.3)
 
 
-def test_presets_reset_asymmetric_reassignment():
-    base = default_params()
-    base["reassignment_asymmetric"] = True
-    fast = apply_preset(base, PRESET_FAST)
-    full = apply_preset(base, PRESET_FULL)
-    assert fast["reassignment_asymmetric"] is False
-    assert full["reassignment_asymmetric"] is False
+def test_presets_preserve_full_asymmetric_reassignment():
+    full = apply_preset(default_params(), PRESET_FULL)
+    full.update(reassignment="fixed", reassignment_asymmetric=True,
+                shift_factor_x=.35, shift_factor_y=.42)
+    fast = apply_preset(full, PRESET_FAST)
+    assert fast["full_options"]["reassignment_asymmetric"] is True
+    back = apply_preset(fast, PRESET_FULL)
+    assert back["reassignment_asymmetric"] is True
+    assert (back["shift_factor_x"], back["shift_factor_y"]) == (.35, .42)
 
 
 def test_reassignment_is_masked_to_the_scanned_camera_axis():

@@ -100,6 +100,38 @@ def _detector_properties(document: dict, detector: str, *, create: bool) -> dict
     return props if isinstance(props, dict) else None
 
 
+
+def startup_detector_id(*, path: Path | None = None) -> str:
+    """Resolve a detector before data selection, but only when unambiguous.
+
+    Prefer the sole detector with an explicit MoNaLISA FWHM setting.  With
+    no configured FWHM, a single-detector setup is also unambiguous (useful
+    when saving a first calibration).  Never guess between multiple cameras
+    with competing or missing defaults.
+    """
+    setup_path = path if path is not None else current_setup_path()
+    if setup_path is None:
+        return "unknown"
+    try:
+        document = _read_setup(Path(setup_path))
+        detectors = document.get("detectors")
+        if not isinstance(detectors, dict):
+            return "unknown"
+        candidates = [name for name, entry in detectors.items()
+                      if isinstance(name, str) and name and isinstance(entry, dict)]
+        configured = [name for name in candidates
+                      if positive_fwhm(
+                          (_detector_properties(document, name, create=False) or {}).get(FWHM_KEY)
+                      ) is not None]
+        if len(configured) == 1:
+            return configured[0]
+        if not configured and len(candidates) == 1:
+            return candidates[0]
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return "unknown"
+
+
 def read_detector_defaults(detector: str, *, path: Path | None = None) -> DetectorSetupDefaults:
     detector = str(detector or "")
     setup_path = path if path is not None else current_setup_path()

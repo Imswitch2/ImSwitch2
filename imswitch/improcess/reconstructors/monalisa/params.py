@@ -12,7 +12,21 @@ PRESET_FAST = "Fast"
 PRESET_FULL = "Full"
 PRESET_LEGACY = "Legacy DLL"
 PRESET_CUSTOM = "Custom"
-PRESETS = (PRESET_FAST, PRESET_FULL, PRESET_LEGACY, PRESET_CUSTOM)
+# Only Gaussian processing profiles are selectable in the unified interface.
+# Legacy DLL remains readable for old jobs and has a separate reconstructor.
+PRESETS = (PRESET_FAST, PRESET_FULL)
+
+FULL_OPTION_DEFAULTS = {
+    "reassignment": "auto",
+    "shift_factor": 0.0,
+    "reassignment_asymmetric": False,
+    "shift_factor_x": 0.0,
+    "shift_factor_y": 0.0,
+    "pinhole_stack": False,
+    "sharpen": False,
+}
+FULL_OPTION_KEYS = tuple(FULL_OPTION_DEFAULTS)
+
 
 LOCALIZATION_AUTO = "Auto"
 LOCALIZATION_LOCKED = "Locked"
@@ -63,9 +77,8 @@ DEFAULT_PARAMS = {
     "locked_localization_id": "",
     "locked_localization_name": "",
     "locked_localization": {},
-    # Presets select how expensive Auto localization/refinement may be.  This
-    # remains hidden in the fixed widget: Custom keeps whichever preset it was
-    # derived from.
+    # Explicit localization refinement policy, independent of Fast/Full mode.
+    # Existing saved values remain valid on replay.
     "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
     "manual_offset_x_px": 10.4,
     "manual_offset_y_px": 9.89,
@@ -83,15 +96,11 @@ DEFAULT_PARAMS = {
     "spot_fwhm_unit": "nm",
     "background": "constant",
     "estimator": ESTIMATOR_LOCAL,
-    # Preserve existing Joint behavior (2.5 sigma) unless Expert changes it.
-    "joint_footprint_mode": "auto",
-    "joint_footprint_radius_px": 4.5,
-    "local_footprint_shape": FOOTPRINT_SQUARE,
-    "local_footprint_mode": FOOTPRINT_FROM_LATTICE,
-    "local_footprint_size": 9,
+    # Legacy per-estimator footprint keys are NOT part of the current
+    # parameter contract. Old results are still interpreted by
+    # footprint_from_params() before defaults are merged.
     "local_sampling": "camera_pixels",
-    # One footprint policy for either Local or Joint (legacy keys above are
-    # retained only to interpret older saved reconstruction settings).
+    # One shared footprint policy for Local and Joint.
     "footprint_shape": "square",
     "footprint_mode": "from_lattice",
     "footprint_size_px": 9.0,
@@ -113,6 +122,9 @@ DEFAULT_PARAMS = {
     "sharpen_sigma_px": 1.5,
     "sharpen_regularization": 0.1,
     "pinhole_stack": False,
+    # Stored independently of the Fast execution settings. Switching away
+    # from Full bypasses these stages without discarding the user's choices.
+    "full_options": deepcopy(FULL_OPTION_DEFAULTS),
     # Kept as expert overrides for recordings whose layout/attrs do not state
     # their scan geometry. Zero means "use the recording".
     "scan_steps_fast": 0,
@@ -120,72 +132,102 @@ DEFAULT_PARAMS = {
     "scan_step_nm": 0.0,
 }
 
-PRESET_VALUES = {
-    PRESET_FAST: {
-        "device": "GPU",
-        "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
-        "spot_width_mode": SPOT_MANUAL,
-    "spot_width_source": "Application default",
-        "estimator": ESTIMATOR_LOCAL,
-        "intensity_correction": False,
-        "cell_offsets": False,
-        "reassignment": "off",
-        "reassignment_asymmetric": False,
-        "placement_mode": PLACEMENT_AUTO,
-        "variance_weighting": False,
-        "sharpen": False,
-    },
-    PRESET_FULL: {
-        "device": "GPU",
-        "localization_refinement": LOCALIZATION_REFINEMENT_FULL,
-        "spot_width_mode": SPOT_AUTO,
-        "estimator": ESTIMATOR_JOINT,
-        "intensity_correction": True,
-        "cell_offsets": True,
-        "reassignment": "auto",
-        "reassignment_asymmetric": False,
-        "placement_mode": PLACEMENT_AUTO,
-        "variance_weighting": False,
-        "sharpen": False,
-    },
-    PRESET_LEGACY: {
-        # The classic SignalExtractor has its own background / bleaching
-        # controls, but still shares localization, FWHM and the compute-device
-        # setting with the unified widget.  Keep unsupported Gaussian stages
-        # inert when entering Legacy DLL mode.
-        "device": "CPU",
-        "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
-        "spot_width_mode": SPOT_MANUAL,
-    "spot_width_source": "Application default",
-        "estimator": ESTIMATOR_JOINT,
-        "intensity_correction": False,
-        "cell_offsets": False,
-        "reassignment": "off",
-        "reassignment_asymmetric": False,
-        "placement_mode": PLACEMENT_AUTO,
-        "variance_weighting": False,
-        "sharpen": False,
-    },
-}
-
-PRESET_CONTROLLED_KEYS = frozenset(
-    key for values in PRESET_VALUES.values() for key in values
-)
-
-
 def default_params() -> dict:
     return deepcopy(DEFAULT_PARAMS)
 
 
-def apply_preset(params: dict, preset: str) -> dict:
+# Only processing stages differ between the two Gaussian modes.  In
+# particular, mode selection must never rewrite localization, FWHM, fitting,
+# corrections, device, placement or the numerical optimization policy.
+PRESET_VALUES = {
+    PRESET_FAST: {"reassignment": "off", "pinhole_stack": False, "sharpen": False},
+    PRESET_FULL: deepcopy(FULL_OPTION_DEFAULTS),
+}
+PRESET_CONTROLLED_KEYS = frozenset(FULL_OPTION_KEYS)
+
+
+def _full_options(params: dict, *, capture_effective: bool = False) -> dict:
+    """Load retained Full settings; accept old records without a nested copy."""
+    options = deepcopy(FULL_OPTION_DEFAULTS)
+    saved = params.get("full_options")
+    if isinstance(saved, dict):
+        options.update({key: saved[key] for key in FULL_OPTION_KEYS if key in saved})
+    elif capture_effective:
+        options.update({key: params[key] for key in FULL_OPTION_KEYS if key in params})
+    return options
+
+
+def normalize_preset(params: dict) -> str:
+    """Resolve old Custom jobs based on the processing stages they requested.
+
+    Scientific controls from such jobs are never reset or inferred from the
+    previous Fast/Full recipe.  Legacy is handled separately by its adapter.
+    """
+    preset = str(params.get("preset", PRESET_FAST))
+    if preset == PRESET_CUSTOM:
+        return (PRESET_FULL if (
+            str(params.get("reassignment", "off")) != "off"
+            or bool(params.get("pinhole_stack", False))
+            or bool(params.get("sharpen", False))
+        ) else PRESET_FAST)
+    if preset not in (PRESET_FAST, PRESET_FULL, PRESET_LEGACY):
+        raise ValueError(f"Unknown MoNaLISA preset {preset!r}")
+    return preset
+
+
+def effective_mode_params(params: dict) -> dict:
+    """Make mode-specific stages explicit without changing scientific choices.
+
+    A Fast result always has ISM/pinhole/sharpening disabled, irrespective of
+    saved Full settings.  Full's explicit fields are authoritative; the nested
+    settings are a remembered selection, not an override of an active job.
+    """
     out = deepcopy(dict(params))
-    if preset not in PRESET_VALUES:
-        if preset != PRESET_CUSTOM:
-            raise ValueError(f"Unknown MoNaLISA preset {preset!r}")
-        out["preset"] = PRESET_CUSTOM
+    requested = str(out.get("preset", PRESET_FAST))
+    mode = normalize_preset(out)
+    out["preset"] = mode
+    out["full_options"] = _full_options(
+        out, capture_effective=(requested in (PRESET_FULL, PRESET_CUSTOM) and
+                                "full_options" not in out),
+    )
+    if mode == PRESET_FAST:
+        out.update(PRESET_VALUES[PRESET_FAST])
+    elif mode == PRESET_FULL:
+        for key in FULL_OPTION_KEYS:
+            out.setdefault(key, out["full_options"][key])
+    return out
+
+
+def apply_preset(params: dict, preset: str) -> dict:
+    """Change processing profile; retain scientific and previous Full settings."""
+    out = deepcopy(dict(params))
+    target = normalize_preset({**out, "preset": preset})
+    previous = normalize_preset(out)
+    if target == PRESET_LEGACY:
+        # Preserve the old API for preexisting legacy jobs, while removing this
+        # choice from the unified widget and public selectable PRESETS.
+        out.update({
+            "device": "CPU", "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
+            "spot_width_mode": SPOT_MANUAL, "estimator": ESTIMATOR_JOINT,
+            "intensity_correction": False, "cell_offsets": False,
+            "reassignment": "off", "reassignment_asymmetric": False,
+            "placement_mode": PLACEMENT_AUTO, "variance_weighting": False,
+            "sharpen": False, "pinhole_stack": False,
+        })
+        out["preset"] = PRESET_LEGACY
         return out
-    out.update(deepcopy(PRESET_VALUES[preset]))
-    out["preset"] = preset
+    full = _full_options(
+        out, capture_effective=(previous == PRESET_FULL and "full_options" not in out),
+    )
+    if previous == PRESET_FULL and "full_options" in out:
+        # The effective fields reflect the last UI/headless edits made in Full.
+        full.update({key: out[key] for key in FULL_OPTION_KEYS if key in out})
+    out["full_options"] = full
+    out["preset"] = target
+    if target == PRESET_FULL:
+        out.update(full)
+    else:
+        out.update(PRESET_VALUES[PRESET_FAST])
     return out
 
 
@@ -208,6 +250,7 @@ __all__ = [
     "PLACEMENT_AUTO",
     "PLACEMENT_DIRECT",
     "PLACEMENT_INTERPOLATE",
+    "FULL_OPTION_DEFAULTS", "FULL_OPTION_KEYS",
     "PRESET_CONTROLLED_KEYS",
     "PRESET_CUSTOM",
     "PRESET_FAST",
@@ -217,6 +260,6 @@ __all__ = [
     "PRESETS",
     "SPOT_AUTO",
     "SPOT_MANUAL",
-    "apply_preset",
+    "apply_preset", "effective_mode_params", "normalize_preset",
     "default_params",
 ]

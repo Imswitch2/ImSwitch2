@@ -22,13 +22,12 @@ from .params import (
     ORIENTATION_RECORDED,
     ORIENTATION_LOCKED,
     ORIENTATION_MANUAL,
-    PRESET_CUSTOM,
     PRESET_FAST,
     PRESET_FULL,
     PRESET_LEGACY,
+    FULL_OPTION_DEFAULTS,
     SPOT_AUTO,
     SPOT_MANUAL,
-    apply_preset,
     default_params,
 )
 from .scan_frame import ORIENTATIONS
@@ -40,6 +39,7 @@ from .footprint_config import footprint_from_params, migrate_footprint_params
 from .setup_defaults import (
     DetectorSetupDefaults, FWHM_KEY, ORIENTATION_KEY, current_setup_path,
     read_detector_defaults, save_detector_default, save_detector_fitting, positive_fwhm,
+    startup_detector_id,
 )
 
 
@@ -216,9 +216,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     _MODE_LABELS = (
         ("Normal", PRESET_FAST),
-        ("Full (Auto + ISM)", PRESET_FULL),
-        ("Legacy DLL", PRESET_LEGACY),
-        ("Custom", PRESET_CUSTOM),
+        ("Full", PRESET_FULL),
     )
     _ISM_LABELS = (("Off", "off"), ("Auto", "auto"), ("Manual", "fixed"))
 
@@ -226,7 +224,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         super().__init__(parent)
         values = default_params()
         self._registry = session_registry
-        self._detector_id = "unknown"
+        # A dataset is not needed to identify the active setup's sole
+        # configured MoNaLISA detector. Refuse ambiguous multi-camera setups.
+        self._detector_id = startup_detector_id()
+        self._setup_defaults = read_detector_defaults(self._detector_id)
+        if self._setup_defaults.fwhm_nm is not None:
+            values["spot_fwhm"] = self._setup_defaults.fwhm_nm
+            values["spot_width_source"] = "Setup default"
         self._current_data_obj = None
         self._selected_locked_localization_id = ""
         self._localization_settings = LocalizationSettings.from_dict(values["localization_settings"])
@@ -235,11 +239,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._auto_localization = deepcopy(values["auto_localization"])
         self._localization_busy = False
         self._spot_unit = str(values["spot_fwhm_unit"])
-        self._setup_defaults = DetectorSetupDefaults("unknown")
         self._recorded_orientation = None
         self._orientation_user_override = False
         self._loading_setup_orientation = False
-        self._fwhm_source = "Application default"
+        self._fwhm_source = str(values["spot_width_source"])
         self._programmatic_fwhm = False
         self._footprint_user_override = False
         self._fwhm_estimate_serial = 0
@@ -369,10 +372,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
         self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
         self.modeCombo.setToolTip(
-            "Normal uses Local Gaussian fitting with optional corrections. "
-            "Full uses Joint Gaussian fitting, automatic width, reassignment and corrections. "
-            "Legacy DLL uses the classic SignalExtractor implementation. "
-            "Use Expert settings to compare fitting methods and footprints."
+            "Normal and Full share localization, FWHM, fitting and corrections. "
+            "Full additionally enables ISM (Auto by default), pinhole stacks "
+            "and optional sharpening. Returning to Normal remembers Full settings. "
+            "For the classic DLL choose the separate Legacy DLL reconstructor."
         )
         modeRow.addWidget(self.modeCombo, 1)
         self.advancedButton = QtWidgets.QPushButton("Expert…")
@@ -683,13 +686,14 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
         # ISM ---------------------------------------------------------------
         self.ismBox, ism = self._section("ISM", expanded=True)
-        self.reassignmentCombo = self._combo(self._ISM_LABELS, values["reassignment"])
-        self.shiftFactorSpin = self._double_spin(values["shift_factor"], 0.0, 1.0, 3)
+        full = values.get("full_options") or FULL_OPTION_DEFAULTS
+        self.reassignmentCombo = self._combo(self._ISM_LABELS, full["reassignment"])
+        self.shiftFactorSpin = self._double_spin(full["shift_factor"], 0.0, 1.0, 3)
         self.shiftFactorSpin.setSingleStep(0.05)
         self.asymmetricCheck = QtWidgets.QCheckBox("Asymmetric")
-        self.asymmetricCheck.setChecked(bool(values.get("reassignment_asymmetric", False)))
+        self.asymmetricCheck.setChecked(bool(full.get("reassignment_asymmetric", False)))
         self.pinholeCheck = QtWidgets.QCheckBox("Pinhole stack")
-        self.pinholeCheck.setChecked(bool(values["pinhole_stack"]))
+        self.pinholeCheck.setChecked(bool(full["pinhole_stack"]))
         ism.addWidget(QtWidgets.QLabel("Reassignment"), 0, 0)
         ism.addWidget(self.reassignmentCombo, 0, 1)
         ism.addWidget(QtWidgets.QLabel("Shift"), 0, 2)
@@ -709,8 +713,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         asym.setContentsMargins(0, 0, 0, 0)
         self.shiftXLabel = QtWidgets.QLabel("X")
         self.shiftYLabel = QtWidgets.QLabel("Y")
-        self.shiftXSpin = self._double_spin(values.get("shift_factor_x", values["shift_factor"]), 0.0, 1.0, 3)
-        self.shiftYSpin = self._double_spin(values.get("shift_factor_y", values["shift_factor"]), 0.0, 1.0, 3)
+        self.shiftXSpin = self._double_spin(full.get("shift_factor_x", full["shift_factor"]), 0.0, 1.0, 3)
+        self.shiftYSpin = self._double_spin(full.get("shift_factor_y", full["shift_factor"]), 0.0, 1.0, 3)
         self.shiftXSpin.setSingleStep(0.05)
         self.shiftYSpin.setSingleStep(0.05)
         asym.addWidget(self.shiftXLabel)
@@ -740,7 +744,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         # Output -------------------------------------------------------------
         self.outputBox, output = self._section("Output", expanded=True)
         self.sharpenCheck = QtWidgets.QCheckBox("Sharpened image")
-        self.sharpenCheck.setChecked(bool(values["sharpen"]))
+        self.sharpenCheck.setChecked(bool(full["sharpen"]))
         output.addWidget(self.sharpenCheck, 0, 0)
         output.setColumnStretch(1, 1)
         root.addWidget(self.outputBox)
@@ -762,6 +766,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.intensityCheck.toggled.connect(self._correction_changed)
         self.cellOffsetsCheck.toggled.connect(self._correction_changed)
         self.sharpenCheck.toggled.connect(self._controlled_changed)
+        self.pinholeCheck.toggled.connect(self._controlled_changed)
+        for spin in (self.shiftFactorSpin, self.shiftXSpin, self.shiftYSpin):
+            spin.valueChanged.connect(self._controlled_changed)
         self.legacyBackgroundCombo.currentIndexChanged.connect(lambda *_: self._update_ui())
         self.legacyDeviceCombo.currentIndexChanged.connect(self._legacy_device_changed)
         self.legacyPixelSizeSpin.valueChanged.connect(self._legacy_pixel_size_changed)
@@ -819,58 +826,21 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._set_combo_data(self.modeCombo, value)
 
     def _mode_changed(self, *_):
+        """Mode only selects optional processing; never rewrite calibration."""
         if self._applying_preset:
             return
-        mode = self._mode_value()
-        if mode != PRESET_CUSTOM:
-            values = apply_preset(self.get_values(), mode)
-            self._applying_preset = True
-            try:
-                self._apply_controlled_values(values)
-                self._localization_refinement = str(values["localization_refinement"])
-                if mode == PRESET_LEGACY:
-                    self.legacyPixelSizeSpin.setValue(
-                        float(self._advanced_values["pixel_size_nm"])
-                    )
-            finally:
-                self._applying_preset = False
         self._update_ui()
         self.sigModeChanged.emit(str(self._mode_value()))
 
-    def _apply_controlled_values(self, values: dict) -> None:
-        self._advanced_values["device"] = str(values["device"])
-        self._advanced_values["estimator"] = str(values["estimator"])
-        if hasattr(self, "legacyDeviceCombo"):
-            self._set_combo_data(self.legacyDeviceCombo, values["device"])
-        self._advanced_values["placement_mode"] = str(values["placement_mode"])
-        self._advanced_values["variance_weighting"] = bool(values["variance_weighting"])
-        self.intensityCheck.setChecked(bool(values["intensity_correction"]))
-        self.cellOffsetsCheck.setChecked(bool(values["cell_offsets"]))
-        self._set_combo_data(self.spotModeCombo, values["spot_width_mode"])
-        self._set_combo_data(self.reassignmentCombo, values["reassignment"])
-        self.asymmetricCheck.setChecked(bool(values.get("reassignment_asymmetric", False)))
-        self.sharpenCheck.setChecked(bool(values["sharpen"]))
-
     def _controlled_changed(self, *_):
+        """Edits remain in the selected profile (there is no Custom mode)."""
         if self._applying_preset:
             return
-        if self._mode_value() != PRESET_CUSTOM:
-            self._applying_preset = True
-            try:
-                self._set_mode_value(PRESET_CUSTOM)
-            finally:
-                self._applying_preset = False
         self._update_ui()
         self.sigModeChanged.emit(str(self._mode_value()))
 
     def _correction_changed(self, *_):
-        """Fast corrections are optional without turning the mode into Custom."""
-        if self._applying_preset:
-            return
-        if self._mode_value() == PRESET_FAST:
-            self._update_ui()
-            self.sigModeChanged.emit(PRESET_FAST)
-            return
+        # Corrections are shared between Normal and Full.
         self._controlled_changed()
 
     def _legacy_device_changed(self, *_):
@@ -1527,7 +1497,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     # ----------------------------------------------------------- spot / ISM
     def _sync_fitting_controls(self) -> None:
-        """Reflect preset/setup changes without recursively marking Custom."""
+        """Reflect setup and fitting changes without recursively updating values."""
         for widget, value in (
             (self.estimatorCombo, self._advanced_values["estimator"]),
             (self.footprintShapeCombo, self._advanced_values["footprint_shape"]),
@@ -2239,7 +2209,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if self._registry is not None and self._selected_locked_localization_id:
             locked_profile = self._registry.localization_profile(self._selected_locked_localization_id)
         locked_orientation = self._registry.locked_orientation(self._detector_id) if self._registry else None
-        return {
+        values = {
             "preset": self._mode_value(),
             "device": str(self._advanced_values["device"]),
             "pixel_size_nm": float(self._advanced_values["pixel_size_nm"]),
@@ -2299,6 +2269,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "pinhole_stack": bool(self.pinholeCheck.isChecked()),
             **self._scan_overrides,
         }
+        # Full-only processing is retained while Normal is selected, but
+        # disabled in the effective parameter snapshot sent to reconstruction.
+        full = {key: values[key] for key in FULL_OPTION_DEFAULTS}
+        values["full_options"] = full
+        if values["preset"] != PRESET_FULL:
+            values.update(reassignment="off", pinhole_stack=False, sharpen=False)
+        return values
 
     def set_pattern_params(self, row_offset: float, col_offset: float, row_period: float, col_period: float):
         self._set_combo_data(self.localizationModeCombo, LOCALIZATION_MANUAL)

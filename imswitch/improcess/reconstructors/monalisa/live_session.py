@@ -604,6 +604,16 @@ class MonalisaLiveSession(StreamingSession):
         """
         if "preset" not in params:
             return
+        if str(params.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError(
+                "Legacy DLL mode is offline-only; use the separate classic "
+                "reconstructor for offline processing."
+            )
+        if str(params.get("preset", "")) == "Full":
+            raise ValueError(
+                "Full mode is offline-only. Select Normal for streaming; "
+                "the incremental engine may impose additional estimator limits."
+            )
         # This older incremental engine uses a distinct rectangular Gauss
         # extractor. Never pretend it implements the selected new Local or
         # Joint extraction configuration; offline processing remains valid.
@@ -611,11 +621,6 @@ class MonalisaLiveSession(StreamingSession):
             raise ValueError(
                 "Selected Gaussian estimator/footprint is offline-only in the "
                 "current streaming engine; use finite MoNaLISA reconstruction."
-            )
-        if str(params.get("preset", "")) == PRESET_LEGACY:
-            raise ValueError(
-                "Legacy DLL mode is offline-only; live MoNaLISA reconstruction uses "
-                "the Fast-compatible Gaussian path."
             )
         unsupported = []
         if params.get("intensity_correction", False):

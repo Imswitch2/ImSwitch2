@@ -21,13 +21,13 @@ from imswitch.improcess.reconstructors.monalisa.lattice import Lattice
 from imswitch.improcess.reconstructors.monalisa.pipeline import PipelineParams, prepare_geometry
 
 
-def test_normal_defaults_to_local_while_full_keeps_joint():
+def test_normal_and_full_share_the_same_local_fit():
     normal = apply_preset(default_params(), PRESET_FAST)
     full = apply_preset(default_params(), PRESET_FULL)
     assert normal["estimator"] == ESTIMATOR_LOCAL
-    assert normal["local_footprint_shape"] == "square"
+    assert normal["footprint_shape"] == "square"
     assert normal["local_sampling"] == "camera_pixels"
-    assert full["estimator"] == ESTIMATOR_JOINT
+    assert full["estimator"] == ESTIMATOR_LOCAL
 
 
 @pytest.mark.parametrize("period,expected", [(10.0, 9), (11.05, 11), (8.0, 7)])

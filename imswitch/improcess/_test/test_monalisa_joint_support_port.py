@@ -27,7 +27,10 @@ def test_joint_default_matches_historical_sigma_scaled_radius():
     frame = _spots((40, 41), x, y, 1.7, [87., 110.], background=4.)
     np.testing.assert_allclose(new.apply_fast_device(frame, "CPU").amplitude,
                                old.apply_fast_device(frame, "CPU").amplitude)
-    assert default_params()["joint_footprint_mode"] == "auto"
+    # The old Joint auto policy remains understood for historical records,
+    # but new configurations declare only the shared footprint fields.
+    assert "joint_footprint_mode" not in default_params()
+    assert default_params()["footprint_mode"] == "from_lattice"
 
 
 def test_fixed_radius_changes_fit_pixel_support_and_recovers_amplitude():

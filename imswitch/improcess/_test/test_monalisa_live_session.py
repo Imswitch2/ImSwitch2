@@ -1257,7 +1257,7 @@ def test_unified_fast_live_accepts_fast_settings_and_rejects_unimplemented_full_
     session._validate_unified_live_params(fast)
 
     full = apply_preset(default_params(), PRESET_FULL)
-    with pytest.raises(ValueError, match="Fast-compatible"):
+    with pytest.raises(ValueError, match="Full mode is offline-only"):
         session._validate_unified_live_params(full)
 
 

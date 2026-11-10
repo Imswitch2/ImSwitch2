@@ -9,10 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy import QtCore, QtWidgets  # noqa: E402
 
 from imswitch.improcess.reconstructors.monalisa.params import (  # noqa: E402
-    PRESET_CUSTOM,
     PRESET_FAST,
     PRESET_FULL,
-    PRESET_LEGACY,
     default_params,
 )
 from imswitch.improcess.reconstructors.monalisa.params_widget import MonalisaParamsWidget  # noqa: E402
@@ -24,8 +22,69 @@ def qapp():
 
 
 def test_compact_widget_defaults_match_the_backend_contract(qapp):
+    from imswitch.improcess.model.plugin_contract import widget_problems
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+
     widget = MonalisaParamsWidget()
-    assert widget.get_values() == default_params()
+    assert widget_problems(MonalisaReconstructor(), widget) == []
+
+def test_setup_fwhm_is_available_before_first_dataset_and_contract_replayable(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa import setup_defaults
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    from imswitch.improcess.model.plugin_contract import widget_problems
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({
+        "detectors": {"CAM": {"managerProperties": {"monalisaSpotFwhmNm": 238.0}}}
+    }))
+    monkeypatch.setattr(setup_defaults, "current_setup_path", lambda: path)
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    widget = MonalisaParamsWidget()
+    assert widget._current_data_obj is None
+    assert widget._detector_id == "CAM"
+    assert widget.fwhmSpin.value() == pytest.approx(238.0)
+    assert widget.get_values()["spot_width_source"] == "Setup default"
+    assert widget.useSetupFwhmButton.isEnabled()
+    assert widget.saveFwhmDefaultButton.isEnabled()
+    assert widget_problems(MonalisaReconstructor(), widget) == []
+
+    widget.fwhmSpin.setValue(245.0)
+    widget.useSetupFwhmButton.trigger()
+    assert widget.fwhmSpin.value() == pytest.approx(238.0)
+    assert widget.get_values()["spot_width_source"] == "Setup default"
+
+    # Saving is permitted before the first dataset only because CAM is
+    # unambiguously identified by the active setup.
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *a, **kw: QtWidgets.QMessageBox.Yes)
+    widget.fwhmSpin.setValue(251.0)
+    widget.saveFwhmDefaultButton.trigger()
+    assert setup_defaults.read_detector_defaults("CAM", path=path).fwhm_nm == pytest.approx(251.0)
+    widget.load_from_attrs({"recording:detector_name": "CAM", "monalisa:spot_fwhm_nm": 280.0})
+    assert widget.fwhmSpin.value() == pytest.approx(280.0)
+    assert widget.get_values()["spot_width_source"] == "Recording"
+    widget.useSetupFwhmButton.trigger()
+    assert widget.fwhmSpin.value() == pytest.approx(251.0)
+
+
+def test_startup_ambiguous_detectors_do_not_enable_fwhm_setup_actions(qapp, tmp_path, monkeypatch):
+    import json
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa import setup_defaults
+
+    path = tmp_path / "hardware.json"
+    path.write_text(json.dumps({"detectors": {
+        "A": {"managerProperties": {"monalisaSpotFwhmNm": 230.0}},
+        "B": {"managerProperties": {"monalisaSpotFwhmNm": 250.0}},
+    }}))
+    monkeypatch.setattr(setup_defaults, "current_setup_path", lambda: path)
+    monkeypatch.setattr(module, "current_setup_path", lambda: path)
+    widget = MonalisaParamsWidget()
+    assert widget._detector_id == "unknown"
+    assert widget.fwhmSpin.value() == pytest.approx(default_params()["spot_fwhm"])
+    assert not widget.useSetupFwhmButton.isEnabled()
+    assert not widget.saveFwhmDefaultButton.isEnabled()
 
 
 def test_preview_starts_visible_and_workflow_is_scrollable(qapp):
@@ -62,30 +121,26 @@ def test_fast_corrections_do_not_turn_the_mode_into_custom(qapp):
     assert values["cell_offsets"] is True
 
 
-def test_full_auto_is_the_ui_name_for_the_existing_full_contract_value(qapp):
+def test_full_defaults_to_auto_ism_without_rewriting_fwhm_or_fitting(qapp):
     widget = MonalisaParamsWidget()
-    index = widget.modeCombo.findText("Full (Auto + ISM)")
+    index = widget.modeCombo.findText("Full")
     widget.modeCombo.setCurrentIndex(index)
     values = widget.get_values()
     assert values["preset"] == PRESET_FULL
-    assert values["spot_width_mode"] == "Auto"
+    assert values["spot_width_mode"] == "Manual/default"
+    assert values["estimator"] == "local"
     assert values["reassignment"] == "auto"
     assert widget.ismBox.isHidden() is False
 
 
 
-def test_legacy_dll_is_a_unified_mode_with_classic_controls(qapp):
+def test_only_gaussian_profiles_appear_in_the_existing_mode_combo(qapp):
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
-    values = widget.get_values()
-    assert values["preset"] == PRESET_LEGACY
-    assert widget.legacyBox.isHidden() is False
-    assert widget.correctionsBox.isHidden() is True
-    assert widget.ismBox.isHidden() is True
-    assert widget.outputBox.isHidden() is True
-    assert widget.orientationModeCombo.isEnabled() is False
-    assert widget.scanningAdvancedButton.isEnabled() is False
-    assert values["device"] == "CPU"
+    assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
+        "Normal", "Full",
+    ]
+    assert widget.legacyBox.isHidden()
+    assert widget.fittingBox.isHidden() is False
 
 
 def test_fast_fwhm_is_a_normal_edit_not_a_customization(qapp):
@@ -94,11 +149,45 @@ def test_fast_fwhm_is_a_normal_edit_not_a_customization(qapp):
     assert widget.get_values()["preset"] == PRESET_FAST
 
 
-def test_changing_a_mode_controlled_option_enters_custom(qapp):
+def test_full_processing_controls_do_not_change_mode(qapp):
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     widget.reassignmentCombo.setCurrentIndex(widget.reassignmentCombo.findText("Manual"))
-    assert widget.get_values()["preset"] == PRESET_CUSTOM
+    widget.shiftFactorSpin.setValue(.42)
+    widget.sharpenCheck.setChecked(True)
+    widget.pinholeCheck.setChecked(True)
+    result = widget.get_values()
+    assert result["preset"] == PRESET_FULL
+    assert result["reassignment"] == "fixed"
+    assert result["shift_factor"] == .42
+    assert result["sharpen"] is True
+    assert result["pinhole_stack"] is True
+
+
+def test_full_settings_survive_fast_and_full_roundtrip(qapp):
+    widget = MonalisaParamsWidget()
+    widget._set_combo_data(widget.estimatorCombo, "joint")
+    widget.fwhmSpin.setValue(207)
+    widget.intensityCheck.setChecked(True)
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
+    widget._set_combo_data(widget.reassignmentCombo, "fixed")
+    widget.shiftFactorSpin.setValue(.47)
+    widget.sharpenCheck.setChecked(True)
+    full = widget.get_values()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Normal"))
+    fast = widget.get_values()
+    assert fast["reassignment"] == "off"
+    assert fast["sharpen"] is False
+    assert fast["full_options"]["reassignment"] == "fixed"
+    for key in ("estimator", "spot_fwhm", "intensity_correction"):
+        assert fast[key] == full[key]
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
+    back = widget.get_values()
+    assert back["reassignment"] == "fixed"
+    assert back["shift_factor"] == .47
+    assert back["sharpen"] is True
+    assert back["estimator"] == "joint"
+    assert back["spot_fwhm"] == 207
 
 
 def _combo_item_enabled(combo, text):
@@ -259,7 +348,7 @@ def test_fitting_settings_are_editable_in_main_panel(qapp):
     widget._set_combo_data(widget.footprintShapeCombo, "circle")
     widget.footprintSizeSpin.setValue(10.5)
     assert widget.get_values()["footprint_size_px"] == 10.5
-    assert widget.get_values()["preset"] == PRESET_CUSTOM
+    assert widget.get_values()["preset"] == PRESET_FAST
 
 def test_calibrated_fwhm_can_be_fixed_then_saved_to_setup(qapp, tmp_path, monkeypatch):
     import json
@@ -388,13 +477,13 @@ def test_joint_support_is_editable_in_main_spot_model(qapp):
     assert widget.footprintSizeSpin.isHidden() is True
     assert widget.footprintSigmaSpin.isHidden() is True
 
-def test_editing_joint_support_marks_full_as_custom(qapp):
+def test_editing_joint_support_keeps_full_mode(qapp):
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     assert widget.get_values()["preset"] == PRESET_FULL
     widget._set_combo_data(widget.footprintShapeCombo, "lattice")
     values = widget.get_values()
-    assert values["preset"] == PRESET_CUSTOM
+    assert values["preset"] == PRESET_FULL
     assert values["footprint_shape"] == "lattice"
 
 def test_spot_width_and_fitting_are_independent_top_level_sections(qapp):
@@ -409,7 +498,10 @@ def test_spot_width_and_fitting_are_independent_top_level_sections(qapp):
     assert widget.fittingDetailsWidget is widget.fittingBox.details
     assert widget.fittingMenuButton.menu() is widget.fittingMenu
     assert widget.fwhmMenuButton.menu() is widget.fwhmMenu
-    assert widget.get_values() == default_params()
+    # The FWHM is detector-specific and can differ from the headless default.
+    from imswitch.improcess.model.plugin_contract import widget_problems
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    assert widget_problems(MonalisaReconstructor(), widget) == []
 
 
 def test_expert_background_roundtrips_without_changing_preset(qapp, monkeypatch):
@@ -447,13 +539,11 @@ def test_fitting_status_compares_saved_estimator_and_footprint(qapp):
     widget._update_ui()
     assert widget.footprintSourceLabel.text() == "Modified from setup"
 
-def test_legacy_hides_gaussian_fitting_but_keeps_spot_width(qapp):
+def test_full_preserves_gaussian_fitting_and_spot_width(qapp):
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     assert widget.fwhmSpin.isHidden() is False
-    assert widget.fittingBox.isHidden() is True
-    assert widget.footprintSourceLabel.isHidden() is True
-    assert widget.fittingBox.isVisibleTo(widget) is False
+    assert widget.fittingBox.isHidden() is False
     assert widget.get_values()["background"] == "constant"
 
 
@@ -838,14 +928,14 @@ def test_mode_visibility_and_expansion_are_independent(qapp):
     widget = MonalisaParamsWidget()
     widget.fittingBox.setExpanded(True)
     widget.correctionsBox.setExpanded(False)
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
-    assert widget.fittingBox.isHidden() is True
-    assert widget.legacyBox.isHidden() is False
-    assert widget.legacyBox.isExpanded() is True
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
+    assert widget.fittingBox.isHidden() is False
+    assert widget.ismBox.isHidden() is False
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Normal"))
     assert widget.fittingBox.isHidden() is False
     assert widget.fittingBox.isExpanded() is True
     assert widget.correctionsBox.isExpanded() is False
+    assert widget.ismBox.isHidden() is True
     assert widget.legacyBox.isHidden() is True
 
 
@@ -883,7 +973,7 @@ def test_ism_estimate_acceptance_sets_fixed_without_reconstruction(qapp):
     import numpy as np
 
     widget = MonalisaParamsWidget()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full (Auto + ISM)"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     data_obj = object()
     widget._current_data_obj = data_obj
     widget._ism_estimate_serial = 1

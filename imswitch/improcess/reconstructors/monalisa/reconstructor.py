@@ -27,7 +27,7 @@ from .params import (
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, ORIENTATION_SETUP, ORIENTATION_RECORDED,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
-    PRESET_FAST, PRESET_LEGACY, PRESETS,
+    PRESET_FAST, PRESET_FULL, PRESET_LEGACY, PRESETS, effective_mode_params,
     SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES, FOOTPRINT_MODES,
     ESTIMATOR_JOINT, default_params as unified_default_params,
 )
@@ -83,6 +83,10 @@ class MonalisaReconstructor(StreamingReconstructor):
     # internal Fast/Legacy method selector. Old v1 dictionaries remain
     # accepted by process() during the migration window.
     params_version = 5
+    # Detector-specific setup values are loaded in the GUI at startup. The
+    # headless application defaults are intentionally detector-independent;
+    # these two widget fields therefore vary with the active hardware setup.
+    default_params_volatile = ("spot_fwhm", "spot_width_source")
 
     @classmethod
     def default_params(cls) -> dict:
@@ -93,6 +97,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         defaults = cls.default_params()
         return (
             ParamField('preset', 'select', defaults['preset'], label='Mode', options=tuple(PRESETS)),
+            ParamField('full_options', 'json', defaults['full_options'], label='Remembered Full options', group='Advanced', advanced=True),
             ParamField('device', 'select', defaults['device'], label='CPU/GPU', options=('GPU', 'CPU'), group='Advanced', advanced=True),
             ParamField('pixel_size_nm', 'float', defaults['pixel_size_nm'], label='Camera pixel', suffix='nm', min=0.0, group='Advanced', advanced=True),
             ParamField('localization_mode', 'select', defaults['localization_mode'], label='Mode',
@@ -517,10 +522,16 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
 
         merged = unified_default_params()
-        merged.update(dict(params or {}))
-        if str(merged.get("preset", "Fast")) != "Fast":
+        merged.update(effective_mode_params(dict(params or {})))
+        if (str(merged.get("reassignment", "off")) != "off"
+                or bool(merged.get("sharpen", False))
+                or bool(merged.get("pinhole_stack", False))
+                or bool(merged.get("variance_weighting", False))
+                or bool(merged.get("intensity_correction", False))
+                or bool(merged.get("cell_offsets", False))):
             raise ValueError(
-                "Update reconstruction is currently available only in Fast mode."
+                "Update reconstruction requires amplitude-only extraction "
+                "without corrections, ISM, pinhole stacks or sharpening."
             )
         expected = getattr(result, "_monalisa_fast_update_signature", None)
         if expected is None or not hasattr(result, "_fast_placement_cache"):
@@ -588,7 +599,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         except ValueError as exc:
             raise ValueError(
                 "Legacy DLL supports only an axis-aligned rectangular localization. "
-                "Use Fast/Robust/Custom for rotated or staggered patterns."
+                "Use the Gaussian MoNaLISA reconstructor for rotated or staggered patterns."
             ) from exc
         return (float(offset_y), float(offset_x), float(period_y), float(period_x))
 
@@ -686,7 +697,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         original = dict(params or {})
         merged = unified_default_params()
-        merged.update(original)
+        merged.update(effective_mode_params(original))
         if "local_footprint_mode" not in original:
             # Patch 1/2 saved settings chose a fixed odd pixel size. Preserve it.
             merged["local_footprint_mode"] = "fixed"
@@ -712,11 +723,10 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         lattice_params = {
             **MonalisaLatticeReconstructor.default_params(),
-            # Internal execution hint: preserve the unified mathematical
-            # pipeline, but let the compatibility wrapper use the dedicated
-            # low-overhead Fast execution strategy when the user selected
-            # Fast.  Robust/Custom keep the full diagnostic extraction path.
-            "_fast_execution": str(merged.get("preset", PRESET_FAST)) == PRESET_FAST,
+            # The lattice pipeline itself checks whether optional stages are
+            # compatible with batched amplitude-only extraction. Full without
+            # those stages must use the same computation as Normal.
+            "_fast_execution": True,
             "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
             "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
             "scan_step_nm": float(merged.get("scan_step_nm", 0.0)),
@@ -869,9 +879,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         metadata = dict(getattr(result, "metadata", {}) or {})
         metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
         result.metadata = metadata
-        if str(merged.get("preset", "Fast")) == "Fast" and hasattr(
-            result, "_fast_placement_cache"
-        ):
+        if hasattr(result, "_fast_placement_cache"):
             result._monalisa_fast_update_signature = self._fast_update_signature(
                 merged, localization=resolved_localization,
                 spot_sigma_px=effective_sigma_px,
