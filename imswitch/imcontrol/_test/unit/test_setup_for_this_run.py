@@ -193,6 +193,55 @@ def test_first_run_with_setup_neither_asks_nor_writes_the_options_file(setups, m
     assert not optionsPath.exists()
 
 
+# ── --setup choose ────────────────────────────────────────────────────────
+def test_choose_asks_with_the_usual_setup_preselected_and_names_the_pick(setups, monkeypatch):
+    pytest.importorskip('PyQt5')
+    import imswitch.__main__ as entry
+
+    dialogModule = importlib.import_module('imswitch.imcontrol.view.PickSetupDialog')
+    askForSetup = Mock(return_value='b_scope.json')
+    monkeypatch.setattr(dialogModule, 'askForSetup', askForSetup)
+    monkeypatch.setattr(configfiletools.sys, 'argv',
+                        ['imswitch', '--setup', 'choose', '--debug'])
+
+    assert entry._chooseSetup(configfiletools, Mock()) == 'b_scope.json'
+
+    offered, selected = askForSetup.call_args.args
+    assert offered == ['a_scope.json', 'b_scope.json'] and selected == 'a_scope.json'
+    # A restart comes back with the pick instead of opening the dialog again.
+    assert configfiletools.sys.argv == ['imswitch', '--debug', '--setup', 'b_scope.json']
+
+
+def test_choose_cancelled_ends_the_launch(setups, monkeypatch):
+    pytest.importorskip('PyQt5')
+    import imswitch.__main__ as entry
+
+    dialogModule = importlib.import_module('imswitch.imcontrol.view.PickSetupDialog')
+    monkeypatch.setattr(dialogModule, 'askForSetup', Mock(return_value=None))
+    monkeypatch.setattr(configfiletools.sys, 'argv', ['imswitch', '--setup', 'choose'])
+
+    with pytest.raises(SystemExit):
+        entry._chooseSetup(configfiletools, Mock())
+
+
+@pytest.mark.parametrize('result, expected', [('Accepted', 'b_scope.json'), ('Rejected', None)])
+def test_ask_for_setup_returns_the_pick_or_none(qtbot, monkeypatch, result, expected):
+    pytest.importorskip('PyQt5')
+    from qtpy import QtWidgets
+    dialogModule = importlib.import_module('imswitch.imcontrol.view.PickSetupDialog')
+    shown = []
+
+    def exec_(dialog):
+        shown.append((dialog.informationLabel.text(), dialog.getSelectedSetup()))
+        return getattr(QtWidgets.QDialog, result)
+
+    monkeypatch.setattr(dialogModule.PickSetupDialog, 'exec_', exec_)
+
+    assert dialogModule.askForSetup(['a_scope.json', 'b_scope.json'], 'b_scope.json',
+                                    information='For this run:') == expected
+    assert shown == [('For this run:', 'b_scope.json')]
+
+
 # ── Picking a setup in a run started with --setup ─────────────────────────
 def _controller():
     from imswitch.imcontrol.controller.ImConMainController import ImConMainController
