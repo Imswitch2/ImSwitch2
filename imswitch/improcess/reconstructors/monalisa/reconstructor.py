@@ -83,7 +83,9 @@ class MonalisaReconstructor(StreamingReconstructor):
     # The fixed unified Gaussian parameter contract replaces the former
     # internal Fast/Legacy method selector. Old v1 dictionaries remain
     # accepted by process() during the migration window.
-    params_version = 5
+    # Version 6 changes the defaults for new reconstructions: both corrections
+    # now start enabled. Historical sparse jobs must keep the old Off defaults.
+    params_version = 6
     # Detector-specific setup values are loaded in the GUI at startup. The
     # headless application defaults are intentionally detector-independent;
     # these two widget fields therefore vary with the active hardware setup.
@@ -107,9 +109,9 @@ class MonalisaReconstructor(StreamingReconstructor):
                        options=(LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL), group='Localization'),
             ParamField('auto_localization', 'json', defaults['auto_localization'],
                        label='Resolved Auto localization', group='Localization', advanced=True),
-            ParamField('locked_localization_id', 'str', defaults['locked_localization_id'],
+            ParamField('locked_localization_id', 'text', defaults['locked_localization_id'],
                        label='Locked localization id', group='Localization', advanced=True),
-            ParamField('locked_localization_name', 'str', defaults['locked_localization_name'],
+            ParamField('locked_localization_name', 'text', defaults['locked_localization_name'],
                        label='Locked localization name', group='Localization', advanced=True),
             ParamField('locked_localization', 'json', defaults['locked_localization'],
                        label='Resolved Locked localization', group='Localization', advanced=True),
@@ -130,10 +132,13 @@ class MonalisaReconstructor(StreamingReconstructor):
                        options=(ORIENTATION_AUTO, ORIENTATION_RECORDED, ORIENTATION_SETUP, ORIENTATION_LOCKED, ORIENTATION_MANUAL), group='Scanning'),
             ParamField('orientation', 'select', defaults['orientation'], label='Orientation',
                        options=tuple(ORIENTATIONS), group='Scanning'),
-            ParamField('locked_orientation', 'str', defaults['locked_orientation'],
+            ParamField('locked_orientation', 'text', defaults['locked_orientation'],
                        label='Locked orientation', group='Scanning', advanced=True),
             ParamField('spot_width_mode', 'select', defaults['spot_width_mode'], label='Mode',
                        options=(SPOT_MANUAL, SPOT_AUTO), group='Spot model'),
+            ParamField('spot_width_source', 'text', defaults['spot_width_source'],
+                       label='FWHM source', group='Spot model', advanced=True,
+                       help='Origin of the selected spot width (setup, recorded or measured)'),
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
             ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
             ParamField('estimator', 'select', defaults['estimator'], label='Gaussian estimator', options=ESTIMATORS, group='Advanced', advanced=True),
@@ -176,6 +181,19 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('scan_steps_slow', 'int', defaults['scan_steps_slow'], label='Steps, slow axis', min=0, group='Scanning', advanced=True),
             ParamField('scan_step_nm', 'float', defaults['scan_step_nm'], label='Step', suffix='nm', min=0.0, group='Scanning', advanced=True),
         )
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Preserve pre-v6 correction defaults when replaying sparse jobs.
+
+        New configurations (v6+) default to both corrections On. Prior versions
+        defaulted them Off; a saved job that omitted either key must not acquire
+        new processing when replayed. Explicit recorded values always win.
+        """
+        migrated = dict(encoded or {})
+        if int(from_version) < 6:
+            migrated.setdefault("intensity_correction", False)
+            migrated.setdefault("cell_offsets", False)
+        return migrated
 
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
@@ -741,7 +759,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             **MonalisaLatticeReconstructor.default_params(),
             # The lattice pipeline itself checks whether optional stages are
             # compatible with batched amplitude-only extraction. Full without
-            # those stages must use the same computation as Standard.
+            # those stages must use the same computation as Fast.
             "_fast_execution": True,
             "performance_amplitude_only": str(merged["performance_amplitude_only"]),
             "performance_batch_extraction": str(merged["performance_batch_extraction"]),

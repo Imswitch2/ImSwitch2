@@ -121,7 +121,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     """Compact workflow-oriented controls for unified Gaussian MoNaLISA.
 
     The widget intentionally does not mirror the parameter dictionary one row
-    at a time.  Standard reconstruction decisions stay visible; implementation
+    at a time.  Fast reconstruction decisions stay visible; implementation
     details remain in small advanced dialogs.  ``get_values`` is still the one
     adapter to the stable backend/headless parameter contract.
     """
@@ -133,7 +133,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigModeChanged = QtCore.Signal(str)
 
     _MODE_LABELS = (
-        ("Standard", PRESET_FAST),
+        ("Fast", PRESET_FAST),
         ("Full", PRESET_FULL),
         ("DLL-equivalent", PRESET_DLL),
     )
@@ -294,9 +294,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
         self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
         self.modeCombo.setToolTip(
-            "Standard and Full share localization, FWHM, fitting and corrections. "
+            "Fast and Full share localization, FWHM, fitting and corrections. "
             "Full additionally enables ISM (Auto by default), pinhole stacks "
-            "and optional sharpening. Returning to Standard remembers Full settings. "
+            "and optional sharpening. Returning to Fast remembers Full settings. "
             "DLL-equivalent uses the recovered CPU unit-cell extraction model and "
             "the common scan/calibration pipeline, but disables ISM, sharpening "
             "and variance weighting. For the original DLL use the separate "
@@ -785,7 +785,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.sigModeChanged.emit(str(self._mode_value()))
 
     def _correction_changed(self, *_):
-        # Corrections are shared between Standard and Full.
+        # Corrections are shared between Fast and Full.
         self._controlled_changed()
 
     def _update_sharpening_enabled(self, *_):
@@ -2244,7 +2244,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "pinhole_stack": bool(self.pinholeCheck.isChecked()),
             **self._scan_overrides,
         }
-        # Full-only processing is retained while Standard is selected, but
+        # Full-only processing is retained while Fast is selected, but
         # disabled in the effective parameter snapshot sent to reconstruction.
         full = {key: values[key] for key in FULL_OPTION_DEFAULTS}
         values["full_options"] = full

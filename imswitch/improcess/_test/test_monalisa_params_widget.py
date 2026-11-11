@@ -137,7 +137,7 @@ def test_full_defaults_to_auto_ism_without_rewriting_fwhm_or_fitting(qapp):
 def test_three_profiles_appear_in_the_existing_mode_combo(qapp):
     widget = MonalisaParamsWidget()
     assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
-        "Standard", "Full", "DLL-equivalent",
+        "Fast", "Full", "DLL-equivalent",
     ]
     assert widget.legacyBox.isHidden()
     assert widget.fittingBox.isHidden() is False
@@ -174,7 +174,7 @@ def test_full_settings_survive_fast_and_full_roundtrip(qapp):
     widget.shiftFactorSpin.setValue(.47)
     widget.sharpenCheck.setChecked(True)
     full = widget.get_values()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Standard"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Fast"))
     fast = widget.get_values()
     assert fast["reassignment"] == "off"
     assert fast["sharpen"] is False
@@ -931,7 +931,7 @@ def test_mode_visibility_and_expansion_are_independent(qapp):
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     assert widget.fittingBox.isHidden() is False
     assert widget.ismBox.isHidden() is False
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Standard"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Fast"))
     assert widget.fittingBox.isHidden() is False
     assert widget.fittingBox.isExpanded() is True
     assert widget.correctionsBox.isExpanded() is False
@@ -1060,13 +1060,13 @@ def test_dll_mode_expert_disables_only_irrelevant_numerics(qapp):
     normal_dialog.close()
 
 
-def test_patch_o_mode_labels_settings_title_and_correction_defaults(qapp):
+def test_final_mode_labels_settings_title_and_correction_defaults(qapp):
     from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
     from imswitch.improcess.reconstructors.monalisa.params import PRESET_DLL
 
     widget = MonalisaParamsWidget()
     assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
-        "Standard", "Full", "DLL-equivalent",
+        "Fast", "Full", "DLL-equivalent",
     ]
     assert widget.modeCombo.currentData() == PRESET_FAST  # saved identifier unchanged
     assert widget.advancedButton.text() == "Settings…"

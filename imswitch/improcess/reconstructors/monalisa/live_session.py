@@ -613,7 +613,7 @@ class MonalisaLiveSession(StreamingSession):
             raise ValueError("DLL-equivalent extraction is offline-only")
         if str(params.get("preset", "")) == "Full":
             raise ValueError(
-                "Full mode is offline-only. Select Standard for streaming; "
+                "Full mode is offline-only. Select Fast for streaming; "
                 "the incremental engine may impose additional estimator limits."
             )
         # This older incremental engine uses a distinct rectangular Gauss

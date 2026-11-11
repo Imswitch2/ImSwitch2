@@ -133,3 +133,10 @@ def test_patch_o_new_correction_defaults_and_legacy_saved_values():
         replayed = effective_mode_params(apply_preset(saved, mode))
         assert replayed["intensity_correction"] is False
         assert replayed["cell_offsets"] is False
+
+
+def test_new_defaults_keep_both_corrections_enabled():
+    params = default_params()
+    assert params["intensity_correction"] is True
+    assert params["cell_offsets"] is True
+    assert PRESET_FAST in PRESETS
