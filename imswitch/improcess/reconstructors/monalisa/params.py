@@ -123,6 +123,12 @@ DEFAULT_PARAMS = {
     "placement_mode": PLACEMENT_AUTO,
     "commensurate_tolerance": COMMENSURATE_TOLERANCE,
     "variance_weighting": False,
+    # Execution overrides are benchmark/debug controls, not scientific settings.
+    # Auto keeps the original optimized implementation wherever applicable.
+    "performance_amplitude_only": "auto",
+    "performance_batch_extraction": "auto",
+    "performance_placement_reuse": "auto",
+    "show_reconstruction_timings": False,
     "sharpen": False,
     "sharpen_sigma_px": 1.5,
     "sharpen_regularization": 0.1,

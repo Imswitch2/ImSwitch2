@@ -275,6 +275,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "placement_mode": str(values["placement_mode"]),
             "commensurate_tolerance": float(values["commensurate_tolerance"]),
             "variance_weighting": bool(values["variance_weighting"]),
+            "performance_amplitude_only": str(values["performance_amplitude_only"]),
+            "performance_batch_extraction": str(values["performance_batch_extraction"]),
+            "performance_placement_reuse": str(values["performance_placement_reuse"]),
+            "show_reconstruction_timings": bool(values["show_reconstruction_timings"]),
             "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
             "sharpen_regularization": float(values["sharpen_regularization"]),
             "estimator": str(values["estimator"]),
@@ -758,6 +762,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._outputPixelSizeLabel = QtWidgets.QLabel("Output pixel size: — (set after reconstruction)")
         self._outputPixelSizeLabel.setStyleSheet("color: palette(mid);")
         root.addWidget(self._outputPixelSizeLabel)
+        self._timingLabel = QtWidgets.QLabel("")
+        self._timingLabel.setStyleSheet("color: palette(mid);")
+        self._timingLabel.setVisible(False)
+        root.addWidget(self._timingLabel)
         root.addStretch(1)
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
@@ -1153,6 +1161,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             return
         self._advanced_values.update(dialog.values())
         self._update_ui()
+        self._timingLabel.setVisible(bool(self._advanced_values["show_reconstruction_timings"])
+                                     and bool(self._timingLabel.text()))
         controlled = ("device", "placement_mode", "variance_weighting")
         if any(self._advanced_values[key] != before[key] for key in controlled):
             self._controlled_changed()
@@ -1998,6 +2008,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 return result
         return results[0] if len(results) == 1 else None
 
+    def set_reconstruction_timings(self, worker_seconds: float | None,
+                                   total_seconds: float) -> None:
+        if not bool(self._advanced_values.get("show_reconstruction_timings", False)):
+            self._timingLabel.setVisible(False)
+            return
+        parts = []
+        if worker_seconds is not None:
+            parts.append(f"Worker {worker_seconds:.3f} s")
+        parts.append(f"Total {total_seconds:.3f} s")
+        self._timingLabel.setText("Reconstruction: " + " · ".join(parts))
+        self._timingLabel.setToolTip(
+            "Worker: reconstruction processing time, excluding GUI publication. "
+            "Total: from worker dispatch through GUI publication."
+        )
+        self._timingLabel.setVisible(True)
+
     def sync_reconstruction_results(self, results) -> None:
         selected = self._result_for_current_data(
             results, str(getattr(self._current_data_obj, "name", "") or "")
@@ -2282,6 +2308,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "placement_mode": str(self._advanced_values["placement_mode"]),
             "commensurate_tolerance": float(self._advanced_values["commensurate_tolerance"]),
             "variance_weighting": bool(self._advanced_values["variance_weighting"]),
+            "performance_amplitude_only": str(self._advanced_values["performance_amplitude_only"]),
+            "performance_batch_extraction": str(self._advanced_values["performance_batch_extraction"]),
+            "performance_placement_reuse": str(self._advanced_values["performance_placement_reuse"]),
+            "show_reconstruction_timings": bool(self._advanced_values["show_reconstruction_timings"]),
             "sharpen": bool(self.sharpenCheck.isChecked()),
             "sharpen_sigma_px": float(self._advanced_values["sharpen_sigma_px"]),
             "sharpen_regularization": float(self._advanced_values["sharpen_regularization"]),

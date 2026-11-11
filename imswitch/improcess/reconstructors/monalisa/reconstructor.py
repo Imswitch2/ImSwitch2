@@ -1,6 +1,7 @@
 """MoNaLISA SIM reconstructor plugin."""
 
 import copy
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -159,6 +160,14 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('placement_mode', 'select', defaults['placement_mode'], label='Mode', options=(PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE), group='Advanced', advanced=True),
             ParamField('commensurate_tolerance', 'float', defaults['commensurate_tolerance'], label='Direct tolerance', suffix='px', min=0.0, max=1.0, group='Advanced', advanced=True),
             ParamField('variance_weighting', 'bool', defaults['variance_weighting'], label='Variance weighting', group='Advanced', advanced=True),
+            ParamField('performance_amplitude_only', 'select', defaults['performance_amplitude_only'],
+                       label='Amplitude-only extraction', options=('auto', 'disabled'), group='Performance', advanced=True),
+            ParamField('performance_batch_extraction', 'select', defaults['performance_batch_extraction'],
+                       label='T/Z batch extraction', options=('auto', 'disabled'), group='Performance', advanced=True),
+            ParamField('performance_placement_reuse', 'select', defaults['performance_placement_reuse'],
+                       label='Placement-map reuse', options=('auto', 'disabled'), group='Performance', advanced=True),
+            ParamField('show_reconstruction_timings', 'bool', defaults['show_reconstruction_timings'],
+                       label='Show reconstruction timings', group='Performance', advanced=True),
             ParamField('sharpen', 'bool', defaults['sharpen'], label='Sharpened image', group='Output'),
             ParamField('sharpen_sigma_px', 'float', defaults['sharpen_sigma_px'], label='Sharpening blur', suffix='px', min=0.1, group='Advanced', advanced=True),
             ParamField('sharpen_regularization', 'float', defaults['sharpen_regularization'], label='Sharpening regularization', min=0.001, group='Advanced', advanced=True),
@@ -697,6 +706,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             MonalisaLatticeReconstructor,
         )
 
+        started_worker = time.perf_counter()
         original = dict(params or {})
         merged = unified_default_params()
         merged.update(effective_mode_params(original))
@@ -733,6 +743,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             # compatible with batched amplitude-only extraction. Full without
             # those stages must use the same computation as Normal.
             "_fast_execution": True,
+            "performance_amplitude_only": str(merged["performance_amplitude_only"]),
+            "performance_batch_extraction": str(merged["performance_batch_extraction"]),
+            "performance_placement_reuse": str(merged["performance_placement_reuse"]),
+            "show_reconstruction_timings": bool(merged["show_reconstruction_timings"]),
             "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
             "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
             "scan_step_nm": float(merged.get("scan_step_nm", 0.0)),
@@ -885,6 +899,14 @@ class MonalisaReconstructor(StreamingReconstructor):
         metadata = dict(getattr(result, "metadata", {}) or {})
         metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
         result.metadata = metadata
+        if bool(merged["show_reconstruction_timings"]):
+            elapsed = time.perf_counter() - started_worker
+            result.diagnostics["timing_worker_s"] = elapsed
+            self._logger.info(
+                "%s: reconstruction worker %.3f s (lattice stages: %s)",
+                getattr(data_obj, "name", "MoNaLISA"), elapsed,
+                result.diagnostics.get("timing_stages_s", {}),
+            )
         if hasattr(result, "_fast_placement_cache"):
             result._monalisa_fast_update_signature = self._fast_update_signature(
                 merged, localization=resolved_localization,

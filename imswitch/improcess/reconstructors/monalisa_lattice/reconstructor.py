@@ -41,6 +41,7 @@ from ..monalisa.pipeline import (
     reconstruct_stack,
 )
 from ..monalisa.extraction import ExtractionResult
+from ..monalisa.fast_execution import _extract_fast_recording
 from ..monalisa.scan_frame import (
     ORIENTATIONS, orient_recorded_index, orient_step_columns, raster_scan_index,
 )
@@ -62,12 +63,6 @@ _LOCALIZATION_FIELDS = (
     "spot_mode", "spot_sigma_px", "period_band_px",
     "localization_refinement", "localization_settings",
 )
-
-
-# Keep the mature Fast-Gauss batching policy: transfer roughly 256 MiB of
-# camera frames per extraction call rather than launching one GPU solve per
-# T/Z stack.
-FAST_EXTRACTION_CHUNK_BYTES = 256 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -131,57 +126,6 @@ def _fast_calibration_is_resolved(
         and str(settings.background) in ("constant", "none")
     )
 
-
-def _extract_fast_recording(
-    frames: np.ndarray,
-    operator,
-    device: str,
-    report,
-    check_cancelled,
-) -> ExtractionResult:
-    """Extract one complete recording in large Fast-Gauss-style chunks."""
-    frames = np.asarray(frames)
-    if frames.ndim != 3 or frames.shape[0] == 0:
-        raise ValueError("Fast extraction expects a non-empty frame stack")
-    per_frame = max(int(frames[0].nbytes), 1)
-    chunk_frames = max(1, int(FAST_EXTRACTION_CHUNK_BYTES // per_frame))
-    total = int(frames.shape[0])
-    amplitude = background = haze = None
-    for start in range(0, total, chunk_frames):
-        check_cancelled()
-        stop = min(start + chunk_frames, total)
-        report(
-            "allocate", start, total,
-            f"Extracting Gaussian amplitudes {start + 1}-{stop} of {total}",
-        )
-        part = operator.apply_fast_device(frames[start:stop], device)
-        if amplitude is None:
-            amplitude = np.empty(
-                (total, part.amplitude.shape[1]), dtype=part.amplitude.dtype
-            )
-            if part.background is not None:
-                background = np.empty(
-                    (total, part.background.shape[1]), dtype=part.background.dtype
-                )
-            if part.haze is not None:
-                haze = np.empty((total, part.haze.shape[1]), dtype=part.haze.dtype)
-        elif (background is None) != (part.background is None):
-            raise ValueError("Inconsistent Fast extraction background")
-        elif (haze is None) != (part.haze is None):
-            raise ValueError("Inconsistent Fast extraction haze")
-        amplitude[start:stop] = part.amplitude
-        if background is not None:
-            background[start:stop] = part.background
-        if haze is not None:
-            haze[start:stop] = part.haze
-    report("allocate", total, total, "Gaussian extraction complete")
-    return ExtractionResult(
-        amplitude=amplitude,
-        background=background,
-        haze=haze,
-        noise_sigma=np.full(total, np.nan),
-        coefficients=np.empty((total, 0), dtype=float),
-    )
 
 
 def _fast_stack_order(extracted: ExtractionResult, scan: LayoutScan) -> list[int]:
@@ -498,6 +442,16 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 f"Expected frames of shape (frames, rows, cols), got {frames.shape}"
             )
 
+        timing = bool(params.get("show_reconstruction_timings", False))
+        stage_times = {} if timing else None
+        stage_t0 = time.perf_counter() if timing else None
+        def record_stage(name):
+            nonlocal stage_t0
+            if stage_times is not None:
+                now = time.perf_counter()
+                stage_times[name] = round(now - stage_t0, 6)
+                stage_t0 = now
+
         # Steps typed into the panel describe the recording as a raster of
         # their own; otherwise the recording's layout places every frame.
         recorded = None
@@ -568,10 +522,16 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 modulation_frame=None,
             )
 
+        record_stage("calibration")
         fast_extracted = None
         if fast_execution and geometry is not None:
+            groups = (None if params.get("performance_batch_extraction", "auto") == "auto"
+                      else [np.arange(index * per_stack, (index + 1) * per_stack)
+                            for index in range(scan.num_stacks)])
             fast_extracted = _extract_fast_recording(
-                frames, geometry.operator, settings.device, report, check_cancelled
+                frames, geometry.operator, settings.device, report, check_cancelled,
+                amplitude_only=params.get("performance_amplitude_only", "auto") == "auto",
+                frame_groups=groups,
             )
 
         order = (
@@ -582,6 +542,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             else list(range(scan.num_stacks))
         )
 
+        record_stage("extraction")
         check_cancelled()
         report(
             "align", 0, 1,
@@ -612,7 +573,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             if number == 0:
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
-                if fast_execution:
+                if fast_execution and params.get("performance_placement_reuse", "auto") == "auto":
                     shared_placement = prepare_stack_placement(
                         geometry,
                         raster_scan_index(scan.num_fast, scan.num_slow, orientation),
@@ -625,6 +586,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
         ):
             # Cache only a localization whose whole reconstruction succeeded.
             self._remember_geometry(geometry, orientation, frames, data_obj.name)
+        record_stage("placement")
+        record_stage("placement")
         report("finalize", 0, 1, "Assembling the result")
 
         first = results[int(order[0])]
@@ -657,6 +620,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
             )
         diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
         diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
+        record_stage("assembly")
+        if stage_times is not None:
+            diagnostics["timing_stages_s"] = dict(stage_times)
+            self._logger.info("%s: timing stages (s): %s", data_obj.name, stage_times)
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
 
@@ -705,6 +672,16 @@ class MonalisaLatticeReconstructor(Reconstructor):
         focus would read them badly on its own. The stack with the most
         modulation goes first and measures the shift factor for the rest.
         """
+        timing = bool(params.get("show_reconstruction_timings", False))
+        stage_times = {} if timing else None
+        stage_t0 = time.perf_counter() if timing else None
+        def record_stage(name):
+            nonlocal stage_t0
+            if stage_times is not None:
+                now = time.perf_counter()
+                stage_times[name] = round(now - stage_t0, 6)
+                stage_t0 = now
+
         typed_step = float(params["scan_step_nm"])
         if typed_step > 0:
             # What the panel says outranks what the recording says, as on
@@ -807,11 +784,16 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 modulation_frame=modulation_frame, step_aspect=step_aspect,
             )
         shape = scan.in_plane_shape
+        record_stage("calibration")
 
         fast_extracted = None
         if fast_execution:
+            groups = (None if params.get("performance_batch_extraction", "auto") == "auto"
+                      else [scan.frames_of(stack) for stack in range(scan.num_stacks)])
             fast_extracted = _extract_fast_recording(
-                frames, geometry.operator, settings.device, report, check_cancelled
+                frames, geometry.operator, settings.device, report, check_cancelled,
+                amplitude_only=params.get("performance_amplitude_only", "auto") == "auto",
+                frame_groups=groups,
             )
             notes["fast execution"] = "batched amplitude-only extraction"
             if fast_calibration_resolved:
@@ -822,6 +804,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                         "(highest extracted modulation; no raw-frame pre-pass)"
                     )
 
+        record_stage("extraction")
         results = {}
         shared_placement = None
         shared_stage_index = None
@@ -855,7 +838,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 # the rest: one recording, one geometry.
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
-                if fast_execution:
+                if fast_execution and params.get("performance_placement_reuse", "auto") == "auto":
                     camera_index = orient_recorded_index(stage_index, orientation)
                     shared_placement = prepare_stack_placement(
                         geometry, camera_index
@@ -899,6 +882,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
         diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
         diagnostics.update(notes)
+        record_stage("assembly")
+        if stage_times is not None:
+            diagnostics["timing_stages_s"] = dict(stage_times)
+            self._logger.info("%s: timing stages (s): %s", data_obj.name, stage_times)
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
 

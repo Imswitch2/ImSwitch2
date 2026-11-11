@@ -124,6 +124,33 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             self.variance.setEnabled(False)
             self.variance.setToolTip("DLL-equivalent has no amplitude-variance solve")
 
+        performance = QtWidgets.QGroupBox("Performance")
+        performanceForm = QtWidgets.QFormLayout(performance)
+        self.performanceCombos = {}
+        for key, title, tip in (
+            ("performance_amplitude_only", "Amplitude-only extraction",
+             "Auto skips unused fit diagnostics where compatible; Disabled runs the full extraction."),
+            ("performance_batch_extraction", "T/Z batch extraction",
+             "Auto extracts compatible scans in memory-bounded batches; Disabled solves each in-plane scan separately."),
+            ("performance_placement_reuse", "Placement-map reuse",
+             "Auto reuses compatible placements between stacks; Disabled rebuilds each placement map."),
+        ):
+            combo = QtWidgets.QComboBox()
+            combo.addItem("Auto", "auto")
+            combo.addItem("Disabled", "disabled")
+            index = combo.findData(str(values.get(key, "auto")))
+            combo.setCurrentIndex(max(0, index))
+            combo.setToolTip(tip)
+            performanceForm.addRow(title, combo)
+            self.performanceCombos[key] = combo
+        self.showTimings = QtWidgets.QCheckBox("Show reconstruction timings")
+        self.showTimings.setChecked(bool(values.get("show_reconstruction_timings", False)))
+        self.showTimings.setToolTip(
+            "Display worker and GUI-inclusive elapsed times after reconstruction. "
+            "Additional timings are written to the application log."
+        )
+        performanceForm.addRow(self.showTimings)
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -135,6 +162,7 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         layout.addWidget(execution)
         layout.addWidget(placement)
         layout.addWidget(sharpening)
+        layout.addWidget(performance)
         layout.addWidget(buttons)
 
     def values(self) -> dict:
@@ -148,6 +176,8 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             "variance_weighting": bool(self.variance.isChecked()),
             "sharpen_sigma_px": float(self.sharpenSigma.value()),
             "sharpen_regularization": float(self.sharpenRegularization.value()),
+            **{key: str(combo.currentData()) for key, combo in self.performanceCombos.items()},
+            "show_reconstruction_timings": bool(self.showTimings.isChecked()),
         }
 
 
