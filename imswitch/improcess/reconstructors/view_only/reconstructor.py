@@ -92,6 +92,11 @@ class ViewOnlyReconstructor(StreamingReconstructor):
     description = "Display raw frames without any reconstruction"
     is_pass_through = True
     result_role = "inspection"
+    supports_session_auto = True
+    # Finite Auto may follow completed physical timepoints when Live is off
+    # or the source cannot be read safely during acquisition. Each pass-through
+    # timepoint can be assembled along the *logical* acquisition T axis.
+    supports_progressive_finite = True
 
     @classmethod
     def contract(cls, info: RawInfo, params: dict) -> Contract:
@@ -234,11 +239,24 @@ class ViewOnlyReconstructor(StreamingReconstructor):
 
         ndim = data.ndim
         axis_labels = self._axis_labels_for(data_obj, source_axis_labels, ndim)
+        # Finite Session Auto processes one *physical* timepoint at a time.
+        # A T label inside that physical source represents its raw frame axis,
+        # not the parent acquisition's elapsed-time axis. Leave the logical T
+        # coordinate for the progressive assembler to insert unambiguously.
+        per_timepoint = getattr(data_obj, "_improcess_timepoint_scope", None) is not None
+        if per_timepoint and "T" in axis_labels:
+            axis_labels = ["Frame" if axis == "T" else axis for axis in axis_labels]
 
+        calibrated = bool(source_axis_scales) and len(source_axis_scales) == ndim
         axis_scales = (
-            list(source_axis_scales)
-            if source_axis_scales and len(source_axis_scales) == ndim
-            else None
+            list(source_axis_scales) if calibrated
+            # Progressive T assembly requires one scale per axis. If physical
+            # calibration is absent, use honest unit-pixel coordinates.
+            else ([1.0] * ndim if per_timepoint else None)
+        )
+        scale_unit = (
+            "px" if per_timepoint and not calibrated
+            else (source_scale_unit or "px")
         )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
@@ -256,7 +274,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
                 view_modes=view_modes,
                 display_levels=None,
                 axis_scales=axis_scales,
-                scale_unit=source_scale_unit or "px",
+                scale_unit=scale_unit,
                 identity_kind="derived",
             )
         return ViewOnlyResult(
@@ -266,7 +284,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
             view_modes=view_modes,
             display_levels=None,
             axis_scales=axis_scales,
-            scale_unit=source_scale_unit or "px",
+            scale_unit=scale_unit,
             dataset_uid=dataset_uid,
             result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
             coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),

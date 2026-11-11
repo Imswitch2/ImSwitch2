@@ -376,6 +376,19 @@ class ProcessingQueue:
         }
 
 
+def supports_session_auto(reconstructor) -> bool:
+    """Auto admission is independent of whether a result is derived or raw.
+
+    Derived plugins retain their existing Auto eligibility. Inspection plugins
+    must opt in explicitly, so enabling View only does not silently enable the
+    Time lapse reconstructor or any other raw-data inspection plugin.
+    """
+    if reconstructor is None:
+        return False
+    return (str(getattr(reconstructor, "result_role", "derived")) != "inspection"
+            or bool(getattr(reconstructor, "supports_session_auto", False)))
+
+
 class AutoProcessPolicy:
     """V1 auto rule: queue Session datasets that have no derived result yet."""
 
@@ -397,8 +410,8 @@ class AutoProcessPolicy:
             return False
         if queue.contains_dataset(getattr(dataset, "id", "")):
             return False
-        # Inspection-only plugins are views, not automatic processing recipes.
-        if str(getattr(reconstructor, "result_role", "derived")) == "inspection":
+        # An inspection view is Auto-eligible only when explicitly opted in.
+        if not supports_session_auto(reconstructor):
             return False
         # Non-streaming plugins are eligible too. The source-readiness gate
         # holds their Auto job until explicit writer markers prove it finite.
@@ -407,6 +420,7 @@ class AutoProcessPolicy:
 
 __all__ = [
     "AutoProcessPolicy",
+    "supports_session_auto",
     "ProcessingJob",
     "ProcessingJobView",
     "ProcessingJobState",

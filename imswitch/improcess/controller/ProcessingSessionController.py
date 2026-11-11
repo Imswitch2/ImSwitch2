@@ -17,6 +17,7 @@ from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
     discover_time_lapse,
 )
+from imswitch.improcess.model.processing_queue import supports_session_auto
 from imswitch.improcess.model.processing_session import (
     ProcessingSession,
     result_role_for_result,
@@ -338,8 +339,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         available = bool(
             self._session is not None and self._sessionMode == "follow"
-            and reconstructor is not None
-            and str(getattr(reconstructor, "result_role", "derived")) != "inspection"
+            and supports_session_auto(reconstructor)
         )
         view = getattr(self._main, "_widget", None)
         if view is not None and hasattr(view, "setSessionAutoProcessingAvailable"):
@@ -633,8 +633,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         queue_getter = getattr(self, "_queue_controller", None)
         queue = queue_getter() if callable(queue_getter) else None
         reconstructor = getattr(getattr(self, "_main", None), "_activeReconstructor", None)
-        if (queue is not None and reconstructor is not None
-                and str(getattr(reconstructor, "result_role", "derived")) != "inspection"):
+        if queue is not None and supports_session_auto(reconstructor):
             queue.setAutoEnabled(True)
         update_details = getattr(self, "_update_watcher_detail_paths", None)
         if callable(update_details):

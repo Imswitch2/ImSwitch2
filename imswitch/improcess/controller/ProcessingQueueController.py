@@ -40,6 +40,7 @@ from imswitch.improcess.model.processing_queue import (
     ProcessingJob,
     ProcessingOrigin,
     ProcessingQueue,
+    supports_session_auto,
 )
 from imswitch.improcess.reconstructors.registry import get_registry
 from imswitch.improcess.execution.contracts import Incompatible
@@ -196,8 +197,7 @@ class ProcessingQueueController(ImProcessWidgetController):
     def captureAutoRecipe(self) -> dict | None:
         """Freeze a new arrival's reconstructor and parameters at first sight."""
         reconstructor = getattr(self._main, "_activeReconstructor", None)
-        if (reconstructor is None or not self.autoPolicy.enabled
-                or str(getattr(reconstructor, "result_role", "derived")) == "inspection"):
+        if (not self.autoPolicy.enabled or not supports_session_auto(reconstructor)):
             return None
         params = self._snapshot_params(reconstructor)
         capable = streaming_capability(reconstructor, params).supported
@@ -224,8 +224,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         reconstructor = get_registry().get_reconstructor(
             reconstructor_id, raise_on_missing=False,
         )
-        if (reconstructor is None or
-                str(getattr(reconstructor, "result_role", "derived")) == "inspection"):
+        if not supports_session_auto(reconstructor):
             return 0
         jobs = []
         for dataset_id in dict.fromkeys(str(item) for item in dataset_ids):
@@ -1403,6 +1402,16 @@ class ProcessingQueueController(ImProcessWidgetController):
         job = self.queue.current
         if job is None or str(getattr(job, "source", "session")) != "session":
             return
+        # The shared publisher is also used for inspection-only Auto views.
+        # Tag before any viewer or Session callback can index this snapshot.
+        producer = (getattr(self, "_incrementalReconstructor", None)
+                    or getattr(self, "_offlineReconstructor", None))
+        if producer is None:
+            producer = get_registry().get_reconstructor(
+                job.reconstructor_id, raise_on_missing=False,
+            )
+        if str(getattr(producer, "result_role", "derived")) == "inspection":
+            result._improcess_result_role = "inspection"
         claimer = getattr(self._sessionController, "claimResultForDataset", None)
         if callable(claimer):
             claimer(result, job.dataset_id)

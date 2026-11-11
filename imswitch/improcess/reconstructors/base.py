@@ -202,6 +202,14 @@ class Reconstructor(ABC):
     as proof that the raw acquisition has been processed.
     """
 
+    supports_session_auto: bool = False
+    """Allow an inspection reconstructor in Session Auto processing.
+
+    Derived reconstruction plugins remain Auto-eligible by default. Inspection
+    plugins must opt in explicitly, without changing their result role: their
+    outputs are views, not auto-saved or counted as processed acquisitions.
+    """
+
     default_save_subdir: str = "rec"
     """Subdirectory name a save path should use for reconstructed outputs.
 

@@ -119,6 +119,10 @@ def test_auto_policy_rejects_inspection_but_allows_non_streaming_plugins():
 
     inspection = SimpleNamespace(result_role="inspection", supports_streaming=True)
     assert not policy.eligible(dataset, queue=queue, reconstructor=inspection, processed=False)
+    # View-only explicitly opts into automatic *inspection* without turning
+    # all inspection plugins into reconstruction jobs.
+    inspection.supports_session_auto = True
+    assert policy.eligible(dataset, queue=queue, reconstructor=inspection, processed=False)
 
     offline_only = SimpleNamespace(result_role="derived", supports_streaming=False)
     assert policy.eligible(dataset, queue=queue, reconstructor=offline_only, processed=False)

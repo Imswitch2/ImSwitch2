@@ -284,3 +284,21 @@ if __name__ == "__main__":
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_incremental_contract_starts_on_first_committed_frame():
+    """The shared reader normalizes zero-init semantics to one raw frame."""
+    reconstructor = ViewOnlyReconstructor()
+    assert reconstructor.contract(None, {}).init_frames == 0
+    assert reconstructor.contract(None, {}).begin_frames == 1
+    frames = _frames(8)
+    init = _init(frames, frames_per_stack=4, num_timepoints=2)
+    init = StreamInit(
+        name=init.name, dataset_name=init.dataset_name,
+        data=frames[:1], attrs=init.attrs, stack_info=init.stack_info,
+    )
+    session = reconstructor.make_session()
+    session.begin(init, {})
+    for start in range(1, 8):
+        session.push(frames[start:start + 1], start, start + 1)
+    assert np.array_equal(session.finish().data.reshape(8, H, W), frames)

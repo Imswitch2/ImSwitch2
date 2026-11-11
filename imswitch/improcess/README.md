@@ -386,6 +386,14 @@ Completed results are kept on failure/Cancel, while incomplete provisional
 previews are not treated as completed scientific timepoints. The Session
 indexes successive live snapshots from **one queue job** as one result.
 
+`View only` explicitly supports Session Auto for raw-data inspection. With Live
+on, it previews committed frames as they arrive; with Live off (or an unsafe
+live reader), it uses finite processing and can assemble independently sealed
+timepoints. Its outputs remain **inspection** results: no automatic duplicate
+raw-data save and no change to the Session's scientifically processed status.
+Other inspection plugins, including `Time lapse`, are not Auto-enabled by this
+opt-in.
+
 ### 3.4 Legacy watcher and direct-memory compatibility paths
 
 The older **Directory Watcher** dock remains separately available. Its

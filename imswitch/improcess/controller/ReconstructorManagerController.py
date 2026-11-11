@@ -7,6 +7,7 @@ from qtpy import QtCore
 
 from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
 from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
+from imswitch.improcess.model.processing_queue import supports_session_auto
 
 from .reconstruction_worker import (
     ReconstructionWorker,
@@ -536,7 +537,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
             # a StreamingSession.
             session_controller = getattr(self._main, 'processingSessionController', None)
             auto_available = bool(
-                derived and session_controller is not None
+                supports_session_auto(reconstructor) and session_controller is not None
                 and getattr(session_controller, 'session', None) is not None
                 and getattr(session_controller, 'sessionMode', 'review') == 'follow'
             )
