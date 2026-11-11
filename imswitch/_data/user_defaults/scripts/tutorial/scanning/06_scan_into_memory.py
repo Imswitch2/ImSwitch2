@@ -14,8 +14,7 @@ Setup
                 scan.
   Your own microscope: as 01_run_a_scan.py, plus the Recording widget.
 
-Next: the scripts of ``basic`` that read a recording back from disk, when
-      the frames are to be kept.
+Next: 07_scan_parameters_in_code.py
 """
 import glob
 import os

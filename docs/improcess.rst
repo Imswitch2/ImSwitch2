@@ -687,7 +687,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Rank >= 2 image-like result for single-image FRC; two-image mode also
        needs a compare axis with at least two planes.
      - ``FRCResult`` curve data with axes ``C, Frequency`` and graph payload.
-       This is a curve/table result, not an image-stack input.
+       This is a curve/table result, not an image-stack input. The resolution
+       is in the input's calibrated unit unless a pixel size is set.
    * - ``multicolor-registration``
      - Registration
      - Strictly ``["Z", "Y", "X"]`` or ``["T", "Z", "Y", "X"]`` deskewed
@@ -905,6 +906,18 @@ panel.  (The former custom FRC panel duplicated the processor's parameters
 and plotted only locally; it was retired in the result-unification tool
 audit.)  If the panel is enabled at startup, ImProcess auto-registers the
 ``frc`` processor when it is not already listed under ``processing.processors``.
+
+The resolution comes out in the image's own unit: *Pixel size* 0 (shown as
+*From image*) takes the calibrated Y/X pixel size, and *Resolution unit*
+``auto`` keeps the image's unit, so a 65 nm-pixel image is measured in nm and
+an uncalibrated one in px.  Choosing ``nm`` or ``um`` converts the
+calibration; ``px`` reports pixels whatever the calibration.  A pixel size
+typed in wins over the calibration and is taken in the chosen unit (the
+image's own with ``auto``).  FRC needs square pixels and, for two inputs, one
+grid: Y and X sizes that differ, or two inputs calibrated differently, are
+refused unless a pixel size is set, and an uncalibrated image needs one to be
+reported in nm or µm.  Recorded runs from before this (``params_version`` 1)
+replay with the 1 px they meant.
 
 ROI statistics panel
 ====================

@@ -87,8 +87,12 @@ def temp_state_dir(monkeypatch, tmp_path):
 @pytest.fixture(autouse=False)
 def clean_registry(temp_state_dir):
     """Provide a clean registry instance for each test."""
-    # Reset global singleton before test
-    import imswitch.imcontrol.model.WidgetStatePersistence as wsp_module
+    # Reset global singleton before test. Through sys.modules: the attribute
+    # path ``imswitch.imcontrol.model.WidgetStatePersistence`` is the class the
+    # package re-exports under that name, so setting the singleton there did
+    # nothing, and a controller any earlier test registered was still in it.
+    import sys
+    wsp_module = sys.modules[getWidgetStatePersistence.__module__]
     wsp_module._persistence_instance = None
     
     # Create new registry (will use the patched dirtools.UserFileDirs.Root)

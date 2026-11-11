@@ -31,6 +31,12 @@
     ]
   },
   {
+    "name": "sigDetectorParametersChanged",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigNewFrame",
     "args": []
   },
@@ -55,6 +61,13 @@
   {
     "name": "sigRemoveItemFromVb",
     "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigScanGeometryShown",
+    "args": [
+      "str",
       "object"
     ]
   },
