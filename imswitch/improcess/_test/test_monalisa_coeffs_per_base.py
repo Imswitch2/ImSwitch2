@@ -1,7 +1,7 @@
 """Contract tests for the MoNaLISA per-base reassembly fix.
 
-Locks in the contract that SignalExtractor returns 4D
-``(numBases, numFrames, gridRows, gridCols)`` and that MonalisaReconstructor
+Locks in the classic DLL contract that SignalExtractor returns 4D
+``(numBases, numFrames, gridRows, gridCols)`` and that LegacyMonalisaReconstructor
 loops the leading Base axis through coeffs_to_image once per base, producing
 6D ``(Dataset=1, Base, T, Z, Y, X)`` output.  Skips the real SignalExtractor
 (Windows + CUDA DLL) by injecting a stub.
@@ -304,12 +304,9 @@ def stub_extractor(monkeypatch):
 
     stub = _StubExtractor()
 
-    # Patch SignalExtractor inside the reconstructor module so _ensure
-    # builds the stub instead of the CUDA-backed real one.
-    monkeypatch.setattr(
-        'imswitch.improcess.reconstructors.monalisa.reconstructor.SignalExtractor',
-        lambda *_a, **_kw: stub,
-    )
+    # The classic extractor now lives in the independent legacy plugin.
+    from imswitch.improcess.reconstructors.monalisa.legacy import LegacyMonalisaReconstructor
+    monkeypatch.setattr(LegacyMonalisaReconstructor, '_extractor', lambda self: stub)
     return stub
 
 
@@ -321,6 +318,7 @@ def _make_data_obj(rows: int, cols: int):
         data=arr,
         dataLoaded=True,
         attrs={},
+        numFrames=frames,
         checkAndLoadData=lambda: None,
         checkAndUnloadData=lambda: None,
     )
@@ -338,16 +336,17 @@ def _params(rows: int, cols: int):
         'bg_modelling': 'Constant',
         'bg_gaussian_size_nm': 500.0,
         'bleaching_correction': False,
+        'pattern': [5.0, 5.0, 11.0, 11.0],
         'scan_params': _scan_params(rows=rows, cols=cols),
     }
 
 
 def test_monalisa_process_produces_6d_output_with_one_image_per_base(stub_extractor):
-    from imswitch.improcess.reconstructors.monalisa.reconstructor import (
-        MonalisaReconstructor,
+    from imswitch.improcess.reconstructors.monalisa.legacy import (
+        LegacyMonalisaReconstructor,
     )
 
-    reconstructor = MonalisaReconstructor()
+    reconstructor = LegacyMonalisaReconstructor()
     data_obj = _make_data_obj(rows=4, cols=5)
 
     result = reconstructor.process(data_obj, _params(rows=4, cols=5))
@@ -368,20 +367,18 @@ def test_monalisa_process_produces_6d_output_with_one_image_per_base(stub_extrac
 def test_monalisa_process_raises_on_3d_extractor_output(monkeypatch):
     """Defensive: a future extractor regression returning the old 3D
     legacy shape must error loudly instead of silently producing junk."""
-    from imswitch.improcess.reconstructors.monalisa.reconstructor import (
-        MonalisaReconstructor,
+    from imswitch.improcess.reconstructors.monalisa.legacy import (
+        LegacyMonalisaReconstructor,
     )
 
     class _Bad3DExtractor:
         def extractSignal(self, data, sigmas, pattern, device):
             return np.zeros((data.shape[0], 3, 3), dtype=np.float32)
 
-    monkeypatch.setattr(
-        'imswitch.improcess.reconstructors.monalisa.reconstructor.SignalExtractor',
-        lambda *_a, **_kw: _Bad3DExtractor(),
-    )
+    monkeypatch.setattr(LegacyMonalisaReconstructor, '_extractor',
+                        lambda self: _Bad3DExtractor())
 
-    reconstructor = MonalisaReconstructor()
+    reconstructor = LegacyMonalisaReconstructor()
     data_obj = _make_data_obj(rows=4, cols=5)
 
     with pytest.raises(ValueError, match='numBases'):

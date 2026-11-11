@@ -489,7 +489,7 @@ def test_editing_joint_support_keeps_full_mode(qapp):
 def test_spot_width_and_fitting_are_independent_top_level_sections(qapp):
     widget = MonalisaParamsWidget()
     layout = widget.spotBox.grid
-    assert widget.spotBox.details.title().startswith("⌄ Spot width")
+    assert "Spot width" in widget.spotBox.details.toolTip()
     assert layout.itemAtPosition(0, 0).widget() is widget.fwhmLabel
     assert layout.itemAtPosition(0, 4).widget() is widget.estimateFwhmButton
     assert layout.itemAtPosition(0, 5).widget() is widget.fwhmMenuButton
@@ -840,7 +840,7 @@ def test_native_section_titles_follow_current_summary_and_collapse(qapp):
     widget = MonalisaParamsWidget()
     parameters = widget.get_values()
     widget._set_combo_data(widget.localizationModeCombo, "Manual")
-    assert "Manual" in widget.localizationDetailsWidget.title()
+    assert "Manual" in widget.localizationDetailsWidget.toolTip()
     widget.localizationDetailsWidget.collapseRequested.emit()
     assert widget.localizationToggle.isChecked() is False
     assert widget.localizationDetailsWidget.isHidden() is True

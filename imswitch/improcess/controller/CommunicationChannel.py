@@ -195,7 +195,7 @@ class CommunicationChannel(SignalInterface):
     step does not leave one entry per step behind. A listener that does not
     find ``old`` treats ``new`` as produced.
 
-    Emitters: ResultProcessorController
+    Emitters: ReconstructorManagerController, ResultProcessorController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 

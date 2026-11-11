@@ -1596,9 +1596,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self._advanced_values.update({
                 "footprint_shape": saved.footprint_shape,
                 "footprint_mode": saved.footprint_mode,
-                "footprint_size_px": saved.footprint_size,
                 "footprint_sigma_factor": saved.footprint_sigma_factor,
             })
+            # The setup may specify only a relative footprint. A missing
+            # *fixed* diameter must not replace the spin box's valid value.
+            if saved.footprint_size is not None:
+                self._advanced_values["footprint_size_px"] = saved.footprint_size
         if saved.estimator is not None:
             self._advanced_values["estimator"] = saved.estimator
         self._footprint_user_override = False

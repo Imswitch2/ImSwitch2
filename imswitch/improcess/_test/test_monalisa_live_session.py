@@ -1249,12 +1249,13 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
     assert (session.nx_s, session.ny_s, session.num_linesteps) == (nx_s, ny_s, 1)
 
 
-def test_unified_fast_live_accepts_fast_settings_and_rejects_unimplemented_full_options():
+def test_unified_live_rejects_unimplemented_modern_estimator_and_full_options():
     from imswitch.improcess.reconstructors.monalisa.params import PRESET_FULL, apply_preset, default_params
 
     session = MonalisaReconstructor().make_session()
     fast = default_params()
-    session._validate_unified_live_params(fast)
+    with pytest.raises(ValueError, match="offline-only"):
+        session._validate_unified_live_params(fast)
 
     full = apply_preset(default_params(), PRESET_FULL)
     with pytest.raises(ValueError, match="Full mode is offline-only"):

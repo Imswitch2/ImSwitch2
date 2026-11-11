@@ -57,7 +57,7 @@ PINHOLE_STACK_LIMIT_BYTES = 8 * 1024**3
 # The settings the extraction operator and spot model were built with. A
 # reused localization keeps those objects, so these settings must stay with it.
 _LOCALIZATION_FIELDS = (
-    "reach_sigma", "joint_footprint_mode", "joint_footprint_radius_px",
+    "reach_sigma", "joint_footprint_mode", "joint_fit_radius_px",
     "footprint_shape", "footprint_mode", "footprint_size_px", "footprint_sigma_factor",
     "background", "haze_sigma_px", "joint",
     "spot_mode", "spot_sigma_px", "period_band_px",

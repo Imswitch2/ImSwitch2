@@ -627,7 +627,7 @@ class TestRecordedScans:
             "x: one period, y: the period over the steps"
         )
         assert result.diagnostics["orientation"] in ("+x+y", "-x+y")
-        assert "only y is scanned" in result.diagnostics["reassignment"]
+        assert result.diagnostics["reassignment axes"] == "y only"
         assert result.diagnostics["output pixel (µm)"] == "Y 0.035 / X 0.77"
         # The planes are the same image at their brightness.
         inner = (slice(20, -20), slice(1, -1))

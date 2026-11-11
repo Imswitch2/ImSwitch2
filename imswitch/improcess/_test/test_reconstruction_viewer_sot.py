@@ -159,6 +159,12 @@ class _FakeReconstructionView:
         self.imgLayer.metadata.pop("source_result", None)
         self.imgLayer.data = np.zeros((1, 1))
 
+    def getImage(self):
+        return self.imgLayer.data
+
+    def setImageDisplayLevelsRange(self, minimum, maximum):
+        self._levels_range = (minimum, maximum)
+
     def setImageDisplayLevels(self, minimum, maximum):
         self.imgLayer.contrast_limits = (minimum, maximum)
 
