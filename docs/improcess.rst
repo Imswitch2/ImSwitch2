@@ -2336,7 +2336,7 @@ to your ImControl setup file (the same JSON you select via
     }
 
 MoNaLISA reconstruction defaults
--------------------------------
+--------------------------------
 
 MoNaLISA calibration preferences are **ImProcess settings**, not detector
 hardware settings. The existing setup JSON can hold independent defaults for

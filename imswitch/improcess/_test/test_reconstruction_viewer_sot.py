@@ -698,9 +698,13 @@ def test_named_view_choice_is_remembered_and_not_replaced_by_automatic_default()
     assert view.getViewName() == "Left"
 
     # User explicitly chooses top-down for this result.
+    view.napariViewer.camera.zoom = 4.0
     view._viewName = "Standard"
     controller._viewChanged()
-    assert view.reset_view_calls == 2
+    # These fake modes all display the same Y/X plane. Changing only the
+    # named view must not discard the existing camera framing.
+    assert view.reset_view_calls == 1
+    assert view.napariViewer.camera.zoom == 4.0
 
     view._currentIndex = 1
     controller.listItemChanged()

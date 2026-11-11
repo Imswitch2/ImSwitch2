@@ -404,7 +404,20 @@ class MonalisaLatticeReconstructor(Reconstructor):
             name: getattr(reference["geometry"].params, name)
             for name in _LOCALIZATION_FIELDS
         }
-        differ = [name for name in kept if getattr(settings, name) != kept[name]]
+        # prepare_geometry resolves an unspecified period band from the
+        # localization settings before storing the geometry. Compare the same
+        # *effective* values here; None (unresolved) versus that derived band
+        # must not be reported as a user change on an otherwise identical run.
+        effective_settings = settings
+        if settings.period_band_px is None and settings.localization_settings is not None:
+            effective_settings = replace(
+                settings,
+                period_band_px=settings.localization_settings.period_band_px(),
+            )
+        differ = [
+            name for name in kept
+            if getattr(effective_settings, name) != kept[name]
+        ]
         geometry = replace(reference["geometry"], params=replace(settings, **kept))
         note = (
             f"{', '.join(differ)} kept from {reference['source']}" if differ else None

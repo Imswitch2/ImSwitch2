@@ -338,6 +338,7 @@ def _params(rows: int, cols: int):
         'bleaching_correction': False,
         'pattern': [5.0, 5.0, 11.0, 11.0],
         'scan_params': _scan_params(rows=rows, cols=cols),
+        'axis_label_map': _AXIS_LABELS,
     }
 
 
@@ -383,3 +384,27 @@ def test_monalisa_process_raises_on_3d_extractor_output(monkeypatch):
 
     with pytest.raises(ValueError, match='numBases'):
         reconstructor.process(data_obj, _params(rows=4, cols=5))
+
+
+def test_monalisa_process_rejects_bad_base_or_frame_count(monkeypatch):
+    """Reject malformed DLL output before it can be reassembled by axis."""
+    from imswitch.improcess.reconstructors.monalisa.legacy import (
+        LegacyMonalisaReconstructor,
+    )
+
+    class _BadExtractor:
+        def __init__(self, coeffs):
+            self.coeffs = coeffs
+
+        def extractSignal(self, data, sigmas, pattern, device):
+            return self.coeffs
+
+    reconstructor = LegacyMonalisaReconstructor()
+    data_obj = _make_data_obj(rows=4, cols=5)
+    for shape in ((1, 20, 3, 3), (2, 19, 3, 3)):
+        monkeypatch.setattr(
+            LegacyMonalisaReconstructor, '_extractor',
+            lambda self, shape=shape: _BadExtractor(np.zeros(shape, dtype=np.float32)),
+        )
+        with pytest.raises(ValueError, match='numBases=2 and numFrames=20'):
+            reconstructor.process(data_obj, _params(rows=4, cols=5))
