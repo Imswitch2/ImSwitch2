@@ -147,6 +147,91 @@ def _disc_entries(
     )
 
 
+def _square_entries(
+    x: np.ndarray, y: np.ndarray, side: int, frame_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Square sensor-pixel support matching Local camera_pixels exactly.
+
+    Centres are rounded only to select pixel coordinates; Gaussian distances
+    always use the true subpixel centre.  Border clipping is identical to Local.
+    """
+    rows, cols = frame_shape
+    half = (side - 1) // 2
+    offsets = np.arange(-half, half + 1, dtype=np.int64)
+    oy, ox = np.meshgrid(offsets, offsets, indexing="ij")
+    dx, dy = ox.ravel(), oy.ravel()
+    block = max(1, _BLOCK_ENTRIES // (side * side))
+    focuses, pixels, distances = [], [], []
+    for start in range(0, x.size, block):
+        stop = min(start + block, x.size)
+        px = np.rint(x[start:stop]).astype(np.int64)[:, None] + dx
+        py = np.rint(y[start:stop]).astype(np.int64)[:, None] + dy
+        keep = (px >= 0) & (px < cols) & (py >= 0) & (py < rows)
+        indices = np.broadcast_to(np.arange(start, stop)[:, None], px.shape)
+        focuses.append(indices[keep])
+        pixels.append((py * cols + px)[keep])
+        distances.append(((px - x[start:stop, None])**2
+                          + (py - y[start:stop, None])**2)[keep])
+    return np.concatenate(focuses), np.concatenate(pixels), np.concatenate(distances)
+
+
+def _lattice_cell_entries(
+    x: np.ndarray,
+    y: np.ndarray,
+    frame_shape: tuple[int, int],
+    lattice,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Assign camera pixels to canonical DLL unit cells, as Local does.
+
+    The partition is made from lattice period/offset, *not* the potentially
+    refined fitting centres. The returned distances use the actual fitting
+    centres, however. Each returned pixel has precisely one owner/focus.
+    The geometry is restricted to an axis-aligned rectangular lattice.
+    """
+    if lattice is None:
+        raise ValueError("Joint lattice unit cells require a lattice")
+    try:
+        per_x, off_x, per_y, off_y = lattice.to_grid_params(tol=0.02)
+    except ValueError as exc:
+        raise ValueError("Joint lattice unit cells require an axis-aligned rectangular lattice") from exc
+    if min(per_x, per_y) <= 0:
+        raise ValueError("Invalid DLL grid period")
+    rows, cols = frame_shape
+    nr = 1 + int((rows - 1 - off_y) / per_y + .5)
+    nc = 1 + int((cols - 1 - off_x) / per_x + .5)
+    if nr < 1 or nc < 1:
+        raise ValueError("DLL grid does not intersect the camera")
+    ir = np.rint((y - off_y) / per_y).astype(np.int64)
+    ic = np.rint((x - off_x) / per_x).astype(np.int64)
+    grid_x = off_x + ic * per_x
+    grid_y = off_y + ir * per_y
+    assigned = (
+        (ir >= 0) & (ir < nr) & (ic >= 0) & (ic < nc)
+        & (np.abs(x - grid_x) < .45 * per_x)
+        & (np.abs(y - grid_y) < .45 * per_y)
+    )
+    focus_for_cell = np.full(nr * nc, -1, dtype=np.int64)
+    focus = np.flatnonzero(assigned)
+    cells = ir[focus] * nc + ic[focus]
+    if np.unique(cells).size != cells.size:
+        raise ValueError("Joint lattice support has duplicate focus cells")
+    focus_for_cell[cells] = focus
+
+    # The half-open floor(+0.5) convention is identical to Local's partition,
+    # including its handling of even lattice periods and fractional offsets.
+    yy = np.floor((np.arange(rows) - off_y) / per_y + .5).astype(np.int64)
+    xx = np.floor((np.arange(cols) - off_x) / per_x + .5).astype(np.int64)
+    inside = ((yy[:, None] >= 0) & (yy[:, None] < nr)
+              & (xx[None, :] >= 0) & (xx[None, :] < nc))
+    pixels = np.flatnonzero(inside)
+    cell_ids = (yy[:, None] * nc + xx[None, :]).ravel()[pixels]
+    owners = focus_for_cell[cell_ids]
+    keep = owners >= 0
+    pixel, owners = pixels[keep], owners[keep]
+    dist2 = (pixel % cols - x[owners])**2 + (pixel // cols - y[owners])**2
+    return owners, pixel, dist2
+
+
 def _haze_shape(dist2: np.ndarray, sigma: float) -> np.ndarray:
     """A wide Gaussian, shifted to reach zero at its support radius.
 
@@ -189,7 +274,10 @@ def _usable_pixels(num_pixels, pixel_mask, pixel_variance):
     return usable, variance
 
 
-def _joint_terms(x, y, sigma, frame_shape, fit_pixel, background, haze_sigma):
+def _joint_terms(
+    x, y, sigma, frame_shape, fit_pixel, background, haze_sigma,
+    *, lattice_owners=None,
+):
     """Rows and model terms of the joint fit: one row per fitted pixel.
 
     Every term is ``(kind, focus, row, value)``, the entries of the design
@@ -213,9 +301,15 @@ def _joint_terms(x, y, sigma, frame_shape, fit_pixel, background, haze_sigma):
         terms.append(("haze", focus, row, _haze_shape(dist2, float(haze_sigma))))
     if background != "none":
         # The constant of a focus holds over the pixels nearest to it.
-        _, owner = cKDTree(np.column_stack([x, y])).query(
-            np.column_stack([row_pixel % cols, row_pixel // cols])
-        )
+        if lattice_owners is None:
+            _, owner = cKDTree(np.column_stack([x, y])).query(
+                np.column_stack([row_pixel % cols, row_pixel // cols])
+            )
+        else:
+            # DLL-style cells own their background regardless of fitted centre.
+            owner = lattice_owners[row_pixel]
+            if np.any(owner < 0):
+                raise ValueError("Joint lattice background has unowned fit pixels")
         terms.append(
             ("constant", owner, np.arange(row_pixel.size), np.ones(row_pixel.size))
         )
@@ -342,6 +436,11 @@ class ExtractionOperator:
         frame_shape: tuple[int, int],
         *,
         reach_sigma: float = DEFAULT_REACH_SIGMA,
+        fit_radius_px: float | None = None,
+        footprint_mode: str = "auto",
+        fit_shape: str = "circle",
+        fit_size_px: float | None = None,
+        lattice=None,
         background: str = "constant",
         haze_sigma: float | None = None,
         joint: bool = True,
@@ -357,8 +456,18 @@ class ExtractionOperator:
                 into it and the joint fit accounts for them.
             sigma: Spot width, one value or one per focus.
             frame_shape: ``(rows, cols)``.
-            reach_sigma: Footprint radius in units of each focus' sigma. The
-                fit uses the pixels within this radius of any focus.
+            reach_sigma: Fit-pixel radius in spot sigmas for "auto" (2.5 by
+                default). This is distinct from the 5.5-sigma model support.
+            fit_radius_px: Fixed circular fit-pixel radius, in camera pixels,
+                used when footprint_mode is "fixed".
+            footprint_mode: "auto" (sigma-scaled circle), "fixed" (circle of
+                given radius), or "lattice" (DLL rectangular unit-cell pixels).
+            fit_shape: "square" selects an odd-square camera-pixel footprint;
+                "circle" retains the original radial fit-pixel selection.
+            fit_size_px: Odd side in camera pixels for square support.
+            lattice: Required for "lattice". The lattice defines pixel
+                ownership, while Gaussian centres remain the localized ones.
+                Only axis-aligned rectangular lattices are supported.
             background: ``"none"``, ``"constant"`` (one constant per focus,
                 over the pixels nearest to it) or ``"constant+haze"`` (plus
                 one wide Gaussian per focus).
@@ -377,10 +486,35 @@ class ExtractionOperator:
         x, y, sigma = _check_arguments(
             x, y, sigma, reach_sigma, background, haze_sigma
         )
+        footprint_mode = str(footprint_mode).strip().lower()
+        if footprint_mode not in ("auto", "fixed", "lattice"):
+            raise ValueError("Joint footprint must be auto, fixed, or lattice")
+        if fit_radius_px is not None:
+            fit_radius_px = float(fit_radius_px)
+            if not np.isfinite(fit_radius_px) or fit_radius_px <= 0:
+                raise ValueError("Joint fit radius must be finite and > 0")
+        if footprint_mode == "fixed" and fit_radius_px is None and fit_shape != "square":
+            raise ValueError("Fixed Joint footprint requires a fit radius")
+        if footprint_mode == "lattice" and not joint:
+            raise ValueError("Joint lattice footprint requires joint extraction")
+        if fit_shape not in ("square", "circle"):
+            raise ValueError("Joint footprint shape must be square or circle")
+        if fit_shape == "square":
+            if fit_size_px is None or not np.isfinite(fit_size_px):
+                raise ValueError("Square Joint footprint requires a finite side")
+            if fit_size_px < 3 or fit_size_px > 255 or fit_size_px % 2 != 1:
+                raise ValueError("Square Joint footprint side must be an odd integer 3–255 px")
         rows, cols = (int(n) for n in frame_shape)
         usable, variance = _usable_pixels(rows * cols, pixel_mask, pixel_variance)
 
-        focus, pixel, dist2 = _disc_entries(x, y, reach_sigma * sigma, (rows, cols))
+        if footprint_mode == "lattice":
+            focus, pixel, dist2 = _lattice_cell_entries(x, y, (rows, cols), lattice)
+        elif fit_shape == "square":
+            focus, pixel, dist2 = _square_entries(x, y, int(fit_size_px), (rows, cols))
+        else:
+            radius = (reach_sigma * sigma if footprint_mode == "auto" else
+                      np.full(x.size, fit_radius_px, dtype=float))
+            focus, pixel, dist2 = _disc_entries(x, y, radius, (rows, cols))
         keep = usable[pixel]
         focus, pixel, dist2 = focus[keep], pixel[keep], dist2[keep]
         pixels_per_focus = np.bincount(focus, minlength=x.size)
@@ -390,8 +524,13 @@ class ExtractionOperator:
             raise ValueError("No focus has enough footprint pixels inside the frame")
 
         if joint:
+            lattice_owners = None
+            if footprint_mode == "lattice":
+                lattice_owners = np.full(rows * cols, -1, dtype=np.int64)
+                lattice_owners[pixel] = focus
             row_pixel, terms = _joint_terms(
-                x, y, sigma, (rows, cols), pixel, background, haze_sigma
+                x, y, sigma, (rows, cols), pixel, background, haze_sigma,
+                lattice_owners=lattice_owners,
             )
             row = np.searchsorted(row_pixel, pixel)
         else:
@@ -437,7 +576,9 @@ class ExtractionOperator:
     def num_coefficients(self) -> int:
         return int(self._design.shape[1])
 
-    def _solve(self, frames: np.ndarray, chunk: int) -> tuple[np.ndarray, np.ndarray]:
+    def _solve(
+        self, frames: np.ndarray, chunk: int, *, with_noise: bool = True
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         frames = np.asarray(frames)
         if frames.ndim == 2:
             frames = frames[None]
@@ -448,16 +589,22 @@ class ExtractionOperator:
             )
         flat = frames.reshape(frames.shape[0], -1)
         coefficients = np.empty((frames.shape[0], self.num_coefficients))
-        noise = np.empty(frames.shape[0])
+        noise = np.empty(frames.shape[0]) if with_noise else None
         dof = max(self._row_pixel.size - self.num_coefficients, 1)
         for start in range(0, frames.shape[0], chunk):
             data = flat[start:start + chunk][:, self._row_pixel].astype(float).T
             projected = self._projector @ data
             solution = self._solver.solve(projected)
             coefficients[start:start + chunk] = solution.T
-            weighted = data if self._row_weight is None else data * self._row_weight[:, None]
-            rss = np.sum(data * weighted, axis=0) - np.sum(projected * solution, axis=0)
-            noise[start:start + chunk] = np.sqrt(np.maximum(rss, 0.0) / dof)
+            if with_noise:
+                weighted = (
+                    data if self._row_weight is None
+                    else data * self._row_weight[:, None]
+                )
+                rss = np.sum(data * weighted, axis=0) - np.sum(
+                    projected * solution, axis=0
+                )
+                noise[start:start + chunk] = np.sqrt(np.maximum(rss, 0.0) / dof)
         return coefficients, noise
 
     def _per_focus(self, coefficients: np.ndarray, column: np.ndarray) -> np.ndarray:
@@ -479,6 +626,33 @@ class ExtractionOperator:
             haze=haze,
             noise_sigma=noise,
             coefficients=coefficients,
+        )
+
+    def _fast_result(self, coefficients: np.ndarray) -> ExtractionResult:
+        """The fitted planes Fast needs, without residual/noise diagnostics.
+
+        Mature Fast Gauss solved the same joint normal equations but copied
+        only the per-focus coefficient planes needed for reconstruction.  The
+        unified pipeline initially routed Fast through :meth:`apply`, which
+        also calculates residual noise and retains the complete coefficient
+        matrix.  This lightweight result restores the old execution contract
+        while keeping the exact same estimator.
+
+        ``coefficients`` is intentionally empty: Fast modes that need the raw
+        fitted state (reassignment/pinhole diagnostics) must use the full
+        extraction path instead.
+        """
+        background = haze = None
+        if self._background_column is not None:
+            background = self._per_focus(coefficients, self._background_column)
+        if self._haze_column is not None:
+            haze = self._per_focus(coefficients, self._haze_column)
+        return ExtractionResult(
+            amplitude=self._per_focus(coefficients, self._amplitude_column),
+            background=background,
+            haze=haze,
+            noise_sigma=np.full(coefficients.shape[0], np.nan),
+            coefficients=np.empty((coefficients.shape[0], 0), dtype=float),
         )
 
     def apply(self, frames: np.ndarray, chunk: int = 64) -> ExtractionResult:
@@ -507,6 +681,27 @@ class ExtractionOperator:
                 self._device_executor = DeviceExtractionExecutor(self)
             return self._device_executor.apply(frames)
         return self.apply(frames, chunk=chunk)
+
+    def apply_fast_device(
+        self, frames, device: str = "CPU", chunk: int = 64
+    ) -> ExtractionResult:
+        """Fast joint extraction without residual/noise work or retained state.
+
+        The mathematical solve is identical to :meth:`apply_device`.  Only
+        execution differs: residual/noise estimation is skipped and only the
+        per-focus amplitude/background/haze planes needed by Fast are copied
+        back from the GPU.  This is the execution model used by the mature
+        pre-merge Fast-Gauss path.
+        """
+        choice = str(device or "CPU").strip().lower()
+        if choice not in ("cpu", "gpu"):
+            raise ValueError(f"Unknown extraction device {device!r}")
+        if choice == "gpu" and CUPY_AVAILABLE:
+            if self._device_executor is None:
+                self._device_executor = DeviceExtractionExecutor(self)
+            return self._device_executor.apply_fast(frames)
+        coefficients, _ = self._solve(frames, int(chunk), with_noise=False)
+        return self._fast_result(coefficients)
 
     def footprint_values(
         self, frames: np.ndarray, extracted: ExtractionResult | None = None
@@ -659,6 +854,35 @@ class DeviceExtractionExecutor:
         device_columns = cp.asarray(np.where(have, columns, 0))
         amplitude = coefficients[:, device_columns]
         return cp.where(cp.asarray(have)[None, :], amplitude, 0.0).astype(cp.float32)
+
+    def _per_focus(self, coefficients, columns):
+        if columns is None:
+            return None
+        have = self.operator.valid & (columns >= 0)
+        device_columns = cp.asarray(np.where(have, columns, 0))
+        values = coefficients[:, device_columns]
+        return cp.where(cp.asarray(have)[None, :], values, cp.nan)
+
+    def apply_fast(self, frames) -> ExtractionResult:
+        """Fast host result: selected per-focus planes, no residual/noise.
+
+        The solve still contains all model coefficients on the device, as the
+        joint estimator requires, but the large generic result and residual
+        calculation are avoided.  Only reconstruction coefficient planes are
+        transferred back to the host.
+        """
+        coefficients, _ = self.solve(frames, with_noise=False)
+        amplitude = self._per_focus(coefficients, self.operator._amplitude_column)
+        background = self._per_focus(coefficients, self.operator._background_column)
+        haze = self._per_focus(coefficients, self.operator._haze_column)
+        count = int(coefficients.shape[0])
+        return ExtractionResult(
+            amplitude=cp.asnumpy(amplitude),
+            background=None if background is None else cp.asnumpy(background),
+            haze=None if haze is None else cp.asnumpy(haze),
+            noise_sigma=np.full(count, np.nan),
+            coefficients=np.empty((count, 0), dtype=float),
+        )
 
     def apply(self, frames) -> ExtractionResult:
         """Run on the GPU and copy the solved fit to a normal host result."""

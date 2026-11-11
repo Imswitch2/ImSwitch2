@@ -157,6 +157,21 @@ class TestNoise:
         assert joint.noise_sigma[0] < 0.01
         assert isolated.noise_sigma[0] > 1.0
 
+
+class TestFastExecution:
+    def test_fast_result_keeps_the_same_fit_without_noise_or_retained_state(self, scene):
+        operator = _build(scene, reach_sigma=3.0, background="constant")
+        frames = np.stack([scene["frame"], 1.15 * scene["frame"]])
+
+        full = operator.apply_device(frames, "CPU")
+        fast = operator.apply_fast_device(frames, "CPU")
+
+        np.testing.assert_allclose(fast.amplitude, full.amplitude, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(fast.background, full.background, rtol=0, atol=1e-12)
+        assert fast.haze is None
+        assert np.all(np.isnan(fast.noise_sigma))
+        assert fast.coefficients.shape == (frames.shape[0], 0)
+
     def test_weighting_by_the_variance_lowers_the_noise(self):
         """E2: peak 200 over a background of 2 gains 15-25 % in variance."""
         rng = np.random.default_rng(2)

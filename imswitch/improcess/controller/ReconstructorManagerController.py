@@ -3,6 +3,8 @@ import json
 import os
 import uuid
 
+import time
+
 from qtpy import QtCore
 
 from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
@@ -663,7 +665,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def refreshUpdateReconstructionAvailability(self):
         """Keep the MoNaLISA Scan/Orientation update action exactly gated."""
         reconstructor = getattr(self._main, "_activeReconstructor", None)
-        widget = getattr(self._widget, "parTree", None)
+        widget = getattr(self, "_previewWidget", None)
+        if widget is None:
+            widget = getattr(self._widget, "parTree", None)
         setter = getattr(widget, "setUpdateReconstructionEnabled", None)
         if reconstructor is None or reconstructor.id != "monalisa" or not callable(setter):
             return
@@ -1240,6 +1244,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"
         )
+        self._timing_dispatch_started = time.perf_counter()
+        self._timing_requested = (reconstructor.id == "monalisa" and any(
+            bool(job.params.get("show_reconstruction_timings", False)) for job in jobs
+        ))
         self._set_reconstruction_job_state(
             True,
             progress=0.0,
@@ -1394,6 +1402,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     sync()
                 except Exception as exc:
                     self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
+        if reconstructor is not None and reconstructor.id == "monalisa" and getattr(self, "_timing_requested", False):
+            elapsed = time.perf_counter() - self._timing_dispatch_started
+            completed = outcome.results or ([outcome.merged] if outcome.merged is not None else [])
+            work = [(getattr(result, "diagnostics", None) or {}).get("timing_worker_s")
+                    for result in completed]
+            worker_seconds = sum(float(value) for value in work if value is not None)
+            worker_seconds = worker_seconds if any(value is not None for value in work) else None
+            widget = getattr(self, "_previewWidget", None)
+            setter = getattr(widget, "set_reconstruction_timings", None)
+            if callable(setter):
+                setter(worker_seconds, elapsed)
+            self._logger.info("MoNaLISA timing: worker=%s s, GUI-inclusive=%.3f s",
+                              worker_seconds, elapsed)
         inspection = (
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"
