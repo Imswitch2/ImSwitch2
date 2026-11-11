@@ -72,6 +72,8 @@ class ReconstructionView(QtWidgets.QFrame):
     sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
+    sigLockSlicePerResultChanged = QtCore.Signal(bool)
+    sigLockZoomPerResultChanged = QtCore.Signal(bool)
     #: (layer metadata, (min, max)) -- a rendered layer's contrast changed,
     #: however it was changed: our toolbar, napari's own slider, or a render.
     sigImageLevelsChanged = QtCore.Signal(object, object)
@@ -134,8 +136,26 @@ class ReconstructionView(QtWidgets.QFrame):
         self.chooseViewGroup.addButton(self.leftView)
         self.viewLayout.addWidget(self.leftView)
 
+        self.lockSlicePerResult = QtWidgets.QCheckBox('Lock slice per result')
+        self.lockSlicePerResult.setToolTip(
+            'When enabled, each reconstruction/view remembers its own spatial slice. '
+            'When disabled, compatible views share the most recently selected slice '
+            'to make comparisons across reconstructions easier.'
+        )
+        self.lockZoomPerResult = QtWidgets.QCheckBox('Lock zoom per result')
+        self.lockZoomPerResult.setToolTip(
+            'When enabled, each reconstruction/view remembers its own zoom and center. '
+            'When disabled, compatible XY/YZ/XZ views share the most recent camera '
+            'to make visual comparisons easier.'
+        )
+
+        self.viewLayout.addWidget(self.lockSlicePerResult)
+        self.viewLayout.addWidget(self.lockZoomPerResult)
+
         self.chooseViewBox.setLayout(self.viewLayout)
         self.chooseViewGroup.buttonClicked.connect(self.sigViewChanged)
+        self.lockSlicePerResult.toggled.connect(self.sigLockSlicePerResultChanged)
+        self.lockZoomPerResult.toggled.connect(self.sigLockZoomPerResultChanged)
 
         # List for storing sevral data sets
         self.reconList = QtWidgets.QListWidget()
@@ -319,25 +339,194 @@ class ReconstructionView(QtWidgets.QFrame):
     def getViewName(self):
         return self.chooseViewGroup.checkedButton().viewName
 
-    def setViewModes(self, viewModes):
+    def setViewModes(self, viewModes, selectedName=None):
         if not viewModes:
+            buttons = []
             for button, text, view_name in self._defaultViewLabels:
                 button.setText(text)
                 button.viewName = view_name
                 button.setVisible(True)
-            self.standardView.setChecked(True)
-            return
+                buttons.append(button)
+        else:
+            buttons = [self.standardView, self.bottomView, self.leftView]
+            for index, button in enumerate(buttons):
+                if index < len(viewModes):
+                    mode = viewModes[index]
+                    button.setText(mode.name)
+                    button.viewName = mode.name
+                    button.setVisible(True)
+                else:
+                    button.setVisible(False)
 
-        buttons = [self.standardView, self.bottomView, self.leftView]
-        for index, button in enumerate(buttons):
-            if index < len(viewModes):
-                mode = viewModes[index]
-                button.setText(mode.name)
-                button.viewName = mode.name
-                button.setVisible(True)
-            else:
-                button.setVisible(False)
-        buttons[0].setChecked(True)
+        visible = [button for button in buttons if not button.isHidden()]
+        selected = next(
+            (button for button in visible if button.viewName == selectedName),
+            None,
+        )
+        (selected or (visible[0] if visible else self.standardView)).setChecked(True)
+
+
+    def isSliceLockedPerResult(self):
+        """Whether spatial slice positions are restored per reconstruction."""
+        return bool(self.lockSlicePerResult.isChecked())
+
+    def isZoomLockedPerResult(self):
+        """Whether camera zoom/center are restored per reconstruction."""
+        return bool(self.lockZoomPerResult.isChecked())
+
+    def getDimensionStepState(self):
+        """Return current napari slider positions keyed by semantic axis label."""
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            steps = tuple(int(step) for step in dims.current_step)
+            if len(labels) != len(steps):
+                return {}
+            return {label: steps[index] for index, label in enumerate(labels)}
+        except Exception:
+            return {}
+
+    def setDimensionStepState(self, state):
+        """Restore slider positions by axis label, clamping to available slices."""
+        if not state:
+            return
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            nsteps = tuple(int(value) for value in getattr(dims, 'nsteps', ()))
+            for axis, label in enumerate(labels):
+                if label not in state:
+                    continue
+                step = int(state[label])
+                if axis < len(nsteps):
+                    hi = max(0, nsteps[axis] - 1)
+                else:
+                    # Fallback for older napari: current_step is an index and
+                    # a unit-step dimension's range upper bound is its max index.
+                    hi = max(0, int(dims.range[axis][1]))
+                dims.set_current_step(axis, max(0, min(step, hi)))
+        except Exception as exc:
+            self._logger.debug('Could not restore napari dimension steps: %s', exc)
+
+    def getDimensionPositionState(self):
+        """Return current napari world positions keyed by semantic axis label."""
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            points = getattr(dims, 'point', None)
+            if points is not None and len(points) == len(labels):
+                return {label: float(points[index]) for index, label in enumerate(labels)}
+
+            # Older napari fallback: derive the world point from the dimension
+            # range and its discrete current step.
+            current = tuple(int(step) for step in dims.current_step)
+            ranges = tuple(dims.range)
+            if len(current) != len(labels) or len(ranges) != len(labels):
+                return {}
+            positions = {}
+            for axis, label in enumerate(labels):
+                start, _stop, increment = ranges[axis]
+                positions[label] = float(start) + float(increment) * current[axis]
+            return positions
+        except Exception:
+            return {}
+
+    def setDimensionPositionState(self, state):
+        """Restore world positions by semantic axis, using napari's own mapping.
+
+        ``Dims.set_point`` performs the world-coordinate -> discrete-step
+        conversion for the newly displayed result. The fallback implements the
+        same nearest-step/clamping rule for older napari versions.
+        """
+        if not state:
+            return
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            set_point = getattr(dims, 'set_point', None)
+            ranges = tuple(dims.range)
+            for axis, label in enumerate(labels):
+                if label not in state or axis >= len(ranges):
+                    continue
+                value = float(state[label])
+                start, stop, increment = (float(v) for v in ranges[axis])
+                lo, hi = sorted((start, stop))
+                value = max(lo, min(value, hi))
+                if callable(set_point):
+                    set_point(axis, value)
+                    continue
+                if increment == 0:
+                    step = 0
+                else:
+                    step = int(round((value - start) / increment))
+                nsteps = tuple(int(v) for v in getattr(dims, 'nsteps', ()))
+                max_step = max(0, nsteps[axis] - 1) if axis < len(nsteps) else max(0, step)
+                dims.set_current_step(axis, max(0, min(step, max_step)))
+        except Exception as exc:
+            self._logger.debug('Could not restore napari dimension positions: %s', exc)
+
+    def getDimensionOrder(self):
+        """Return napari's raw axis order for the result currently on screen."""
+        return tuple(self.napariViewer.dims.order)
+
+    def setDimensionOrder(self, order=None):
+        """Restore a raw napari axis order, or natural order when unavailable.
+
+        ``order`` is deliberately kept separate from ProcessingResult view
+        modes: it captures the user's direct napari "roll dimensions" choice.
+        """
+        dims = self.napariViewer.dims
+        ndim = int(dims.ndim)
+        natural = tuple(range(ndim))
+        try:
+            requested = tuple(int(v) for v in order) if order is not None else natural
+        except (TypeError, ValueError):
+            requested = natural
+        if len(requested) != ndim or sorted(requested) != list(range(ndim)):
+            requested = natural
+        if tuple(dims.order) != requested:
+            dims.order = requested
+
+    def getDisplayedPlaneAxes(self):
+        """Semantic labels of the axes currently drawn on the 2-D canvas.
+
+        Napari's ``dims.order`` is global viewer state.  Reading the final
+        displayed axes after a result/view change lets the controller decide
+        whether an existing camera is meaningful for the new plane (XY->XY)
+        or must be refit (XY->YZ/XZ).
+        """
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            order = tuple(int(index) for index in dims.order)
+            ndisplay = max(1, int(dims.ndisplay))
+            if len(labels) != len(order):
+                return ()
+            return tuple(labels[index] for index in order[-ndisplay:])
+        except Exception:
+            return ()
+
+    def getCameraState(self):
+        """Return the small part of the 2-D napari camera worth preserving."""
+        try:
+            camera = self.napariViewer.camera
+            return {
+                "center": tuple(float(value) for value in camera.center),
+                "zoom": float(camera.zoom),
+            }
+        except Exception:
+            return None
+
+    def setCameraState(self, state):
+        """Restore a camera state captured by :meth:`getCameraState`."""
+        if not state:
+            return
+        try:
+            camera = self.napariViewer.camera
+            camera.center = tuple(float(value) for value in state["center"])
+            camera.zoom = float(state["zoom"])
+        except Exception as exc:
+            self._logger.debug("Could not restore napari camera state: %s", exc)
 
     def getImage(self):
         return self.imgLayer.data
@@ -379,6 +568,9 @@ class ReconstructionView(QtWidgets.QFrame):
                 pairs = []
                 for layer, arr in zip(targets, arrays):
                     arr = np.asarray(arr)
+                    if (transposeOrder and len(transposeOrder) == arr.ndim
+                            and tuple(transposeOrder) != tuple(range(arr.ndim))):
+                        arr = arr.transpose(*transposeOrder)
                     if tuple(arr.shape) != tuple(np.shape(layer.data)):
                         return False
                     pairs.append((layer, arr))

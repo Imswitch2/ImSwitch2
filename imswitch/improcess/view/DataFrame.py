@@ -5,6 +5,58 @@ from .DataEditDialog import DataEditDialog
 from .guitools import BetterPushButton
 
 
+class _ElidingLabel(QtWidgets.QLabel):
+    """A QLabel whose contents never impose a horizontal minimum width.
+
+    File and dataset names can be arbitrarily long.  A normal QLabel feeds the
+    full text width into its parent layout's minimum-size calculation; because
+    Current data shares a dock column with the other left-hand panels, loading
+    one long filename can otherwise make the entire column impossible to
+    shrink again.
+    """
+
+    def __init__(self, text='', *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fullText = ''
+        self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored,
+            QtWidgets.QSizePolicy.Preferred,
+        )
+        self.setText(text)
+
+    def setText(self, text):
+        self._fullText = str(text)
+        self.setToolTip(self._fullText)
+        self._updateElidedText()
+
+    def fullText(self):
+        return self._fullText
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._updateElidedText()
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def _updateElidedText(self):
+        width = max(0, self.contentsRect().width())
+        shown = self.fontMetrics().elidedText(
+            self._fullText,
+            QtCore.Qt.ElideMiddle,
+            width,
+        )
+        super().setText(shown)
+
+
 class DataFrame(QtWidgets.QFrame):
     """Frame for showing and examining the raw data"""
 
@@ -49,8 +101,8 @@ class DataFrame(QtWidgets.QFrame):
                                                      self.sigFrameNumberChanged.emit(int(x))))
         self.frameNum.setFixedWidth(45)
 
-        self.dataName = QtWidgets.QLabel('File:')
-        self.datasetName = QtWidgets.QLabel('Dataset:')
+        self.dataName = _ElidingLabel('File:')
+        self.datasetName = _ElidingLabel('Dataset:')
         numFramesLabel = QtWidgets.QLabel('No. frames:')
         self.numFrames = QtWidgets.QLabel('')
 
@@ -132,6 +184,19 @@ class DataFrame(QtWidgets.QFrame):
 
     def setDetectionPreviewData(self, x, y):
         self.detectionScatter.setData(x, y)
+
+    def setDetectionPreviewStyle(self, marker):
+        """``"point"``: a dot on each found focus, as the pattern grid is
+        drawn; ``"circle"``: an open ring around each candidate."""
+        if str(marker) == "point":
+            self.detectionScatter.setPen(None)
+            self.detectionScatter.setBrush(pg.mkBrush(color=(255, 50, 50), antialias=True))
+            self.detectionScatter.setSize(1)
+        else:
+            self.detectionScatter.setPen(pg.mkPen(color=(255, 50, 50), width=1.5,
+                                                  style=QtCore.Qt.SolidLine, antialias=True))
+            self.detectionScatter.setBrush(None)
+            self.detectionScatter.setSize(8)
 
     def setCurrentFrame(self, value):
         self.frameNum.setText(str(value))
