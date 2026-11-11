@@ -15,8 +15,6 @@
       "dllLocation": "example",
       "flushFrameLimit": 1,
       "frameBufferDepth": 1,
-      "monalisaScanOrientation": null,
-      "monalisaSpotFwhmNm": null,
       "useMockOnFailure": true
     }
   }

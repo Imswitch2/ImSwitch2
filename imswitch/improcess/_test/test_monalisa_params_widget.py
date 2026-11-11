@@ -37,7 +37,8 @@ def test_setup_fwhm_is_available_before_first_dataset_and_contract_replayable(qa
 
     path = tmp_path / "hardware.json"
     path.write_text(json.dumps({
-        "detectors": {"CAM": {"managerProperties": {"monalisaSpotFwhmNm": 238.0}}}
+        "detectors": {"CAM": {"managerProperties": {}}},
+        "processing": {"monalisa": {"detectorDefaults": {"CAM": {"spotFwhmNm": 238.0}}}}
     }))
     monkeypatch.setattr(setup_defaults, "current_setup_path", lambda: path)
     monkeypatch.setattr(module, "current_setup_path", lambda: path)
@@ -75,9 +76,11 @@ def test_startup_ambiguous_detectors_do_not_enable_fwhm_setup_actions(qapp, tmp_
 
     path = tmp_path / "hardware.json"
     path.write_text(json.dumps({"detectors": {
-        "A": {"managerProperties": {"monalisaSpotFwhmNm": 230.0}},
-        "B": {"managerProperties": {"monalisaSpotFwhmNm": 250.0}},
-    }}))
+        "A": {"managerProperties": {}},
+        "B": {"managerProperties": {}},
+    }, "processing": {"monalisa": {"detectorDefaults": {
+        "A": {"spotFwhmNm": 230.0}, "B": {"spotFwhmNm": 250.0},
+    }}}}))
     monkeypatch.setattr(setup_defaults, "current_setup_path", lambda: path)
     monkeypatch.setattr(module, "current_setup_path", lambda: path)
     widget = MonalisaParamsWidget()

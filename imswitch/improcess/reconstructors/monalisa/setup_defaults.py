@@ -1,21 +1,24 @@
-"""Detector-scoped MoNaLISA setup defaults, independent of the session registry.
+"""ImProcess-owned, detector-scoped MoNaLISA calibration defaults.
 
-Only explicit user actions write the currently selected ImControl setup JSON.
-Reconstruction may use recordings without importing ImControl at module import time.
+Only an explicit Save action writes to the selected setup's
+``processing.monalisa.detectorDefaults``. Legacy detector ``managerProperties``
+remain *read-only* fallback for existing microscope setups; neither ImControl
+nor raw acquisition owns or snapshots these reconstruction preferences.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import math
 import os
 from pathlib import Path
 import tempfile
-from dataclasses import dataclass
 
-from .scan_frame import ORIENTATIONS
 from .footprint_config import FitFootprint
+from .scan_frame import ORIENTATIONS
 
+# Legacy keys remain public for existing callers and read-only migration.
 FWHM_KEY = "monalisaSpotFwhmNm"
 ORIENTATION_KEY = "monalisaScanOrientation"
 FOOTPRINT_MODE_KEY = "monalisaLocalFootprintMode"
@@ -26,18 +29,6 @@ SHARED_FOOTPRINT_SHAPE_KEY = "monalisaFitFootprintShape"
 SHARED_FOOTPRINT_SIZE_KEY = "monalisaFitFootprintSizePx"
 SHARED_FOOTPRINT_SIGMA_KEY = "monalisaFitFootprintSigmaFactor"
 ESTIMATOR_KEY = "monalisaFitEstimator"
-
-
-def validate_footprint(mode, shape, size) -> tuple[str, str, int] | None:
-    if mode not in ("fixed", "from_lattice") or shape not in ("square", "circle"):
-        return None
-    try:
-        number = int(size)
-    except (ValueError, TypeError, OverflowError):
-        return None
-    if isinstance(size, bool) or number != size or number < 3 or number > 255 or number % 2 != 1:
-        return None
-    return mode, shape, number
 
 
 @dataclass(frozen=True)
@@ -55,20 +46,31 @@ class DetectorSetupDefaults:
 def positive_fwhm(value) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) and number > 0 else None
 
 
 def valid_orientation(value) -> str | None:
-    value = str(value or "")
-    return value if value in ORIENTATIONS else None
+    return value if isinstance(value, str) and value in ORIENTATIONS else None
+
+
+def validate_footprint(mode, shape, size) -> tuple[str, str, int] | None:
+    """Read the pre-shared, odd-integer Local footprint format."""
+    if mode not in ("fixed", "from_lattice") or shape not in ("square", "circle"):
+        return None
+    try:
+        number = int(size)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if isinstance(size, bool) or number != size or number < 3 or number > 255 or number % 2 != 1:
+        return None
+    return mode, shape, number
 
 
 def current_setup_path() -> Path | None:
-    """Use the active setup selection via ImProcess's sole config adapter."""
+    """Use ImProcess's existing, lazy setup-selection adapter."""
     from imswitch.improcess.model.processing_config import selected_setup_path
-
     return selected_setup_path()
 
 
@@ -76,32 +78,100 @@ def _read_setup(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         document = json.load(handle)
     if not isinstance(document, dict):
-        raise ValueError("ImControl setup is not a JSON object")
+        raise ValueError("Setup is not a JSON object")
     return document
 
 
-def _detector_properties(document: dict, detector: str, *, create: bool) -> dict | None:
+def _known_detector(document: dict, detector: str) -> bool:
     detectors = document.get("detectors")
-    if not isinstance(detectors, dict) or detector not in detectors:
-        return None
-    entry = detectors[detector]
-    if not isinstance(entry, dict):
-        return None
-    props = entry.get("managerProperties")
-    if props is None and create:
-        props = {}
-        entry["managerProperties"] = props
-    return props if isinstance(props, dict) else None
+    return (isinstance(detectors, dict) and detector in detectors
+            and isinstance(detectors[detector], dict))
 
+
+def _legacy_properties(document: dict, detector: str) -> dict:
+    if not _known_detector(document, detector):
+        return {}
+    props = document["detectors"][detector].get("managerProperties")
+    return props if isinstance(props, dict) else {}
+
+
+def _processing_defaults(document: dict, detector: str) -> dict:
+    """Return a detector's processing-owned values; never create sections on read."""
+    processing = document.get("processing")
+    monalisa = processing.get("monalisa") if isinstance(processing, dict) else None
+    defaults = monalisa.get("detectorDefaults") if isinstance(monalisa, dict) else None
+    entry = defaults.get(detector) if isinstance(defaults, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def _valid_fit(value) -> FitFootprint | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return FitFootprint(
+            shape=value["shape"],
+            mode=value.get("mode", "from_lattice"),
+            size_px=float(value.get("sizePx", 9)),
+            sigma_factor=float(value.get("sigmaFactor", 2.5)),
+        ).validate()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _legacy_fit(props: dict) -> FitFootprint | None:
+    if SHARED_FOOTPRINT_SHAPE_KEY in props:
+        result = _valid_fit({
+            "shape": props[SHARED_FOOTPRINT_SHAPE_KEY],
+            "mode": props.get(SHARED_FOOTPRINT_MODE_KEY, "from_lattice"),
+            "sizePx": props.get(SHARED_FOOTPRINT_SIZE_KEY, 9),
+            "sigmaFactor": props.get(SHARED_FOOTPRINT_SIGMA_KEY, 2.5),
+        })
+        if result is not None:
+            return result
+    old = validate_footprint(
+        props.get(FOOTPRINT_MODE_KEY), props.get(FOOTPRINT_SHAPE_KEY),
+        props.get(FOOTPRINT_SIZE_KEY),
+    )
+    return FitFootprint(old[1], old[0], float(old[2])) if old else None
+
+
+def _fit_mapping(fit: FitFootprint) -> dict:
+    return {
+        "shape": fit.shape, "mode": fit.mode,
+        "sizePx": fit.size_px, "sigmaFactor": fit.sigma_factor,
+    }
+
+
+def _read_from_document(document: dict, detector: str) -> DetectorSetupDefaults:
+    if not _known_detector(document, detector):
+        return DetectorSetupDefaults(detector)
+    prefs = _processing_defaults(document, detector)
+    legacy = _legacy_properties(document, detector)
+    fit = _valid_fit(prefs.get("footprint")) or _legacy_fit(legacy)
+    fwhm = positive_fwhm(prefs.get("spotFwhmNm"))
+    if fwhm is None:
+        fwhm = positive_fwhm(legacy.get(FWHM_KEY))
+    orientation = valid_orientation(prefs.get("scanOrientation"))
+    if orientation is None:
+        orientation = valid_orientation(legacy.get(ORIENTATION_KEY))
+    estimator = prefs.get("estimator")
+    if estimator not in ("local", "joint"):
+        estimator = legacy.get(ESTIMATOR_KEY)
+    return DetectorSetupDefaults(
+        detector=detector, fwhm_nm=fwhm, orientation=orientation,
+        footprint_mode=fit.mode if fit else None,
+        footprint_shape=fit.shape if fit else None,
+        footprint_size=fit.size_px if fit else None,
+        footprint_sigma_factor=fit.sigma_factor if fit else 2.5,
+        estimator=estimator if estimator in ("local", "joint") else None,
+    )
 
 
 def startup_detector_id(*, path: Path | None = None) -> str:
-    """Resolve a detector before data selection, but only when unambiguous.
+    """Resolve a single detector, or a unique detector with a calibration.
 
-    Prefer the sole detector with an explicit MoNaLISA FWHM setting.  With
-    no configured FWHM, a single-detector setup is also unambiguous (useful
-    when saving a first calibration).  Never guess between multiple cameras
-    with competing or missing defaults.
+    Never infer a detector when two or more are calibrated; a recording's
+    detector identity takes precedence once data are selected.
     """
     setup_path = path if path is not None else current_setup_path()
     if setup_path is None:
@@ -111,12 +181,14 @@ def startup_detector_id(*, path: Path | None = None) -> str:
         detectors = document.get("detectors")
         if not isinstance(detectors, dict):
             return "unknown"
-        candidates = [name for name, entry in detectors.items()
-                      if isinstance(name, str) and name and isinstance(entry, dict)]
-        configured = [name for name in candidates
-                      if positive_fwhm(
-                          (_detector_properties(document, name, create=False) or {}).get(FWHM_KEY)
-                      ) is not None]
+        candidates = [name for name in detectors
+                      if isinstance(name, str) and name and _known_detector(document, name)]
+        configured = []
+        for name in candidates:
+            saved = _read_from_document(document, name)
+            if (saved.fwhm_nm is not None or saved.orientation is not None
+                    or saved.estimator is not None or saved.footprint_mode is not None):
+                configured.append(name)
         if len(configured) == 1:
             return configured[0]
         if not configured and len(candidates) == 1:
@@ -132,111 +204,97 @@ def read_detector_defaults(detector: str, *, path: Path | None = None) -> Detect
     if not detector or detector == "unknown" or setup_path is None:
         return DetectorSetupDefaults(detector)
     try:
-        props = _detector_properties(_read_setup(Path(setup_path)), detector, create=False)
+        return _read_from_document(_read_setup(Path(setup_path)), detector)
     except (OSError, ValueError, json.JSONDecodeError):
-        props = None
-    footprint = None
-    if props and SHARED_FOOTPRINT_SHAPE_KEY in props:
-        try:
-            footprint = FitFootprint(
-                shape=str(props[SHARED_FOOTPRINT_SHAPE_KEY]),
-                mode=str(props.get(SHARED_FOOTPRINT_MODE_KEY, "from_lattice")),
-                size_px=float(props.get(SHARED_FOOTPRINT_SIZE_KEY, 9)),
-                sigma_factor=float(props.get(SHARED_FOOTPRINT_SIGMA_KEY, 2.5)),
-            ).validate()
-        except (ValueError, TypeError):
-            pass
-    if footprint is None and props:
-        old = validate_footprint(
-            props.get(FOOTPRINT_MODE_KEY), props.get(FOOTPRINT_SHAPE_KEY),
-            props.get(FOOTPRINT_SIZE_KEY),
-        )
-        if old is not None:
-            footprint = FitFootprint(old[1], old[0], float(old[2]))
-    return DetectorSetupDefaults(
-        detector=detector,
-        fwhm_nm=positive_fwhm(props.get(FWHM_KEY)) if props else None,
-        orientation=valid_orientation(props.get(ORIENTATION_KEY)) if props else None,
-        footprint_mode=footprint.mode if footprint else None,
-        footprint_shape=footprint.shape if footprint else None,
-        footprint_size=footprint.size_px if footprint else None,
-        footprint_sigma_factor=footprint.sigma_factor if footprint else 2.5,
-        estimator=(props.get(ESTIMATOR_KEY) if props and props.get(ESTIMATOR_KEY) in ("local", "joint") else None),
-    )
+        return DetectorSetupDefaults(detector)
 
 
 def save_detector_footprint(
     detector: str, mode: str, shape: str, size: float, *,
     sigma_factor: float = 2.5, path: Path | None = None,
 ) -> Path:
-    """Save one estimator-independent footprint preference atomically.
-
-    The older Local-only setup keys remain readable for compatibility, but
-    new saves use shared property keys.  Nothing changes until Save is clicked.
-    """
+    """Save estimator-independent footprint in ImProcess setup preferences."""
     try:
         fit = FitFootprint(shape, mode, float(size), float(sigma_factor)).validate()
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
         raise ValueError("Invalid fitting footprint preference") from exc
-    return _save_detector_properties(detector, {
-        SHARED_FOOTPRINT_SHAPE_KEY: fit.shape,
-        SHARED_FOOTPRINT_MODE_KEY: fit.mode,
-        SHARED_FOOTPRINT_SIZE_KEY: fit.size_px,
-        SHARED_FOOTPRINT_SIGMA_KEY: fit.sigma_factor,
-    }, path=path)
-
+    return _save_processing_preferences(detector, {"footprint": _fit_mapping(fit)}, path=path)
 
 
 def save_detector_fitting(
     detector: str, estimator: str, mode: str, shape: str, size: float, *,
     sigma_factor: float = 2.5, path: Path | None = None,
 ) -> Path:
-    """Atomically save estimator and footprint as one detector fitting default."""
+    """Save the Gaussian estimator and footprint as one atomic preference."""
     if estimator not in ("local", "joint"):
         raise ValueError(f"Invalid Gaussian estimator: {estimator!r}")
     try:
         fit = FitFootprint(shape, mode, float(size), float(sigma_factor)).validate()
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
         raise ValueError("Invalid fitting footprint preference") from exc
-    return _save_detector_properties(detector, {
-        ESTIMATOR_KEY: estimator,
-        SHARED_FOOTPRINT_SHAPE_KEY: fit.shape,
-        SHARED_FOOTPRINT_MODE_KEY: fit.mode,
-        SHARED_FOOTPRINT_SIZE_KEY: fit.size_px,
-        SHARED_FOOTPRINT_SIGMA_KEY: fit.sigma_factor,
-    }, path=path)
+    return _save_processing_preferences(
+        detector, {"estimator": estimator, "footprint": _fit_mapping(fit)}, path=path,
+    )
 
 
 def save_detector_default(detector: str, key: str, value, *, path: Path | None = None) -> Path:
-    """Atomically change exactly one property of a known detector in a setup.
-
-    Unknown detectors/setups fail closed instead of silently creating hardware
-    entries. A recorded data source never selects a different setup file.
-    """
-    if key not in (FWHM_KEY, ORIENTATION_KEY):
-        raise ValueError(f"Unsupported MoNaLISA setup key: {key!r}")
+    """Save one validated processing preference; legacy key names for UI compatibility."""
     if key == FWHM_KEY:
         validated = positive_fwhm(value)
-    else:
+        field = "spotFwhmNm"
+    elif key == ORIENTATION_KEY:
         validated = valid_orientation(value)
+        field = "scanOrientation"
+    else:
+        raise ValueError(f"Unsupported MoNaLISA setup key: {key!r}")
     if validated is None:
         raise ValueError(f"Invalid {key} value: {value!r}")
-    return _save_detector_properties(detector, {key: validated}, path=path)
+    return _save_processing_preferences(detector, {field: validated}, path=path)
 
 
-def _save_detector_properties(detector: str, values: dict, *, path: Path | None = None) -> Path:
-    if not detector or detector == "unknown":
+def _save_processing_preferences(detector: str, values: dict, *, path: Path | None = None) -> Path:
+    if not isinstance(detector, str) or not detector or detector == "unknown":
         raise ValueError("Select data with an identified detector before saving a setup default")
     setup_path = Path(path) if path is not None else current_setup_path()
     if setup_path is None or not setup_path.is_file():
-        raise ValueError("No selected ImControl hardware setup is available")
+        raise ValueError("No selected setup is available")
     document = _read_setup(setup_path)
-    props = _detector_properties(document, detector, create=True)
-    if props is None:
+    if not _known_detector(document, detector):
         raise ValueError(f"Detector {detector!r} is not defined in the selected setup")
-    props.update(values)
-    # Save atomically; do not serialize the SetupInfo dataclass, which can
-    # reformat or drop unknown fields from carefully maintained setups.
+
+    # Fail closed on malformed sections rather than overwriting unrelated data.
+    processing = document.setdefault("processing", {})
+    if not isinstance(processing, dict):
+        raise ValueError("Setup processing section must be an object")
+    monalisa = processing.setdefault("monalisa", {})
+    if not isinstance(monalisa, dict):
+        raise ValueError("Setup processing.monalisa section must be an object")
+    mapping = monalisa.setdefault("detectorDefaults", {})
+    if not isinstance(mapping, dict):
+        raise ValueError("Setup processing.monalisa.detectorDefaults must be an object")
+    prefs = mapping.setdefault(detector, {})
+    if not isinstance(prefs, dict):
+        raise ValueError(f"Processing defaults for {detector!r} must be an object")
+
+    # Non-destructive, on-save migration: carry *valid* old preferences to the
+    # new location, without mutating legacy managerProperties or other detectors.
+    legacy = _legacy_properties(document, detector)
+    old_fwhm = positive_fwhm(legacy.get(FWHM_KEY))
+    old_orientation = valid_orientation(legacy.get(ORIENTATION_KEY))
+    old_estimator = legacy.get(ESTIMATOR_KEY)
+    old_fit = _legacy_fit(legacy)
+    if old_fwhm is not None:
+        prefs.setdefault("spotFwhmNm", old_fwhm)
+    if old_orientation is not None:
+        prefs.setdefault("scanOrientation", old_orientation)
+    if old_estimator in ("local", "joint"):
+        prefs.setdefault("estimator", old_estimator)
+    if old_fit is not None:
+        prefs.setdefault("footprint", _fit_mapping(old_fit))
+    prefs.update(values)
+
+    # Replace atomically without round-tripping SetupInfo (which may drop
+    # unrelated/unknown properties). No change to disk on validation failure.
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(

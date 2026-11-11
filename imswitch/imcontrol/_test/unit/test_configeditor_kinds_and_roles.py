@@ -264,22 +264,27 @@ class TestRolePredicates:
 
 
 class TestRoleDiagnostics:
-    def test_monalisa_detector_defaults_are_optional_editor_fields(self, registry):
-        """Every detector may be configured, but absence is not a warning."""
+    def test_monalisa_calibration_is_an_improcess_section_not_a_detector_role(self, registry):
+        """Reconstruction calibration must not be a hardware-device role."""
         from imswitch.imcontrol.model.configeditor import resources, roles as roles_module
+        from imswitch.imcontrol.model.plugins.validation import validate_setup_data
 
-        role = next(r for r in resources.roles() if r["role"] == "monalisa_reconstruction")
-        assert {"monalisaSpotFwhmNm", "monalisaScanOrientation",
-                "monalisaFitEstimator"} <= set(role["properties"])
+        assert not any(r["role"] == "monalisa_reconstruction" for r in resources.roles())
         data = {"detectors": {"Camera": {
             "managerName": "HamamatsuManager", "managerProperties": {},
         }}}
-        assert [r["role"] for r in roles_module.applicable(
-            [role], section="detectors", name="Camera",
-            device=data["detectors"]["Camera"], setup=data,
-        )] == ["monalisa_reconstruction"]
-        assert not roles_module.evaluate(role, data)[0].missing_reads
+        assert not any(
+            r["role"] == "monalisa_reconstruction"
+            for r in roles_module.applicable(
+                resources.roles(), section="detectors", name="Camera",
+                device=data["detectors"]["Camera"], setup=data,
+            )
+        )
         assert not _codes(validate_setup_data(data, registry), "role.missing-read")
+        schema = json.loads((_REPO / "imswitch" / "imcontrol" / "view" / "configeditor" /
+                             "builtin_templates" / "sections" / "processing.json").read_text())
+        fields = {f["key"]: f for f in schema["fields"]}
+        assert fields["monalisa"]["type"] == "json"
 
     def test_the_consumer_message_reaches_the_validator(self, registry):
         report = validate_setup_data(GALVO, registry)

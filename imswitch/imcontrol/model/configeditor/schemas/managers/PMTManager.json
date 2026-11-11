@@ -221,18 +221,6 @@
         "code:optional(get)"
       ]
     },
-    "monalisaScanOrientation": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
-    "monalisaSpotFwhmNm": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
     "offset_v": {
       "description": "Voltage offset subtracted from each sample before being treated as signal.",
       "type": [

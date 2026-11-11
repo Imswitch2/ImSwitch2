@@ -1867,7 +1867,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         answer = QtWidgets.QMessageBox.question(
             self, "Save Gaussian fitting setup default?",
             f"Save {detail} for detector '{self._detector_id}' in:\n{path}\n\n"
-            "Only the Gaussian estimator and fit-footprint properties will change.",
+            "Only ImProcess calibration defaults will change; hardware properties stay unchanged.",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
@@ -1901,8 +1901,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         answer = QtWidgets.QMessageBox.question(
             self, "Save MoNaLISA setup default?",
             f"Save {detail} for detector '{self._detector_id}' in:\n{path}\n\n"
-            "Only this setup property is changed. ImControl may require a restart "
-            "before new recordings snapshot the updated default.",
+            "Only ImProcess calibration defaults will change. Hardware settings and raw "
+            "recording metadata remain unchanged.",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )

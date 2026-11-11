@@ -13,8 +13,6 @@
       "line_channel": 1,
       "line_trigger": 1.5,
       "min_counts_per_pixel": 1,
-      "monalisaScanOrientation": null,
-      "monalisaSpotFwhmNm": null,
       "n_bins": 1,
       "start_channel": 1,
       "start_trigger": 1.5,

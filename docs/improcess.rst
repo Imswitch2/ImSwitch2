@@ -2335,6 +2335,56 @@ to your ImControl setup file (the same JSON you select via
         }
     }
 
+MoNaLISA reconstruction defaults
+-------------------------------
+
+MoNaLISA calibration preferences are **ImProcess settings**, not detector
+hardware settings. The existing setup JSON can hold independent defaults for
+named detectors under ``processing.monalisa.detectorDefaults``::
+
+    {
+        "detectors": {
+            "CAM": {"managerName": "HamamatsuManager", "managerProperties": {}}
+        },
+        "processing": {
+            "reconstructors": ["monalisa"],
+            "monalisa": {
+                "detectorDefaults": {
+                    "CAM": {
+                        "spotFwhmNm": 215.0,
+                        "scanOrientation": "-y+x",
+                        "estimator": "local",
+                        "footprint": {
+                            "shape": "circle",
+                            "mode": "from_lattice",
+                            "sizePx": 9.0,
+                            "sigmaFactor": 2.5
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+The MoNaLISA reconstruction panel's explicit *Save default* actions update
+only the corresponding ImProcess preference for the selected detector. The
+ImControl Config Editor also exposes the ``monalisa`` JSON object in the
+ImProcess section. Other processing keys and all detector hardware properties
+are preserved. Preferences are optional; when unavailable, the reconstructor
+uses its existing built-in defaults. Explicit user choices and saved result
+parameters retain precedence for reconstruction and replay.
+
+For older microscope setups, ImProcess **reads** the historical MoNaLISA
+properties in ``detectors.<name>.managerProperties`` as a fallback for values
+not present in the new processing block. On the next explicit Save, valid old
+preferences are copied to the new processing section without deleting or
+modifying the original hardware entries. New saves **never** write MoNaLISA
+preferences into hardware properties. ImControl does not inject these defaults
+into raw recording metadata; older recordings containing
+``monalisa:spot_fwhm_nm`` or ``monalisa:scan_orientation`` remain readable.
+The effective reconstruction calibration is retained with processing results
+for reproducibility.
+
 The block is optional.  When it is absent, names neither ``reconstructors``
 nor ``processors``, or no setup file can be read at all, the registry falls
 back to::

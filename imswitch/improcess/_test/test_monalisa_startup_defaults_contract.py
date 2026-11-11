@@ -69,3 +69,18 @@ def test_current_parameter_contract_has_shared_footprint_only():
     migrated = migrate_footprint_params(old)
     assert footprint_from_params(migrated).size_px == pytest.approx(10.5)
     assert migrated["joint_footprint_mode"] == "fixed"
+
+
+def test_startup_uses_new_processing_defaults_without_legacy_hardware_keys(tmp_path):
+    path = tmp_path / "setup.json"
+    path.write_text(json.dumps({
+        "detectors": {"CAM": {"managerProperties": {}}, "OTHER": {"managerProperties": {}}},
+        "processing": {"monalisa": {"detectorDefaults": {
+            "CAM": {"spotFwhmNm": 242.0, "scanOrientation": "-x+y"},
+        }}},
+    }), encoding="utf-8")
+    assert startup_detector_id(path=path) == "CAM"
+    defaults = read_detector_defaults("CAM", path=path)
+    assert defaults.fwhm_nm == pytest.approx(242.0)
+    assert defaults.orientation == "-x+y"
+    assert read_detector_defaults("OTHER", path=path).fwhm_nm is None

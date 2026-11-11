@@ -133,18 +133,6 @@
         "docs:integer"
       ]
     },
-    "monalisaScanOrientation": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
-    "monalisaSpotFwhmNm": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
     "simulation_mode": {
       "description": "Run the mock counter instead of the NI-DAQ counter task, even when a DAQ is present.",
       "x-imswitch-kind": "boolean",

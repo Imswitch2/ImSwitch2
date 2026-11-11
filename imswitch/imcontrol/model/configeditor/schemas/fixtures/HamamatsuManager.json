@@ -6,9 +6,7 @@
       "cameraListIndex": 1,
       "cameraPixelSizeUm": 1.5,
       "hamamatsu": {},
-      "mockSample": {},
-      "monalisaScanOrientation": null,
-      "monalisaSpotFwhmNm": null
+      "mockSample": {}
     }
   }
 }

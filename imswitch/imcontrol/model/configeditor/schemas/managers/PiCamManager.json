@@ -24,18 +24,6 @@
         "docs:integer"
       ]
     },
-    "monalisaScanOrientation": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
-    "monalisaSpotFwhmNm": {
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)"
-      ]
-    },
     "picam": {
       "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.",
       "type": "object",

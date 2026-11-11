@@ -133,9 +133,13 @@ def test_setup_saves_shared_preferences_and_reads_old_local_format(tmp_path):
     loaded = read_detector_defaults("CAM", path=path)
     assert (loaded.footprint_mode, loaded.footprint_shape, loaded.footprint_sigma_factor) == (
         "fwhm", "circle", 3.25)
-    props = json.loads(path.read_text())["detectors"]["CAM"]["managerProperties"]
+    doc = json.loads(path.read_text())
+    props = doc["detectors"]["CAM"]["managerProperties"]
     assert props["preserve_me"] is True
-    assert props["monalisaLocalFootprintSizePx"] == 7  # migration is nondestructive
+    assert props["monalisaLocalFootprintSizePx"] == 7  # read-only legacy migration
+    assert doc["processing"]["monalisa"]["detectorDefaults"]["CAM"]["footprint"] == {
+        "shape": "circle", "mode": "fwhm", "sizePx": 9.0, "sigmaFactor": 3.25,
+    }
 
 
 def test_invalid_fixed_square_is_rejected_early():
