@@ -6,6 +6,8 @@
       "Photometrics": {},
       "cameraListIndex": 1,
       "cameraPixelSizeUm": null,
+      "monalisaScanOrientation": null,
+      "monalisaSpotFwhmNm": null,
       "useMockOnFailure": true
     }
   }

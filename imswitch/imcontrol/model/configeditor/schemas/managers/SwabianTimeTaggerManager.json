@@ -118,6 +118,18 @@
         "code:optional(get)"
       ]
     },
+    "monalisaScanOrientation": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "monalisaSpotFwhmNm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
     "n_bins": {
       "description": "Number of TCSPC histogram bins per pixel. Omitted, it spans one period of ``laser_rep_rate_mhz`` at ``binwidth_ps`` (391 bins at 80 MHz / 32 ps). A declared window shorter than 80 % of the period is warned about at startup: the ``moment`` and ``phasor`` fits read a truncated decay as a short lifetime, plausibly and without any other sign.",
       "x-imswitch-kind": "integer",

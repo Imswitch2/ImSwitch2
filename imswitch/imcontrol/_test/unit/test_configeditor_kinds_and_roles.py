@@ -264,6 +264,23 @@ class TestRolePredicates:
 
 
 class TestRoleDiagnostics:
+    def test_monalisa_detector_defaults_are_optional_editor_fields(self, registry):
+        """Every detector may be configured, but absence is not a warning."""
+        from imswitch.imcontrol.model.configeditor import resources, roles as roles_module
+
+        role = next(r for r in resources.roles() if r["role"] == "monalisa_reconstruction")
+        assert {"monalisaSpotFwhmNm", "monalisaScanOrientation",
+                "monalisaFitEstimator"} <= set(role["properties"])
+        data = {"detectors": {"Camera": {
+            "managerName": "HamamatsuManager", "managerProperties": {},
+        }}}
+        assert [r["role"] for r in roles_module.applicable(
+            [role], section="detectors", name="Camera",
+            device=data["detectors"]["Camera"], setup=data,
+        )] == ["monalisa_reconstruction"]
+        assert not roles_module.evaluate(role, data)[0].missing_reads
+        assert not _codes(validate_setup_data(data, registry), "role.missing-read")
+
     def test_the_consumer_message_reaches_the_validator(self, registry):
         report = validate_setup_data(GALVO, registry)
         errors = {d.path[1]: d for d in _codes(report, "role.missing-required")}

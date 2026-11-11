@@ -6,6 +6,8 @@
       "cameraHost": "example",
       "cameraPixelSizeUm": null,
       "cameraPort": 1,
+      "monalisaScanOrientation": null,
+      "monalisaSpotFwhmNm": null,
       "picam": {},
       "useMockOnFailure": true
     }

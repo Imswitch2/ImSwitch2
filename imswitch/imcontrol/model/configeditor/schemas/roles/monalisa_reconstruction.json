@@ -5,24 +5,7 @@
   "consumer": "imswitch.improcess.reconstructors.monalisa",
   "when": {},
   "requires": [],
-  "reads": [
-    {
-      "key": "monalisaSpotFwhmNm",
-      "fallback": "the MoNaLISA application default"
-    },
-    {
-      "key": "monalisaScanOrientation",
-      "fallback": "automatic orientation detection"
-    },
-    {
-      "key": "monalisaLocalFootprintMode",
-      "fallback": "from_lattice for new settings; old saved settings retain fixed size"
-    },
-    {
-      "key": "monalisaFitEstimator",
-      "fallback": "local for new configurations; historical recorded settings remain unchanged"
-    }
-  ],
+  "reads": [],
   "properties": {
     "monalisaSpotFwhmNm": {
       "x-imswitch-kind": "number",

@@ -6,6 +6,8 @@
       "avcam": {},
       "cameraListIndex": "example",
       "cameraPixelSizeUm": 1.5,
+      "monalisaScanOrientation": null,
+      "monalisaSpotFwhmNm": null,
       "useMockOnFailure": true
     }
   }

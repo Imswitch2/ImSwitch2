@@ -12,7 +12,9 @@ def _worker(detector_properties):
         monalisaScanOrientation=configuredMonalisaScanOrientation(detector_properties),
     )
     manager = SimpleNamespace(detectorsManager={"Camera": detector})
-    worker = object.__new__(RecordingWorker)
+    # PyQt QObject subclasses cannot be allocated with object.__new__.
+    # Avoid __init__ here: this test exercises metadata, not worker threads.
+    worker = RecordingWorker.__new__(RecordingWorker)
     worker._RecordingWorker__recordingManager = manager
     worker.saveFormat = SaveFormat.HDF5
     worker.recLapseTotal = 1

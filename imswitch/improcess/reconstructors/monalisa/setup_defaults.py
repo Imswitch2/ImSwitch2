@@ -66,16 +66,10 @@ def valid_orientation(value) -> str | None:
 
 
 def current_setup_path() -> Path | None:
-    """Use ImControl's active setup selection, never a guessed setup file."""
-    try:
-        from imswitch.imcontrol.model import configfiletools
-        options, _ = configfiletools.loadOptions()
-        name = str(getattr(options, "setupFileName", "") or "")
-        if not name or Path(name).name != name:
-            return None
-        return Path(configfiletools.getSetupFilePath(name))
-    except (ImportError, OSError, AttributeError):
-        return None
+    """Use the active setup selection via ImProcess's sole config adapter."""
+    from imswitch.improcess.model.processing_config import selected_setup_path
+
+    return selected_setup_path()
 
 
 def _read_setup(path: Path) -> dict:

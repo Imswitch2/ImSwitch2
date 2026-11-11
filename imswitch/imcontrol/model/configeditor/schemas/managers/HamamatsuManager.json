@@ -45,6 +45,18 @@
         "code:optional(get)",
         "example:object"
       ]
+    },
+    "monalisaScanOrientation": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "monalisaSpotFwhmNm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
     }
   },
   "required": [

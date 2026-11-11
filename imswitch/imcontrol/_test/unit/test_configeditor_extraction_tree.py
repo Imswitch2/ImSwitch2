@@ -87,7 +87,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # (reconnect 2.0 R-3: the fallback mock became an explicit opt-in);
     # 242: and on Photometrics, Allied Vision and PiCam. 244: the APD's and the
     # Hamamatsu's mockSample (SimplePointScan / SimpleMoNaLISA mock setups).
-    assert report.keys == 244
+    # The nine detector managers each gained two optional MoNaLISA setup
+    # defaults, making 244 + 18 = 262 discoverable keys.
+    assert report.keys == 262
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 64 after the device-reconnection rebase: CoolLED and MPB read
@@ -95,14 +97,14 @@ def test_the_coverage_the_plan_is_built_on(report):
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
     assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
-    assert report.optional == 178  # +2 mockSample
+    assert report.optional == 196  # +18 detector-scoped MoNaLISA keys
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
     # 35: PM100 and PAX1000 read wavelengthNm with .get() (None = keep the
     # instrument's own). 37: MockPAX plate1Rotator / plate2Rotator.
     # 39: the two mockSample blocks (None = no synthetic sample).
-    assert report.none_default_only == 39
+    assert report.none_default_only == 57  # +18 nullable detector defaults
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.

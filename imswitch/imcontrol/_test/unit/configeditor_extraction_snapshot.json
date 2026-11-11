@@ -11,7 +11,7 @@
     },
     {
       "constrained": 3,
-      "keys": 10,
+      "keys": 12,
       "name": "APDManager",
       "refs": 0,
       "required": 2,
@@ -20,7 +20,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 6,
       "name": "AVManager",
       "refs": 0,
       "required": 2,
@@ -164,7 +164,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 6,
       "name": "HamamatsuManager",
       "refs": 0,
       "required": 2,
@@ -371,7 +371,7 @@
     },
     {
       "constrained": 8,
-      "keys": 13,
+      "keys": 15,
       "name": "PMTManager",
       "refs": 0,
       "required": 0,
@@ -380,7 +380,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 6,
       "name": "PhotometricsManager",
       "refs": 0,
       "required": 1,
@@ -389,7 +389,7 @@
     },
     {
       "constrained": 1,
-      "keys": 5,
+      "keys": 7,
       "name": "PiCamManager",
       "refs": 0,
       "required": 3,
@@ -506,7 +506,7 @@
     },
     {
       "constrained": 10,
-      "keys": 15,
+      "keys": 17,
       "name": "SwabianTimeTaggerManager",
       "refs": 0,
       "required": 3,
@@ -515,7 +515,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 5,
       "name": "TISManager",
       "refs": 0,
       "required": 2,
@@ -533,7 +533,7 @@
     },
     {
       "constrained": 3,
-      "keys": 7,
+      "keys": 9,
       "name": "ThorCamTSIManager",
       "refs": 0,
       "required": 0,
@@ -600,11 +600,11 @@
     "constrained": 56,
     "docs_agree": 164,
     "docs_documented": 164,
-    "keys": 244,
+    "keys": 262,
     "managers": 66,
-    "none_default_only": 39,
-    "none_only": 16,
-    "optional": 178,
+    "none_default_only": 57,
+    "none_only": 34,
+    "optional": 196,
     "reads_any": 60,
     "refs": 14,
     "required": 66,

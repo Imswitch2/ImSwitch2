@@ -4,11 +4,11 @@
     "constrained": 56,
     "docs_agree": 166,
     "docs_documented": 166,
-    "keys": 246,
+    "keys": 264,
     "managers": 66,
-    "none_default_only": 40,
-    "none_only": 16,
-    "optional": 180,
+    "none_default_only": 58,
+    "none_only": 34,
+    "optional": 198,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
@@ -87,7 +87,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 10,
+      "properties": 12,
       "required": 2
     },
     "AVManager": {
@@ -97,7 +97,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 6,
       "required": 2
     },
     "BSC203StageManager": {
@@ -257,7 +257,7 @@
         "DetectorManager"
       ],
       "overridden": true,
-      "properties": 4,
+      "properties": 6,
       "required": 2
     },
     "HamamatsuSLMdviManager": {
@@ -481,7 +481,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 13,
+      "properties": 15,
       "required": 0
     },
     "PhotometricsManager": {
@@ -491,7 +491,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 6,
       "required": 1
     },
     "PiCamManager": {
@@ -501,7 +501,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 5,
+      "properties": 7,
       "required": 3
     },
     "PiezoconceptZManager": {
@@ -629,7 +629,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 15,
+      "properties": 17,
       "required": 3
     },
     "TISManager": {
@@ -639,7 +639,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 5,
       "required": 2
     },
     "TeensyPulseManager": {
@@ -659,7 +659,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 7,
+      "properties": 9,
       "required": 0
     },
     "ThorlabsMFFManager": {
