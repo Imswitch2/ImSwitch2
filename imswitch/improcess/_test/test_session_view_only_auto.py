@@ -27,13 +27,13 @@ from imswitch.improcess.reconstructors.time_lapse.reconstructor import TimeLapse
 from imswitch.improcess.model.result import ViewMode
 
 
-def test_only_view_only_inspection_opts_in_to_session_auto():
+def test_inspection_plugins_opt_into_session_auto_individually():
     inspection = ViewOnlyReconstructor()
     assert inspection.result_role == "inspection"
     assert inspection.supports_streaming
     assert inspection.supports_progressive_finite
     assert supports_session_auto(inspection)
-    assert not supports_session_auto(TimeLapseReconstructor())
+    assert supports_session_auto(TimeLapseReconstructor())
     assert not supports_session_auto(SimpleNamespace(result_role="inspection"))
     assert supports_session_auto(SimpleNamespace(result_role="derived"))
 
@@ -49,7 +49,7 @@ def test_auto_policy_accepts_view_only_but_does_not_count_inspection_as_processe
     assert policy.eligible(
         dataset, queue=queue, reconstructor=ViewOnlyReconstructor(), processed=False,
     )
-    assert not policy.eligible(
+    assert policy.eligible(
         dataset, queue=queue, reconstructor=TimeLapseReconstructor(), processed=False,
     )
     # A genuinely derived reconstruction still suppresses duplicate Auto jobs.
@@ -77,7 +77,10 @@ def test_view_only_auto_recipe_respects_live_toggle():
     assert (ProcessingQueueController.captureAutoRecipe(stub)
             ["execution_requirement"] == ExecutionRequirement.FINITE.value)
     stub._main._activeReconstructor = TimeLapseReconstructor()
-    assert ProcessingQueueController.captureAutoRecipe(stub) is None
+    assert ProcessingQueueController.captureAutoRecipe(stub) == {
+        "reconstructor_id": "time-lapse", "params": {},
+        "execution_requirement": ExecutionRequirement.FINITE.value,
+    }
 
 
 def test_queue_claim_tags_view_only_before_session_publication(monkeypatch):
@@ -132,7 +135,7 @@ def test_view_only_completed_timepoints_can_be_assembled_without_processing_pixe
     assert result.axis_scales == [1.0, 1.0, 0.2, 0.2]
 
 
-def test_monitor_auto_availability_allows_view_only_but_not_time_lapse():
+def test_monitor_auto_availability_allows_view_only_and_time_lapse():
     from imswitch.improcess.controller.ProcessingSessionController import (
         ProcessingSessionController,
     )
@@ -151,7 +154,7 @@ def test_monitor_auto_availability_allows_view_only_but_not_time_lapse():
     ProcessingSessionController._sync_auto_availability(stub)
     stub._main._activeReconstructor = TimeLapseReconstructor()
     ProcessingSessionController._sync_auto_availability(stub)
-    assert changes == [True, False]
+    assert changes == [True, True]
 
 
 def test_view_only_auto_arrival_creates_one_job_without_creating_a_derived_result(monkeypatch):

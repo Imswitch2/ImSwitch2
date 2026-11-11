@@ -7,7 +7,7 @@ from qtpy import QtCore
 
 from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
 from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
-from imswitch.improcess.model.processing_queue import supports_session_auto
+from imswitch.improcess.model.processing_queue import supports_session_auto, supports_session_manual
 
 from .reconstruction_worker import (
     ReconstructionWorker,
@@ -531,7 +531,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # capability, like is_pass_through above -- not another id check.
         try:
             streaming = bool(getattr(reconstructor, 'supports_streaming', False))
-            derived = str(getattr(reconstructor, 'result_role', 'derived')) != 'inspection'
+            session_manual = supports_session_manual(reconstructor)
             # Auto after explicit finite readiness works for offline-only
             # reconstructors too. Only true acquisition-time following needs
             # a StreamingSession.
@@ -542,8 +542,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 and getattr(session_controller, 'sessionMode', 'review') == 'follow'
             )
             self._widget.setDirectoryWatcherAvailable(streaming)
-            self._widget.processingSessionFrame.setProcessingAvailable(derived)
-            self._widget.setBatchProcessingAvailable(derived)
+            self._widget.processingSessionFrame.setProcessingAvailable(session_manual)
+            self._widget.setBatchProcessingAvailable(session_manual)
             self._widget.setSessionAutoProcessingAvailable(auto_available)
             # An unavailable Auto control must not leave a hidden policy armed.
             # Re-enabling Auto is an explicit user action for the new reconstructor.

@@ -202,6 +202,13 @@ class Reconstructor(ABC):
     as proof that the raw acquisition has been processed.
     """
 
+    supports_session_manual: bool = False
+    """Opt an inspection plugin into manual Session/Quick Load queue actions.
+
+    Derived reconstructors already have this capability. Inspection stays
+    inspection: queue execution must never imply a new scientific artifact.
+    """
+
     supports_session_auto: bool = False
     """Allow an inspection reconstructor in Session Auto processing.
 

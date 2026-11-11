@@ -391,8 +391,13 @@ on, it previews committed frames as they arrive; with Live off (or an unsafe
 live reader), it uses finite processing and can assemble independently sealed
 timepoints. Its outputs remain **inspection** results: no automatic duplicate
 raw-data save and no change to the Session's scientifically processed status.
-Other inspection plugins, including `Time lapse`, are not Auto-enabled by this
-opt-in.
+`Time lapse` also opts into manual Session reconstruction and finite Auto.
+Its configured detector, time-axis and incomplete-point policies are applied
+when assembling one lazy T-stack from the complete logical acquisition. Auto
+waits for explicit writer-completion evidence; it does not provide Live viewing.
+`Open in viewer` remains a separate default-settings inspection shortcut.
+Both inspection plugins leave Session scientific processing and auto-save state
+unchanged. Other inspection plugins remain ineligible unless opted in.
 
 ### 3.4 Legacy watcher and direct-memory compatibility paths
 

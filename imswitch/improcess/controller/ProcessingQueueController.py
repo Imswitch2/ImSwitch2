@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from qtpy import QtCore
@@ -41,6 +42,7 @@ from imswitch.improcess.model.processing_queue import (
     ProcessingOrigin,
     ProcessingQueue,
     supports_session_auto,
+    supports_session_manual,
 )
 from imswitch.improcess.reconstructors.registry import get_registry
 from imswitch.improcess.execution.contracts import Incompatible
@@ -230,6 +232,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         for dataset_id in dict.fromkeys(str(item) for item in dataset_ids):
             dataset = session.dataset_by_id(dataset_id)
             if (dataset is None or getattr(dataset, "raw_deleted", False)
+                    or (getattr(reconstructor, "consumes_logical_lapse", False)
+                        and getattr(dataset, "kind", "") != "time-lapse")
                     or self.queue.contains_dataset(dataset_id)
                     or self._sessionController.isDatasetProcessed(dataset_id)):
                 continue
@@ -269,8 +273,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         if session is None or reconstructor is None:
             return 0
-        if str(getattr(reconstructor, "result_role", "derived")) == "inspection":
-            self._logger.warning("Inspection reconstructors are not processing-queue jobs")
+        if not supports_session_manual(reconstructor):
             return 0
         try:
             origin = ProcessingOrigin(origin)
@@ -311,7 +314,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         if reconstructor is None:
             return 0
-        if str(getattr(reconstructor, "result_role", "derived")) == "inspection":
+        if not supports_session_manual(reconstructor):
             return 0
         params = self._snapshot_params(reconstructor)
         session = getattr(self._sessionController, "session", None)
@@ -570,6 +573,34 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._autoTimepointCached[job_id] = batch
         return batch
 
+    @classmethod
+    def _inspection_lapse_readiness_source(cls, job, source):
+        """Use on-disk Zarr membership, not the watcher's initial T0 snapshot.
+
+        Do not rediscover an actively written HDF5 file here: ImControl's
+        non-SWMR writer must not acquire a concurrent HDF5 reader on Windows.
+        Physical readiness markers remain the only completion authority.
+        """
+        if (str(getattr(job, "reconstructor_id", "")) != "time-lapse"
+                or cls._source_kind(source) != "time-lapse"):
+            return source
+        path = (getattr(source, "dataPath", None) if isinstance(source, DataObj)
+                else getattr(source, "primary_path", None))
+        if Path(str(path or "")).suffix.lower() != ".zarr":
+            return source
+        index = cls._fresh_manual_lapse_index(source)
+        # A configurable inspection may target a detector other than the one
+        # used to discover the Session. Auto must wait for that detector's own
+        # finalized partitions, not merely for the anchor detector to finish.
+        detector = (getattr(job, "params", None) or {}).get("detector") or index.anchor_detector
+        index.channel(detector)
+        if detector != index.anchor_detector:
+            index = replace(index, anchor_detector=detector)
+        return DataObj.fromMetadataSource(
+            index.name, index.anchor.path, TIME_LAPSE_SOURCE_KIND, index,
+            originalPath=index.anchor.path,
+        )
+
     def _probe_auto_readiness(self, job, source) -> Readiness:
         """Throttle metadata-only probes; never use file stability as a signal."""
         job_id = str(job.id)
@@ -579,11 +610,12 @@ class ProcessingQueueController(ImProcessWidgetController):
                 ReadinessState.UNKNOWN, "Waiting for source metadata"))
         self._readinessDue[job_id] = now + 2.0
         try:
+            probe_source = self._inspection_lapse_readiness_source(job, source)
             status = probe_scope(
-                source, job, is_lapse=self._source_kind(source) == "time-lapse",
+                probe_source, job, is_lapse=self._source_kind(source) == "time-lapse",
                 inspected=self._readinessInspected.setdefault(job_id, {}),
             )
-        except (ValueError, TypeError, IndexError) as exc:
+        except (ValueError, TypeError, IndexError, OSError, KeyError) as exc:
             status = Readiness(ReadinessState.UNKNOWN, f"Readiness unavailable: {exc}")
         self._readinessCached[job_id] = status
         return status
@@ -1083,13 +1115,22 @@ class ProcessingQueueController(ImProcessWidgetController):
         scope = coerce_timepoint_scope(getattr(job, "timepoint_scope", None))
         scoped_count = scope.count(self._currentSourceTimepoints)
         self._currentPlannedTimepoints = scoped_count or self._currentSourceTimepoints
+        logical_lapse_inspection = bool(
+            getattr(reconstructor, "consumes_logical_lapse", False)
+        )
         auto_batch = ready_timepoints is not None
         allowed_t = set(ready_timepoints) if auto_batch else None
         try:
-            data_objs = self._data_objs_for_source(
-                source, timepoint_scope=scope, allowed_timepoints=allowed_t,
-                verified_references=ready_references,
-            )
+            if logical_lapse_inspection:
+                # Time lapse itself assembles the logical T-stack. Supplying
+                # scan0/scan1/... as separate worker jobs would lose its
+                # detector/time-axis/incomplete-point options.
+                data_objs = [self._whole_lapse_inspection_source(source, scope)]
+            else:
+                data_objs = self._data_objs_for_source(
+                    source, timepoint_scope=scope, allowed_timepoints=allowed_t,
+                    verified_references=ready_references,
+                )
         except Exception as exc:
             # Manual finite membership is resolved at execution time. A
             # transient discovery error must also release the queue slot.
@@ -1103,7 +1144,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         # A finite lapse is one logical result, including when individual
         # completed timepoints are published progressively. Never renumber
         # missing logical positions or infer the time axis from image shape.
-        atomic_lapse = self._source_kind(source) == "time-lapse"
+        atomic_lapse = (self._source_kind(source) == "time-lapse"
+                        and not logical_lapse_inspection)
         if atomic_lapse:
             try:
                 start_t, stop_t = scope.bounds(self._currentSourceTimepoints)
@@ -1279,6 +1321,26 @@ class ProcessingQueueController(ImProcessWidgetController):
         if expected_detector and fresh.anchor_detector != expected_detector:
             raise ValueError("Time-lapse detector changed; refresh the Session")
         return fresh
+
+    @classmethod
+    def _whole_lapse_inspection_source(cls, source, scope) -> DataObj:
+        """Re-open a single logical lapse as one configured inspection input."""
+        if coerce_timepoint_scope(scope) != TimepointScope.all():
+            raise ValueError(
+                "Time lapse inspection displays the whole acquisition; select All T"
+            )
+        if cls._source_kind(source) == "time-lapse":
+            index = cls._fresh_manual_lapse_index(source)
+        elif isinstance(source, DataObj) and getattr(source, "dataPath", None):
+            # A Quick Load item can be an individual file of a logical lapse.
+            # The inspection plugin already supports discovering its siblings.
+            index = discover_time_lapse(source.dataPath, source.datasetName)
+        else:
+            raise ValueError("Time lapse requires a time-lapse acquisition")
+        return DataObj.fromMetadataSource(
+            index.name, index.anchor.path, TIME_LAPSE_SOURCE_KIND, index,
+            originalPath=index.anchor.path,
+        )
 
     def _data_objs_for_source(self, source, *, timepoint_scope=None,
                               allowed_timepoints=None, verified_references=None) -> list[DataObj]:

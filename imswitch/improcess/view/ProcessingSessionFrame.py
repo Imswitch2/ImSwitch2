@@ -1552,7 +1552,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             unfavorite.triggered.connect(
                 lambda _checked=False: self.sigSetSelectedFavoriteRequested.emit(False)
             )
-        if selected_entries:
+        if selected_entries and self._processingAvailable:
             reconstruct_next = menu.addAction(
                 "Reconstruct selected next" if len(selected_items) > 1 else "Reconstruct next"
             )
