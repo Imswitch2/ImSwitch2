@@ -11,7 +11,8 @@ from qtpy import QtCore, QtWidgets
 from .collapsible_section import CompactSection
 from .advanced_settings import AdvancedReconstructionDialog
 from .calibration import PatternLocalization, ScanOrientation
-from .localization_settings import DEFAULT_LOCALIZATION_SETTINGS, LocalizationSettings, PeriodPrior
+from .localization_settings import LocalizationSettings
+from .localization_settings_editor import LocalizationSettingsEditor
 from .params import (
     LOCALIZATION_AUTO,
     LOCALIZATION_LOCKED,
@@ -45,107 +46,23 @@ from .setup_defaults import (
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
-    """Small tuning dialog for automatic lattice localization."""
+    """Compatibility wrapper; the workflow now edits these settings via Settings…."""
 
     def __init__(self, settings: LocalizationSettings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Localization settings")
-        self._defaults = DEFAULT_LOCALIZATION_SETTINGS
-
-        self.usePrior = QtWidgets.QCheckBox("Use expected period")
-        self.periodX = QtWidgets.QDoubleSpinBox()
-        self.periodY = QtWidgets.QDoubleSpinBox()
-        self.tolerance = QtWidgets.QDoubleSpinBox()
-        for widget in (self.periodX, self.periodY):
-            widget.setRange(0.0, 100000.0)
-            widget.setDecimals(3)
-            widget.setSuffix(" px")
-        self.tolerance.setRange(0.0, 2.0)
-        self.tolerance.setDecimals(3)
-        self.tolerance.setSingleStep(0.05)
-
-        self.minPeriod = QtWidgets.QDoubleSpinBox()
-        self.maxPeriod = QtWidgets.QDoubleSpinBox()
-        for widget in (self.minPeriod, self.maxPeriod):
-            widget.setRange(0.0, 100000.0)
-            widget.setDecimals(3)
-            widget.setSuffix(" px")
-        self.maxPeriod.setToolTip("0: choose the longest usable period from the frame size")
-
-        self.candidates = QtWidgets.QSpinBox()
-        self.candidates.setRange(2, 128)
-        self.significance = QtWidgets.QDoubleSpinBox()
-        self.significance.setRange(0.1, 1000.0)
-        self.significance.setDecimals(2)
-
-        form = QtWidgets.QFormLayout()
-        form.addRow(self.usePrior)
-        form.addRow("Expected period X", self.periodX)
-        form.addRow("Expected period Y", self.periodY)
-        form.addRow("Tolerance (fraction)", self.tolerance)
-
-        self.showAdvanced = QtWidgets.QCheckBox("Show advanced parameters")
-        advanced = QtWidgets.QGroupBox("Advanced")
-        advancedForm = QtWidgets.QFormLayout(advanced)
-        advancedForm.addRow("Minimum period", self.minPeriod)
-        advancedForm.addRow("Maximum period", self.maxPeriod)
-        advancedForm.addRow("Spectral candidates", self.candidates)
-        advancedForm.addRow("Peak significance", self.significance)
-
-        self.resetButton = QtWidgets.QPushButton("Reset defaults")
+        self.editor = LocalizationSettingsEditor(settings, self)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        self.resetButton.clicked.connect(lambda: self._load(self._defaults))
-
-        footer = QtWidgets.QHBoxLayout()
-        footer.addWidget(self.resetButton)
-        footer.addStretch(1)
-        footer.addWidget(buttons)
-
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.showAdvanced)
-        layout.addWidget(advanced)
-        layout.addLayout(footer)
-
-        advanced.setVisible(False)
-        self.showAdvanced.toggled.connect(advanced.setVisible)
-        self.usePrior.toggled.connect(self._update_prior_enabled)
-        self._load(settings)
-
-    def _load(self, settings: LocalizationSettings) -> None:
-        prior = settings.period_prior
-        self.usePrior.setChecked(bool(prior.enabled))
-        self.periodX.setValue(float(prior.expected_x_px))
-        self.periodY.setValue(float(prior.expected_y_px))
-        self.tolerance.setValue(float(prior.tolerance_fraction))
-        self.minPeriod.setValue(float(settings.min_period_px))
-        self.maxPeriod.setValue(float(settings.max_period_px))
-        self.candidates.setValue(int(settings.num_candidate_peaks))
-        self.significance.setValue(float(settings.min_peak_significance))
-        self._update_prior_enabled(self.usePrior.isChecked())
-
-    def _update_prior_enabled(self, enabled: bool) -> None:
-        self.periodX.setEnabled(enabled)
-        self.periodY.setEnabled(enabled)
-        self.tolerance.setEnabled(enabled)
+        layout.addWidget(self.editor)
+        layout.addWidget(buttons)
 
     def settings(self) -> LocalizationSettings:
-        return LocalizationSettings(
-            min_period_px=float(self.minPeriod.value()),
-            max_period_px=float(self.maxPeriod.value()),
-            num_candidate_peaks=int(self.candidates.value()),
-            min_peak_significance=float(self.significance.value()),
-            period_prior=PeriodPrior(
-                enabled=bool(self.usePrior.isChecked()),
-                expected_x_px=float(self.periodX.value()),
-                expected_y_px=float(self.periodY.value()),
-                tolerance_fraction=float(self.tolerance.value()),
-            ),
-        )
+        return self.editor.settings()
 
 
 class _WidthEstimateSignals(QtCore.QObject):
@@ -204,7 +121,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     """Compact workflow-oriented controls for unified Gaussian MoNaLISA.
 
     The widget intentionally does not mirror the parameter dictionary one row
-    at a time.  Normal reconstruction decisions stay visible; implementation
+    at a time.  Standard reconstruction decisions stay visible; implementation
     details remain in small advanced dialogs.  ``get_values`` is still the one
     adapter to the stable backend/headless parameter contract.
     """
@@ -216,7 +133,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigModeChanged = QtCore.Signal(str)
 
     _MODE_LABELS = (
-        ("Normal", PRESET_FAST),
+        ("Standard", PRESET_FAST),
         ("Full", PRESET_FULL),
         ("DLL-equivalent", PRESET_DLL),
     )
@@ -279,8 +196,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "performance_batch_extraction": str(values["performance_batch_extraction"]),
             "performance_placement_reuse": str(values["performance_placement_reuse"]),
             "show_reconstruction_timings": bool(values["show_reconstruction_timings"]),
-            "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
-            "sharpen_regularization": float(values["sharpen_regularization"]),
             "estimator": str(values["estimator"]),
             "footprint_shape": str(values["footprint_shape"]),
             "footprint_mode": str(values["footprint_mode"]),
@@ -379,19 +294,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
         self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
         self.modeCombo.setToolTip(
-            "Normal and Full share localization, FWHM, fitting and corrections. "
+            "Standard and Full share localization, FWHM, fitting and corrections. "
             "Full additionally enables ISM (Auto by default), pinhole stacks "
-            "and optional sharpening. Returning to Normal remembers Full settings. "
+            "and optional sharpening. Returning to Standard remembers Full settings. "
             "DLL-equivalent uses the recovered CPU unit-cell extraction model and "
             "the common scan/calibration pipeline, but disables ISM, sharpening "
             "and variance weighting. For the original DLL use the separate "
             "Legacy DLL reconstructor."
         )
         modeRow.addWidget(self.modeCombo, 1)
-        self.advancedButton = QtWidgets.QPushButton("Expert…")
-        self.advancedButton.setToolTip(
-            "Open existing advanced parameters, including Gaussian estimator and footprint."
-        )
+        self.advancedButton = QtWidgets.QPushButton("Settings…")
+        self.advancedButton.setToolTip("Advanced settings")
         modeRow.addWidget(self.advancedButton)
         root.addLayout(modeRow)
 
@@ -460,14 +373,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.lockLocalizationButton.setToolTip(
             "Save the currently resolved localization in this session and use it immediately."
         )
-        self.localizationSettingsButton = QtWidgets.QPushButton("Settings…")
-        self.localizationSettingsButton.setToolTip(
-            "Configure automatic localization parameters."
-        )
         actionRow.addWidget(self.previewCheckbox)
         actionRow.addWidget(self.localizeButton)
         actionRow.addWidget(self.lockLocalizationButton)
-        actionRow.addWidget(self.localizationSettingsButton)
         actionRow.addStretch()
         loc.addLayout(actionRow, 2, 0, 1, 6)
 
@@ -751,12 +659,30 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         corrections.setColumnStretch(2, 1)
         root.addWidget(self.correctionsBox)
 
-        # Output -------------------------------------------------------------
-        self.outputBox, output = self._section("Output", expanded=True)
-        self.sharpenCheck = QtWidgets.QCheckBox("Sharpened image")
+        # Sharpening ---------------------------------------------------------
+        self.outputBox, output = self._section("Sharpening", expanded=True)
+        self.sharpenCheck = QtWidgets.QCheckBox("Enable")
         self.sharpenCheck.setChecked(bool(full["sharpen"]))
+        self.sharpenCheck.setToolTip("Generate an optional sharpened image after reconstruction.")
+        self.sharpenSigma = self._double_spin(values["sharpen_sigma_px"], 0.1, 100.0, 2, " px")
+        self.sharpenSigma.setToolTip(
+            "Spatial scale of the blur model used by optional sharpening."
+        )
+        self.sharpenRegularization = self._double_spin(
+            values["sharpen_regularization"], 0.001, 100.0, 3
+        )
+        self.sharpenRegularization.setToolTip(
+            "Regularization strength: higher values suppress noise amplification "
+            "but reduce sharpening."
+        )
+        self.sharpenSigma.setMaximumWidth(100)
+        self.sharpenRegularization.setMaximumWidth(105)
         output.addWidget(self.sharpenCheck, 0, 0)
-        output.setColumnStretch(1, 1)
+        output.addWidget(QtWidgets.QLabel("Blur"), 0, 1)
+        output.addWidget(self.sharpenSigma, 0, 2)
+        output.addWidget(QtWidgets.QLabel("Regularization"), 0, 3)
+        output.addWidget(self.sharpenRegularization, 0, 4)
+        output.setColumnStretch(5, 1)
         root.addWidget(self.outputBox)
 
         self._outputPixelSizeLabel = QtWidgets.QLabel("Output pixel size: — (set after reconstruction)")
@@ -780,6 +706,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.intensityCheck.toggled.connect(self._correction_changed)
         self.cellOffsetsCheck.toggled.connect(self._correction_changed)
         self.sharpenCheck.toggled.connect(self._controlled_changed)
+        self.sharpenCheck.toggled.connect(self._update_sharpening_enabled)
+        self.sharpenSigma.valueChanged.connect(self._controlled_changed)
+        self.sharpenRegularization.valueChanged.connect(self._controlled_changed)
         self.pinholeCheck.toggled.connect(self._controlled_changed)
         for spin in (self.shiftFactorSpin, self.shiftXSpin, self.shiftYSpin):
             spin.valueChanged.connect(self._controlled_changed)
@@ -789,7 +718,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
         self.previewCheckbox.toggled.connect(self.sigPreviewToggled)
         self.localizeButton.clicked.connect(self.sigLocalizeRequested.emit)
-        self.localizationSettingsButton.clicked.connect(self._open_localization_settings)
         self.lockLocalizationButton.clicked.connect(self._lock_current_localization)
         self.renameLocalizationButton.clicked.connect(self._rename_locked_localization)
         self.deleteLocalizationButton.clicked.connect(self._delete_locked_localization)
@@ -857,8 +785,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.sigModeChanged.emit(str(self._mode_value()))
 
     def _correction_changed(self, *_):
-        # Corrections are shared between Normal and Full.
+        # Corrections are shared between Standard and Full.
         self._controlled_changed()
+
+    def _update_sharpening_enabled(self, *_):
+        enabled = self.sharpenCheck.isChecked()
+        self.sharpenSigma.setEnabled(enabled)
+        self.sharpenRegularization.setEnabled(enabled)
 
     def _legacy_device_changed(self, *_):
         if self._applying_preset:
@@ -879,15 +812,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.ismBox.setVisible(not fast and not legacy and not dll)
         self.correctionsBox.setVisible(not legacy)
         self.outputBox.setVisible(not fast and not legacy and not dll)
+        self._update_sharpening_enabled()
         self.legacyBox.setVisible(legacy)
         # Spot width is useful for Legacy too; fitting is Gaussian-only.
         self.spotModeCombo.setVisible(not legacy)
         self.fittingBox.setVisible(not legacy and not dll)
-        self.advancedButton.setToolTip(
-            "DLL-equivalent uses a fixed CPU unit-cell Gaussian/background model; "
-            "other expert settings remain stored for Normal/Full."
-            if dll else "Advanced reconstruction settings"
-        )
+        self.advancedButton.setToolTip("Advanced settings")
         self.fwhmUnitCombo.setEnabled(True)
         gaussian_bg = str(self._combo_data(self.legacyBackgroundCombo)) == "Gaussian"
         self.legacyGaussianSizeLabel.setEnabled(gaussian_bg)
@@ -917,7 +847,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             widget.setVisible(locked)
         auto = localization_mode == LOCALIZATION_AUTO
         self.localizeButton.setEnabled(auto and not self._localization_busy)
-        self.localizationSettingsButton.setEnabled(auto)
         self.lockLocalizationButton.setEnabled(
             self._lockable_localization() is not None
             and not locked
@@ -1116,7 +1045,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if self.cellOffsetsCheck.isChecked():
             corrections.append("Cell offsets")
         self.correctionsBox.setSummary(" · ".join(corrections) if corrections else "Off")
-        self.outputBox.setSummary("Sharpening On" if self.sharpenCheck.isChecked() else "Sharpening Off")
+        self.outputBox.setSummary("On" if self.sharpenCheck.isChecked() else "Off")
 
     def _refresh_scroll_minimum(self) -> None:
         """Keep the full workflow reachable instead of vertically compressing labels."""
@@ -1125,16 +1054,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._scrollContent.setMinimumHeight(self._contentLayout.minimumSize().height())
 
     # -------------------------------------------------------------- dialogs
-    def _open_localization_settings(self):
-        dialog = LocalizationSettingsDialog(self._localization_settings, self)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            self._localization_settings = dialog.settings()
-            self.clear_auto_localization(
-                "Localization settings changed — localizing…"
-            )
-            if str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
-                self.sigLocalizeRequested.emit()
-
     def _open_scanning_advanced(self):
         dialog = ScanningAdvancedDialog(
             self._scan_overrides,
@@ -1146,6 +1065,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def _open_advanced_reconstruction(self):
         before = dict(self._advanced_values)
+        previous_localization_settings = self._localization_settings
         localization = self._lockable_localization()
         if localization is not None:
             localization = localization[0]
@@ -1155,11 +1075,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             localization = profile.localization if profile is not None else None
         dialog = AdvancedReconstructionDialog(
             self._advanced_values, self, localization=localization,
+            localization_settings=self._localization_settings,
             dll_equivalent=self._mode_value() == PRESET_DLL,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._advanced_values.update(dialog.values())
+        self._localization_settings = dialog.localization_settings()
+        if self._localization_settings != previous_localization_settings:
+            self.clear_auto_localization("Localization settings changed — localizing…")
+            if str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
+                self.sigLocalizeRequested.emit()
         self._update_ui()
         self._timingLabel.setVisible(bool(self._advanced_values["show_reconstruction_timings"])
                                      and bool(self._timingLabel.text()))
@@ -2313,12 +2239,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "performance_placement_reuse": str(self._advanced_values["performance_placement_reuse"]),
             "show_reconstruction_timings": bool(self._advanced_values["show_reconstruction_timings"]),
             "sharpen": bool(self.sharpenCheck.isChecked()),
-            "sharpen_sigma_px": float(self._advanced_values["sharpen_sigma_px"]),
-            "sharpen_regularization": float(self._advanced_values["sharpen_regularization"]),
+            "sharpen_sigma_px": float(self.sharpenSigma.value()),
+            "sharpen_regularization": float(self.sharpenRegularization.value()),
             "pinhole_stack": bool(self.pinholeCheck.isChecked()),
             **self._scan_overrides,
         }
-        # Full-only processing is retained while Normal is selected, but
+        # Full-only processing is retained while Standard is selected, but
         # disabled in the effective parameter snapshot sent to reconstruction.
         full = {key: values[key] for key in FULL_OPTION_DEFAULTS}
         values["full_options"] = full

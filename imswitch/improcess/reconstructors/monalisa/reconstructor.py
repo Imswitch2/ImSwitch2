@@ -168,9 +168,9 @@ class MonalisaReconstructor(StreamingReconstructor):
                        label='Placement-map reuse', options=('auto', 'disabled'), group='Performance', advanced=True),
             ParamField('show_reconstruction_timings', 'bool', defaults['show_reconstruction_timings'],
                        label='Show reconstruction timings', group='Performance', advanced=True),
-            ParamField('sharpen', 'bool', defaults['sharpen'], label='Sharpened image', group='Output'),
-            ParamField('sharpen_sigma_px', 'float', defaults['sharpen_sigma_px'], label='Sharpening blur', suffix='px', min=0.1, group='Advanced', advanced=True),
-            ParamField('sharpen_regularization', 'float', defaults['sharpen_regularization'], label='Sharpening regularization', min=0.001, group='Advanced', advanced=True),
+            ParamField('sharpen', 'bool', defaults['sharpen'], label='Enable', group='Sharpening'),
+            ParamField('sharpen_sigma_px', 'float', defaults['sharpen_sigma_px'], label='Blur', suffix='px', min=0.1, group='Sharpening'),
+            ParamField('sharpen_regularization', 'float', defaults['sharpen_regularization'], label='Regularization', min=0.001, group='Sharpening'),
             ParamField('pinhole_stack', 'bool', defaults['pinhole_stack'], label='Pinhole stack', group='ISM'),
             ParamField('scan_steps_fast', 'int', defaults['scan_steps_fast'], label='Steps, fast axis', min=0, group='Scanning', advanced=True),
             ParamField('scan_steps_slow', 'int', defaults['scan_steps_slow'], label='Steps, slow axis', min=0, group='Scanning', advanced=True),
@@ -741,7 +741,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             **MonalisaLatticeReconstructor.default_params(),
             # The lattice pipeline itself checks whether optional stages are
             # compatible with batched amplitude-only extraction. Full without
-            # those stages must use the same computation as Normal.
+            # those stages must use the same computation as Standard.
             "_fast_execution": True,
             "performance_amplitude_only": str(merged["performance_amplitude_only"]),
             "performance_batch_extraction": str(merged["performance_batch_extraction"]),

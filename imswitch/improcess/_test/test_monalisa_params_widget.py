@@ -137,7 +137,7 @@ def test_full_defaults_to_auto_ism_without_rewriting_fwhm_or_fitting(qapp):
 def test_three_profiles_appear_in_the_existing_mode_combo(qapp):
     widget = MonalisaParamsWidget()
     assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
-        "Normal", "Full", "DLL-equivalent",
+        "Standard", "Full", "DLL-equivalent",
     ]
     assert widget.legacyBox.isHidden()
     assert widget.fittingBox.isHidden() is False
@@ -174,7 +174,7 @@ def test_full_settings_survive_fast_and_full_roundtrip(qapp):
     widget.shiftFactorSpin.setValue(.47)
     widget.sharpenCheck.setChecked(True)
     full = widget.get_values()
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Normal"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Standard"))
     fast = widget.get_values()
     assert fast["reassignment"] == "off"
     assert fast["sharpen"] is False
@@ -296,7 +296,7 @@ def test_background_localization_busy_state_disables_duplicate_auto_actions(qapp
 
     assert widget.localizeButton.isEnabled() is False
     assert widget.lockLocalizationButton.isEnabled() is False
-    assert widget.localizationSettingsButton.isEnabled() is True
+    assert not hasattr(widget, "localizationSettingsButton")
     assert widget.previewStatusLabel.text() == "Auto: localizing…"
 
     widget.set_localization_job_state(False)
@@ -916,7 +916,7 @@ def test_compact_sections_retain_scientific_parameters_and_live_summaries(qapp):
     widget.intensityCheck.setChecked(True)
     assert "Intensity" in widget.correctionsBox.header._summary
     widget.sharpenCheck.setChecked(True)
-    assert "Sharpening On" in widget.outputBox.header._summary
+    assert widget.outputBox.header._summary == "On"
     widget._set_combo_data(widget.reassignmentCombo, "fixed")
     widget.shiftFactorSpin.setValue(0.4)
     assert "Manual · 0.4" in widget.ismBox.header._summary
@@ -931,7 +931,7 @@ def test_mode_visibility_and_expansion_are_independent(qapp):
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Full"))
     assert widget.fittingBox.isHidden() is False
     assert widget.ismBox.isHidden() is False
-    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Normal"))
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Standard"))
     assert widget.fittingBox.isHidden() is False
     assert widget.fittingBox.isExpanded() is True
     assert widget.correctionsBox.isExpanded() is False
@@ -1049,7 +1049,7 @@ def test_dll_mode_expert_disables_only_irrelevant_numerics(qapp):
     assert not dialog.background.isEnabled()
     assert not dialog.sampling.isEnabled()
     assert not dialog.variance.isEnabled()
-    assert not dialog.sharpenSigma.isEnabled()
+    assert not hasattr(dialog, "sharpenSigma")
     assert dialog.pixelNm.isEnabled()
     assert dialog.placement.isEnabled()
     dialog.close()
@@ -1058,3 +1058,100 @@ def test_dll_mode_expert_disables_only_irrelevant_numerics(qapp):
     assert normal_dialog.background.isEnabled()
     assert normal_dialog.variance.isEnabled()
     normal_dialog.close()
+
+
+def test_patch_o_mode_labels_settings_title_and_correction_defaults(qapp):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+    from imswitch.improcess.reconstructors.monalisa.params import PRESET_DLL
+
+    widget = MonalisaParamsWidget()
+    assert [widget.modeCombo.itemText(i) for i in range(widget.modeCombo.count())] == [
+        "Standard", "Full", "DLL-equivalent",
+    ]
+    assert widget.modeCombo.currentData() == PRESET_FAST  # saved identifier unchanged
+    assert widget.advancedButton.text() == "Settings…"
+    assert widget.advancedButton.toolTip() == "Advanced settings"
+    assert not hasattr(widget, "localizationSettingsButton")
+    assert widget.intensityCheck.isChecked()
+    assert widget.cellOffsetsCheck.isChecked()
+    assert widget.get_values()["intensity_correction"] is True
+    assert widget.get_values()["cell_offsets"] is True
+
+    dialog = AdvancedReconstructionDialog(
+        widget._advanced_values, localization_settings=widget._localization_settings,
+    )
+    assert dialog.windowTitle() == "Advanced settings"
+    assert dialog.localizationEditor.settings() == widget._localization_settings
+    assert not hasattr(dialog, "sharpenSigma")
+    dialog.close()
+    widget._set_combo_data(widget.modeCombo, PRESET_DLL)
+    assert widget.get_values()["intensity_correction"] is True
+    assert widget.get_values()["cell_offsets"] is True
+
+
+def test_patch_o_sharpening_controls_share_one_section_row_and_remember_values(qapp):
+    widget = MonalisaParamsWidget()
+    widget._set_combo_data(widget.modeCombo, PRESET_FULL)
+    assert widget.outputBox.details.title().startswith("⌄ Sharpening")
+    grid = widget.outputBox.grid
+    assert grid.itemAtPosition(0, 0).widget() is widget.sharpenCheck
+    assert grid.itemAtPosition(0, 2).widget() is widget.sharpenSigma
+    assert grid.itemAtPosition(0, 4).widget() is widget.sharpenRegularization
+    assert not widget.sharpenSigma.isEnabled()
+    widget.sharpenCheck.setChecked(True)
+    assert widget.sharpenSigma.isEnabled()
+    widget.sharpenSigma.setValue(2.75)
+    widget.sharpenRegularization.setValue(0.123)
+    values = widget.get_values()
+    assert values["sharpen"] is True
+    assert values["sharpen_sigma_px"] == pytest.approx(2.75)
+    assert values["sharpen_regularization"] == pytest.approx(0.123)
+    widget._set_combo_data(widget.modeCombo, PRESET_FAST)
+    assert widget.get_values()["sharpen"] is False
+    assert widget.get_values()["sharpen_sigma_px"] == pytest.approx(2.75)
+    widget._set_combo_data(widget.modeCombo, PRESET_FULL)
+    restored = widget.get_values()
+    assert restored["sharpen"] is True
+    assert restored["sharpen_sigma_px"] == pytest.approx(2.75)
+    assert restored["sharpen_regularization"] == pytest.approx(0.123)
+
+
+def test_patch_o_localization_tuning_moves_into_settings_and_keeps_cancel_semantics(qapp, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.advanced_settings import AdvancedReconstructionDialog
+
+    widget = MonalisaParamsWidget()
+    before = widget.get_values()["localization_settings"]
+    requests = []
+    widget.sigLocalizeRequested.connect(lambda: requests.append(True))
+
+    def cancel_edit(dialog):
+        dialog.localizationEditor.candidates.setValue(21)
+        return QtWidgets.QDialog.Rejected
+
+    monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", cancel_edit)
+    widget._open_advanced_reconstruction()
+    assert widget.get_values()["localization_settings"] == before
+    assert not requests
+
+    def accept_edit(dialog):
+        dialog.localizationEditor.candidates.setValue(21)
+        return QtWidgets.QDialog.Accepted
+
+    monkeypatch.setattr(AdvancedReconstructionDialog, "exec_", accept_edit)
+    widget._open_advanced_reconstruction()
+    assert widget.get_values()["localization_settings"]["num_candidate_peaks"] == 21
+    assert len(requests) == 1
+
+
+def test_patch_o_explicit_saved_correction_values_survive_mode_changes():
+    from imswitch.improcess.reconstructors.monalisa.params import (
+        apply_preset, default_params, PRESET_DLL,
+    )
+
+    defaults = default_params()
+    assert defaults["intensity_correction"] is defaults["cell_offsets"] is True
+    saved = {**defaults, "intensity_correction": False, "cell_offsets": False}
+    for mode in (PRESET_FAST, PRESET_FULL, PRESET_DLL):
+        switched = apply_preset(saved, mode)
+        assert switched["intensity_correction"] is False
+        assert switched["cell_offsets"] is False

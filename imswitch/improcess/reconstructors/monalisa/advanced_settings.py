@@ -1,8 +1,11 @@
-"""Expert numerical settings kept out of the normal MoNaLISA workflow UI."""
+"""Advanced numerical and localization settings for MoNaLISA reconstruction."""
 
 from __future__ import annotations
 
 from qtpy import QtWidgets
+
+from .localization_settings import DEFAULT_LOCALIZATION_SETTINGS, LocalizationSettings
+from .localization_settings_editor import LocalizationSettingsEditor
 
 from .params import PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE
 
@@ -15,9 +18,10 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
     scanning or the spot model in the interactive panel.
     """
 
-    def __init__(self, values: dict, parent=None, *, localization=None, dll_equivalent=False):
+    def __init__(self, values: dict, parent=None, *, localization=None,
+                 localization_settings=None, dll_equivalent=False):
         super().__init__(parent)
-        self.setWindowTitle("Expert reconstruction parameters")
+        self.setWindowTitle("Advanced settings")
         self._localization = localization
 
         self.device = QtWidgets.QComboBox()
@@ -73,28 +77,6 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         placementForm.addRow("Direct tolerance", self.tolerance)
         placementForm.addRow(self.variance)
 
-        self.sharpenSigma = QtWidgets.QDoubleSpinBox()
-        self.sharpenSigma.setRange(0.1, 100.0)
-        self.sharpenSigma.setDecimals(2)
-        self.sharpenSigma.setSuffix(" px")
-        self.sharpenSigma.setValue(float(values.get("sharpen_sigma_px", 1.5)))
-        self.sharpenSigma.setToolTip(
-            "Spatial scale of the blur model used by the optional sharpening post-processing."
-        )
-        self.sharpenRegularization = QtWidgets.QDoubleSpinBox()
-        self.sharpenRegularization.setRange(0.001, 100.0)
-        self.sharpenRegularization.setDecimals(3)
-        self.sharpenRegularization.setValue(float(values.get("sharpen_regularization", 0.1)))
-        self.sharpenRegularization.setToolTip(
-            "Regularization strength for sharpening. Higher values suppress noise amplification "
-            "but reduce the sharpening effect."
-        )
-
-        sharpening = QtWidgets.QGroupBox("Sharpening")
-        sharpeningForm = QtWidgets.QFormLayout(sharpening)
-        sharpeningForm.addRow("Blur", self.sharpenSigma)
-        sharpeningForm.addRow("Regularization", self.sharpenRegularization)
-
         # Everyday estimator and footprint settings now live in Spot model.
         # Keep only specialist numerical controls here to avoid two editors.
         self.background = QtWidgets.QComboBox()
@@ -118,7 +100,7 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             # The DLL-equivalent mode fixes the Gaussian numerical model and
             # does not perform amplitude-variance fitting or sharpening.
             # Placement and camera-pixel calibration remain configurable.
-            for group in (gaussian, sharpening):
+            for group in (gaussian,):
                 group.setEnabled(False)
                 group.setToolTip("Not used by DLL-equivalent reconstruction")
             self.variance.setEnabled(False)
@@ -151,6 +133,10 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         )
         performanceForm.addRow(self.showTimings)
 
+        self.localizationEditor = LocalizationSettingsEditor(
+            localization_settings or DEFAULT_LOCALIZATION_SETTINGS, self
+        )
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -158,12 +144,23 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(gaussian)
-        layout.addWidget(execution)
-        layout.addWidget(placement)
-        layout.addWidget(sharpening)
-        layout.addWidget(performance)
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        content = QtWidgets.QWidget()
+        contentLayout = QtWidgets.QVBoxLayout(content)
+        contentLayout.addWidget(self.localizationEditor)
+        contentLayout.addWidget(gaussian)
+        contentLayout.addWidget(execution)
+        contentLayout.addWidget(placement)
+        contentLayout.addWidget(performance)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
         layout.addWidget(buttons)
+        self.resize(520, 610)
+
+    def localization_settings(self) -> LocalizationSettings:
+        return self.localizationEditor.settings()
 
     def values(self) -> dict:
         return {
@@ -174,8 +171,6 @@ class AdvancedReconstructionDialog(QtWidgets.QDialog):
             "placement_mode": self.placement.currentText(),
             "commensurate_tolerance": float(self.tolerance.value()),
             "variance_weighting": bool(self.variance.isChecked()),
-            "sharpen_sigma_px": float(self.sharpenSigma.value()),
-            "sharpen_regularization": float(self.sharpenRegularization.value()),
             **{key: str(combo.currentData()) for key, combo in self.performanceCombos.items()},
             "show_reconstruction_timings": bool(self.showTimings.isChecked()),
         }

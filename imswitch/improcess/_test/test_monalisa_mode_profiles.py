@@ -116,3 +116,20 @@ def test_sparse_full_job_gets_auto_ism_and_explicit_off_is_respected():
     assert effective_mode_params({"preset": PRESET_FULL})["reassignment"] == "auto"
     assert effective_mode_params({"preset": PRESET_FULL, "reassignment": "off"})["reassignment"] == "off"
     assert effective_mode_params({"preset": PRESET_FULL, "reassignment": "fixed", "shift_factor": .38})["full_options"]["shift_factor"] == .38
+
+
+def test_patch_o_new_correction_defaults_and_legacy_saved_values():
+    """Only new configurations change; explicit values remain authoritative."""
+    from imswitch.improcess.reconstructors.monalisa.params import PRESET_DLL
+
+    params = default_params()
+    assert params["intensity_correction"] is True
+    assert params["cell_offsets"] is True
+    for mode in (PRESET_FAST, PRESET_FULL, PRESET_DLL):
+        current = apply_preset(params, mode)
+        assert current["intensity_correction"] is True
+        assert current["cell_offsets"] is True
+        saved = {**params, "intensity_correction": False, "cell_offsets": False}
+        replayed = effective_mode_params(apply_preset(saved, mode))
+        assert replayed["intensity_correction"] is False
+        assert replayed["cell_offsets"] is False
