@@ -61,8 +61,17 @@ class _FakeDataObj:
         """Patch the DataObj symbol inside the controller module so the
         helper's enumeration + construction calls use the fake."""
 
+        # The real resolver returns pathlib paths. On Windows, str(Path(...))
+        # uses backslashes even when the test input used forward slashes.
+        # Compare dataset keys as native paths, while exercising the actual
+        # resolver (including Zarr-child -> store-root normalization).
+        def key(path):
+            return os.path.normcase(os.path.normpath(os.fspath(path)))
+
+        dataset_map = {key(path): datasets for path, datasets in dataset_map.items()}
+
         def fake_get_names(path):
-            return list(dataset_map.get(path, []))
+            return list(dataset_map.get(key(path), []))
 
         cls.last = None
 
@@ -164,7 +173,7 @@ def test_single_dataset_default_goes_to_multidata(monkeypatch):
     outcome = ctl._loadFromPath('/x/file.h5')
 
     assert outcome == 'multidata'
-    assert ctl.multiDataFrameController.added == [('file.h5', 'frame', '/x/file.h5')]
+    assert ctl.multiDataFrameController.added == [('file.h5', 'frame', os.path.normpath('/x/file.h5'))]
     assert ctl._main._currentDataObj is None
     assert not ctl._widget.dialog_shown
 
@@ -176,7 +185,7 @@ def test_zarr_child_path_is_normalized_before_routing(monkeypatch):
     outcome = ctl._loadFromPath('/x/store.zarr/APD/data/0.0.0')
 
     assert outcome == 'multidata'
-    assert ctl.multiDataFrameController.added == [('store.zarr', 'APD', '/x/store.zarr')]
+    assert ctl.multiDataFrameController.added == [('store.zarr', 'APD', os.path.normpath('/x/store.zarr'))]
 
 
 def test_quick_load_zarr_source_uses_folder_dialog(monkeypatch):
@@ -302,8 +311,8 @@ def test_multi_dataset_picker_many_selected_goes_to_multidata_even_with_prefer_c
 
     assert outcome == 'multidata'
     assert ctl.multiDataFrameController.added == [
-        ('file.h5', 'a', '/x/file.h5'),
-        ('file.h5', 'c', '/x/file.h5'),
+        ('file.h5', 'a', os.path.normpath('/x/file.h5')),
+        ('file.h5', 'c', os.path.normpath('/x/file.h5')),
     ]
     assert ctl._main._currentDataObj is None
 
