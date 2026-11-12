@@ -7,6 +7,11 @@ introducing a runtime dependency on slmcore.
 """
 
 from .api import localize_lattice, localize_spots
+from .contracts import PatternPrior, PatternGeometry, PatternLocalizationResult
+from .adapters import (
+    from_periodic_localization, periodic_components,
+    from_finite_grid, finite_grid_components, from_lattice_registration,
+)
 from .detection import detect_spots
 from .lattice import infer_lattice_shape, make_lattice_model, rectangular_lattice_indices
 from .model import DetectedSpots, LatticeModel, LatticeRegistration, LatticeRegistrationOptions, SpotDetectionOptions
@@ -14,6 +19,9 @@ from .registration import register_lattice
 from .parameters import LOCALIZATION_DEFAULTS, LOCALIZATION_PARAMETER_INFO
 
 __all__ = [
+    "PatternPrior", "PatternGeometry", "PatternLocalizationResult",
+    "from_periodic_localization", "periodic_components",
+    "from_finite_grid", "finite_grid_components", "from_lattice_registration",
     "DetectedSpots", "LatticeModel", "LatticeRegistration",
     "LatticeRegistrationOptions", "SpotDetectionOptions",
     "detect_spots", "infer_lattice_shape", "localize_lattice",
