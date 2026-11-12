@@ -3,13 +3,14 @@
 The detection half of the SMLM localizer (Picasso net gradient, see
 :mod:`imswitch.improcess.analysis.spot_count`) run frame by frame, without
 the Gaussian fit: an event-trigger experiment wants *how many* and *where*,
-not sub-pixel positions. Two outputs:
+not sub-pixel positions. One result holds all of it:
 
-* ``counts`` -- a curve, one sample per frame along the stack's leading axis
-  (its label and scale are kept, so a calibrated T axis plots in seconds);
-* ``spots`` -- every detection as a points result, ``(y, x)`` in pixels with
-  the frame index as property ``t`` and the net gradient, smoothed intensity
-  and local contrast as further properties.
+* the table / points: every detection, ``(y, x)`` in pixels with the frame
+  index as property ``t`` and the net gradient, smoothed intensity and local
+  contrast as further properties;
+* the viewer: a copy of the input with a ring on every spot, on its frame;
+* the Graph panel: the count per frame along the stack's leading axis (its
+  scale kept, so a calibrated T axis plots in seconds).
 
 The same detection settings drive the tiling processor (``tile-spots``), so
 a threshold tuned on a time stack finds the same spots in an overview.
@@ -27,16 +28,15 @@ from imswitch.improcess.analysis.spot_count import (
     SpotParams,
     find_spots_in_stack,
 )
-from imswitch.improcess.model.curve_result import CurveResult
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.points_result import UNKNOWN_FRAME, PointsResult
-from imswitch.improcess.model.result import ANY_KIND, ProcessingResult
+from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._axis_split import (
     axis_labels_for_result,
     axis_scales_for_result,
     shape_for_result,
 )
-from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
+from imswitch.improcess.processors.base import Processor
 
 #: Default threshold per mode: SMLM's net-gradient default, and a multiple of
 #: the frame's robust net-gradient noise.
@@ -157,28 +157,6 @@ def add_spot_param_rows(layout: QtWidgets.QFormLayout):
     return get_values
 
 
-def spots_points(name: str, spots: dict, *, frame_property: str, scales_yx=None,
-                 scale_unit: str = "px", frame: str = UNKNOWN_FRAME,
-                 metadata: dict | None = None) -> PointsResult:
-    """A spot table as a points result: ``(y, x)`` plus the other columns."""
-    properties = {
-        frame_property: np.asarray(spots["frame"], dtype=np.int64),
-        "net_gradient": spots["net_gradient"],
-        "intensity": spots["intensity"],
-        "contrast": spots["contrast"],
-    }
-    return PointsResult(
-        name,
-        np.column_stack([spots["y"], spots["x"]]).reshape(-1, 2),
-        frame=frame,
-        axis_names=["y", "x"],
-        properties=properties,
-        coordinate_scale=list(scales_yx) if scales_yx is not None else None,
-        scale_unit=scale_unit,
-        metadata=metadata,
-    )
-
-
 class SpotCountProcessor(Processor):
     """Count diffraction-limited spots in every frame of a stack."""
 
@@ -187,8 +165,8 @@ class SpotCountProcessor(Processor):
     category = "Measurement"
     run_label = "Count spots"
     kinds = ("image",)
-    #: A curve and a points table: two kinds, so the declaration is ``any``.
-    output_kind = ANY_KIND
+    #: One result: the spots as points, with the image overlay and the count graph.
+    output_kind = "points"
 
     @classmethod
     def default_params(cls) -> dict:
@@ -197,9 +175,6 @@ class SpotCountProcessor(Processor):
     @classmethod
     def param_spec(cls) -> tuple:
         return spot_param_fields()
-
-    def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
-        return OutputSpec(ports=("counts", "spots"), kind=self.output_kind)
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -212,7 +187,9 @@ class SpotCountProcessor(Processor):
         widget.get_values = add_spot_param_rows(layout)
         return widget
 
-    def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
+    def apply(self, result: ProcessingResult, params: dict) -> PointsResult:
+        from .result import SpotResult
+
         data = np.asarray(result.data)
         if data.ndim not in (2, 3):
             raise ValueError(
@@ -223,33 +200,49 @@ class SpotCountProcessor(Processor):
 
         labels = list(axis_labels_for_result(result))
         scales = list(axis_scales_for_result(result))
-        axis_label = labels[0] if data.ndim == 3 else "Frame"
-        axis_scale = scales[0] if data.ndim == 3 else 1.0
-        settings_meta = {
-            "operation": self.id,
-            "threshold": settings.threshold,
-            "threshold_mode": settings.threshold_mode,
-            "sigma": settings.sigma,
-            "roi": settings.roi,
-            "reject_edges": settings.reject_edges,
-        }
-        curve = CurveResult(
-            f"{result.name} spot count",
-            counts.astype(np.float64),
-            [axis_label],
-            axis_scales=[axis_scale],
-            scale_unit=getattr(result, "scale_unit", "px"),
-            metadata={**settings_meta, "total_spots": int(counts.sum())},
+        stacked = data.ndim == 3
+        axis_label = labels[0] if stacked else "Frame"
+        axis_scale = float(scales[0]) if stacked else 1.0
+        frame_property = str(axis_label).lower() if stacked else "t"
+        overlay = (
+            np.column_stack([spots["frame"], spots["y"], spots["x"]]) if stacked
+            else np.column_stack([spots["y"], spots["x"]])
         )
-        points = spots_points(
+        unit = getattr(result, "scale_unit", "px")
+        x_unit = "s" if stacked and str(axis_label).upper().startswith("T") and axis_scale != 1.0 else ""
+        return SpotResult(
             f"{result.name} spots",
-            spots,
-            frame_property=str(axis_label).lower() if data.ndim == 3 else "t",
-            scales_yx=scales[-2:],
-            scale_unit=getattr(result, "scale_unit", "px"),
-            metadata=settings_meta,
+            np.column_stack([spots["y"], spots["x"]]).reshape(-1, 2),
+            image=np.array(data, copy=True),
+            image_axis_labels=labels,
+            image_axis_scales=scales,
+            image_scale_unit=unit,
+            overlay=overlay,
+            marker_size_px=settings.roi,
+            counts=counts,
+            counts_x=np.arange(len(counts)) * axis_scale,
+            counts_title=f"Spots per {str(axis_label).lower()} ({int(counts.sum())} in total)",
+            counts_x_label=f"{axis_label} ({x_unit})" if x_unit else str(axis_label),
+            axis_names=["y", "x"],
+            properties={
+                frame_property: np.asarray(spots["frame"], dtype=np.int64),
+                "net_gradient": spots["net_gradient"],
+                "intensity": spots["intensity"],
+                "contrast": spots["contrast"],
+            },
+            coordinate_scale=scales[-2:],
+            scale_unit=unit,
+            metadata={
+                "operation": self.id,
+                "threshold": settings.threshold,
+                "threshold_mode": settings.threshold_mode,
+                "sigma": settings.sigma,
+                "roi": settings.roi,
+                "reject_edges": settings.reject_edges,
+                "total_spots": int(counts.sum()),
+                "counts": counts.tolist(),
+            },
         )
-        return ProcessorOutput((curve, points), keys=("counts", "spots"))
 
 
 __all__ = [
@@ -258,7 +251,6 @@ __all__ = [
     "add_spot_param_rows",
     "spot_default_params",
     "spot_param_fields",
-    "spots_points",
 ]
 
 
