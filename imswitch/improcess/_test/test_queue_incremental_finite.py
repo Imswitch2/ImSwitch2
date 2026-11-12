@@ -97,7 +97,7 @@ def _queue_controller_stub():
         _incrementalRunner=object(), _incrementalReconstructor=object(),
         _incrementalResult=None, _incrementalError="",
         _incrementalMissingRanges=(), _incrementalPublishedResult=None,
-        _incrementalCompletedTimepoints=0,
+        _incrementalCompletedTimepoints=0, _incrementalTerminalCount=None,
         _currentPlannedTimepoints=2, _currentSourceTimepoints=5,
         _skipRequested=False, queue=queue, _commChannel=channel,
         _claim_current_result=lambda result: setattr(result, "_claimed", True),

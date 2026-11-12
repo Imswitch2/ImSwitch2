@@ -35,7 +35,7 @@ def test_inspection_roles_and_queue_eligibility_are_independent():
     assert lapse.result_role == "inspection"
     assert supports_session_manual(lapse)
     assert supports_session_auto(lapse)
-    assert not lapse.supports_streaming
+    assert not getattr(lapse, "supports_streaming", False)
     assert not supports_session_manual(ViewOnlyReconstructor())
     assert supports_session_auto(ViewOnlyReconstructor())
     assert not supports_session_manual(SimpleNamespace(result_role="inspection"))

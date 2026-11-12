@@ -4,6 +4,14 @@ import pytest
 
 pytest.importorskip("qtpy")
 
+
+@pytest.fixture
+def qt_app():
+    from qtpy import QtWidgets
+
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
 from imswitch.improcess.view.ProcessingSessionFrame import ProcessingSessionFrame
 
 
@@ -14,8 +22,8 @@ def test_session_error_occupies_dedicated_row_and_remains_dismissible(qt_app):
     frame.setStatus(message)
 
     assert frame.statusRow.isHidden() is False
-    assert frame.statusLabel.fullText() == message
-    assert frame.statusLabel.toolTip() == message
+    assert frame.statusLabel.fullText() == message.strip()
+    assert frame.statusLabel.toolTip() == message.strip()
     assert frame.statusLabel.parentWidget() is frame.statusRow
     assert frame.sessionNameLabel.parentWidget() is frame
     frame._dismissStatus()

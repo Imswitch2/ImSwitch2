@@ -130,7 +130,7 @@ def test_auto_job_can_start_on_first_completed_t_without_full_scope(monkeypatch)
     started = []
     fake = SimpleNamespace(
         queue=queue, _closing=False, _offlineThread=None,
-        _incrementalRunner=None,
+        _incrementalRunner=None, _autoTimepointStates={},
         _reconstructorManager=SimpleNamespace(isReconstructionRunning=lambda: False),
         _resolve_job_source=lambda job: SimpleNamespace(kind="time-lapse"),
         _source_kind=lambda source: source.kind,

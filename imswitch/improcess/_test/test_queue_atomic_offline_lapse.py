@@ -53,6 +53,7 @@ def test_offline_scope_publication_occurs_once_after_real_thread_end(monkeypatch
         _offlineThread=thread, _offlinePendingOutcome=("completed", ""),
         _offlineDataObjs=[], _offlineResultScopes=[], _offlineWorker=object(),
         _offlineAtomicLapse=True, _offlinePendingResult=result,
+        _offlineAutoBatch=False, _offlineBatchIndices=(), _autoTimepointStates={},
         _offlineReconstructor=plugin, _skipRequested=False,
         _release_data_objs=lambda data: events.append(("release", data)),
         _currentSourceTimepoints=4, queue=queue,
@@ -81,9 +82,11 @@ def test_skip_offline_lapse_discards_provisional_consolidation():
     events = []
     thread = object()
     fake = SimpleNamespace(
+        queue=_running(),
         _offlineThread=thread, _offlinePendingOutcome=("completed", ""),
         _offlineDataObjs=[], _offlineResultScopes=[], _offlineWorker=object(),
         _offlineAtomicLapse=True, _offlinePendingResult=object(),
+        _offlineAutoBatch=False, _offlineBatchIndices=(), _autoTimepointStates={},
         _offlineReconstructor=object(), _skipRequested=True,
         _release_data_objs=lambda data: None,
         _finish_current=lambda **kwargs: events.append(kwargs),

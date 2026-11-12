@@ -352,6 +352,7 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
         progress=progress,
     )
     retried = []
+    terminal_notifications = []
     fake = SimpleNamespace(
         _acquisitionProbeGeneration=0,
         _session=SimpleNamespace(dataset_by_id=lambda _id: dataset),
@@ -363,6 +364,9 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
         _syncWatchRetryTimer=lambda: None,
         _update_watcher_detail_paths=lambda: None,
         _queue_states=lambda: {},
+        _queue_controller=lambda: SimpleNamespace(
+            acquisitionTerminated=lambda *args: terminal_notifications.append(args),
+        ),
         _selectedDatasetId=None,
         _renderDataset=lambda *args, **kwargs: retried.append((args, kwargs)),
         _logger=SimpleNamespace(warning=lambda *args: None),
@@ -376,6 +380,7 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
 
     assert path in fake._watchAcquisitionRetryPaths
     assert fake._watchRetrySchedule
+    assert not terminal_notifications
 
 
 def test_confirmed_early_stop_shows_actual_timepoints_and_no_result():

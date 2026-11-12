@@ -161,12 +161,19 @@ def test_bounded_probe_caches_completed_references(tmp_path):
     assert len(cache) == 3
 
 
-def test_unified_monalisa_modes_are_not_streamed_by_legacy_fast_engine():
+def test_unified_monalisa_streaming_requires_compatible_fast_settings():
     from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
     from imswitch.improcess.reconstructors.monalisa.params import apply_preset, default_params
 
+    fast = apply_preset(default_params(), "Fast")
+    # Unified Fast has its own streaming implementation; the former
+    # legacy-engine prohibition no longer applies.
+    assert MonalisaReconstructor.supports_streaming_params(fast)
+    # Unsupported scientific operations must still wait for finite processing.
     assert not MonalisaReconstructor.supports_streaming_params(
-        apply_preset(default_params(), "Fast"))
+        {**fast, "reassignment": "auto"})
+    assert not MonalisaReconstructor.supports_streaming_params(
+        {**fast, "spot_width_mode": "Auto"})
     assert not MonalisaReconstructor.supports_streaming_params(
         apply_preset(default_params(), "Full"))
     assert not MonalisaReconstructor.supports_streaming_params(

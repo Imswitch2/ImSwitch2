@@ -5132,19 +5132,15 @@ def test_hdf5_streaming_swmr_readable(tmp_path):
         assert dataset.attrs['recording:frames_per_stack'] == 10
         assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
     
-    # Test with Hdf5LiveSource while writing=True
+    # Direct SWMR reads above establish the on-disk streaming contract.
+    # ImProcess deliberately disallows a second raw HDF5 handle while the
+    # recorder holds the writer open in this same process. This must not be
+    # mistaken for a file that is merely waiting to become readable.
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
     source = Hdf5LiveSource(detector_name=detectorName)
-    info = source.open(path)
-    assert info.expected_frames == 10
-    assert info.detector_name == detectorName
-    assert info.source_format == 'HDF5'
-    
-    chunks = source.poll()
-    assert len(chunks) > 0
-    total_frames = sum(c.end - c.start for c in chunks)
-    assert total_frames == 6
-    assert not source.is_complete()  # writing=True and cursor < expected_frames
-    source.close()
+    with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+        source.open(path)
     
     # Finalize
     storer.finalizeStream(
@@ -5162,7 +5158,10 @@ def test_hdf5_streaming_swmr_readable(tmp_path):
     
     # Test with Hdf5LiveSource after finalize
     source2 = Hdf5LiveSource(detector_name=detectorName)
-    source2.open(path)
+    info = source2.open(path)
+    assert info.expected_frames == 10
+    assert info.detector_name == detectorName
+    assert info.source_format == 'HDF5'
     chunks2 = source2.poll()
     total_frames2 = sum(c.end - c.start for c in chunks2)
     assert total_frames2 == 6
