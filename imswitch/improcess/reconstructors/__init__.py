@@ -25,7 +25,9 @@ from .smlm import SmlmLocalizer
 from .beadrec import BeadRecReconstructor
 from .tiling import TilingReconstructor
 from .monalisa.legacy import LegacyMonalisaReconstructor
+from .monalisa_lattice import MonalisaLatticeReconstructor
 from .time_lapse import TimeLapseReconstructor
+from .polarisation_map import PolarisationMapReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -38,7 +40,9 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'beadrec': BeadRecReconstructor,
     'tiling-mosaic': TilingReconstructor,
     'monalisa-legacy': LegacyMonalisaReconstructor,
+    'monalisa-lattice': MonalisaLatticeReconstructor,
     'time-lapse': TimeLapseReconstructor,
+    'polarisation-map': PolarisationMapReconstructor,
 }
 
 # User drop-in reconstructors discovered from the plugins directory

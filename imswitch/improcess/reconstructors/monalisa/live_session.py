@@ -6,13 +6,15 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 
 from .gauss_processor import (
-    DEFAULT_FOOTPRINT_NUM_RECTS,
     DEFAULT_GAUSSIAN_SIGMA_PX,
-    make_gauss_processor,
+    make_fast_gauss_extractor,
+    measure_spot_sigma,
 )
 from .localizer import localization_from_pattern, localizer
+from .params import PRESET_LEGACY
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
+from .spot_settings import fwhm_to_sigma_px
 
 try:
     import cupy as cp
@@ -208,6 +210,7 @@ class MonalisaLiveSession(StreamingSession):
         data = init_obj.data
         attrs = init_obj.attrs
 
+        self._validate_unified_live_params(params)
         explicit_use_gpu = params.get("use_gpu")
         self.use_gpu = (
             bool(explicit_use_gpu)
@@ -304,14 +307,7 @@ class MonalisaLiveSession(StreamingSession):
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
 
-        num_rects = params.get(
-            "fast_gauss_footprint_num_rects",
-            params.get("num_rects", DEFAULT_FOOTPRINT_NUM_RECTS),
-        )
-        gaussian_sigma_px = self._resolve_gaussian_sigma_px(params)
-        pinhole_radius_px = self._resolve_pinhole_radius_px(params, gaussian_sigma_px)
-        fit_background = self._resolve_fit_background(params)
-        self.processor = make_gauss_processor(
+        self.processor = make_fast_gauss_extractor(
             loc_result.xp,
             loc_result.xo,
             loc_result.yp,
@@ -322,15 +318,23 @@ class MonalisaLiveSession(StreamingSession):
             self.ny_s,
             loc_result.num_rows,
             loc_result.num_cols,
-            num_rects=num_rects,
-            gaussian_sigma_px=gaussian_sigma_px,
-            pinhole_radius_px=pinhole_radius_px,
-            fit_background=fit_background,
+            gaussian_sigma_px=self._resolve_gaussian_sigma_px(params, working_data, loc_result),
+            fit_background=self._resolve_fit_background(params),
             use_gpu=self.use_gpu,
         )
+        # The device solve may have declined (no CuPy, or a factorization
+        # that failed); everything downstream follows the extractor.
+        self.use_gpu = bool(self.processor.use_gpu)
 
         orientation_indices = self._condition_frame_indices(0)
-        if (
+        manual_orientation = (
+            str(params.get("orientation_mode", "Auto")) in ("Manual", "Setup default", "Recorded")
+            and params.get("orientation")
+        )
+        if manual_orientation:
+            orientation = str(manual_orientation)
+            self._logger.info(f"Using manual scan orientation: {orientation}")
+        elif (
             orientation_indices.size < self.num_frames_per_condition
             or working_data.shape[0] <= int(orientation_indices[-1])
         ):
@@ -589,24 +593,92 @@ class MonalisaLiveSession(StreamingSession):
         dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
         self._hot_plane_dirty = False
 
-    def _resolve_gaussian_sigma_px(self, params: dict) -> float:
-        """Fit-Gaussian sigma in pixels.
+    @staticmethod
+    def _validate_unified_live_params(params: dict) -> None:
+        """Reject unified options the legacy incremental Fast live path cannot honor.
 
-        An explicit ``fast_gauss_gaussian_sigma_px``/``gaussian_sigma_px`` > 0
-        wins; otherwise derive it from the optical PSF using the slow-path
-        convention ``sigma_px = PSF_FWHM_nm / (2.355 * pixel_size_nm)`` so the
-        fast and slow paths share one physical parameterization.
+        Patch 2 keeps the existing low-latency Fast live implementation. The
+        fully general lattice/corrections live path is intentionally deferred;
+        failing explicitly is safer than displaying an image reconstructed with
+        options the user selected but the live path ignored.
         """
-        explicit = params.get(
-            "fast_gauss_gaussian_sigma_px", params.get("gaussian_sigma_px", 0.0)
-        )
-        try:
-            explicit = float(explicit)
-        except (TypeError, ValueError):
-            explicit = 0.0
-        if explicit > 0:
-            return explicit
+        if "preset" not in params:
+            return
+        if str(params.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError(
+                "Legacy DLL mode is offline-only; use the separate classic "
+                "reconstructor for offline processing."
+            )
+        if str(params.get("preset", "")) == "DLL-equivalent":
+            raise ValueError("DLL-equivalent extraction is offline-only")
+        if str(params.get("preset", "")) == "Full":
+            raise ValueError(
+                "Full mode is offline-only. Select Fast for streaming; "
+                "the incremental engine may impose additional estimator limits."
+            )
+        # This older incremental engine uses a distinct rectangular Gauss
+        # extractor. Never pretend it implements the selected new Local or
+        # Joint extraction configuration; offline processing remains valid.
+        if "estimator" in params:
+            raise ValueError(
+                "Selected Gaussian estimator/footprint is offline-only in the "
+                "current streaming engine; use finite MoNaLISA reconstruction."
+            )
+        unsupported = []
+        if params.get("intensity_correction", False):
+            unsupported.append("Intensity correction")
+        if params.get("cell_offsets", False):
+            unsupported.append("Cell offsets")
+        if str(params.get("reassignment", "off")).lower() != "off":
+            unsupported.append("Reassignment")
+        if str(params.get("placement_mode", "Auto")).lower() != "auto":
+            unsupported.append("forced placement mode")
+        if params.get("variance_weighting", False):
+            unsupported.append("Variance weighting")
+        if params.get("sharpen", False):
+            unsupported.append("Sharpening")
+        if (
+            str(params.get("localization_mode", "Auto")) == "Manual"
+            and str(params.get("stagger_axis", "None")).lower() != "none"
+            and abs(float(params.get("stagger", 0.0))) > 1e-12
+        ):
+            unsupported.append("manual stagger")
+        if unsupported:
+            raise ValueError(
+                "The current live MoNaLISA session supports the Fast-compatible "
+                "rectangular path only; " + ", ".join(unsupported) +
+                " require the general live pipeline planned for the live-integration pass."
+            )
 
+    def _resolve_gaussian_sigma_px(self, params: dict, frames=None, localization=None) -> float:
+        """Spot width in pixels: measured on the frames when they are given
+        (:func:`.gauss_processor.measure_spot_sigma`), else from the optical
+        PSF as the classic path has it, ``PSF_FWHM_nm / (2.355 * pixel_size_nm)``."""
+        # Unified manual/default spot width is authoritative. Auto keeps the
+        # existing live measurement behavior until the general live pipeline
+        # is introduced.
+        if str(params.get("spot_width_mode", "")).lower().startswith("manual"):
+            return fwhm_to_sigma_px(
+                params.get("spot_fwhm", 220.0),
+                params.get("spot_fwhm_unit", "nm"),
+                params.get("pixel_size_nm"),
+            )
+        if frames is not None and localization is not None:
+            measured = measure_spot_sigma(
+                frames, localization.xp, localization.xo, localization.yp,
+                localization.yo, localization.nx_c, localization.ny_c,
+            )
+            if measured is not None:
+                nominal = self._resolve_gaussian_sigma_px(params)
+                self._logger.info(
+                    f"Spot width measured on the frames: {measured:.2f} px "
+                    f"(the PSF FWHM parameter would give {nominal:.2f} px)"
+                )
+                return measured
+            self._logger.warning(
+                "The spot width could not be measured on the frames; using the "
+                "PSF FWHM parameter"
+            )
         fwhm_nm = params.get("psf_fwhm_nm")
         pixel_size_nm = params.get("pixel_size_nm")
         try:
@@ -625,6 +697,15 @@ class MonalisaLiveSession(StreamingSession):
         ``_monalisa_pattern_params`` so it follows the parameter widget in the
         same way as the full SignalExtractor path.
         """
+        if str(params.get("localization_mode", "Auto")) == "Manual":
+            return localization_from_pattern(
+                row_offset=float(params["manual_offset_y_px"]),
+                col_offset=float(params["manual_offset_x_px"]),
+                row_period=float(params["manual_period_y_px"]),
+                col_period=float(params["manual_period_x_px"]),
+                num_rows=data.shape[-2],
+                num_cols=data.shape[-1],
+            )
         pattern = params.get("_monalisa_pattern_params")
         if pattern:
             return localization_from_pattern(
@@ -638,23 +719,9 @@ class MonalisaLiveSession(StreamingSession):
         return localizer(data)
 
     @staticmethod
-    def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:
-        """Circular pinhole radius = k * sigma (k from params; None disables)."""
-        mode = params.get("fast_gauss_footprint_mode")
-        if mode is not None and str(mode).strip().lower() != "circular pinhole":
-            return None
-
-        k = params.get("fast_gauss_pinhole_radius_sigma", 0.0)
-        try:
-            k = float(k)
-        except (TypeError, ValueError):
-            k = 0.0
-        return k * gaussian_sigma_px if k > 0 else None
-
-    @staticmethod
     def _resolve_fit_background(params: dict) -> bool:
         """Whether to fit a constant background (False = pure matched filter)."""
-        bg = str(params.get("bg_modelling", "Constant")).strip().lower()
+        bg = str(params.get("background", params.get("bg_modelling", "Constant"))).strip().lower()
         return bg not in ("no background", "none")
 
     def _resolve_num_timepoints(self, metadata: dict, stack_info) -> int:
@@ -960,10 +1027,7 @@ class MonalisaLiveSession(StreamingSession):
     def close(self) -> None:
         """Free optional GPU resources."""
         if self.use_gpu and CUPY_AVAILABLE:
-            if hasattr(self.processor, "x_interp"):
-                del self.processor.x_interp
-                del self.processor.y_interp
-                del self.processor.lsq_weights
+            self.processor = None
             self._hot_plane = None
             self._frame_inds_gpu = None
             cp.get_default_memory_pool().free_all_blocks()

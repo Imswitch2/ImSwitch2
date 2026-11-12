@@ -31,6 +31,18 @@ class FakeNidaqManager:
         self.digital_calls.append((target, enabled))
 
 
+class RejectingNidaqManager(FakeNidaqManager):
+    """DAQ backend that is present as a manager but cannot perform writes."""
+
+    def setAnalog(self, target, voltage, min_val, max_val):
+        super().setAnalog(target, voltage, min_val, max_val)
+        return False
+
+    def setDigital(self, target, enabled):
+        super().setDigital(target, enabled)
+        return False
+
+
 def _make_laser_info(
     analog_channel=0,
     digital_line=1,
@@ -182,3 +194,13 @@ def test_analog_and_digital_channels_both_work():
     assert nidaq.digital_calls == [('Laser488', True)]
     assert len(nidaq.analog_calls) == 1
     assert nidaq.analog_calls[0][1] == 2.5
+
+
+@pytest.mark.nohardware
+def test_failed_daq_writes_are_reported_by_laser_manager():
+    nidaq = RejectingNidaqManager()
+    info = _make_laser_info()
+    manager = NidaqLaserManager(info, 'Laser488', nidaqManager=nidaq)
+
+    assert manager.setEnabled(True) is False
+    assert manager.setValue(2.5) is False

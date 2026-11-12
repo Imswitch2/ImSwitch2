@@ -22,6 +22,15 @@ class DeviceInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the manager. Empty when omitted. """
 
+    transient: bool = False
+    """ Declared but not required at startup: left absent (not an error, no
+    mock) until connected from the Hardware status window or a script. For
+    devices that are plugged in only when needed. """
+
+    connectOnStartup: bool = False
+    """ For a transient device: still try to connect at startup; a failure
+    leaves it absent with the error shown, never in mock. """
+
     def getAnalogChannel(self):
         """ :meta private: """
         if isinstance(self.analogChannel, int):
@@ -492,6 +501,10 @@ class ScanInfo:
     sampleRate: int
     """ Scan sample rate. """
 
+    cloak: Optional[str] = None
+    """ Optional simplified frontend over ``scanWidgetType``. The cloak must
+    declare that it supports the selected scan widget type. """
+
     maxScanTimeMin: Optional[int] = None
     """ Max scan time allowed, in min. ``null``/omitted = no limit. """
 
@@ -509,6 +522,32 @@ class ScanInfo:
     """ Line for frame end clock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
+
+    simplePointScan: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimplePointScan`` panel, all optional:
+    ``objectiveNA``, ``nyquistPixelSizeUm``, ``overviewAxes``,
+    ``overviewFieldUm``, ``overviewMinFieldUm``, ``overviewMinPixels``,
+    ``overviewMaxPixels``, ``overviewFrameTimeS``, ``minSamplesPerPixel``,
+    ``maxDwellMs``. Other scan panels ignore it. """
+
+    simpleMoNaLISA: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimpleMoNaLISA`` cloak. FOV can use
+    ``fovSource`` = ``"detector"`` (with ``fovUm`` as a persisted fallback) or
+    ``"manual"``. Camera readout timing uses ``defaultCameraReadoutTimeMs`` as
+    the setup default; profiles may override it with ``cameraReadoutTimeMs``.
+    The detector-reported readout is diagnostic only and can be copied into a
+    profile explicitly with Auto. ``ulensPeriodPolicy`` is ``"fixed"`` or
+    ``"per_profile"``;
+    fixed setups use the setup-level ``ulensPeriodUm``, while per-profile setups
+    require ``ulensPeriodUm`` in every usable profile. Profiles may also choose
+    ``scanExtentSource`` = ``"ulens"`` or ``"manual"`` (with ``scanExtentUm``),
+    so lateral scan length is not intrinsically the uLens period. ``profiles``
+    define ordered MoNaLISA sequence steps and modes selecting step/device
+    subsets; modes never own uLens geometry. Profiles and these setup options are
+    editable from SimpleMoNaLISA and persist back into the active setup file.
+    An empty or omitted ``profiles`` mapping is valid and starts in a restricted
+    state until the user creates one. Run defaults include ``defaultScanType``,
+    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and ``defaultZStepUm``. """
 
 
 
@@ -558,7 +597,12 @@ class NidaqInfo:
     """ Boolean for start triggering for sync. """
 
     simulation: Optional[bool] = False
-    """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+    """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
+
+    If ``False`` and the NI-DAQmx backend is unavailable, ImControl still
+    starts but NI-DAQ operations remain unavailable rather than silently
+    switching to simulated acquisition.
+    """
 
     def getTimerCounterChannel(self):
         """ :meta private: """
@@ -596,7 +640,7 @@ class TeensyPulseInfo:
     purely a convenience for scripts to refer to ``pinMap['laser488']``
     rather than hardcoded integers. """
 
-    useMockOnFailure: bool = True
+    useMockOnFailure: bool = False
     """ Fall back to the in-process mock if the port can't be opened.
     Set False to make a missing device a hard failure. """
 
@@ -644,6 +688,13 @@ class FlipMirrorInfo:
     """ Optional manager-specific properties. """
 
 
+@dataclass(frozen=True, kw_only=True)
+class InstrumentInfo(DeviceInfo):
+    """ A measurement instrument: one physical device sampled as a whole
+    (``docs/design/plans/transient-instruments-step-scans.md``). Usually
+    ``transient``. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -652,6 +703,16 @@ class SetupInfo:
     detectors: Dict[str, DetectorInfo] = field(default_factory=dict)
     """ Detectors in this setup. This is a map from unique detector names to
     DetectorInfo objects. """
+
+    disabledDevices: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    """ Device definitions parked by the configuration editor.
+
+    The outer key is the normal setup section name (for example ``detectors``
+    or ``positioners``), and the inner mapping keeps the original raw device
+    dictionaries keyed by device name. Disabled entries intentionally do not
+    appear in the active device mappings above/below, so runtime manager
+    construction and controllers continue to see only enabled hardware.
+    """
 
     lasers: Dict[str, LaserInfo] = field(default_factory=dict)
     """ Lasers in this setup. This is a map from unique laser names to
@@ -693,6 +754,10 @@ class SetupInfo:
 
     flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
     """ Motorized flip mirror settings. """
+
+    instruments: Optional[Dict[str, InstrumentInfo]] = field(default_factory=lambda: None)
+    """ Measurement instruments (power meters, polarimeters, ...). Usually
+    ``transient``: declared here, connected only when needed. """
 
     calibrations: CalibrationsInfo = field(default_factory=CalibrationsInfo)
     """Named transform-calibration startup settings."""

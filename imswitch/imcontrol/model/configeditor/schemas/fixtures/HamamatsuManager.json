@@ -5,7 +5,8 @@
     "managerProperties": {
       "cameraListIndex": 1,
       "cameraPixelSizeUm": 1.5,
-      "hamamatsu": {}
+      "hamamatsu": {},
+      "mockSample": {}
     }
   }
 }

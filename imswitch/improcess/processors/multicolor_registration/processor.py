@@ -25,6 +25,7 @@ class MulticolorRegistrationProcessor(Processor):
 
     name = "Multicolor Registration"
     id = "multicolor-registration"
+    output_kind = "image"
     category = "Registration"
 
     @classmethod

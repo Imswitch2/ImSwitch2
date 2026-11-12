@@ -145,6 +145,23 @@ def preflight_acquisition_layout(
     return tuple(issues)
 
 
+@dataclass(frozen=True)
+class DetectionPreview:
+    """What :meth:`Reconstructor.detection_preview` draws: points and a line.
+
+    ``x`` and ``y`` are column and row coordinates in the raw frame, so
+    that a spot at pixel ``(row, col)`` lands on that pixel on screen.
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    status: str = ""
+    marker: str = "circle"
+    """How the points are drawn: ``"circle"`` (an open ring around each,
+    for candidates to inspect) or ``"point"`` (a dot on each, as the classic
+    pattern overlay draws its grid)."""
+
+
 class Reconstructor(ABC):
     """
     Turns raw DataObj into a ProcessingResult.
@@ -197,11 +214,27 @@ class Reconstructor(ABC):
     acquisition_requirements: AcquisitionRequirements | None = None
     """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
 
+    #: The kind of result a reconstruction produces, declared (see
+    #: :attr:`~imswitch.improcess.processors.base.Processor.output_kind`).
+    output_kind: str | None = None
+    #: See :attr:`~imswitch.improcess.processors.base.Processor.deterministic`.
+    deterministic: bool = True
+
     #: Version of this reconstructor's parameter contract; see
     #: :attr:`~imswitch.improcess.processors.base.Processor.params_version`.
     params_version: int = 1
     #: Keys of :meth:`default_params` whose widget default is machine-dependent.
     default_params_volatile: tuple[str, ...] = ()
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        """The one port a reconstruction produces, ``out``, with its declared kind.
+
+        Same shape as a processor's, so a workflow editor treats both alike.
+        """
+        from imswitch.improcess.model.result import UNKNOWN_KIND
+        from imswitch.improcess.processors.base import OutputSpec
+
+        return OutputSpec(ports=("out",), kind=self.output_kind or UNKNOWN_KIND)
 
     @classmethod
     def default_params(cls) -> dict:
@@ -391,6 +424,20 @@ class Reconstructor(ABC):
         Returns:
             A pyqtgraph GraphicsItem (e.g., ScatterPlotItem) to be added to
             DataFrame.imageItem.getViewBox(), or None for no overlay.
+        """
+        return None
+
+    def detection_preview(
+        self, data_obj: DataObj, displayed_image, params: dict
+    ) -> "DetectionPreview | None":
+        """Spots to draw on the raw-data viewer, for a parameter widget's preview.
+
+        A widget with a ``previewCheckbox`` and a ``sigPreviewToggled`` signal
+        gets the plugin's preview drawn over the raw frames while the box is
+        checked: the localizer's candidate spots on the displayed frame, the
+        MoNaLISA lattice reconstructor's foci. ``displayed_image`` is the 2D
+        frame on screen, ``params`` the widget's values. ``None`` means the
+        plugin has nothing to draw; the widget then shows nothing.
         """
         return None
 

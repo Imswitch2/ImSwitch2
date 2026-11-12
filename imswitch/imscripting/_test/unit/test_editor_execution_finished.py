@@ -14,10 +14,12 @@ def test_execution_finished_is_forwarded_without_arguments(qtbot):
     channel.sigExecutionFinished.connect(lambda *args: received.append(args))
     ctrl = EditorController.__new__(EditorController)
     ctrl._moduleCommChannel = channel
-    stopping = []
-    ctrl._widget = SimpleNamespace(setStopping=stopping.append)
+    stopping, running = [], []
+    ctrl._widget = SimpleNamespace(setStopping=stopping.append, setRunning=running.append)
+    ctrl.scriptExecutor = SimpleNamespace(isBusy=lambda: False)
 
     ctrl._onExecutionFinished(ScriptRunResult())
 
     assert received == [()]
     assert stopping == [False]
+    assert running == [False]      # Reset session is available again

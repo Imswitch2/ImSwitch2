@@ -1,4 +1,4 @@
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Tuple
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.framework import Signal
@@ -16,6 +16,9 @@ from imswitch.imcontrol.model import (
     normalizeLaserScanState,
 )
 from imswitch.imcontrol.view import guitools
+from imswitch.imcontrol.model.devices.status import (
+    DeviceNotConnectedError, device_usable, not_connected_reason,
+)
 from ..basecontrollers import (
     ComponentStateApplyMode,
     ImConWidgetController,
@@ -104,13 +107,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 (lManager.freqRangeMin, lManager.freqRangeMax, lManager.freqRangeInit) if lManager.isModulated else (0, 0, 0),
             )
             # Ensure laser/LED is off and at zero power on startup, regardless of
-            # hardware state left over from a previous session.
-            self._master.lasersManager[lName].setEnabled(False)
-            if not lManager.isBinary:
-                self.valueChanged(lName, valueRangeMin)
+            # hardware state left over from a previous session. A laser that
+            # is not connected refuses this; it is greyed out below instead.
+            try:
+                self._master.lasersManager[lName].setEnabled(False)
+                if not lManager.isBinary:
+                    self.valueChanged(lName, valueRangeMin)
+            except DeviceNotConnectedError as exc:
+                self._logger.info(f'Laser {lName} not connected at startup: {exc}')
+                self._widget.setLaserActive(lName, False, emitSignal=False)
 
             self.setSharedAttr(lName, _enabledAttr, self._widget.isLaserActive(lName))
             self.setSharedAttr(lName, _valueAttr, self._widget.getValue(lName))
+        self._refreshLaserUsability()
 
         # Configure setup-level power policy before populating contextual UI.
         # Coupled keeps the modern sticky preset header but presents one Live-like
@@ -189,9 +198,29 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         if lifecycleService is not None and listener is not None:
             lifecycleService.removeListener(listener)
             self._deviceLifecycleListener = None
-        self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
-        self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
-        self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
+        # Only connected lasers can be switched off; an absent one is dark.
+        for action in (lambda l: l.setScanModeActive(False),
+                       lambda l: l.setValue(0),
+                       lambda l: l.setEnabled(False)):
+            self._master.lasersManager.execOnAll(action, condition=device_usable)
+
+    def _refreshLaserUsability(self, names=None):
+        """Grey out lasers that are not connected (absent at startup,
+        unplugged, faulted) and enable the ones that are."""
+        for name, manager in self._master.lasersManager:
+            if names is not None and name not in names:
+                continue
+            usable = device_usable(manager)
+            self._widget.setLaserUsable(name, usable,
+                                        '' if usable else not_connected_reason(manager))
+
+    def _refuseNotConnected(self, laserName, exc):
+        """A command reached a laser that is not connected: keep the panel
+        dark, say why, and grey the row."""
+        self._logger.warning(str(exc))
+        self._widget.setLaserActive(laserName, False, emitSignal=False)
+        self.setSharedAttr(laserName, _enabledAttr, False)
+        self._refreshLaserUsability((laserName,))
 
     def _deviceLifecycleChanged(self, result):
         deactivated = tuple(
@@ -199,12 +228,20 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             for device_id in getattr(result, 'deactivated_device_ids', ())
             if getattr(device_id, 'kind', None) == 'laser'
         )
-        if not deactivated:
+        affected = tuple(
+            device_id.name
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'laser'
+        )
+        if not deactivated and not affected:
             return
 
-        self._invokeOnControllerThreadIfNeeded(
-            lambda: self._applyLifecycleDeactivation(deactivated)
-        )
+        def apply():
+            if deactivated:
+                self._applyLifecycleDeactivation(deactivated)
+            if affected:
+                self._refreshLaserUsability(affected)
+        self._invokeOnControllerThreadIfNeeded(apply)
 
     def _applyLifecycleDeactivation(self, device_ids):
         knownLasers = {name for name, _ in self._master.lasersManager}
@@ -269,7 +306,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Any explicit Live ON/OFF action supersedes a pending post-scan
         # restoration. Power/preset/context edits deliberately do not.
         self._invalidateResumeLive()
-        applied = self._master.lasersManager[laserName].setEnabled(enabled)
+        try:
+            applied = self._master.lasersManager[laserName].setEnabled(enabled)
+        except DeviceNotConnectedError as exc:
+            self._refuseNotConnected(laserName, exc)
+            return
         # Managers may explicitly reject an unsafe enable (for example an MPB
         # laser with no positive setpoint). Keep the toggle and shared state
         # fail-closed instead of displaying ON while the hardware remains dark.
@@ -548,6 +589,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def loadLaserPreset(self, name: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Applies the laser preset ``name`` and selects it in the Laser
+        widget. In separated power mode the preset goes to ``context``
+        (``'live'`` or ``'scan'``) and must be visible there; otherwise it
+        sets the live powers. Returns False when there is no such preset. """
         self._requireLaserEditsAllowed()
         storedContext, preset = self._presetDefinition(name)
         if preset is None:
@@ -595,6 +640,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def deleteLaserPreset(self, name: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Deletes the laser preset ``name`` from the setup file. Returns
+        False when there is no such preset. """
         self._requireLaserEditsAllowed()
         if name not in getattr(self._setupInfo, 'laserPresets', {}):
             return False
@@ -611,6 +658,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def renameLaserPreset(self, oldName: str, newName: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Renames the laser preset ``oldName`` to ``newName`` in the setup
+        file; a preset already called ``newName`` is replaced. Returns False
+        when there is no preset ``oldName`` or ``newName`` is empty. """
         self._requireLaserEditsAllowed()
         presets = getattr(self._setupInfo, 'laserPresets', {})
         if oldName not in presets or not newName:
@@ -751,14 +801,22 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             uses_fallback=usesFallback,
         )
 
-    @staticmethod
-    def _serializeLaserAcquisitionState(state: LaserAcquisitionState) -> Dict[str, Any]:
+    def _serializeLaserAcquisitionState(self, state: LaserAcquisitionState) -> Dict[str, Any]:
+        powerManager = self._master.lasersManager[state.power_device]
+        displayMeta = getattr(self, '_laserDisplayMeta', {}).get(state.power_device)
+        if displayMeta is not None:
+            valueUnits, valueDecimals = displayMeta
+        else:
+            valueUnits = getattr(powerManager, 'valueUnits', '')
+            valueDecimals = getattr(powerManager, 'valueDecimals', None)
         return {
             'active_for_scan': state.active_for_scan,
             'power_mode': state.power_mode.value,
             'power_control': state.power_control.value,
             'power_device': state.power_device,
             'value': state.value,
+            'value_units': str(valueUnits or ''),
+            'value_decimals': valueDecimals,
             'value_context': (
                 state.value_context.value
                 if state.value_context is not None else None
@@ -1614,6 +1672,13 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             # Some lightweight tests construct controllers without initializing
             # the QObject base. State updates must still work there.
             pass
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        notify = getattr(workflow, 'recording_filename_suffix_changed', None)
+        if callable(notify):
+            try:
+                notify(None)
+            except Exception:
+                pass
 
     def _emitLaserPresetListChanged(self, context):
         try:
@@ -1633,7 +1698,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def _setLaserValue(self, laserName, value):
         self._requireLaserEditsAllowed()
-        self._master.lasersManager[laserName].setValue(value)
+        try:
+            self._master.lasersManager[laserName].setValue(value)
+        except DeviceNotConnectedError as exc:
+            self._refuseNotConnected(laserName, exc)
+            return
         if not hasattr(self, '_livePowerValues'):
             self._livePowerValues = {}
         self._livePowerValues[laserName] = value
@@ -1681,15 +1750,69 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._refreshLaserRow(laserName, updatePrimary=False)
 
     @APIExport()
+    def getLaserValue(self, laserName: str):
+        """ The value the specified laser was last set to, in its own units
+        (a % setpoint when it uses a calibration LUT). """
+        return self._commChannel.sharedAttrs[(_attrCategory, laserName, _valueAttr)]
+
+    @APIExport()
+    def getLaserActive(self, laserName: str) -> bool:
+        """ Whether the specified laser's emission is switched on. """
+        return bool(self._commChannel.sharedAttrs[(_attrCategory, laserName, _enabledAttr)])
+
+    @APIExport()
     def getLaserNames(self) -> List[str]:
         """ Returns the device names of all lasers. These device names can be
         passed to other laser-related functions. """
         return self._master.lasersManager.getAllDeviceNames()
 
+    def resolveLiveIlluminationLasers(self, deviceNames) -> Tuple[str, ...]:
+        """Resolve profile/scan laser devices to the Live controls to toggle.
+
+        A MoNaLISA profile names the device that owns the scan gate. Some
+        setups split that gate from a separate ``powerDevice`` (for example an
+        AOTF channel that holds the Live/Scan setpoint). Screening is continuous
+        illumination rather than a TTL waveform, so both entries must be ON.
+
+        This deliberately resolves only configured lasers and never changes a
+        power value. It is the controller-level counterpart to the scan arming
+        code's gate -> powerDevice expansion.
+        """
+        resolved = []
+        configured = set(self._setupInfo.lasers)
+        for name in deviceNames or ():
+            name = str(name)
+            if name not in configured:
+                continue
+            if name not in resolved:
+                resolved.append(name)
+            powerDevice = self._powerDeviceFor(name)
+            if powerDevice is not None and powerDevice not in resolved:
+                resolved.append(powerDevice)
+        return tuple(resolved)
+
     @APIExport(runOnUIThread=True)
     def getLaserActive(self, laserName: str) -> bool:
         """Return the current Live ON/OFF state for ``laserName``."""
         return bool(self._widget.isLaserActive(laserName))
+
+    @APIExport(runOnUIThread=True)
+    def isLaserActive(self, laserName: str) -> bool:
+        """ Whether the laser is switched on. """
+        return bool(self._widget.isLaserActive(laserName))
+
+    @APIExport()
+    def getLaserInfo(self, laserName: str) -> Dict[str, Any]:
+        """ Describes the laser: ``wavelength`` in nm, the ``units`` of its
+        value with the ``min``, ``max`` and ``step`` of that value, and
+        ``binary`` (True for a laser that is only switched on and off, whose
+        value means nothing). """
+        laser = self._master.lasersManager[laserName]
+        return {
+            'wavelength': laser.wavelength, 'units': laser.valueUnits,
+            'min': laser.valueRangeMin, 'max': laser.valueRangeMax,
+            'step': laser.valueRangeStep, 'binary': laser.isBinary,
+        }
 
     @APIExport(runOnUIThread=True)
     def setLaserActive(self, laserName: str, active: bool) -> None:

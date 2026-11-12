@@ -201,3 +201,149 @@ def test_validation_warning_includes_clickable_link():
         "Warning should include 'fixsection:tiling' link"
     assert "<a href=" in warning_msg, \
         "Warning should include HTML anchor tag"
+
+
+def test_scan_section_uses_nested_cloak_forms_instead_of_raw_json():
+    schema = editor.SECTION_SCHEMAS["scan"]
+
+    assert "simplePointScan" in schema.get("nested", {})
+    assert "simpleMoNaLISA" in schema.get("nested", {})
+    assert all(
+        field["key"] not in {"simplePointScan", "simpleMoNaLISA"}
+        for field in schema.get("fields", [])
+    )
+
+    point_keys = {field["key"] for field in schema["nested"]["simplePointScan"]}
+    assert {"objectiveNA", "overviewFieldUm", "overviewFrameTimeS"} <= point_keys
+
+    monalisa_keys = {field["key"] for field in schema["nested"]["simpleMoNaLISA"]}
+    assert {
+        "fovSource",
+        "fovUm",
+        "ulensPeriodPolicy",
+        "ulensPeriodUm",
+        "defaultCameraReadoutTimeMs",
+        "interPulseDelayMs",
+        "readoutPulseTimeMs",
+    } <= monalisa_keys
+    assert "profiles" not in monalisa_keys
+
+
+def _minimal_nested_section_schema():
+    return {
+        "display": "Nested section",
+        "fields": [
+            {"key": "backend", "label": "Backend", "type": "text", "default": "Advanced", "req": False, "grp": "Basic"},
+        ],
+        "nested": {
+            "simple": [
+                {"key": "period", "label": "Period", "type": "float", "default": 0.72, "req": False, "grp": "Simple"},
+            ],
+        },
+    }
+
+
+def test_section_nested_apply_preserves_unknown_children_and_section_keys(qapp):
+    from PyQt5.QtTest import QTest
+
+    current = {
+        "backend": "Advanced",
+        "futureTopLevel": {"keep": True},
+        "simple": {
+            "period": 0.72,
+            "profiles": {"green": {"label": "Green"}},
+            "futureNested": 123,
+        },
+    }
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+    fw = dlg._field_widgets[("nested:simple", "period")]
+    fw._w.selectAll()
+    QTest.keyClicks(fw._w, "0.85")
+    assert fw.is_touched()
+
+    dlg._try_apply()
+
+    assert dlg.result_data["simple"]["period"] == pytest.approx(0.85)
+    assert dlg.result_data["simple"]["profiles"] == current["simple"]["profiles"]
+    assert dlg.result_data["simple"]["futureNested"] == 123
+    assert dlg.result_data["futureTopLevel"] == {"keep": True}
+
+
+def test_section_nested_container_is_not_created_when_untouched(qapp):
+    current = {"backend": "Advanced"}
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+
+    dlg._try_apply()
+
+    assert "simple" not in dlg.result_data
+
+
+def test_touching_nested_field_materializes_only_that_field(qapp):
+    from PyQt5.QtTest import QTest
+
+    current = {"backend": "Advanced", "simple": None}
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+    fw = dlg._field_widgets[("nested:simple", "period")]
+    fw._w.selectAll()
+    QTest.keyClicks(fw._w, "0.9")
+
+    dlg._try_apply()
+
+    assert dlg.result_data["simple"] == {"period": pytest.approx(0.9)}
+
+
+def _tabTitles(dlg, *, visible=True):
+    tabs = dlg._tab_widget
+    return {tabs.tabText(i) for i in range(tabs.count()) if tabs.isTabVisible(i) == visible}
+
+
+def _scanDialog(current):
+    return editor.SectionEditorDialog(
+        "scan", editor.SECTION_SCHEMAS["scan"], current, {}, None
+    )
+
+
+@pytest.mark.parametrize("cloak, shown, hidden", [
+    (None, set(), {"SimplePointScan", "SimpleMoNaLISA"}),
+    ("SimplePointScan", {"SimplePointScan"}, {"SimpleMoNaLISA"}),
+    ("SimpleMoNaLISA", {"SimpleMoNaLISA"}, {"SimplePointScan"}),
+])
+def test_a_cloaks_options_tab_shows_only_while_that_cloak_is_selected(qapp, cloak, shown, hidden):
+    dlg = _scanDialog({"scanWidgetType": "Advanced", "cloak": cloak})
+
+    assert shown <= _tabTitles(dlg)
+    assert hidden <= _tabTitles(dlg, visible=False)
+    assert "Basic" in _tabTitles(dlg)
+
+
+def test_the_legacy_cloak_spelling_shows_its_options_tab(qapp):
+    dlg = _scanDialog({"scanWidgetType": "SimplePointScan"})
+
+    assert "SimplePointScan" in _tabTitles(dlg)
+    assert "SimpleMoNaLISA" in _tabTitles(dlg, visible=False)
+
+
+def test_choosing_a_cloak_in_the_form_shows_its_tab_and_hiding_keeps_its_options(qapp):
+    current = {
+        "scanWidgetType": "Advanced",
+        "cloak": "SimplePointScan",
+        "simplePointScan": {"objectiveNA": 1.4, "futureKey": 1},
+    }
+    dlg = _scanDialog(current)
+    combo = dlg._field_widgets[("field", "cloak")]._w
+
+    combo.setCurrentIndex(combo.findData("SimpleMoNaLISA"))
+    combo.activated.emit(combo.currentIndex())     # what a user's pick sends
+
+    assert "SimpleMoNaLISA" in _tabTitles(dlg)
+    assert "SimplePointScan" in _tabTitles(dlg, visible=False)
+    dlg._try_apply()
+    assert dlg.result_data["cloak"] == "SimpleMoNaLISA"
+    assert dlg.result_data["simplePointScan"] == current["simplePointScan"]
+    assert "simpleMoNaLISA" not in dlg.result_data

@@ -76,6 +76,9 @@ def test_nidaq_simulation_allows_channels_without_nidaqmx(monkeypatch):
     manager.setAnalog("X", 1.0)
 
     assert manager.tasks == {}
+    assert manager.isSimulated is True
+    assert manager.backendAvailable is False
+    assert manager._NidaqManager__scanSimulator is not None
 
 
 def test_nidaq_runtime_errors_warn_once_then_debug(monkeypatch):
@@ -94,13 +97,98 @@ def test_nidaq_runtime_errors_warn_once_then_debug(monkeypatch):
     assert logger.debug.call_count == 1
 
 
-def test_nidaq_real_channels_still_require_nidaqmx(monkeypatch):
-    """Real NI-DAQ setups should still fail clearly when nidaqmx is absent."""
+def test_nidaq_real_channels_start_degraded_without_nidaqmx(monkeypatch):
+    """Real NI-DAQ setups stay real but no longer abort ImControl startup."""
     monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)
     setup_info = SetupInfo.from_json(REAL_NIDAQ_SETUP, infer_missing=True)
 
-    with pytest.raises(ImportError, match="nidaqmx is required"):
-        nidaq_module.NidaqManager(setup_info)
+    manager = nidaq_module.NidaqManager(setup_info)
+
+    assert manager.isSimulated is False
+    assert manager.backendAvailable is False
+    assert isinstance(manager.backendError, ImportError)
+    assert manager._NidaqManager__scanSimulator is None
+    assert manager.tasks == {}
+
+
+def test_nidaq_unavailable_real_backend_fails_outputs_closed(monkeypatch):
+    """Unavailable real NI-DAQ writes fail without pretending to succeed."""
+    monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)
+    setup_info = SetupInfo.from_json(REAL_NIDAQ_SETUP, infer_missing=True)
+    manager = nidaq_module.NidaqManager(setup_info)
+
+    assert manager.setDigital("Laser", True) is False
+    assert manager.tasks == {}
+
+
+def test_nidaq_unavailable_real_backend_refuses_scan_before_arm(monkeypatch):
+    """A missing backend must not enter scan state or fall back to simulation."""
+    monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)
+    setup_info = SetupInfo.from_json(REAL_NIDAQ_SETUP, infer_missing=True)
+    manager = nidaq_module.NidaqManager(setup_info)
+
+    with pytest.raises(
+        nidaq_module.NidaqBackendUnavailableError,
+        match="NI-DAQmx is unavailable.*simulation=false",
+    ):
+        manager.runScan({}, {})
+
+    assert manager.busy is False
+    assert manager.tasks == {}
+
+
+def test_nidaq_unavailable_strict_analog_write_raises(monkeypatch):
+    monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)
+    setup_info = SetupInfo.from_json(SIMULATED_NIDAQ_SETUP, infer_missing=True)
+    setup_info = SetupInfo.from_dict(
+        {
+            **setup_info.to_dict(),
+            "nidaq": {"simulation": False},
+        },
+        infer_missing=True,
+    )
+    manager = nidaq_module.NidaqManager(setup_info)
+
+    assert manager.setAnalog("X", 1.0) is False
+    with pytest.raises(nidaq_module.NidaqBackendUnavailableError):
+        manager.setAnalog("X", 1.0, raise_on_error=True)
+
+
+def test_configured_nidaq_names_include_scan_and_point_detector_channels():
+    setup_info = SetupInfo.from_dict(
+        {
+            "detectors": {
+                "APD": {
+                    "managerName": "APDManager",
+                    "managerProperties": {
+                        "ctrInputLine": "Dev2/ctr0",
+                        "terminal": "PFI0",
+                    },
+                    "forAcquisition": True,
+                }
+            },
+            "scan": {
+                "scanWidgetType": "Base",
+                "scanDesigner": "GalvoScanDesigner",
+                "scanDesignerParams": {},
+                "TTLCycleDesigner": "PointScanTTLCycleDesigner",
+                "TTLCycleDesignerParams": {},
+                "sampleRate": 100000,
+                "lineClockLine": "Dev3/port0/line6",
+            },
+            "nidaq": {
+                "simulation": False,
+                "timerCounterChannel": "Dev1/ctr2",
+            },
+        },
+        infer_missing=True,
+    )
+
+    assert nidaq_module.NidaqManager._extractConfiguredDeviceNames(setup_info) == (
+        "Dev1",
+        "Dev2",
+        "Dev3",
+    )
 
 
 def test_imcon_close_event_handles_partial_initialization(monkeypatch):

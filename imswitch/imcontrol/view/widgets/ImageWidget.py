@@ -7,6 +7,10 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.algorithms.transforms.conventions import pixel_matrix_to_world
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
+from imswitch.imcontrol.model.scan_frame import (
+    SCAN_GEOMETRY_METADATA_KEY,
+    ScanFrame,
+)
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 
 
@@ -224,12 +228,7 @@ class ImageWidget(QtWidgets.QWidget):
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
         if scale is not None:
-            sc = tuple(scale)
-            if len(sc) < im.ndim:
-                sc = (1.0,) * (im.ndim - len(sc)) + sc
-            elif len(sc) > im.ndim:
-                sc = sc[-im.ndim:]
-            kwargs['scale'] = sc
+            kwargs['scale'] = self._fitScale(scale, im.ndim)
         self.napariViewer.add_image(im, **kwargs)
 
     def getLiveLayerSnapshot(self, detectorName):
@@ -477,15 +476,76 @@ class ImageWidget(QtWidgets.QWidget):
         matrix = getattr(affine, 'affine_matrix', affine)
         return np.asarray(matrix, dtype=np.float64).copy()
 
+    def setStaticLayer(self, name, im, scale=None):
+        """Shows ``im`` in the layer called ``name``: replaces the data of
+        that layer when there is one (keeping its colormap, blending and
+        visibility, and fitting the contrast to the new data), and adds the
+        layer when there is not. Returns whether the layer is new."""
+        layers = self.napariViewer.layers
+        existing = layers[name] if name in layers else None
+        if existing is not None and (
+            getattr(existing, 'protected', False)
+            or getattr(existing, 'ndim', None) != im.ndim
+            or not hasattr(existing, 'contrast_limits')
+        ):
+            # A live layer is never replaced; another kind of layer, or one of
+            # another dimensionality (napari cannot change a layer's ndim in
+            # place, see _recreateLiveLayer), is replaced by a new one.
+            if getattr(existing, 'protected', False):
+                raise ValueError(f'{name!r} is a live-view layer; use another name')
+            self._removeProtectedLayer(existing)
+            existing = None
+        if existing is None:
+            self.addStaticLayer(name, im, scale)
+            return True
+        existing.data = im
+        if scale is not None:
+            existing.scale = self._fitScale(scale, im.ndim)
+        existing.reset_contrast_limits()
+        return False
+
+    @staticmethod
+    def _fitScale(scale, ndim):
+        """``scale`` with one value per axis: the last values given are the
+        last axes', missing leading axes get 1."""
+        sc = tuple(float(v) for v in scale)
+        if len(sc) < ndim:
+            sc = (1.0,) * (ndim - len(sc)) + sc
+        elif len(sc) > ndim:
+            sc = sc[-ndim:]
+        return sc
+
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name
 
     def getImage(self, name):
         return self.imgLayers[name].data
 
-    def setImage(self, name, im, scale):
+    def getScanGeometry(self, name):
+        """Geometry of the scan pixels the live layer ``name`` shows, if any
+        (a :class:`~imswitch.imcontrol.model.scan_frame.DisplayedScanGeometry`)."""
+        layer = self.imgLayers.get(name)
+        if layer is None:
+            return None
+        return layer.metadata.get(SCAN_GEOMETRY_METADATA_KEY)
+
+    def _setScanGeometry(self, name, scanGeometry):
+        # Filed in the same call that set the layer's pixels, so the layer's
+        # geometry is always that of what it shows. A frame without one clears
+        # it: the pixels on screen no longer belong to any scan geometry.
+        metadata = self.imgLayers[name].metadata
+        if scanGeometry is None:
+            metadata.pop(SCAN_GEOMETRY_METADATA_KEY, None)
+        else:
+            metadata[SCAN_GEOMETRY_METADATA_KEY] = scanGeometry
+
+    def setImage(self, name, im, scale, scanGeometry=None):
         layer = self.imgLayers[name]
         scale = tuple(scale)
+        if isinstance(im, ScanFrame):
+            # napari gets a plain view of the same pixels; the geometry is
+            # filed on the layer below.
+            im = im.view(np.ndarray)
 
         # Normalise scale length to match im.ndim.
         if len(scale) < im.ndim:
@@ -518,6 +578,7 @@ class ImageWidget(QtWidgets.QWidget):
         # scratch.  Only hits on the first frame of an ndim transition.
         if layer.data.ndim != im.ndim:
             self._recreateLiveLayer(name, im, scale)
+            self._setScanGeometry(name, scanGeometry)
             return
 
         # Same-ndim update: scale-before-data is safe because the scale setter
@@ -526,6 +587,7 @@ class ImageWidget(QtWidgets.QWidget):
         # transform.
         layer.scale = scale
         layer.data = im
+        self._setScanGeometry(name, scanGeometry)
         self._applyLiveSourceRegistration(name)
 
     def clearImage(self, name):

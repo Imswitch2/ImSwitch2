@@ -432,6 +432,15 @@ def test_apply_component_state_never_acquires(cameras):
 
 # --- a detector that refuses the ROI --------------------------------------
 
+def test_adjust_frame_emits_detector_parameters_changed(cameras):
+    controller, camera1, _ = cameras
+    controller._commChannel.sigDetectorParametersChanged.emit.reset_mock()
+
+    controller.adjustFrame(detector=camera1)
+
+    controller._commChannel.sigDetectorParametersChanged.emit.assert_called_once_with('Camera1')
+
+
 def test_adjust_frame_reports_a_refused_roi_instead_of_raising(cameras):
     """crop() raises when the camera rejects the ROI outright. adjustFrame runs
     from __init__'s execOnAll, so letting that propagate would abort controller
@@ -736,6 +745,42 @@ def test_component_name_and_schema_version():
     assert SettingsController.componentName == 'Settings'
     assert SettingsController.stateSchemaVersion == 1
     assert SettingsController.legacyStateNames == ()
+
+
+def test_semantic_trigger_switch_targets_exact_camera_even_when_update_all_is_checked(cameras):
+    controller, camera1, camera2 = cameras
+    controller.getCurrentParams().allDetectorsFrame.setValue(True)
+    camera1.calls.clear()
+    camera2.calls.clear()
+
+    snapshot = controller.getDetectorTriggerSetting('Camera1')
+    controller.setDetectorTriggerMode('Camera1', 'external_frame')
+
+    assert snapshot == ('Trigger source', 'Internal trigger')
+    assert ('setParameter', 'Trigger source', 'External "frame-trigger"') in camera1.calls
+    assert not [
+        call for call in camera2.calls
+        if call[:2] == ('setParameter', 'Trigger source')
+    ]
+    assert camera1.parameters['Trigger source'].value == 'External "frame-trigger"'
+    assert camera2.parameters['Trigger source'].value == 'Internal trigger'
+
+    controller.setDetectorParameterExact('Camera1', *snapshot)
+    assert camera1.parameters['Trigger source'].value == 'Internal trigger'
+
+
+def test_semantic_trigger_mapping_supports_thorcam_operation_mode():
+    detector = MagicMock()
+    detector.name = 'ThorCam'
+    detector.parameters = {
+        'Operation Mode': DetectorListParameter(
+            group='Trigger', value='Software', options=['Software', 'Hardware'], editable=True
+        )
+    }
+
+    assert SettingsController._detectorTriggerSpec(detector) == (
+        'Operation Mode', 'Software', 'Hardware'
+    )
 
 
 if __name__ == '__main__':

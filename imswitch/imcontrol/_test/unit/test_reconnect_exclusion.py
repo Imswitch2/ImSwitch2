@@ -235,3 +235,39 @@ def test_settings_refresh_reconnected_detectors_on_the_ui_thread():
     assert calls == [] and len(queued) == 1        # nothing on the worker thread
     queued[0]()
     assert calls == [('params', 'Orca', True), ('adjust', (2304, 2304)), ('shared',)]
+
+
+def test_positioner_panel_refreshes_reconnected_stages_on_the_ui_thread():
+    """Reconnect 2.0 review: every other panel subscribed to lifecycle
+    results; the Positioner panel kept a stale position after a stage
+    reconnect."""
+    from imswitch.imcontrol.controller.controllers.PositionerController import (
+        PositionerController,
+    )
+    from imswitch.imcontrol.model.devices.graph import DeviceId
+
+    class _Stages(dict):
+        def __iter__(self):
+            return iter(self.items())
+
+    calls = []
+    stage = SimpleNamespace(forPositioning=True, isUsable=True)
+    controller = PositionerController.__new__(PositionerController)
+    controller.__dict__.update(
+        _master=SimpleNamespace(positionersManager=_Stages(XY=stage, Z=stage)),
+        _widget=SimpleNamespace(setPositionerUsable=lambda *a: None),
+    )
+    controller.__dict__['_isPositionerShownInWidget'] = lambda m: True
+    controller.__dict__['updatePosition'] = lambda name, axis: calls.append((name, axis))
+    queued = []
+    controller.__dict__['_invokeOnControllerThreadIfNeeded'] = queued.append
+
+    controller._deviceLifecycleChanged(SimpleNamespace(affected_device_ids=(
+        DeviceId('laser', '488'), DeviceId('positioner', 'XY'), DeviceId('positioner', 'Other'))))
+    assert calls == [] and len(queued) == 1          # nothing on the worker thread
+    queued[0]()
+    assert calls == [('XY', 'all')]                  # only known, affected stages
+
+    controller._deviceLifecycleChanged(SimpleNamespace(affected_device_ids=(
+        DeviceId('laser', '488'),)))
+    assert len(queued) == 1                          # no positioner: nothing queued

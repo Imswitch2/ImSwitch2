@@ -166,6 +166,43 @@ class MonalisaProcessingResult(ProcessingResult):
         self.placement = placement
         self.acquisition_projection = _projection_metadata(placement)
 
+    def initial_view_mode_name(self) -> str:
+        """Choose the first useful orthogonal view from the acquired scan axes.
+
+        The reconstructed array can contain X/Y pixels from the uLens grid even
+        when that stage axis was not scanned, so output-array shape is not an
+        acquisition-plane detector.  Prefer ``LayoutPlacement`` when present:
+        its rows/cols/slices are the actual Y/X/Z scan counts before the uLens
+        lattice expands the reconstructed image.  Older/fallback results use
+        the recorded scan-parameter counts.
+        """
+        placement = getattr(self, "placement", None)
+        if placement is not None:
+            try:
+                x = int(placement.cols) > 1
+                y = int(placement.rows) > 1
+                z = int(placement.slices) > 1
+            except (TypeError, ValueError, AttributeError):
+                x = y = z = False
+        else:
+            try:
+                dims = list(self.scan_params["dimensions"])
+                steps = list(self.scan_params["steps"])
+                counts = {dim: int(float(step)) for dim, step in zip(dims, steps)}
+                x = counts.get(self.axis_label_map["r_l_text"], 1) > 1
+                y = counts.get(self.axis_label_map["u_d_text"], 1) > 1
+                z = counts.get(self.axis_label_map["b_f_text"], 1) > 1
+            except (KeyError, TypeError, ValueError):
+                return "Standard"
+
+        # Volumes default to the familiar top-down view.  Pure orthogonal
+        # scans start side-on so their scanned plane is visible immediately.
+        if y and z and not x:
+            return "Left"      # displayed plane: Z, Y
+        if x and z and not y:
+            return "Bottom"    # displayed plane: Z, X
+        return "Standard"      # XY and XYZ (plus degenerate/fallback cases)
+
     @classmethod
     def from_coeffs(
         cls,
@@ -337,7 +374,12 @@ class MonalisaProcessingResult(ProcessingResult):
         return out
     
 
-    supported_formats = ("tiff", "imagej")
+    # The shared OME writers take the serialization view below, so HDF5 and
+    # Zarr are as available as TIFF; only the ImageJ hyperstack is this
+    # type's own writer. Listing TIFF and ImageJ alone, as this once did,
+    # made the save dialog's HDF5 and Zarr choices fail for MoNaLISA results
+    # only, with the same data every other image result saves to them.
+    supported_formats = ("tiff", "hdf5", "zarr", "imagej")
 
     def _fold_for_disk(self):
         """(Dataset, Base, T, Z, Y, X) -> (T, Z, C, Y, X), C = Dataset x Base,
@@ -375,15 +417,20 @@ class MonalisaProcessingResult(ProcessingResult):
         )
 
     def write_files(self, plan, document) -> None:
-        """OME-TIFF through the shared writer (the default), or the ImageJ
-        hyperstack writer of old under ``fmt="imagej"`` for one release."""
-        if plan.fmt == "tiff":
+        """OME-TIFF, HDF5 or OME-Zarr through the shared image writer (all
+        three carry the ``(T, Z, C, Y, X)`` layout of :meth:`serialization_view`),
+        or the ImageJ hyperstack writer of old under ``fmt="imagej"`` for one
+        release."""
+        if plan.fmt in ("tiff", "hdf5", "zarr"):
             from imswitch.improcess.model.result_io import save_image_result
 
-            save_image_result(self, plan.primary, "tiff", document=document)
+            save_image_result(self, plan.primary, plan.fmt, document=document)
             return
         if plan.fmt != "imagej":
-            raise ValueError(f"MoNaLISA result supports 'tiff' or 'imagej', got {plan.fmt!r}")
+            raise ValueError(
+                f"MoNaLISA result supports 'tiff', 'hdf5', 'zarr' or 'imagej', "
+                f"got {plan.fmt!r}"
+            )
         folded, (vxsizec, vxsizer, _vxsizez), _names = self._fold_for_disk()
         ijmetadata = {'axes': 'TZCYX', 'provenance': document.to_json()}
         resolution = (10000.0 / vxsizec, 10000.0 / vxsizer)

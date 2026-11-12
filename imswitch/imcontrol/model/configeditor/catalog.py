@@ -314,6 +314,7 @@ def _scan_legacy_managers(
         "PositionerManager",
         "RotatorManager",
         "FlipMirrorManager",
+        "InstrumentManager",
         "PulseGeneratorManager",
         "StandManager",
         "SLMManager",

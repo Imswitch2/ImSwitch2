@@ -1,4 +1,6 @@
+from dataclasses import replace
 from pathlib import Path
+import weakref
 
 import numpy as np
 from qtpy import QtCore
@@ -6,7 +8,7 @@ from qtpy import QtCore
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.contrast import auto_levels, finite_range
 from imswitch.improcess.model.lazy_array import display_array
-from imswitch.improcess.model.result import result_kind
+from imswitch.improcess.model.result import ViewMode, result_kind
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -18,6 +20,7 @@ from .basecontrollers import ImProcessWidgetController
 #: one while spanning the full range in the other made the same picture look
 #: like two different pictures depending on which was clicked.
 AUTO_SATURATED_PERCENT = 2.0
+_PRESERVE_DIMENSION_ORDER = object()
 
 
 class ReconstructionViewController(ImProcessWidgetController):
@@ -27,6 +30,25 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._currItemInd = None
         self._prevViewId = None
+        # Viewer state is session-local and belongs to the result, not to the
+        # global napari canvas.  In particular, a user may inspect one volume
+        # from YZ and another from XY and expect both choices to survive when
+        # toggling between results.
+        self._viewerStateByResult = weakref.WeakKeyDictionary()
+        # Spatial slider memory is intentionally separate from camera/view
+        # state. Per-result locking remembers an exact discrete slice index.
+        # Normal comparison mode instead remembers a physical/world position,
+        # but only reapplies it when the sliced spatial axis disappeared in the
+        # intervening view (for example YZ -> 2-D XY -> YZ). Compatible YZ->YZ
+        # transitions are deliberately left to napari, which can preserve the
+        # physical point correctly when the two stacks have different spacing.
+        self._sharedSlicePositionByPlane = {}
+        # Camera state follows the same two-level policy as slices. By default
+        # the most recent camera is shared by physical viewing plane (XY/YZ/XZ)
+        # so repeated measurements can be compared at identical framing. The
+        # optional viewer lock makes restoration result-local instead.
+        self._sharedCameraStateByPlane = {}
+        self._restoringSliceState = False
         # The result currently on screen, held by reference rather than by
         # list index: removing a result shifts every index after it, and the
         # index was what decided whose display settings were being saved.
@@ -64,6 +86,9 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
         self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
+        self._commChannel.sigWorkflowPreview.connect(self.showWorkflowPreview)
+        # A workflow-editor preview on screen instead of the list's entry.
+        self._previewing = None
         # Results that have ever arrived as a live update. Their pixels can be
         # rewritten between render passes, so they never get a mutation token
         # and nothing downstream caches a measurement of them.
@@ -77,7 +102,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
         if hasattr(self._widget, "sigImageLevelsChanged"):
             self._widget.sigImageLevelsChanged.connect(self.imageLevelsChanged)
-        self._widget.sigViewChanged.connect(lambda: self.fullUpdate(levels=None))
+        self._widget.sigViewChanged.connect(self._viewChanged)
+        if hasattr(self._widget, 'sigLockSlicePerResultChanged'):
+            self._widget.sigLockSlicePerResultChanged.connect(self._sliceLockChanged)
+        if hasattr(self._widget, 'sigLockZoomPerResultChanged'):
+            self._widget.sigLockZoomPerResultChanged.connect(self._zoomLockChanged)
         if hasattr(self._widget, "sigSelectionChanged"):
             self._widget.sigSelectionChanged.connect(self._resultsChanged)
         if hasattr(self._widget, "sigResultsRemoved"):
@@ -166,13 +195,35 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
         display.retain_only(results)
 
+    def showWorkflowPreview(self, result, displayName=""):
+        """Show a workflow-editor result until the next preview or list selection.
+
+        Not added to the list and never saved; the contrast set on it is not
+        filed against whichever list entry is selected.
+        """
+        if result is None:
+            return
+        displayed = self.__dict__.get("_displayedResult")
+        if displayed is not None and displayed is not result:
+            self._persistActiveViewerSettings(displayed)
+        self.__dict__["_displayedResult"] = None
+        self.__dict__["_previewing"] = result
+        try:
+            self._setProcessingResultSlice(result, autoLevels=True)
+            self._widget.resetView()
+        except Exception as exc:  # noqa: BLE001 - a preview must not break the viewer
+            self._logger.warning("Could not show the workflow preview %r: %s", displayName, exc)
+            self.__dict__["_previewing"] = None
+
     def listItemChanged(self):
+        self.__dict__["_previewing"] = None
         currItem = self._widget.getCurrentItemData()
         # Read through __dict__: on a controller whose base __init__ has not
         # run, plain getattr raises rather than falling back to the default.
         displayed = self.__dict__.get("_displayedResult")
         if displayed is not None and displayed is not currItem:
             self._persistActiveViewerSettings(displayed)
+            self._rememberViewerState(displayed)
         self._syncViewModes(currItem)
 
         if currItem is None:
@@ -200,7 +251,15 @@ class ReconstructionViewController(ImProcessWidgetController):
         # just restored -- which is how a reconstruction came back at the
         # levels its reconstructor measured at construction, every time it was
         # clicked, however often its contrast had been set.
-        self.fullUpdate(autoLevels=not remembered, levels=retrievedLevels)
+        # Restore this result's own raw napari dimension order after rendering.
+        # A first-time result has no saved order and is normalised instead, so
+        # a YZ roll from the previous result cannot poison a new 2D/XY view.
+        saved_order = self._viewerState(currItem).get("dimension_order")
+        self.fullUpdate(
+            autoLevels=not remembered,
+            levels=retrievedLevels,
+            dimensionOrder=saved_order,
+        )
 
         self._currItemInd = self._widget.getCurrentItemIndex()
         self._commChannel.sigCurrentResultChanged.emit(currItem)
@@ -238,21 +297,99 @@ class ReconstructionViewController(ImProcessWidgetController):
         operation re-renders first and overwrites what was never saved. This
         runs on the change itself, so there is no window to lose it in.
         """
+        if self.__dict__.get("_previewing") is not None:
+            return          # a preview's contrast belongs to no list entry
         result = self.getActiveResult()
         if result is None or levels is None:
             return
         self._storeDisplayLevels(result, layerMetadata, levels)
 
-    def fullUpdate(self, autoLevels=False, levels=None):
+    def fullUpdate(
+        self,
+        autoLevels=False,
+        levels=None,
+        *,
+        resetView=False,
+        dimensionOrder=_PRESERVE_DIMENSION_ORDER,
+    ):
+        self.__dict__["_previewing"] = None
         reconObj = self._widget.getCurrentItemData()
         if reconObj is not None:
-            self.setImgSlice(autoLevels=autoLevels, levels=levels)
-            if (
-                self._currItemInd is None
-                or self._prevViewId is None
-                or self.getViewId() != self._prevViewId
+            # Capture viewer state *before* replacing the layer data. A camera
+            # is reusable across another XY result, but the same zoom/centre has
+            # no useful meaning when the displayed plane turns into YZ/XZ. For
+            # slices, knowing which semantic spatial axes existed before the
+            # redraw is what lets us avoid overriding napari on compatible
+            # YZ->YZ/XZ->XZ transitions.
+            source_plane = self._currentDisplayedPlaneAxes()
+            source_camera = self._currentCameraState()
+            source_slice_axes = set(self._currentSpatialSliceState())
+
+            # Ordinary redraws preserve any raw napari axis roll the user made
+            # on the result.  Selection changes pass the saved order explicitly
+            # (or None for a first display).
+            if dimensionOrder is _PRESERVE_DIMENSION_ORDER:
+                dimensionOrder = self._currentDimensionOrder()
+            self.__dict__["_restoringSliceState"] = True
+            try:
+                self.setImgSlice(autoLevels=autoLevels, levels=levels)
+                self._restoreDimensionOrder(reconObj, dimensionOrder)
+                self._restoreSliceState(
+                    reconObj, sourceSpatialAxes=source_slice_axes
+                )
+            finally:
+                self.__dict__["_restoringSliceState"] = False
+            # Rendering can move a slider without emitting a useful persistence
+            # callback while _restoringSliceState is set. Capture the final
+            # napari-resolved position once the redraw is complete.
+            self._rememberSliceState(reconObj, updateShared=True)
+
+            target_plane = self._currentDisplayedPlaneAxes()
+            state = self._viewerState(reconObj)
+            target_key = self._cameraPlaneKey(target_plane)
+            per_result_camera = (
+                state.setdefault("camera_by_plane", {}).get(target_key)
+                if target_key is not None else None
+            )
+            shared_camera = (
+                self.__dict__.setdefault("_sharedCameraStateByPlane", {}).get(target_key)
+                if target_key is not None else None
+            )
+
+            if self._zoomLockedPerResult():
+                desired_camera = per_result_camera
+            else:
+                # Shared-by-plane is the normal comparison workflow. Fall back
+                # to this result's own camera only for older/session state where
+                # no shared entry has been established yet.
+                desired_camera = shared_camera or per_result_camera
+
+            if desired_camera is not None:
+                self._restoreCameraState(desired_camera)
+            elif (
+                not self._zoomLockedPerResult()
+                and source_plane
+                and target_plane
+                and self._cameraPlaneKey(source_plane) == target_key
+                and source_camera is not None
             ):
+                # Defensive fallback for a first transition before shared state
+                # exists. Normally listItemChanged() has already stored source
+                # camera into the shared plane entry.
+                self._restoreCameraState(source_camera)
+            else:
+                # No memory for this policy/plane yet. This includes a
+                # first-time result while per-result lock is enabled and any
+                # XY<->YZ/XZ transition whose target plane has never been seen.
                 self._widget.resetView()
+
+            if target_key is not None:
+                state["display_plane"] = target_plane
+                current_camera = self._currentCameraState()
+                if current_camera is not None:
+                    self._storeCameraState(
+                        reconObj, target_plane, current_camera, updateShared=True
+                    )
         else:
             self._widget.clearImage()
 
@@ -279,7 +416,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         if display_layers:
             if hasattr(result, "applyDisplayLayerSettings"):
                 display_layers = result.applyDisplayLayerSettings(display_layers)
-            self._transposeOrder = list(range(np.asarray(display_layers[0].data).ndim))
+            mode = self._processingViewMode(result)
+            display_layers, layer_order = self._transposeDisplayLayers(
+                result, display_layers, mode
+            )
+            self._transposeOrder = list(layer_order)
             # Display layers carry their own per-layer contrast and have no
             # shared sliced axis, so there is no "Base" axis to rescale against.
             self._displayedAxisLabels = list(display_layers[0].axis_labels)
@@ -288,11 +429,11 @@ class ReconstructionViewController(ImProcessWidgetController):
                 display_layers,
                 identity=self._resultIdentity(
                     result,
-                    np.asarray(first.data),
+                    first.data,
                     list(first.axis_labels),
                     first.axis_scales,
                     first.scale_unit,
-                    view_mode=None,
+                    view_mode=mode.name,
                 ),
             )
             return
@@ -428,18 +569,411 @@ class ReconstructionViewController(ImProcessWidgetController):
             "mutation_token": self._mutationToken(result),
         }
 
+    @staticmethod
+    def _transposeDisplayLayers(result, layers, mode):
+        """Apply a result view-mode permutation to image display layers.
+
+        Display layers may omit semantic axes from ``result.data`` (MoNaLISA
+        removes ``Base``).  Derive the layer permutation by axis label rather
+        than assuming the layer rank matches the parent result rank.
+        """
+        result_labels = list(getattr(result, "axis_labels", ()))
+        try:
+            ordered_labels = [result_labels[i] for i in mode.transpose]
+        except (IndexError, TypeError):
+            ordered_labels = result_labels
+
+        first_order = None
+        transposed = []
+        for spec in layers:
+            labels = list(getattr(spec, "axis_labels", ()))
+            kind = str(getattr(spec, "kind", "image") or "image")
+            order = tuple(range(len(labels)))
+            if kind in ("image", "labels") and len(labels) >= 2:
+                desired = [label for label in ordered_labels if label in labels]
+                extra = [label for label in labels if label not in desired]
+                # A display layer may introduce a slider-only axis absent from
+                # the canonical result (e.g. the lattice pinhole stack). Keep
+                # such axes in front of the final two displayed spatial axes.
+                if extra and len(desired) >= 2:
+                    desired = [*desired[:-2], *extra, *desired[-2:]]
+                else:
+                    desired.extend(extra)
+                if (
+                    len(desired) == len(labels)
+                    and len(set(labels)) == len(labels)
+                    and set(desired) == set(labels)
+                ):
+                    order = tuple(labels.index(label) for label in desired)
+
+            if first_order is None:
+                first_order = order
+            if order == tuple(range(len(labels))):
+                transposed.append(spec)
+                continue
+
+            data = spec.data.transpose(*order)
+            scales = (
+                [spec.axis_scales[i] for i in order]
+                if spec.axis_scales is not None else None
+            )
+            transposed.append(replace(
+                spec,
+                data=data,
+                axis_labels=[labels[i] for i in order],
+                axis_scales=scales,
+            ))
+
+        return transposed, (first_order or ())
+
+    @staticmethod
+    def _viewModesForResult(result):
+        """Declared view modes, with orthogonal XYZ views for semantic volumes.
+
+        A few image results (notably the lattice reconstructor and files opened
+        through View only) expose only the default identity mode even though
+        their axes are explicitly labelled Z/Y/X.  Hiding Bottom/Left for those
+        volumes is an implementation accident, not a meaningful limitation.
+        Strictly 2-D Y/X results still expose Standard only.
+        """
+        modes = list(getattr(result, "view_modes", ()) or ())
+        labels = list(getattr(result, "axis_labels", ()) or ())
+        if (
+            len(modes) == 1
+            and str(modes[0].name).lower() == "standard"
+            and all(axis in labels for axis in ("X", "Y", "Z"))
+        ):
+            leading = [i for i, label in enumerate(labels) if label not in ("X", "Y", "Z")]
+            x, y, z = (labels.index(axis) for axis in ("X", "Y", "Z"))
+            return [
+                ViewMode("Standard", tuple([*leading, z, y, x])),
+                ViewMode("Bottom", tuple([*leading, y, z, x])),
+                ViewMode("Left", tuple([*leading, x, z, y])),
+            ]
+        return modes
+
     def _processingViewMode(self, result):
+        modes = self._viewModesForResult(result)
         view_name = self._widget.getViewName()
-        for mode in result.view_modes:
+        for mode in modes:
             if mode.name == view_name:
                 return mode
-        return result.view_modes[0]
+        return modes[0]
+
+    @staticmethod
+    def _resultViewKey(result):
+        # Viewer interaction state belongs to this in-memory reconstruction
+        # object, not to its provenance/content identity.  Some result types
+        # intentionally derive a stable result_uid when the same source is
+        # reconstructed again; using that UID here made a genuinely new
+        # reconstruction inherit an older object's rolled axes/view choice.
+        return result
+
+    def _viewerState(self, result):
+        if result is None:
+            return {}
+        states = self.__dict__.setdefault("_viewerStateByResult", {})
+        return states.setdefault(self._resultViewKey(result), {})
+
+    def _currentDimensionOrder(self):
+        getter = getattr(self._widget, "getDimensionOrder", None)
+        if not callable(getter):
+            return None
+        try:
+            return tuple(getter())
+        except Exception:
+            return None
+
+    def _currentDisplayedPlaneAxes(self):
+        getter = getattr(self._widget, "getDisplayedPlaneAxes", None)
+        if not callable(getter):
+            return ()
+        try:
+            return tuple(getter())
+        except Exception:
+            return ()
+
+    def _currentCameraState(self):
+        getter = getattr(self._widget, "getCameraState", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _restoreCameraState(self, state):
+        setter = getattr(self._widget, "setCameraState", None)
+        if not callable(setter) or state is None:
+            return
+        try:
+            setter(state)
+        except Exception as exc:
+            self._logger.debug("Could not restore camera state: %s", exc)
+
+    def _rememberViewerState(self, result):
+        if result is None:
+            return
+        self._rememberSliceState(result)
+        state = self._viewerState(result)
+        try:
+            state["view_mode"] = self._widget.getViewName()
+        except Exception:
+            pass
+        order = self._currentDimensionOrder()
+        if order is not None:
+            state["dimension_order"] = order
+        plane = self._currentDisplayedPlaneAxes()
+        camera = self._currentCameraState()
+        if plane:
+            state["display_plane"] = plane
+            if camera is not None:
+                self._storeCameraState(result, plane, camera, updateShared=True)
+
+    @staticmethod
+    def _cameraPlaneKey(plane):
+        """Canonical physical viewing plane used for shared camera memory."""
+        return ReconstructionViewController._slicePlaneKey(plane)
+
+    def _zoomLockedPerResult(self):
+        getter = getattr(self._widget, "isZoomLockedPerResult", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _storeCameraState(self, result, plane, camera, *, updateShared=True):
+        """Record camera in both result-local and optional shared stores."""
+        if result is None or camera is None:
+            return
+        plane_key = self._cameraPlaneKey(plane)
+        if plane_key is None:
+            return
+        state = self._viewerState(result)
+        state.setdefault("camera_by_plane", {})[plane_key] = camera
+        if updateShared:
+            self.__dict__.setdefault("_sharedCameraStateByPlane", {})[plane_key] = camera
+
+    def _zoomLockChanged(self, _locked):
+        """Anchor both camera stores to the framing visible at toggle time."""
+        result = self._widget.getCurrentItemData()
+        if result is None:
+            return
+        plane = self._currentDisplayedPlaneAxes()
+        camera = self._currentCameraState()
+        if plane and camera is not None:
+            self._storeCameraState(result, plane, camera, updateShared=True)
+
+    @staticmethod
+    def _slicePlaneKey(plane):
+        """Canonical physical plane key, independent of on-screen axis order."""
+        spatial = []
+        for label in plane or ():
+            axis = str(label).upper()
+            if axis in ("X", "Y", "Z") and axis not in spatial:
+                spatial.append(axis)
+        if len(spatial) != 2:
+            return None
+        rank = {"X": 0, "Y": 1, "Z": 2}
+        return tuple(sorted(spatial, key=rank.__getitem__))
+
+    def _currentSpatialSliceState(self):
+        """Discrete spatial slider indices not currently drawn on the canvas."""
+        getter = getattr(self._widget, "getDimensionStepState", None)
+        if not callable(getter):
+            return {}
+        try:
+            steps = getter() or {}
+        except Exception:
+            return {}
+        plane = {str(label).upper() for label in self._currentDisplayedPlaneAxes()}
+        return {
+            str(label).upper(): int(step)
+            for label, step in steps.items()
+            if str(label).upper() in ("X", "Y", "Z")
+            and str(label).upper() not in plane
+        }
+
+    def _currentSpatialSlicePositionState(self):
+        """World positions of spatial slider axes not drawn on the canvas."""
+        getter = getattr(self._widget, "getDimensionPositionState", None)
+        if not callable(getter):
+            return {}
+        try:
+            positions = getter() or {}
+        except Exception:
+            return {}
+        plane = {str(label).upper() for label in self._currentDisplayedPlaneAxes()}
+        return {
+            str(label).upper(): float(position)
+            for label, position in positions.items()
+            if str(label).upper() in ("X", "Y", "Z")
+            and str(label).upper() not in plane
+        }
+
+    def _sliceLockedPerResult(self):
+        getter = getattr(self._widget, "isSliceLockedPerResult", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _rememberSliceState(self, result, *, updateShared=True):
+        """Remember exact local index plus the shared physical position.
+
+        The two stores intentionally have different semantics. The result-local
+        store backs ``Lock slice per result`` and therefore remembers exactly
+        which discrete slice was selected. The shared store is a world
+        coordinate so a denser/sparser reconstruction can map to the same
+        physical sample position.
+        """
+        if result is None or self.__dict__.get("_restoringSliceState", False):
+            return
+        plane_key = self._slicePlaneKey(self._currentDisplayedPlaneAxes())
+        slice_state = self._currentSpatialSliceState()
+        if plane_key is None or not slice_state:
+            return
+        state = self._viewerState(result)
+        state.setdefault("slice_by_plane", {})[plane_key] = dict(slice_state)
+
+        if updateShared:
+            positions = self._currentSpatialSlicePositionState()
+            if positions:
+                shared = self.__dict__.setdefault(
+                    "_sharedSlicePositionByPlane", {}
+                )
+                shared.setdefault(plane_key, {}).update(positions)
+
+    def _restoreSliceState(self, result, *, sourceSpatialAxes=()):
+        """Restore only the slice state that ImProcess actually owns.
+
+        In normal comparison mode, a compatible transition such as YZ A -> YZ
+        B is left untouched: napari already carries the current world point
+        through a scale change, which correctly maps different multifoci
+        densities onto different discrete X indices. ImProcess intervenes only
+        when that sliced semantic axis was absent immediately beforehand (for
+        example YZ -> 2-D XY -> YZ), restoring the remembered world position.
+
+        Per-result lock is intentionally different: it restores the exact
+        discrete index saved for that result/view.
+        """
+        if result is None:
+            return
+        plane_key = self._slicePlaneKey(self._currentDisplayedPlaneAxes())
+        if plane_key is None:
+            return
+
+        state = self._viewerState(result)
+        per_result = state.get("slice_by_plane", {}).get(plane_key, {})
+        if self._sliceLockedPerResult():
+            if not per_result:
+                return
+            setter = getattr(self._widget, "setDimensionStepState", None)
+            if not callable(setter):
+                return
+            try:
+                setter(per_result)
+            except Exception as exc:
+                self._logger.debug(
+                    "Could not restore per-result spatial slice state: %s", exc
+                )
+            return
+
+        current_axes = set(self._currentSpatialSliceState())
+        reappeared_axes = current_axes.difference(
+            str(axis).upper() for axis in (sourceSpatialAxes or ())
+        )
+        if not reappeared_axes:
+            # Most important path: same semantic sliced axis before/after. Do
+            # not replace napari's physically meaningful world-coordinate
+            # mapping with one of our own indices.
+            return
+
+        shared = self.__dict__.setdefault(
+            "_sharedSlicePositionByPlane", {}
+        ).get(plane_key, {})
+        desired = {
+            axis: shared[axis]
+            for axis in reappeared_axes
+            if axis in shared
+        }
+        if not desired:
+            return
+        setter = getattr(self._widget, "setDimensionPositionState", None)
+        if not callable(setter):
+            return
+        try:
+            setter(desired)
+        except Exception as exc:
+            self._logger.debug(
+                "Could not restore shared spatial position: %s", exc
+            )
+
+    def _sliceLockChanged(self, _locked):
+        """Anchor shared mode to the slice visible when the policy changes."""
+        result = self._widget.getCurrentItemData()
+        if result is not None:
+            self._rememberSliceState(result, updateShared=True)
+
+    def _restoreDimensionOrder(self, result, order):
+        setter = getattr(self._widget, "setDimensionOrder", None)
+        if callable(setter):
+            try:
+                # None means a first-time result: force natural order instead
+                # of inheriting whatever the previous result left in napari.
+                setter(order)
+            except Exception as exc:
+                self._logger.debug("Could not restore dimension order: %s", exc)
+        current = self._currentDimensionOrder()
+        if current is not None:
+            self._viewerState(result)["dimension_order"] = current
+
+    def _initialViewName(self, item):
+        chooser = getattr(item, "initial_view_mode_name", None)
+        if callable(chooser):
+            try:
+                preferred = chooser()
+                if preferred:
+                    return str(preferred)
+            except Exception as exc:
+                self._logger.debug("Could not determine initial view mode: %s", exc)
+        modes = self._viewModesForResult(item)
+        return modes[0].name if modes else None
 
     def _syncViewModes(self, item):
         if hasattr(item, "view_modes"):
-            self._widget.setViewModes(item.view_modes)
+            state = self._viewerState(item)
+            modes = self._viewModesForResult(item)
+            selected = state.get("view_mode") or self._initialViewName(item)
+            self._widget.setViewModes(modes, selectedName=selected)
+            state["view_mode"] = self._widget.getViewName()
         else:
             self._widget.setViewModes(None)
+
+    def _viewChanged(self):
+        """Remember a named view choice and restore that plane's camera policy.
+
+        Raw napari dimension rolls remain result-local. Named plane changes
+        use the same shared/per-result camera memory as result selection; an
+        unseen plane is fitted once and then remembered.
+        """
+        result = self._widget.getCurrentItemData()
+        if result is not None:
+            self._rememberSliceState(result)
+            state = self._viewerState(result)
+            old_plane = self._currentDisplayedPlaneAxes()
+            old_camera = self._currentCameraState()
+            if old_plane and old_camera is not None:
+                self._storeCameraState(
+                    result, old_plane, old_camera, updateShared=True
+                )
+            state["view_mode"] = self._widget.getViewName()
+            state.pop("dimension_order", None)
+        self.fullUpdate(levels=None, resetView=True, dimensionOrder=None)
 
     def getViewId(self):
         """Return a hashable ID for the current view, used only for change detection."""
@@ -476,6 +1010,9 @@ class ReconstructionViewController(ImProcessWidgetController):
                 self.updateLevelsRange(newBase)
 
         self._axisStep = newAxisStep
+        result = self._widget.getCurrentItemData()
+        if result is not None:
+            self._rememberSliceState(result)
 
     def updateLevelsRange(self, base=None):
         """Scale the contrast to the data currently on screen.
@@ -510,6 +1047,7 @@ class ReconstructionViewController(ImProcessWidgetController):
     def updateRecon(self):
         reconObj = self._widget.getCurrentItemData()
         if reconObj is not None and hasattr(reconObj, "updateImages"):
+            self._rememberSliceState(reconObj)
             reconObj.updateImages()
             self.fullUpdate(levels=None)
 
@@ -552,6 +1090,8 @@ class ReconstructionViewController(ImProcessWidgetController):
         else:
             self._widget.setImageDisplayLevels(minimum, maximum)
 
+        if self.__dict__.get("_previewing") is not None:
+            return          # a preview's contrast belongs to no list entry
         result = self.getActiveResult()
         self._storeActiveDisplayLevels(result, (minimum, maximum))
 
@@ -567,6 +1107,8 @@ class ReconstructionViewController(ImProcessWidgetController):
         if hasattr(self._widget, "setActiveImageColormap"):
             self._widget.setActiveImageColormap(colormap)
 
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         self._storeActiveColormap(result, colormap)
 
@@ -578,6 +1120,8 @@ class ReconstructionViewController(ImProcessWidgetController):
     def setDisplayLayerVisible(self, layer_id: str, visible: bool) -> None:
         if hasattr(self._widget, "setImageLayerVisible"):
             self._widget.setImageLayerVisible(layer_id, visible)
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         if result is not None and hasattr(result, "setDisplayLayerVisible"):
             result.setDisplayLayerVisible(layer_id, visible)
@@ -585,6 +1129,8 @@ class ReconstructionViewController(ImProcessWidgetController):
     def setDisplayLayerColormap(self, layer_id: str, colormap: str) -> None:
         if hasattr(self._widget, "setImageLayerColormap"):
             self._widget.setImageLayerColormap(layer_id, colormap)
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         if result is not None and hasattr(result, "setDisplayLayerColormap"):
             result.setDisplayLayerColormap(layer_id, colormap)

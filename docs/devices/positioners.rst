@@ -435,6 +435,10 @@ plugin's class instead of this one, and a warning in the log says so; see
      - bool
      - ``false``
      - If true, home both axes during construction.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - When the hardware cannot be opened, install a simulation instead of leaving the device not connected (the default: the error shows in Hardware status, commands are refused, Reconnect brings it back).
    * - ``driverUnitsPerPositionUnit``
      - float
      - ``1.0``

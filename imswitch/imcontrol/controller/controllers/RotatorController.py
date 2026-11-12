@@ -1,7 +1,10 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.devices.status import (
+    DeviceNotConnectedError, device_usable, not_connected_reason,
+)
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from PyQt5.QtCore import QTimer 
 
@@ -42,8 +45,10 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
             self._deviceLifecycleListener = self._deviceLifecycleChanged
             lifecycleService.addListener(self._deviceLifecycleListener)
 
-        for name, _ in self._master.rotatorsManager:
-            self.updatePosition(name)
+        for name, manager in self._master.rotatorsManager:
+            if device_usable(manager):
+                self.updatePosition(name)
+        self._refreshRotatorUsability()
         
         # Register for unified state persistence (canonical name)
         getWidgetStatePersistence().register('Rotator', self)
@@ -69,19 +74,71 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
 
     def _refreshLifecycleAffectedRotators(self, device_ids):
         known = {name for name, _ in self._master.rotatorsManager}
-        for device_id in device_ids:
-            if device_id.name in known:
-                self.updatePosition(device_id.name)
+        names = tuple(d.name for d in device_ids if d.name in known)
+        self._refreshRotatorUsability(names)
+        for name in names:
+            if device_usable(self._master.rotatorsManager[name]):
+                self.updatePosition(name)
+
+    def _refreshRotatorUsability(self, names=None):
+        """Grey out rotators that are not connected (absent at startup,
+        unplugged, faulted) and enable the ones that are."""
+        for name, manager in self._master.rotatorsManager:
+            if names is not None and name not in names:
+                continue
+            usable = device_usable(manager)
+            self._widget.setRotatorUsable(
+                name, usable, '' if usable else not_connected_reason(manager))
 
     def moveRel(self, name, dir=1):
         dist = dir * self._widget.getRelStepSize(name)
-        self._master.rotatorsManager[name].move_rel(dist)
+        try:
+            self._master.rotatorsManager[name].move_rel(dist)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
         self.updatePosition(name)
 
     @APIExport(runOnUIThread=True)
-    def moveAbs(self, name, pos): #change by Simone: for scriptable, add pos position
-        #pos = self._widget.getAbsPos(name) #commented by Simone because we want it scriptable. Now connected to the widget through line 20
-        self._master.rotatorsManager[name].move_abs(pos)
+    def moveAbs(self, name: str, pos: float) -> None:
+        """ Turns the rotator ``name`` to ``pos`` degrees: the older name of
+        setRotatorPosition, kept for existing scripts. """
+        self.setRotatorPosition(name, pos)
+
+    @APIExport()
+    def getRotatorNames(self) -> List[str]:
+        """ Returns the names of all rotators (motorized rotation mounts),
+        as the other rotator functions take them. """
+        return [name for name, _ in self._master.rotatorsManager]
+
+    @APIExport(runOnUIThread=True)
+    def getRotatorPosition(self, name: str) -> float:
+        """ Returns the angle of the rotator ``name`` in degrees, read from
+        the mount, and shows it in the Rotator widget. """
+        self.updatePosition(name)
+        return self._master.rotatorsManager[name].position
+
+    @APIExport(runOnUIThread=True)
+    def setRotatorPosition(self, name: str, degrees: float) -> None:
+        """ Turns the rotator ``name`` to the angle ``degrees`` (the Rotator
+        widget's **Abs**). Returns when the mount's manager does: the
+        shipped managers wait for the move. """
+        try:
+            self._master.rotatorsManager[name].move_abs(degrees)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
+        self.updatePosition(name)
+
+    @APIExport(runOnUIThread=True)
+    def moveRotator(self, name: str, degrees: float) -> None:
+        """ Turns the rotator ``name`` by ``degrees`` from where it is, either
+        way round (the Rotator widget's **+** and **-**, with any step). """
+        try:
+            self._master.rotatorsManager[name].move_rel(degrees)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
         self.updatePosition(name)
 
     def setZeroPos(self, name):

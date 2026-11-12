@@ -178,12 +178,13 @@ filter, controlled over RS232.
        above.
    * - ``useMockOnFailure``
      - bool
-     - ``true``
+     - ``false``
      - When the controller does not answer the startup commands (a pyvisa
-       timeout, say), send a best-effort channel OFF and continue with this
-       channel in mock mode instead of aborting ImSwitch2. Set to ``false``
-       when a missing AOTF must be a startup error. Configuration errors
-       abort startup either way.
+       timeout, say), a best-effort channel OFF is sent and the channel is
+       left **not connected**: the error shows in Hardware status, commands
+       are refused until the channel is reconnected there. ``true`` installs
+       a mock instead (the channel then silently accepts commands). Configuration
+       errors abort startup either way.
 
 **LaserInfo fields used**
 
@@ -199,9 +200,11 @@ filter, controlled over RS232.
 **Vendor library**
 
 None — commands are sent as plain ASCII over the shared RS232 manager.
-Two mock paths: the RS232 sub-manager substitutes a mock port when the port
-cannot be opened at all, and this manager enters mock mode (see
-``useMockOnFailure``) when the port opens but the controller does not answer.
+When the port cannot be opened at all the RS232 sub-manager substitutes a
+mock port; when the port opens but the controller does not answer, the
+channel is not connected until reconnected from Hardware status (a mock
+only with ``useMockOnFailure``). A reconnect repeats the startup exchange
+(frequency, control mode) and ends with the channel OFF.
 
 **Source**
 
@@ -691,8 +694,7 @@ schema — fields below are derived from the constructor.
                 "rampDownEnabled": true,
                 "rampDownDurationS": 2.0,
                 "rampDownSteps": 20,
-                "rampDownDwellS": 0.0,
-                "useMockOnFailure": true
+                "rampDownDwellS": 0.0
             },
             "wavelength": 775,
             "valueRangeMin": 0,
@@ -730,9 +732,11 @@ schema — fields below are derived from the constructor.
      - Optional dwell at minimum power before diode disable. Defaults to zero.
    * - ``useMockOnFailure``
      - bool
-     - Continue in mock mode after an initialization failure. A best-effort
-       immediate OFF is attempted first. Set to ``false`` when an unavailable
-       or unconfirmed MPB laser must abort startup.
+     - Defaults to ``false``: after an initialization failure (a best-effort
+       immediate OFF is attempted first) the laser is left **not connected**,
+       with the error in Hardware status; commands are refused until it is
+       reconnected there, which repeats the startup exchange (darken, APC
+       mode, limits). ``true`` installs a mock instead.
 
 **LaserInfo fields used**
 

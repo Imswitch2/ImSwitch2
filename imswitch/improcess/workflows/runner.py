@@ -16,6 +16,8 @@ drift unless told to allow it.
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -78,6 +80,13 @@ class RunReport:
     #: caller rather than produced by this run (see ``run(bindings=...)``);
     #: a publisher must not add those to a list they already sit in.
     bound: list[str] = field(default_factory=list)
+    #: Save steps not written because the run was asked not to
+    #: (``write_saves=False``): step id -> the path it would have written.
+    would_write: dict[str, Path] = field(default_factory=dict)
+    #: What failed, as data: ``step``, ``type``, ``message``, and where the
+    #: exception has them ``line``, ``traceback`` and ``stdout`` (a Python step's
+    #: line in the user's code, its trimmed traceback, what it printed).
+    failure: dict | None = None
     _sources: list = field(default_factory=list, repr=False)
     _closed: bool = field(default=False, repr=False)
 
@@ -217,6 +226,9 @@ def run(
     progress: Callable[[int, int, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
     logger=None,
+    on_step_done: Callable[[str, dict, float, bool], None] | None = None,
+    write_saves: bool = True,
+    source_stem: str | None = None,
 ) -> RunReport:
     """Execute ``workflow`` and return its :class:`RunReport`.
 
@@ -230,10 +242,24 @@ def run(
     Raises :class:`RunError` on the first failing step, with the report
     attached as ``exc.report``.
 
+    A binding to a step with several ports is a ``{port: result}`` mapping,
+    in the order the ports were produced (a reference without a port takes the
+    first); a plain result binds the ``out`` port.
+
     ``hash_sources`` records a sha256 of every file source in the provenance
     (so a later replay can be verified byte-for-byte); ``verify_hash`` makes
     a replay require and check that hash. Accepting drift (``allow_drift``)
     turns a replay into a run, and the report's ``mode`` says so.
+
+    ``on_step_done(step_id, {port: result}, seconds, cached)`` is called as
+    each step finishes, and for each bound step with ``cached=True``; a step
+    skipped because it only fed a bound one is not reported. An exception in
+    the callback is logged, never a failure of the step. With
+    ``write_saves=False`` no Save step writes: ``report.would_write`` holds the
+    path each would have written. ``source_stem`` names the files of the run
+    (``{source_stem}``); without it the stem comes from the first source the
+    run opens, else from the first bound result's name. A failure is described
+    as data in ``report.failure``.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -244,12 +270,13 @@ def run(
     out_dir = (Path(out_dir) if out_dir is not None else Path.cwd()).resolve()
     report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir)
     bindings = dict(bindings or {})
-    source_stem = "result"
+    explicit_stem = bool(source_stem)
+    source_stem = str(source_stem) if explicit_stem else "result"
     total = len(workflow.steps)
     # A binding may also be an in-memory result: "start from this". That
     # step is not run, its output port is the result, and any step that
     # only fed it (its source, say) is skipped too.
-    bound_results = {sid: value for sid, value in bindings.items() if is_result_binding(value)}
+    bound_results = {sid: _bound_ports(value) for sid, value in bindings.items() if is_result_binding(value)}
     for sid in bound_results:
         try:
             target = workflow.step(sid)
@@ -266,9 +293,22 @@ def run(
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
     from imswitch.improcess.model.provenance import graph_of, output_of
 
+    def report_done(step_id, keys_before, started, cached=False):
+        if on_step_done is None:
+            return
+        produced = {key.split(".", 1)[1]: value for key, value in report.results.items()
+                    if key not in keys_before and key.split(".", 1)[0] == step_id}
+        try:
+            on_step_done(step_id, produced, time.perf_counter() - started, cached)
+        except Exception:
+            logger.exception("on_step_done failed for step %s", step_id)
+
     for index, step in enumerate(workflow.steps):
         if progress is not None:
             progress(index, total, step.id)
+        keys_before = set(report.results)
+        started = time.perf_counter()
+        reported = False
         try:
             if cancel is not None and cancel():
                 # Inside the handler on purpose: a cancellation is reported
@@ -277,11 +317,14 @@ def run(
                 raise RunError("cancelled")
             if step.id in skipped:
                 if step.id in bound_results:
-                    result = bound_results[step.id]
-                    report.results[f"{step.id}.{DEFAULT_PORT}"] = result
-                    report.bound.append(f"{step.id}.{DEFAULT_PORT}")
-                    if not report._sources:
-                        source_stem = str(getattr(result, "name", "") or source_stem)
+                    ports = bound_results[step.id]
+                    for port, result in ports.items():
+                        report.results[f"{step.id}.{port}"] = result
+                        report.bound.append(f"{step.id}.{port}")
+                    first = next(iter(ports.values()))
+                    if not report._sources and not explicit_stem:
+                        source_stem = str(getattr(first, "name", "") or source_stem)
+                    report_done(step.id, keys_before, started, cached=True)
                 report.steps_run.append(step.id)
                 continue
             if isinstance(step, Source):
@@ -330,7 +373,7 @@ def run(
                         # Drift was accepted: whatever this produces, it did not
                         # reproduce the recorded run.
                         report.mode = "run"
-                if len(report._sources) == 1:
+                if len(report._sources) == 1 and not explicit_stem:
                     source_stem = source_stem_of(spec.path)
                 report.results[f"{step.id}.{SOURCE_PORT}"] = data_obj
 
@@ -374,7 +417,10 @@ def run(
                             f"(kind {getattr(item, 'kind', 'image')!r}, axes "
                             f"{list(getattr(item, 'axis_labels', []) or [])}, shape {shape})"
                         )
-                spec = plugin.output_spec(params)
+                from imswitch.improcess.model.result import result_kind
+                from imswitch.improcess.processors.base import call_output_spec
+
+                spec = call_output_spec(plugin, params, tuple(result_kind(item) for item in inputs))
                 fan_out = len(inputs) > 1 and getattr(plugin, "max_inputs", 1) == 1
                 # A single-input processor over several inputs runs once per
                 # input, and each run's ports are suffixed with *that input's*
@@ -384,7 +430,11 @@ def run(
                     results, failures = run_processor(plugin, group, params, logger)
                     if failures:
                         who, why = failures[0]
-                        raise RunError(f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}")
+                        message = f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}"
+                        cause = getattr(why, "exception", None)
+                        if cause is not None:
+                            raise RunError(message) from cause
+                        raise RunError(message)
                     if not results:
                         raise RunError(f"{step.processor!r} produced no results")
                     for result in results:
@@ -407,6 +457,12 @@ def run(
                 path = render_save_path(
                     step, out_dir=out_dir, source_stem=source_stem, result=result, input_step=step.input.step,
                 )
+                if not write_saves:
+                    # Asked not to write: say what would have been, and do not
+                    # count it as run.
+                    report.would_write[step.id] = path
+                    reported = True
+                    continue
                 receipt = result.save(path, step.fmt, overwrite=overwrite)
                 report.receipts.append(receipt)
             else:  # pragma: no cover - the step types are closed
@@ -417,22 +473,67 @@ def run(
             # between-steps one: a failure of this step, with the report attached.
             report.failed_step = step.id
             report.error = f"{step.id}: {'cancelled' if isinstance(exc, OperationCancelled) else exc}"
+            report.failure = failure_details(step.id, exc)
             error = RunError(report.error)
             error.report = report          # type: ignore[attr-defined]
             raise error from exc
         report.steps_run.append(step.id)
+        if not reported:
+            try:
+                report_done(step.id, keys_before, started)
+            except OperationCancelled as exc:
+                # An interruption meant for the step that just ended, landing
+                # while it is reported: the run stops here, report attached,
+                # so its open sources are closed rather than lost.
+                report.error = f"{step.id}: cancelled"
+                report.failure = failure_details(step.id, exc)
+                error = RunError(report.error)
+                error.report = report      # type: ignore[attr-defined]
+                raise error from exc
     if progress is not None:
         progress(total, total, "done")
     return report
 
 
-def is_result_binding(value) -> bool:
-    """Whether a binding value is an in-memory result rather than a source spec."""
+def _is_result(value) -> bool:
     return (
         not isinstance(value, (str, SourceSpec))
         and hasattr(value, "axis_labels")
         and hasattr(value, "data")
     )
+
+
+def is_result_binding(value) -> bool:
+    """Whether a binding value is an in-memory result (or a ``{port: result}``
+    mapping of them) rather than a source spec."""
+    if isinstance(value, Mapping):
+        return bool(value) and all(isinstance(port, str) and _is_result(item) for port, item in value.items())
+    return _is_result(value)
+
+
+def _bound_ports(value) -> dict:
+    """``{port: result}`` for a binding: a mapping as given (its order kept),
+    a single result on the ``out`` port."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {DEFAULT_PORT: value}
+
+
+def failure_details(step_id: str, exc: BaseException) -> dict:
+    """A failure as data, for a caller that shows it rather than logs it.
+
+    A processor's failure arrives wrapped in a :class:`RunError` whose cause is
+    the processor's own exception; the details are read from that cause.
+    """
+    origin = exc.__cause__ if isinstance(exc, RunError) and exc.__cause__ is not None else exc
+    if isinstance(origin, OperationCancelled):
+        return {"step": step_id, "type": "OperationCancelled", "message": "cancelled"}
+    details = {"step": step_id, "type": type(origin).__name__, "message": str(origin)}
+    for attribute, key in (("line", "line"), ("traceback_text", "traceback"), ("stdout", "stdout")):
+        value = getattr(origin, attribute, None)
+        if value not in (None, ""):
+            details[key] = value
+    return details
 
 
 def steps_replaced_by_bindings(workflow, bound_ids) -> set:
@@ -464,7 +565,7 @@ def _log():
     return initLogger("ImProcessWorkflows", tryInheritParent=False)
 
 
-__all__ = ["MODES", "RunError", "RunReport", "is_result_binding", "render_save_path", "run",
+__all__ = ["MODES", "RunError", "RunReport", "failure_details", "is_result_binding", "render_save_path", "run",
            "source_stem_of", "steps_replaced_by_bindings"]
 
 

@@ -20,6 +20,7 @@ class SmlmGroupProcessor(Processor):
     id = "smlm-group"
     category = "SMLM"
     kinds = ("localization",)
+    output_kind = "localization"
 
     @classmethod
     def default_params(cls) -> dict:

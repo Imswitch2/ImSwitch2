@@ -78,6 +78,12 @@ LOCALIZATIONS_SPEC = SourceSpec(
     label="Localization table",
 )
 
+#: A measurement run file (instrument samples at control settings). It is an
+#: HDF5 file by name, so it is recognised by its schema marker
+#: (``imcommon.model.measurement_run``), never by suffix, and opens as a
+#: metadata source rather than an image.
+MEASUREMENT_RUN_SOURCE_KIND = "measurement-run"
+
 SOURCE_SPECS: tuple[SourceSpec, ...] = (HDF5_SPEC, TIFF_SPEC, ZARR_SPEC)
 _SPECS_BY_ID = {
     spec.id: spec
