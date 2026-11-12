@@ -80,25 +80,33 @@ def test_matches_the_smlm_detector_without_the_additions():
     assert np.array_equal(np.column_stack([ours["y"], ours["x"]]).astype(int), smlm)
 
 
-def test_spot_count_processor_outputs_a_count_curve_and_points():
+def test_spot_count_gives_one_result_with_points_overlay_and_counts():
     truth = [_spread(n, seed=n) for n in (2, 5)]
     stack = np.stack([_frame(p, seed=i) for i, p in enumerate(truth)])
     source = ArrayProcessingResult(
         "movie", stack, ["T", "Y", "X"], axis_scales=[0.5, 0.1, 0.1], scale_unit="um"
     )
-    output = SpotCountProcessor().apply(source, spot_default_params())
-    results = dict(zip(output.keys, output.results))
-    counts, points = results["counts"], results["spots"]
-    assert result_kind(counts) == "curve" and result_kind(points) == "points"
-    assert np.asarray(counts.data).tolist() == [2.0, 5.0]
-    assert counts.axis_labels == ["T"] and counts.x_unit() == "s"
-    assert points.count == 7 and sorted(np.asarray(points.properties["t"]).tolist()) == [0, 0, 1, 1, 1, 1, 1]
+    result = SpotCountProcessor().apply(source, spot_default_params())
+    assert result_kind(result) == "points"
+    assert result.count == 7 and sorted(np.asarray(result.properties["t"]).tolist()) == [0, 0, 1, 1, 1, 1, 1]
+    assert result.counts.tolist() == [2.0, 5.0]
+    (plot,) = result.plot_payloads()
+    assert plot.series[0].x.tolist() == [0.0, 0.5] and plot.x_label == "T (s)"
+    image, spots = result.display_layers()
+    assert image.role == "context" and np.shares_memory(image.data, stack) is False
+    assert spots.kind == "points" and spots.data.shape == (7, 3)  # (t, y, x): each on its frame
 
 
-def test_spot_count_processor_takes_a_single_frame():
+def test_spot_count_takes_a_single_frame_and_survives_finding_nothing():
     source = ArrayProcessingResult("frame", _frame(_spread(4, seed=9)), ["Y", "X"])
-    output = SpotCountProcessor().apply(source, spot_default_params())
-    assert np.asarray(dict(zip(output.keys, output.results))["counts"].data).tolist() == [4.0]
+    assert SpotCountProcessor().apply(source, spot_default_params()).counts.tolist() == [4.0]
+
+    empty = SpotCountProcessor().apply(
+        ArrayProcessingResult("blank", _frame([], background=False), ["Y", "X"]), spot_default_params())
+    assert empty.count == 0 and empty.counts.tolist() == [0.0]
+    # The image alone: an empty points layer is never handed to the viewer.
+    assert [layer.kind for layer in empty.display_layers()] == ["image"]
+    assert empty.table_records() == []
 
 
 @pytest.fixture(scope="module")
@@ -275,11 +283,12 @@ def test_tile_spots_processor_on_a_tiling_mosaic(tmp_path):
     assert processor.accepts(mosaic)
     assert not processor.accepts(ArrayProcessingResult("plain", np.zeros((10, 10)), ["Y", "X"]))
 
-    output = processor.apply(mosaic, TileSpotsProcessor.default_params())
-    results = dict(zip(output.keys, output.results))
-    tiles = results["tiles"]
+    tiles = processor.apply(mosaic, TileSpotsProcessor.default_params())
     assert tiles.frame == "stage:XY Stage" and tiles.count == 9
     selected = np.asarray(tiles.properties["selected"], dtype=bool)
     counts = np.asarray(tiles.properties["spots"])
     assert (selected == (counts >= 1)).all() and (np.diff(counts) <= 0).all()
-    assert results["spots"].count >= len(spots)  # overlap spots are seen twice
+    assert len(tiles.spots["y"]) >= len(spots)  # overlap spots are seen twice
+    kinds = [(layer.kind, layer.component) for layer in tiles.display_layers()]
+    assert kinds == [("image", "image"), ("points", "spots"), ("points", "targets")]
+    assert sorted(tiles.counts.tolist(), reverse=True) == counts.tolist()

@@ -732,6 +732,13 @@ class ReconstructionView(QtWidgets.QFrame):
                     spec.name, tuple(getattr(data, "shape", ()) or ()),
                 )
                 continue
+            empty = (data.size == 0) if hasattr(data, "size") else (len(data) == 0)
+            if empty:
+                # Nothing found is a normal outcome. An empty layer (a points
+                # layer of zero rows with per-point styling, a zero-size image)
+                # raises inside napari and leaves the viewer half-built.
+                self._logger.info("setDisplayLayers: %r is empty; not shown", spec.name)
+                continue
             specs.append(spec)
         if not specs:
             self.clearImage()

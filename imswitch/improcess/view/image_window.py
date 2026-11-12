@@ -639,7 +639,7 @@ class ImageWindow(QtWidgets.QWidget):
             self._setViewModesQuietly(None)
             self.setDisplayLayers(specs)
             return
-        if result_kind(result) in ("curve", "table", "localization"):
+        if result_kind(result) in ("curve", "table", "localization", "points", "value", "event"):
             self._clearLayers()
             self._notes.append(f"{result_kind(result)} results have no image to show in a window")
             self._rebuildSliders()
@@ -653,7 +653,7 @@ class ImageWindow(QtWidgets.QWidget):
         data = result.data
         shape = _shape_of(data)
         self._clearLayers()
-        if len(shape) < 2:
+        if len(shape) < 2 or 0 in shape:
             self._notes.append(f"{self._result.name!r} has {len(shape)} axis/axes and cannot be shown as an image")
             self._rebuildSliders()
             self._refreshStatus()
@@ -1054,6 +1054,8 @@ class ImageWindow(QtWidgets.QWidget):
                 self._notes.append(f"{spec.name!r} is a 3D layer; it needs the napari view")
                 continue
             if kind in ("points", "shapes"):
+                if kind == "points" and len(spec.data) == 0:
+                    continue  # nothing found: an empty overlay is not drawn
                 others.append((kind, spec))
                 continue
             # "image", "labels" and any unknown kind (napari treats it as an image).

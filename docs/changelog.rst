@@ -45,9 +45,10 @@ Unreleased
   processors share the SMLM localizer's net-gradient detection (without the
   fit), with an optional relative threshold (multiples of each frame's noise)
   and edge rejection for bright structures: ``spot-count`` counts the spots in
-  every frame of a stack (a count curve plus the spots as points), and
-  ``tile-spots`` counts them per tile of a saved tiling run, ranking the tiles
-  with the stage position to revisit. The workflow script
+  every frame of a stack, and ``tile-spots`` counts them per tile of a saved
+  tiling run, ranking the tiles with the stage position to revisit. Each run
+  gives one result: the spots (or ranked tiles) as its table, a copy of the
+  image or mosaic with the spots ringed, and the counts in the Graph panel. The workflow script
   ``event_trigger/01_spot_tiles_confocal.py`` takes a tiled widefield
   overview, finds the spots and runs the Scan panel's scan on every tile that
   has any. The Tiling controller gained ``isTilingRunning()`` and

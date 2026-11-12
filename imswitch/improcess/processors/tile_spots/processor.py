@@ -7,16 +7,20 @@ commanded stage position, which is what the stage has to go back to. The
 detection is the one ``spot-count`` uses (same settings, same spots), on
 each tile's maximum projection when tiles carry Z planes or channels.
 
-Two outputs, both points:
+One result holds all of it:
 
-* ``tiles`` -- one row per tile, most spots first, at the stage position to
-  revisit (``(y, x)`` in µm, frame ``stage:<positioner>``): the tile centre,
-  or the mean position of its spots (``target``). ``selected`` marks the
-  tiles with at least ``min_spots`` spots, ``rank`` orders them.
-* ``spots`` -- every spot in mosaic pixels (scaled to µm, so it overlays the
-  mosaic), with its tile, its stage position and its detection scores. The
-  placement is the commanded layout: a mosaic refined by registration can sit
-  a few pixels from it.
+* the table / points: one row per tile, most spots first, at the stage
+  position to revisit (``(y, x)`` in µm, frame ``stage:<positioner>``): the
+  tile centre, or the mean position of its spots (``target``). ``selected``
+  marks the tiles with at least ``min_spots`` spots, ``rank`` orders them.
+* the viewer: a copy of the mosaic with a ring on every spot and a labelled
+  marker (``#rank (spots)``) on every selected target. The placement is the
+  commanded layout: a mosaic refined by registration can sit a few pixels
+  from it.
+* the Graph panel: spots per tile, in acquisition order.
+
+Every spot with its stage position stays on the result as ``spots`` (a dict
+of columns) for scripts.
 
 Spots in the overlap of two tiles are counted in both: the count is per field
 of view, not per sample feature.
@@ -37,7 +41,7 @@ from imswitch.improcess.analysis.spot_count import (
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.points_result import PointsResult
 from imswitch.improcess.model.result import ProcessingResult
-from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
+from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.processors.spot_count import (
     add_spot_param_rows,
     spot_default_params,
@@ -48,11 +52,6 @@ from imswitch.improcess.processors.spot_count import (
 _TILE_PROPERTIES = (
     "tile", "spots", "rank", "selected", "grid_row", "grid_col",
     "tile_x_um", "tile_y_um", "target_x_um", "target_y_um",
-)
-#: Spot columns carried into the ``spots`` points.
-_SPOT_PROPERTIES = (
-    "tile_id", "y", "x", "stage_x_um", "stage_y_um",
-    "net_gradient", "intensity", "contrast",
 )
 
 
@@ -105,9 +104,6 @@ class TileSpotsProcessor(Processor):
             ),
         )
 
-    def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
-        return OutputSpec(ports=("tiles", "spots"), kind=self.output_kind)
-
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         """A mosaic that knows the tiling run it came from."""
@@ -150,52 +146,65 @@ class TileSpotsProcessor(Processor):
         widget.get_values = get_values
         return widget
 
-    def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
+    def apply(self, result: ProcessingResult, params: dict) -> PointsResult:
+        from imswitch.improcess.processors._axis_split import (
+            axis_labels_for_result,
+            axis_scales_for_result,
+        )
+        from imswitch.improcess.processors.spot_count import SpotResult
+
         manifest = tiling_manifest_of(result)
         if manifest is None:
             raise ValueError(
                 "Tile spots needs a tiling mosaic: open the run's tiles.json with "
                 "the tiling-mosaic reconstructor"
             )
+        settings = SpotParams.from_params(params)
         found = count_spots_in_tiling(
             manifest,
-            SpotParams.from_params(params),
+            settings,
             detector=params.get("detector") or _mosaic_detector(result),
             min_spots=int(params.get("min_spots", 1)),
             target=str(params.get("target", TARGET_MODES[0])),
         )
         stage_frame = f"stage:{found.positioner}" if found.positioner else "stage"
-        settings = {
-            "operation": self.id,
-            "manifest": found.manifest,
-            "positioner": found.positioner,
-            "axes": list(found.axes) if found.axes else None,
-            "min_spots": int(params.get("min_spots", 1)),
-            "target": str(params.get("target", TARGET_MODES[0])),
-            "selected_tiles": int(np.count_nonzero(found.tiles["selected"])),
-            "total_spots": int(len(found.spots["y"])),
-        }
-        tiles = PointsResult(
+        tiles = found.tiles
+        selected = np.asarray(tiles["selected"], dtype=bool)
+        counts_by_tile = np.zeros(len(tiles["tile"]))
+        counts_by_tile[np.asarray(tiles["tile"], dtype=np.int64)] = tiles["spots"]
+        mosaic = np.asarray(result.data)
+        out = SpotResult(
             f"{result.name} tiles by spot count",
-            np.column_stack([found.tiles["target_y_um"], found.tiles["target_x_um"]]).reshape(-1, 2),
+            np.column_stack([tiles["target_y_um"], tiles["target_x_um"]]).reshape(-1, 2),
+            image=np.array(mosaic, copy=True),
+            image_axis_labels=list(axis_labels_for_result(result)),
+            image_axis_scales=list(axis_scales_for_result(result)),
+            image_scale_unit=getattr(result, "scale_unit", "px"),
+            overlay=np.column_stack([found.spots["mosaic_y"], found.spots["mosaic_x"]]),
+            marker_size_px=settings.roi,
+            targets=np.column_stack([tiles["target_mosaic_y"][selected], tiles["target_mosaic_x"][selected]]),
+            target_labels=[f"#{r} ({n})" for r, n in zip(tiles["rank"][selected], tiles["spots"][selected])],
+            counts=counts_by_tile,
+            counts_title=(f"Spots per tile ({len(found.spots['y'])} in total, "
+                          f"{int(selected.sum())} tile(s) selected)"),
+            counts_x_label="Tile",
             frame=stage_frame,
             axis_names=["y", "x"],
-            properties={key: np.asarray(found.tiles[key]) for key in _TILE_PROPERTIES},
+            properties={key: np.asarray(tiles[key]) for key in _TILE_PROPERTIES},
             scale_unit="µm",
-            metadata=settings,
+            metadata={
+                "operation": self.id,
+                "manifest": found.manifest,
+                "positioner": found.positioner,
+                "axes": list(found.axes) if found.axes else None,
+                "min_spots": int(params.get("min_spots", 1)),
+                "target": str(params.get("target", TARGET_MODES[0])),
+                "selected_tiles": int(selected.sum()),
+                "total_spots": int(len(found.spots["y"])),
+            },
         )
-        pixel_y, pixel_x = found.pixel_size_um
-        spots = PointsResult(
-            f"{result.name} spots",
-            np.column_stack([found.spots["mosaic_y"], found.spots["mosaic_x"]]).reshape(-1, 2),
-            frame="mosaic",
-            axis_names=["y", "x"],
-            properties={key: np.asarray(found.spots[key]) for key in _SPOT_PROPERTIES},
-            coordinate_scale=[pixel_y, pixel_x],
-            scale_unit="µm",
-            metadata=settings,
-        )
-        return ProcessorOutput((tiles, spots), keys=("tiles", "spots"))
+        out.spots = found.spots
+        return out
 
 
 __all__ = ["TileSpotsProcessor", "tiling_manifest_of"]

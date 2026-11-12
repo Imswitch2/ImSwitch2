@@ -460,6 +460,19 @@ def count_spots_in_tiling(
 
     tiles = tile_spot_targets(counts, spots, spot_x, spot_y, stage, min_spots=min_spots, target=target)
     order = tiles["tile"]
+    # Where each target lies on the mosaic, for drawing it there.
+    mosaic_targets = np.zeros((len(planes), 2))
+    for ordinal, plane in enumerate(planes):
+        mine = spots["frame"] == ordinal
+        if target == "spot centroid" and mine.any():
+            mosaic_targets[ordinal] = (spots["mosaic_y"][mine].mean(), spots["mosaic_x"][mine].mean())
+        else:
+            mosaic_targets[ordinal] = (
+                positions[ordinal, 0] - origin[0] + (plane.shape[0] - 1) / 2.0,
+                positions[ordinal, 1] - origin[1] + (plane.shape[1] - 1) / 2.0,
+            )
+    tiles["target_mosaic_y"] = mosaic_targets[order, 0] if len(order) else np.empty(0)
+    tiles["target_mosaic_x"] = mosaic_targets[order, 1] if len(order) else np.empty(0)
     tiles["grid_row"] = np.asarray([dataset.tiles[i].grid[0] for i in order], dtype=np.int64)
     tiles["grid_col"] = np.asarray([dataset.tiles[i].grid[1] for i in order], dtype=np.int64)
     tiles["name"] = np.asarray([dataset.tiles[i].name for i in order], dtype=object)
