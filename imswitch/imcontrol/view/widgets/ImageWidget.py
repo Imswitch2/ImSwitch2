@@ -231,11 +231,36 @@ class ImageWidget(QtWidgets.QWidget):
             kwargs['scale'] = self._fitScale(scale, im.ndim)
         self.napariViewer.add_image(im, **kwargs)
 
+    def getActiveImageLayerSnapshot(self):
+        """Snapshot the selected Napari Image layer for offline localization.
+
+        Only the selected 2-D image is used: no detector, acquisition or
+        image-display intensity transformations are involved.  The layer is
+        returned as well so an overlay can be placed in its world coordinates.
+        """
+        viewer = self.napariViewer
+        layer = getattr(viewer, 'active_layer', None)
+        if layer is None:
+            layer = viewer.layers.selection.active
+        if not isinstance(layer, napari.layers.Image):
+            raise ValueError('select an Image layer in Napari before localizing')
+        if getattr(layer, 'rgb', False):
+            raise ValueError('select a grayscale image layer, not an RGB image')
+        image = np.asarray(layer.data)
+        if image.ndim != 2:
+            raise ValueError(
+                f'active Napari layer {layer.name!r} must be 2-D '
+                f'(got shape {image.shape})'
+            )
+        if not np.issubdtype(image.dtype, np.number):
+            raise ValueError('active Napari image must have numeric pixel values')
+        return np.array(image, copy=True), layer
+
     def getLiveLayerSnapshot(self, detectorName):
         layer = self.imgLayers.get(detectorName)
         if layer is None or layer not in self.napariViewer.layers:
             raise KeyError(f"live detector layer {detectorName!r} is unavailable")
-        image = np.squeeze(np.asarray(layer.data))
+        image = np.asarray(layer.data)
         if image.ndim != 2:
             raise ValueError(
                 f"live detector {detectorName!r} is not a 2D image after squeeze "

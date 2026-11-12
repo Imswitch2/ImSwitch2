@@ -1189,6 +1189,7 @@ class VispyScatterVisual(VispyBaseVisual):
         self._symbol = symbol
         self._markers_data = -1e8 * np.ones((1, 2))
         self._pixel_scale = (1.0, 1.0)
+        self._world_coordinates = False
 
     def attach(self, viewer, view, canvas, parent=None, order=0):
         super().attach(viewer, view, canvas, parent, order)
@@ -1216,7 +1217,7 @@ class VispyScatterVisual(VispyBaseVisual):
             return
         self._pixel_scale = (sx, sy)
         node = getattr(self, 'node', None)
-        if node is not None:
+        if node is not None and not self._world_coordinates:
             node.transform.scale = [sx, sy, 1, 1]
 
     def setVisible(self, value):
@@ -1224,6 +1225,21 @@ class VispyScatterVisual(VispyBaseVisual):
         self._on_data_change(None)
 
     def setData(self, x, y):
+        """Show positions in data pixels (normal detector-overlay mode)."""
+        self._world_coordinates = False
+        node = getattr(self, 'node', None)
+        if node is not None:
+            sx, sy = self._pixel_scale
+            node.transform.scale = [sx, sy, 1, 1]
+        self._markers_data = np.column_stack((x, y))
+        self._on_data_change(None)
+
+    def setWorldData(self, x, y):
+        """Show already-transformed world positions, ignoring pixel-scale updates."""
+        self._world_coordinates = True
+        node = getattr(self, 'node', None)
+        if node is not None:
+            node.transform.scale = [1.0, 1.0, 1, 1]
         self._markers_data = np.column_stack((x, y))
         self._on_data_change(None)
 

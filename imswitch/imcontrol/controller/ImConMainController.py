@@ -120,6 +120,9 @@ class ImConMainController(MainController):
                 'imageWidget': _imageWidget,
                 'lineProfileWidget': self.__mainView.widgets.get('LineProfile'),
             },
+            'ULenses': {
+                'imageWidget': _imageWidget,
+            },
             'TransformCalibration': {
                 'imageWidget': _imageWidget,
                 'ulensesWidget': self.__mainView.widgets.get('ULenses'),

@@ -4,13 +4,21 @@ from ..basecontrollers import ImConWidgetController
 from imswitch.imcontrol.model.ulenses_localizer import localize_grid, localizer
 
 
+def _image_source(widget):
+    getter = getattr(widget, 'getImageSource', None)
+    return getter() if getter is not None else 'detector'
+
+
 class ULensesController(ImConWidgetController):
     """Linked to ULensesWidget."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, imageWidget=None, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self._imageWidget = imageWidget
         self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
 
         # Register the grid overlay with the image viewbox (like the other
         # overlays) so it is tracked in the viewbox's overlay list and receives
@@ -23,11 +31,81 @@ class ULensesController(ImConWidgetController):
         self._widget.sigUShowLensesChanged.connect(self.toggleULenses)
         self._widget.sigLocalizeBtnClicked.connect(self.localize)
         self._widget.sigLocalizationMethodChanged.connect(self._localizationMethodChanged)
+        self._widget.sigImageSourceChanged.connect(self._imageSourceChanged)
+        if self._imageWidget is not None:
+            try:
+                selected = self._imageWidget.napariViewer.layers.selection
+                selected.events.active.connect(self._activeLayerChanged)
+            except AttributeError:
+                pass  # Older Napari releases may not expose this event.
         self._commChannel.sigDetectorSwitched.connect(self._detectorSwitched)
 
         self._syncPixelSizeFromDetector()
 
+    def _imageSourceChanged(self, source):
+        # The new source needs a fresh localization. Never project geometry
+        # from one detector/imported image onto another.
+        self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
+        self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+        if source == 'napari':
+            self._widget.setPixelSizeManualFallback(
+                'Imported Napari image: enter its effective pixel size in nm.'
+            )
+            self._widget.setLocalizationStatus(
+                'Select a 2-D Image layer in Napari, set its pixel size, then Auto Localize.'
+            )
+        else:
+            self._syncPixelSizeFromDetector()
+            self._widget.setLocalizationStatus('Run Auto Localize for this detector.')
+
+    def _activeLayerChanged(self, *_args):
+        if _image_source(self._widget) != 'napari':
+            return
+        # A new selected layer is not the image on which the cached lattice
+        # was localized. Avoid showing potentially misleading grid positions.
+        self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
+        self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+        self._widget.setLocalizationStatus(
+            'Active Napari layer changed — run Auto Localize on the selected image.'
+        )
+
+    @staticmethod
+    def _napariWorldCoordinates(layer, points_rc):
+        """Convert (row, col) image coordinates to Napari world-space (x, y).
+
+        Unlike detector overlays, imported layers may be translated, rotated,
+        or scaled independently of the current detector.  Mapping the output
+        through the layer transform ensures the overlay follows the image.
+        """
+        points_rc = np.asarray(points_rc, dtype=np.float64).reshape(-1, 2)
+        if len(points_rc) == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        world_rc = np.asarray(
+            [layer.data_to_world(tuple(point)) for point in points_rc],
+            dtype=np.float64,
+        )
+        return world_rc[:, [1, 0]]
+
+    def _showGridPoints(self, points_rc):
+        if _image_source(self._widget) == 'napari':
+            if self._napariSourceLayer is None:
+                self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+                return
+            xy = self._napariWorldCoordinates(self._napariSourceLayer, points_rc)
+            # The points are already in world coordinates. Do not let live
+            # detector pixel-scale updates move this imported-image overlay.
+            self._widget.setWorldData(x=xy[:, 0], y=xy[:, 1])
+            return
+        points_rc = np.asarray(points_rc, dtype=np.float64)
+        self._widget.setData(x=points_rc[:, 1], y=points_rc[:, 0])
+
     def _detectorSwitched(self, *_args):
+        if _image_source(self._widget) == 'napari':
+            return  # An imported layer is independent of detector selection.
         # Grid geometry belongs to the image/detector it was localized on. Do
         # not carry a finite tilted grid onto a newly selected detector.
         self._gridLocalizationResult = None
@@ -98,6 +176,8 @@ class ULensesController(ImConWidgetController):
 
     def _syncPixelSizeFromDetector(self):
         """Refresh uLenses pixel size from the currently displayed detector."""
+        if _image_source(self._widget) == 'napari':
+            return None  # Physical calibration of imported images is manual.
         try:
             pixel_size_nm, detector_name, source = self._detectorPixelSizeNm()
         except Exception as error:
@@ -122,7 +202,14 @@ class ULensesController(ImConWidgetController):
             if px <= 0:
                 raise ValueError('Pixel size must be positive')
 
-            img_frame = self._commChannel.get_image()
+            source = _image_source(self._widget)
+            if source == 'napari':
+                if self._imageWidget is None:
+                    raise ValueError('the Image/Napari viewer is not available')
+                img_frame, source_layer = self._imageWidget.getActiveImageLayerSnapshot()
+            else:
+                img_frame = self._commChannel.get_image()
+                source_layer = None
             method = self._widget.getLocalizationMethod()
             if method == 'legacy':
                 loc_res = localizer(
@@ -196,6 +283,12 @@ class ULensesController(ImConWidgetController):
             # Keep the previous successful overlay/result visible for diagnosis.
             return
 
+        if source == 'napari':
+            self._napariSourceLayer = source_layer
+            self._napariImageShape = img_frame.shape
+        else:
+            self._napariSourceLayer = None
+            self._napariImageShape = None
         self.updateGrid()
 
     def _localizationMethodChanged(self, method):
@@ -221,16 +314,28 @@ class ULensesController(ImConWidgetController):
                 )
                 return
             points = np.asarray(grid_result.grid_points_rc, dtype=np.float64)
-            self._widget.setData(x=points[:, 1], y=points[:, 0])
+            if _image_source(self._widget) == 'napari':
+                self._showGridPoints(points)
+            else:
+                self._widget.setData(x=points[:, 1], y=points[:, 0])
             return
 
         # Historical axis-aligned behavior remains unchanged.
         x, y, px, upx, upy = self._widget.getParameters()
-        size_x, size_y = self._master.detectorsManager.execOnCurrent(lambda c: c.shape)
+        if _image_source(self._widget) == 'napari':
+            if self._napariImageShape is None:
+                self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+                return
+            size_y, size_x = self._napariImageShape
+        else:
+            size_x, size_y = self._master.detectorsManager.execOnCurrent(lambda c: c.shape)
         pattern_x = np.arange(x, size_x, upx / px)
         pattern_y = np.arange(y, size_y, upy / px)
         grid = np.array(np.meshgrid(pattern_x, pattern_y)).T.reshape(-1, 2)
-        self._widget.setData(x=grid[:, 0], y=grid[:, 1])
+        if _image_source(self._widget) == 'napari':
+            self._showGridPoints(grid[:, [1, 0]])
+        else:
+            self._widget.setData(x=grid[:, 0], y=grid[:, 1])
 
     def toggleULenses(self, show):
         """Show or hide grid."""

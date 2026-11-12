@@ -596,3 +596,118 @@ def test_detector_assumed_default_pixel_size_keeps_manual_fallback():
 
     with pytest.raises(ValueError, match='assumed default'):
         ulenses_controller_module.ULensesController._detectorPixelSizeNm(fake_controller)
+
+
+def test_controller_grid_can_localize_selected_napari_image(monkeypatch):
+    """Offline image source must never request a mock/live detector frame."""
+    image = np.ones((80, 110), dtype=float)
+    points = np.array([[10.0, 20.0], [17.0, 39.0], [26.0, 58.0]])
+    grid = GridLocalizationResult(
+        origin_rc=points[0],
+        basis_x_rc=np.array([7.0, 19.0]),
+        basis_y_rc=np.array([9.0, 0.0]),
+        n_cols=3,
+        n_rows=1,
+        stagger_axis=None,
+        stagger_fraction=0.0,
+        grid_points_rc=points,
+        logical_indices=np.array([[0, 0], [1, 0], [2, 0]]),
+        detected_points_rc=points,
+        matched_mask=np.ones(3, dtype=bool),
+        measured_points_rc=points,
+        num_cols=3,
+        num_rows=1,
+    )
+    calls = {}
+
+    def fake_localize(image_input, **kwargs):
+        calls['image'] = image_input
+        calls['kwargs'] = kwargs
+        return grid
+
+    monkeypatch.setattr(ulenses_controller_module, 'localize_grid', fake_localize)
+
+    layer = SimpleNamespace(
+        name='imported',
+        data_to_world=lambda rc: (rc[0] * 2.0 + 10.0, rc[1] * 3.0 + 20.0),
+    )
+
+    class Widget:
+        def getImageSource(self):
+            return 'napari'
+
+        def getParameters(self):
+            return 0., 0., 100., 2000., 1800.
+
+        def getLocalizationMethod(self):
+            return 'grid'
+
+        def getGridSize(self):
+            return None, None
+
+        def getGridLocalizationSettings(self):
+            return {}
+
+        def setParameters(self, **kwargs):
+            calls['parameters'] = kwargs
+
+        def setLocalizationStatus(self, status, **kwargs):
+            calls['status'] = status
+
+        def setWorldData(self, x, y):
+            calls['world_x'] = np.asarray(x)
+            calls['world_y'] = np.asarray(y)
+
+    def no_detector_frame():
+        raise AssertionError('detector should not be accessed in Napari mode')
+
+    controller = SimpleNamespace(
+        _widget=Widget(),
+        _commChannel=SimpleNamespace(get_image=no_detector_frame),
+        _imageWidget=SimpleNamespace(getActiveImageLayerSnapshot=lambda: (image, layer)),
+        _logger=SimpleNamespace(warning=lambda _: None),
+        _gridLocalizationResult=None,
+        _napariSourceLayer=None,
+        _napariImageShape=None,
+    )
+    controller._syncPixelSizeFromDetector = lambda: None
+    controller._showGridPoints = lambda pts: (
+        ulenses_controller_module.ULensesController._showGridPoints(controller, pts)
+    )
+    controller._napariWorldCoordinates = lambda src, pts: (
+        ulenses_controller_module.ULensesController._napariWorldCoordinates(src, pts)
+    )
+    controller.updateGrid = lambda: (
+        ulenses_controller_module.ULensesController.updateGrid(controller)
+    )
+
+    ulenses_controller_module.ULensesController.localize(controller)
+
+    assert calls['image'] is image
+    assert calls['kwargs']['xp_guess'] == pytest.approx(20)
+    assert calls['kwargs']['yp_guess'] == pytest.approx(18)
+    assert controller._napariSourceLayer is layer
+    assert controller._napariImageShape == (80, 110)
+    np.testing.assert_allclose(calls['world_x'], 3.0 * points[:, 1] + 20.0)
+    np.testing.assert_allclose(calls['world_y'], 2.0 * points[:, 0] + 10.0)
+
+
+def test_napari_layer_change_discards_old_grid():
+    events = {}
+    widget = SimpleNamespace(
+        getImageSource=lambda: 'napari',
+        setData=lambda **kwargs: events.setdefault('points', kwargs),
+        setLocalizationStatus=lambda status: events.setdefault('status', status),
+    )
+    controller = SimpleNamespace(
+        _widget=widget,
+        _gridLocalizationResult=object(),
+        _napariSourceLayer=object(),
+        _napariImageShape=(80, 110),
+    )
+    ulenses_controller_module.ULensesController._activeLayerChanged(controller)
+    assert controller._gridLocalizationResult is None
+    assert controller._napariSourceLayer is None
+    assert controller._napariImageShape is None
+    assert 'Active Napari layer changed' in events['status']
+    assert len(events['points']['x']) == 0

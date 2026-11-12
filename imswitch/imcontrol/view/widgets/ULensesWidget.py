@@ -15,12 +15,21 @@ class ULensesWidget(NapariHybridWidget):
     sigUShowLensesChanged = QtCore.Signal(bool)  # (enabled)
     sigLocalizeBtnClicked = QtCore.Signal()
     sigLocalizationMethodChanged = QtCore.Signal(str)
+    sigImageSourceChanged = QtCore.Signal(str)
 
     def __post_init__(self):
         # Graphical Elements
         self.localizationMethodCombo = QtWidgets.QComboBox()
         self.localizationMethodCombo.addItem('Legacy (axis-aligned)', 'legacy')
         self.localizationMethodCombo.addItem('Grid localization (experimental)', 'grid')
+
+        self.imageSourceCombo = QtWidgets.QComboBox()
+        self.imageSourceCombo.addItem('Current detector', 'detector')
+        self.imageSourceCombo.addItem('Active Napari image', 'napari')
+        self.imageSourceCombo.setToolTip(
+            'Use the current detector image or the selected Napari Image layer '
+            '(including imported images) for offline localization.'
+        )
 
         self.ulensesButton = guitools.BetterPushButton('uLenses')
         self.ulensesCheck = QtWidgets.QCheckBox('Show uLenses')
@@ -67,35 +76,40 @@ class ULensesWidget(NapariHybridWidget):
         self.setLayout(ulensesLayout)
         ulensesLayout.addWidget(QtWidgets.QLabel('Localization method'), 0, 0)
         ulensesLayout.addWidget(self.localizationMethodCombo, 0, 1, 1, 3)
-        ulensesLayout.addWidget(QtWidgets.QLabel('Pixel Size (nm)'), 1, 0)
-        ulensesLayout.addWidget(self.pxEdit, 1, 1)
-        ulensesLayout.addWidget(QtWidgets.QLabel('Periodicity X'), 2, 0)
-        ulensesLayout.addWidget(self.upxEdit, 2, 1)
-        ulensesLayout.addWidget(QtWidgets.QLabel('Periodicity Y'), 3, 0)
-        ulensesLayout.addWidget(self.upyEdit, 3, 1)
-        ulensesLayout.addWidget(QtWidgets.QLabel('X offset'), 4, 0)
-        ulensesLayout.addWidget(self.xEdit, 4, 1)
-        ulensesLayout.addWidget(QtWidgets.QLabel('Y offset'), 5, 0)
-        ulensesLayout.addWidget(self.yEdit, 5, 1)
+        ulensesLayout.addWidget(QtWidgets.QLabel('Image source'), 1, 0)
+        ulensesLayout.addWidget(self.imageSourceCombo, 1, 1, 1, 3)
+        ulensesLayout.addWidget(QtWidgets.QLabel('Pixel Size (nm)'), 2, 0)
+        ulensesLayout.addWidget(self.pxEdit, 2, 1)
+        ulensesLayout.addWidget(QtWidgets.QLabel('Periodicity X'), 3, 0)
+        ulensesLayout.addWidget(self.upxEdit, 3, 1)
+        ulensesLayout.addWidget(QtWidgets.QLabel('Periodicity Y'), 4, 0)
+        ulensesLayout.addWidget(self.upyEdit, 4, 1)
+        ulensesLayout.addWidget(QtWidgets.QLabel('X offset'), 5, 0)
+        ulensesLayout.addWidget(self.xEdit, 5, 1)
+        ulensesLayout.addWidget(QtWidgets.QLabel('Y offset'), 6, 0)
+        ulensesLayout.addWidget(self.yEdit, 6, 1)
 
-        ulensesLayout.addWidget(self.gridSizeLabel, 6, 0)
-        ulensesLayout.addWidget(self.gridSizeCombo, 6, 1)
-        ulensesLayout.addWidget(self.nColsLabel, 6, 2)
-        ulensesLayout.addWidget(self.nColsSpin, 6, 3)
-        ulensesLayout.addWidget(self.nRowsLabel, 7, 2)
-        ulensesLayout.addWidget(self.nRowsSpin, 7, 3)
+        ulensesLayout.addWidget(self.gridSizeLabel, 7, 0)
+        ulensesLayout.addWidget(self.gridSizeCombo, 7, 1)
+        ulensesLayout.addWidget(self.nColsLabel, 7, 2)
+        ulensesLayout.addWidget(self.nColsSpin, 7, 3)
+        ulensesLayout.addWidget(self.nRowsLabel, 8, 2)
+        ulensesLayout.addWidget(self.nRowsSpin, 8, 3)
 
-        ulensesLayout.addWidget(self.ulensesButton, 8, 0)
-        ulensesLayout.addWidget(self.ulensesCheck, 8, 1)
-        ulensesLayout.addWidget(self.localizeBtn, 8, 2, 1, 2)
-        ulensesLayout.addWidget(self.gridSettingsButton, 9, 2, 1, 2)
-        ulensesLayout.addWidget(self.statusLabel, 10, 0, 1, 4)
+        ulensesLayout.addWidget(self.ulensesButton, 9, 0)
+        ulensesLayout.addWidget(self.ulensesCheck, 9, 1)
+        ulensesLayout.addWidget(self.localizeBtn, 9, 2, 1, 2)
+        ulensesLayout.addWidget(self.gridSettingsButton, 10, 2, 1, 2)
+        ulensesLayout.addWidget(self.statusLabel, 11, 0, 1, 4)
 
         # Connect signals
         self.ulensesButton.clicked.connect(self.sigULensesClicked)
         self.ulensesCheck.toggled.connect(self.sigUShowLensesChanged)
         self.localizeBtn.clicked.connect(self.sigLocalizeBtnClicked)
         self.gridSettingsButton.clicked.connect(self._editGridLocalizationSettings)
+        self.imageSourceCombo.currentIndexChanged.connect(
+            lambda _index: self.sigImageSourceChanged.emit(self.getImageSource())
+        )
         self.localizationMethodCombo.currentIndexChanged.connect(
             self._localizationMethodChanged
         )
@@ -149,6 +163,9 @@ class ULensesWidget(NapariHybridWidget):
                 float(self.pxEdit.text()),
                 float(self.upxEdit.text()),
                 float(self.upyEdit.text()))
+
+    def getImageSource(self):
+        return str(self.imageSourceCombo.currentData())
 
     def getLocalizationMethod(self):
         return str(self.localizationMethodCombo.currentData())
@@ -313,6 +330,10 @@ class ULensesWidget(NapariHybridWidget):
     def setData(self, x, y):
         """Updates plot with new parameters."""
         self.ulensesPlot.setData(x=x, y=y)
+
+    def setWorldData(self, x, y):
+        """Render an imported Napari layer's localized coordinates in world units."""
+        self.ulensesPlot.setWorldData(x=x, y=y)
 
     def setULensesVisible(self, visible):
         """Updates visibility of plot."""
