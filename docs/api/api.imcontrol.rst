@@ -333,6 +333,14 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: getLastTilingFolder() -> str
+
+      The folder the last saved tiling run was written to (it holds
+      ``tiles.json``), or an empty string when no run saved its tiles in this
+      session. A run with *Save tiles* off leaves it unchanged.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: getLiveFrame(detectorName: Optional[str] = None) -> numpy.ndarray
 
       Returns the newest frame of a detector as a NumPy array
@@ -513,6 +521,15 @@ api.imcontrol
       Return whether a setup-mode component changes safety-critical hardware.
 
       Always available.
+
+   .. method:: isTilingRunning() -> bool
+
+      Whether a tiling run is in progress. True from the moment
+      ``startTiling`` accepted the run until its tiles, mosaic and manifest
+      are written and the stage is back at the start, so a script can wait
+      for it: ``waitUntil(lambda: not api.imcontrol.isTilingRunning())``.
+
+      Needs *Tiling* in ``availableWidgets``.
 
    .. method:: listSetupModes()
 

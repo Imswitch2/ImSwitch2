@@ -70,10 +70,15 @@ class TilingMosaicResult(ProcessingResult):
     """A stitched mosaic, 2-D or volumetric."""
 
     def __init__(self, *args, provenance: PayloadProvenance | None = None,
-                 output_origin_yx=(0, 0), **kwargs):
+                 output_origin_yx=(0, 0), manifest=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.provenance = provenance
         self.output_origin_yx = tuple(output_origin_yx)
+        #: The run's ``tiles.json``, so a processor can go back to the tiles
+        #: (and their stage positions) the mosaic was assembled from.
+        if manifest is None:
+            manifest = getattr(provenance, "manifest", None)
+        self.manifest = str(manifest) if manifest is not None else None
 
 
     supported_formats = ("tiff",)
@@ -1081,4 +1086,5 @@ class TilingReconstructor(Reconstructor):
             scale_unit="µm",
             provenance=result_provenance,
             output_origin_yx=result_origin_yx,
+            manifest=index.manifest,
         )

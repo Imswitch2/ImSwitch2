@@ -408,6 +408,25 @@ The Tiling controller exports these methods through ImSwitch2's generated API:
     Return the last alignment report as text, or an empty string when no report
     exists.
 
+``isTilingRunning()`` / ``getLastTilingFolder()``
+    Whether a run is in progress (true from ``startTiling()`` until its files are
+    written and the stage is back), and the folder the last saved run wrote its
+    ``tiles.json`` to. Together they let a script take an overview and wait for it:
+    ``startTiling()`` then ``waitUntil(lambda: not api.imcontrol.isTilingRunning())``.
+    The manifest also names the stage (``xy_positioner``, ``xy_axes``), so its
+    ``stage_um`` positions can be driven back to.
+
+Spots per tile
+--------------
+
+The ImProcess processor ``tile-spots`` runs on a mosaic from the
+``tiling-mosaic`` reconstructor and counts diffraction-limited spots on the
+tiles behind it (the SMLM net-gradient detection ``spot-count`` uses), ranking
+the tiles by count with the stage position to revisit each. The workflow script
+``scripts/workflows/event_trigger/01_spot_tiles_confocal.py`` does the whole loop
+on the microscope: overview, spots per tile, a confocal scan (the Scan panel's
+scan) on every tile with spots, most spots first.
+
 ``detectCellTargets()``
     Detect and display targets without moving the stage; returns their overview
     row/column coordinates.

@@ -189,6 +189,15 @@ def _fixture(pid, processor, tmp_path, monkeypatch):
             lambda *args, **kwargs: _identity_alignment(),
         )
         return [volume], {**params, "x_bounds": "0,2,4,6"}
+    if pid == "tile-spots":
+        # It counts on the tiles behind a mosaic, so it needs a saved run.
+        from test_spot_count import _write_tiling_run
+
+        from imswitch.improcess.reconstructors.tiling.reconstructor import TilingMosaicResult
+
+        manifest, _layout, _spots = _write_tiling_run(tmp_path / "run")
+        return [TilingMosaicResult(name="mosaic", data=np.zeros((8, 8)), axis_labels=["Y", "X"],
+                                   manifest=manifest)], params
     candidates = list(_representative_results().values()) + [_image_t_stack(), _image_c_stack()]
     for candidate in candidates:
         if processor.accepts(candidate):

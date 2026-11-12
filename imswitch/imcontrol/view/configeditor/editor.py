@@ -346,12 +346,14 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "smlm-filter",
     "smlm-group",
     "smlm-render",
+    "spot-count",
     "stack-combine",
     "stack-split",
     "stack-subset",
     "subtract-background",
     "table-to-localizations",
     "threshold",
+    "tile-spots",
     "transform",
 ]
 

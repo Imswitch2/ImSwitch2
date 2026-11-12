@@ -41,6 +41,18 @@ Unreleased
 
 **New Features**
 
+- **Spot counting and a spot-triggered confocal revisit.** Two ImProcess
+  processors share the SMLM localizer's net-gradient detection (without the
+  fit), with an optional relative threshold (multiples of each frame's noise)
+  and edge rejection for bright structures: ``spot-count`` counts the spots in
+  every frame of a stack (a count curve plus the spots as points), and
+  ``tile-spots`` counts them per tile of a saved tiling run, ranking the tiles
+  with the stage position to revisit. The workflow script
+  ``event_trigger/01_spot_tiles_confocal.py`` takes a tiled widefield
+  overview, finds the spots and runs the Scan panel's scan on every tile that
+  has any. The Tiling controller gained ``isTilingRunning()`` and
+  ``getLastTilingFolder()``, and its ``tiles.json`` names the XY stage.
+
 - **Start with another hardware setup for one run.** ``python -m imswitch --setup <file>`` runs ImSwitch with that setup from ``imcontrol_setups`` while ``imcontrol_options.json`` keeps naming the one it normally starts with; ``--setup choose`` picks it in the setup dialog instead. Changes saved to the running setup (laser presets, camera settings) go to its own file, and saving the memory limits or the recordings folder leaves the options file's setup alone. A restart after editing the running setup comes back with it; picking a setup (**Pick hardware setup…**, or *Set as active* in the config editor) makes that the setup ImSwitch starts with and restarts without ``--setup``. An unknown name stops the launch with the list of setups there are.
 - **Smart pipelines can wait.** A ``wait`` action sleeps for ``seconds`` inside the action chain; a gate of rule ``delay`` opens on the first tick ``seconds`` after a trigger arrived and then re-arms. ``run-scan`` scans every point it is given, one scan after the other (``points``: ``all`` or ``first``, ``max_points``).
 - **Smart pipelines run scans: the ``run-scan`` action and scan-driven sources.** A pipeline on a point-scanning setup can now take an overview scan, segment it, scan the cell it picked at a finer pixel size with other lasers, and go back to the overview: ``run-scan`` sets the Scan panel's SimplePointScan plan (``overview`` of ``field_um``, or ``acquisition`` of ``length_um`` at ``pixel_um`` centred on the input point, with ``lasers`` as its channel) and runs it with the scan's exact completion; a ``live`` source on a scan-driven detector (an APD) ticks once per completed scan with that scan's geometry, which the ``scan-geometry`` transform uses to turn pixels into scanner micrometres without a calibration; an action marked ``on_arm`` runs before any frame (the first overview); a tick starts its chain at whichever action it has inputs for, so one pipeline branches between *fine scan at the cell* and *overview again*; a condition gate can be ``invert``\ ed. The shipped demo ``smart_pipelines/apd_scan_cells_demo.json`` (with ``calibrations/apd_scan_geometry.json``) does this on ``galvo_apd_simple_mock_scan_setup.json``. The mock lasers are binary and the mock APD ignores them, so there the laser choice shows in the log, not in the image.

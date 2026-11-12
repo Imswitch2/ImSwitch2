@@ -38,9 +38,11 @@ from .smlm_drift_comet import SmlmCometDriftProcessor
 from .smlm_filter import SmlmFilterProcessor
 from .smlm_group import SmlmGroupProcessor
 from .smlm_render import SmlmRenderProcessor
+from .spot_count import SpotCountProcessor
 from .stack_split import StackSplitProcessor
 from .stack_subset import StackSubsetProcessor
 from .table_to_localizations import TableToLocalizationsProcessor
+from .tile_spots import TileSpotsProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
@@ -70,12 +72,14 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
     'threshold': ThresholdProcessor,
+    'tile-spots': TileSpotsProcessor,
     'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
     'smlm-drift-comet': SmlmCometDriftProcessor,
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
     'smlm-render': SmlmRenderProcessor,
+    'spot-count': SpotCountProcessor,
     'stack-combine': StackCombineProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
