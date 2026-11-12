@@ -51,7 +51,7 @@ def test_old_periodic_imports_are_exact_aliases():
 def test_old_finite_imports_are_exact_aliases():
     assert control_api.GridLocalizationResult is GridLocalizationResult
     assert control_api.GridLocalizationError is GridLocalizationError
-    assert control_api.localize_grid is localize_grid
+    assert control_api.localize_grid.__wrapped__ is localize_grid
     assert control_api.refine_grid_foci is refine_grid_foci
     assert control_api.search_missing_grid_foci is search_missing_grid_foci
     assert control_api.LocalizationResult is old_ulenses.LocalizationResult

@@ -6,11 +6,14 @@ calibration format continue to use PatternLocalization and PeriodPrior directly.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from imswitch.imcommon.algorithms.grid_localization import (
     PatternPrior,
     PatternLocalizationResult,
     from_periodic_localization,
     periodic_components,
+    localize_pattern,
 )
 
 from .calibration import PatternLocalization
@@ -52,3 +55,59 @@ def from_common(result: PatternLocalizationResult) -> PatternLocalization:
         motif=components["motif"],
         provenance=components["provenance"],
     )
+
+
+def detect_lattice_shared(
+    image,
+    *,
+    settings: LocalizationSettings,
+    band: tuple[float, float | None],
+) -> Lattice:
+    """Dispatch the *unchanged* periodic FFT detector via the shared facade.
+
+    ``band`` is the previously resolved MoNaLISA setting (including explicit
+    ``PipelineParams.period_band_px`` overrides). It remains authoritative.
+    Use the shared prior as an algorithm hint only when it describes precisely
+    that same band; otherwise preserve the old numerical kwargs and report
+    the prior as metadata, not a newly applied constraint.
+
+    This function intentionally returns the historical Lattice for existing
+    calibration, spot fitting, FOV enumeration and saved-job contracts.
+    """
+    prior = prior_from_settings(settings)
+    options = dict(
+        min_period=band[0], max_period=band[1],
+        num_candidate_peaks=int(settings.num_candidate_peaks),
+        min_peak_significance=float(settings.min_peak_significance),
+    )
+    # The shared API computes period bands from PatternPrior. It differs
+    # from the existing ImProcess rule for extreme tolerances (>= 1) and
+    # cannot represent a deliberate explicit band override. Preserve exact
+    # old kwargs instead of broadening or narrowing the Fourier search.
+    can_supply_prior = False
+    if prior.provided_fields:
+        periods = [v for v in (
+            prior.expected_period_x_px, prior.expected_period_y_px
+        ) if v is not None]
+        tolerance = prior.period_tolerance_fraction
+        if periods and tolerance is not None and tolerance < 1.0:
+            same_band = (
+                min(periods) * (1.0 - tolerance),
+                max(periods) * (1.0 + tolerance),
+            )
+            can_supply_prior = same_band == band
+    if can_supply_prior:
+        # Period bounds are added by the facade, using the exact same
+        # algorithm and numeric values as the historical settings.
+        options.pop("min_period")
+        options.pop("max_period")
+        common = localize_pattern(image, strategy="periodic", prior=prior,
+                                  options=options)
+    else:
+        common = localize_pattern(image, strategy="periodic", options=options)
+        if prior.provided_fields:
+            common = replace(
+                common, prior=prior,
+                prior_usage={key: "not_evaluated" for key in prior.provided_fields},
+            )
+    return from_common(common).lattice
