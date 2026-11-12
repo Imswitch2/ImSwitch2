@@ -3,14 +3,20 @@
 
 Two storage modes mirror ImControl's HDF5Storer:
 
-  --mode single-file  ->  <name>_CAM.hdf5
+  --mode single-file  ->  <name>_CAM.hdf5.partial during the entire lapse;
                            /scan0/CAM/{data,frames_committed,stream_complete}
                            /scan1/CAM/{data,...}
-                           (writer closes and reopens the same file between scans)
+                           publish as <name>_CAM.hdf5 when the lapse ends.
 
-  --mode multi-file   ->  <name>_scan0_CAM.hdf5  /CAM/{data,...}
-                           <name>_scan1_CAM.hdf5  /CAM/{data,...}
-                           (each finished file is closed and never changed again)
+  --mode multi-file   ->  <name>_scan0_CAM.hdf5.partial during T0;
+                           publish <name>_scan0_CAM.hdf5 after T0;
+                           repeat for each subsequent timepoint.
+
+The temporary-file protocol mirrors ImControl HDF5 SaveMode.Disk timelapses:
+working filename is <public>.partial, <public>.partial.claim exclusively
+reserves the final name, and the same-directory publication happens only after
+post-close finalization. The normal Session HDF5 discovery ignores .partial.
+Use --direct-write to reproduce the previous growing-.hdf5 access behavior.
 
 Each timepoint repeats the source scan's *original raw camera frames*. The
 script copies the detector metadata, acquisition layout, and physical pixel
@@ -24,6 +30,7 @@ and writes the post-close recording:completion_outcome='complete' attribute.
 Usage:
     python fake_hdf5_timelapse.py "<source-hdf5-file-path>" "<target-folder-path>" --mode multi-file --timepoints 5 --duration 5
     python fake_hdf5_timelapse.py "<source-hdf5-file-path>" "<target-folder-path>" --mode single-file --timepoints 5 --duration 5
+    python fake_hdf5_timelapse.py "<source-hdf5-file-path>" "<target-folder-path>" --mode single-file --timepoints 5 --stop-after 3
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import time
 from datetime import datetime
@@ -243,6 +251,57 @@ def _replay_one(path: Path, src_ds: h5py.Dataset, detector: str, index: int,
     print(f"  T{index}: sealed and closed ({path.name})", flush=True)
 
 
+def _working_path(public_path: Path) -> Path:
+    """ImControl's Hdf5PublicationRegistry.working_name convention."""
+    return Path(f"{public_path}.partial")
+
+
+def _claim_path(public_path: Path) -> Path:
+    """ImControl's Hdf5PublicationRegistry.claim_name convention."""
+    return Path(f"{public_path}.partial.claim")
+
+
+def _check_publication_destinations(paths: list[Path]) -> None:
+    """Never reuse an old public file, abandoned stage, or reservation."""
+    occupied = [str(candidate) for public in paths
+                for candidate in (public, _working_path(public), _claim_path(public))
+                if os.path.lexists(candidate)]
+    if occupied:
+        raise FileExistsError(f"Refusing to overwrite existing recording/stage/claim: {occupied}")
+
+
+def _reserve_working_path(public_path: Path) -> Path:
+    """Cross-process reservation, matching ImControl's .partial.claim contract."""
+    _check_publication_destinations([public_path])
+    claim = _claim_path(public_path)
+    fd = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd)
+    return _working_path(public_path)
+
+
+def _publish_finalized(working: Path, public: Path) -> None:
+    """Publish without overwriting, after all writer and metadata handles close.
+
+    Equivalent to Hdf5PublicationRegistry._publish_one; intentionally
+    stand-alone so this tool does not import ImControl or Qt.
+    """
+    if os.path.lexists(public):
+        raise FileExistsError(f"HDF5 destination already exists: {public}")
+    if not working.is_file():
+        raise FileNotFoundError(f"Finalized HDF5 working file missing: {working}")
+    if os.name == "nt":
+        os.rename(working, public)  # same-directory, no-overwrite on Windows
+    else:
+        os.link(working, public)  # no-overwrite across POSIX processes
+        os.unlink(working)
+    try:
+        _claim_path(public).unlink()
+    except OSError:
+        # Publication succeeded. A stale claim is harmless, as in ImControl.
+        pass
+    print(f"  Published {public.name}", flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("source", type=Path, help="Completed HDF5 scan to repeat")
@@ -257,6 +316,12 @@ def main(argv=None):
                         help="Delay between timepoints (default 3 seconds)")
     parser.add_argument("--startup-delay", type=float, default=5.0,
                         help="Delay before creating the first output file (default 5 seconds)")
+    parser.add_argument("--direct-write", action="store_true",
+                        help="Legacy mode: write directly to the visible .hdf5 files to reproduce the HDF5 discovery race")
+    parser.add_argument("--atomic-publish", action="store_true",
+                        help="Compatibility alias for the default staged publication (now using .hdf5.partial in the watched folder)")
+    parser.add_argument("--stop-after", type=int, default=None, metavar="N",
+                        help="Simulate a deliberate STOP after N completed timepoints; keep the original planned total")
     parser.add_argument("--detector", default=None, help="Choose source detector if multiple present")
     parser.add_argument("--source-timepoint", type=int, default=0,
                         help="Select scanN from an existing lapse (default scan0)")
@@ -266,6 +331,10 @@ def main(argv=None):
         parser.error("--timepoints must be between 2 and 1000")
     if args.source_timepoint < 0:
         parser.error("--source-timepoint must be non-negative")
+    if args.stop_after is not None and not 1 <= args.stop_after <= args.timepoints:
+        parser.error("--stop-after must be between 1 and --timepoints")
+    if args.direct_write and args.atomic_publish:
+        parser.error("--direct-write and --atomic-publish cannot be combined")
     if args.duration <= 0 or args.interval <= 0:
         parser.error("--duration and --interval must be positive")
     if args.between_timepoints < 0 or args.startup_delay < 0:
@@ -290,25 +359,59 @@ def main(argv=None):
                  if args.mode == "single-file" else
                  [folder / f"{name}_scan{index:0{index_width}d}_{detector}.hdf5"
                   for index in range(args.timepoints)])
-        existing = [p for p in paths if p.exists()]
-        if existing:
-            parser.error(f"Refusing to overwrite existing file(s): {existing}")
+        try:
+            if args.direct_write:
+                existing = [str(p) for p in paths if os.path.lexists(p)]
+                if existing:
+                    raise FileExistsError(f"Existing output files: {existing}")
+            else:
+                _check_publication_destinations(paths)
+        except FileExistsError as exc:
+            parser.error(str(exc))
         if src_path in paths:
             parser.error("Source and destination must not be the same file")
         print(f"Source: {src_path}  [{detector}/data, {source.shape}, {source.dtype}]", flush=True)
         print(f"Mode: {args.mode}; output: {paths[0]}" +
               (f" ... {paths[-1]}" if len(paths) > 1 else ""), flush=True)
+        print("Publication: " + ("direct/legacy" if args.direct_write else
+              ".hdf5.partial + .claim; publish after finalization"), flush=True)
         print(f"Waiting {args.startup_delay:g} s before creating first output", flush=True)
         time.sleep(args.startup_delay)
-        for index in range(args.timepoints):
-            output = paths[0] if args.mode == "single-file" else paths[index]
-            _replay_one(output, source, detector, index, args.timepoints, args.mode,
-                        duration=args.duration, interval=args.interval,
-                        between_timepoints=args.between_timepoints)
-            if index + 1 < args.timepoints:
-                time.sleep(args.between_timepoints)
-        print(f"Finished {args.timepoints} completed timepoints", flush=True)
-        return paths
+        completed = args.stop_after or args.timepoints
+        shared_working = None
+        try:
+            for index in range(completed):
+                public = paths[0] if args.mode == "single-file" else paths[index]
+                if args.direct_write:
+                    working = public
+                elif args.mode == "single-file" and shared_working is not None:
+                    working = shared_working  # reopen identical staged file for scan1...
+                else:
+                    working = _reserve_working_path(public)
+                    if args.mode == "single-file":
+                        shared_working = working
+                _replay_one(working, source, detector, index, args.timepoints, args.mode,
+                            duration=args.duration, interval=args.interval,
+                            between_timepoints=args.between_timepoints)
+                if not args.direct_write and args.mode == "multi-file":
+                    _publish_finalized(working, public)
+                if index + 1 < completed:
+                    time.sleep(args.between_timepoints)
+            # Shared single-file lapse publishes at the *operation* terminal,
+            # including deliberate early STOP, not after each writer terminal.
+            if not args.direct_write and args.mode == "single-file":
+                _publish_finalized(shared_working, paths[0])
+        except BaseException:
+            if not args.direct_write:
+                print("Replay failed; staged .partial file(s) and .claim(s) "
+                      "are retained for inspection/recovery", flush=True)
+            raise
+        if completed < args.timepoints:
+            print(f"Stopped after {completed}/{args.timepoints} completed timepoints; "
+                  "existing metadata retains planned count", flush=True)
+        else:
+            print(f"Finished {completed} completed timepoints", flush=True)
+        return paths[:completed] if args.mode == "multi-file" else paths
 
 
 if __name__ == "__main__":

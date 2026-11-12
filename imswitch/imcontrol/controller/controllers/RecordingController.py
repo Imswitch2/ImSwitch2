@@ -2760,6 +2760,42 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 )
             return
 
+        # A shared disk-HDF5 timelapse is physically staged across every
+        # timepoint. The writer finalized each completed scanN group, but
+        # only the *operation* terminal (normal completion or early STOP)
+        # may make the shared file visible under its final name.
+        recordingArgs = getattr(self, 'recordingArgs', {}) or {}
+        if (
+            self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+            and recordingArgs.get('singleLapseFile')
+            and recordingArgs.get('saveFormat') == SaveFormat.HDF5
+            and recordingArgs.get('saveMode') == SaveMode.Disk
+        ):
+            manager = self._master.recordingManager
+            publish = getattr(manager, 'publishPendingHdf5Lapse', None)
+            if callable(publish):
+                try:
+                    publish(generation=self.__dict__.get('_recordingManagerGeneration'))
+                except Exception as error:
+                    # The staged file is already finalized and must remain
+                    # recoverable. Publication failure is a terminal error,
+                    # not a reason to invoke writer-abort cleanup.
+                    self._recordingFailedCurrent = True
+                    self._lastRecordingFailure = str(error)
+                    self.__logger.error(
+                        'Could not publish finalized HDF5 lapse; staged data '
+                        'retained for recovery: %s', error, exc_info=True,
+                    )
+                    report = getattr(manager, 'reportRecordingFailure', None)
+                    if callable(report):
+                        try:
+                            report(error, self.__dict__.get('_recordingManagerGeneration'))
+                        except Exception:
+                            self.__logger.error(
+                                'Could not publish HDF5 publication failure',
+                                exc_info=True,
+                            )
+
         # A scan recording's public recordingEnded is published here, once,
         # when the writer has drained and the scan has ended. The worker
         # publishes only the detailed terminal in the scan modes: it has held

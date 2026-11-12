@@ -47,6 +47,9 @@ import logging
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
+from imswitch.imcontrol.model.managers.hdf5_publication import (
+    Hdf5PublicationError, Hdf5PublicationRegistry,
+)
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     ChunkKind, RawFrameUnavailableError, _queueBudgetBytes,
 )
@@ -2048,6 +2051,8 @@ class RecordingManager(SignalInterface):
         # Where the current single-file lapse is writing, resolved once at its
         # first timepoint: { requested base path: path actually opened }.
         self._lapseFilePaths = {}
+        # Disk-HDF5 timelapse outputs remain invisible to Session until closed.
+        self._hdf5Publication = Hdf5PublicationRegistry()
         self.__detectorsManager = detectorsManager
         self.__record = False
         self.__abort = False
@@ -2671,13 +2676,17 @@ class RecordingManager(SignalInterface):
                         or self.__endSignalEmitted)
             failed = self.__failureSignalEmitted
         complete = bool(complete and not failed)
+        # A per-timepoint writer may have finalized a shared single-file
+        # lapse, but the logical run has not published the disk file yet.
+        publication = self._hdf5Publication
         return {
             name: PayloadLocator(
                 path=locator.path, detector=locator.detector,
                 group=locator.group, axes=locator.axes,
                 stored_axes=locator.stored_axes, shape=locator.shape,
                 stored_shape=locator.stored_shape,
-                generation=int(generation), complete=complete,
+                generation=int(generation),
+                complete=(complete and not publication.pending(locator.path)),
             )
             for name, locator in found.items()
         }
@@ -3086,6 +3095,45 @@ class RecordingManager(SignalInterface):
                 return path[:-len(suffix)], path[-len(suffix):]
         return os.path.splitext(path)
 
+    def reserveStagedHdf5Path(self, requested):
+        """Resolve a unique *public* name, reserving its .partial counterpart.
+
+        A crashed or publication-failed stage is never reused or overwritten.
+        Existing getSaveFilePath naming (``_1``, ``_2``...) is preserved.
+        """
+        self._hdf5Publication.discard_missing_unfinalized()
+        candidate = self.getSaveFilePath(requested)
+        sequence = 0
+        stem, ext = self._splitRecordingSuffix(requested)
+        while True:
+            try:
+                self._hdf5Publication.reserve(candidate)
+                return candidate
+            except FileExistsError:
+                # Another process may have won the atomic .claim creation
+                # between our lookup and reservation. Select another name.
+                sequence += 1
+                candidate = f'{stem}_{sequence}{ext}'
+
+    def publishPendingHdf5Lapse(self, generation=None):
+        """Publish preserved, finalized single-file data at run-level terminal.
+
+        Called by RecordingController only after STOP/scan-and-writer teardown.
+        An aborted active point cannot authorize publication itself: there
+        must already be at least one finalized previous generation.
+        """
+        if self.record:
+            raise RuntimeError('Cannot publish HDF5 while recording')
+        writer = getattr(self.__recordingWorker, '_writerThread', None)
+        if writer is not None and writer.is_alive():
+            raise RuntimeError('Cannot publish HDF5 while writer is running')
+        if generation is None:
+            generation = self.__recordingGeneration
+        with self.__recordingSignalLock:
+            locators = self.__payloadLocators.get(int(generation), {})
+            public_paths = tuple(locator.path for locator in locators.values())
+        return self._hdf5Publication.publish_pending_finalized(public_paths)
+
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
         numExisting = 0
@@ -3141,7 +3189,8 @@ class WriterThread(threading.Thread):
                  singleMultiDetectorFile, singleLapseFile, saveMode, filePaths,
                  recordingManager, *, recordingGeneration=None,
                  recordingMode=_ome.MODE_TIMELAPSE, scanDims=None,
-                 scanDrivenDetectors=None):
+                 scanDrivenDetectors=None, publicPaths=None,
+                 publishHdf5OnFinalize=False):
         # Normal shutdown still joins with a deadline and reports a failure.
         # The daemon fail-safe prevents an uninterruptible storage-backend call
         # from keeping the whole application process alive forever.
@@ -3155,6 +3204,10 @@ class WriterThread(threading.Thread):
         self._singleLapseFile = singleLapseFile
         self._saveMode = saveMode
         self._filePaths = filePaths
+        # HDF5 storer uses the physical path, but locator consumers see only
+        # the unchanged public filename (and complete=False until published).
+        self._publicPaths = dict(publicPaths or filePaths)
+        self._publishHdf5OnFinalize = bool(publishHdf5OnFinalize)
         self._recordingManager = recordingManager
         self._recordingGeneration = recordingGeneration
         self._recordingMode = recordingMode
@@ -3208,6 +3261,9 @@ class WriterThread(threading.Thread):
             self._storer.abortStream(
                 self._filePaths, self._fileDests, self._saveMode
             )
+            publication = getattr(self._recordingManager, '_hdf5Publication', None)
+            if publication is not None:
+                publication.discard_missing_unfinalized()
         except Exception as cleanupError:
             logger.error(
                 f'Recording writer failed to clean up partial output: '
@@ -3323,7 +3379,7 @@ class WriterThread(threading.Thread):
                 # Preserve the resolved path for compatibility. There is no
                 # exact group/shape to publish when a detector wrote no array.
                 locators[detectorName] = PayloadLocator(
-                    path=str(self._filePaths[detectorName]),
+                    path=str(self._publicPaths[detectorName]),
                     detector=detectorName,
                 )
                 continue
@@ -3365,7 +3421,7 @@ class WriterThread(threading.Thread):
                     'cannot name both dimensions without ambiguity'
                 )
             locators[detectorName] = PayloadLocator(
-                path=str(self._filePaths[detectorName]),
+                path=str(self._publicPaths[detectorName]),
                 detector=detectorName,
                 group=info.group,
                 axes=axes,
@@ -3429,6 +3485,11 @@ class WriterThread(threading.Thread):
                         self._storer.abortStream(
                             self._filePaths, self._fileDests, self._saveMode
                         )
+                        publication = getattr(
+                            self._recordingManager, '_hdf5Publication', None
+                        )
+                        if publication is not None:
+                            publication.discard_missing_unfinalized()
                         self._stream_cleanup_done.set()
                     else:
                         self._flush_all_batches()
@@ -3471,6 +3532,23 @@ class WriterThread(threading.Thread):
                                     self._saveMode,
                                 )
                             elif self._recordingManager is not None:
+                                publication = getattr(
+                                    self._recordingManager, '_hdf5Publication', None
+                                )
+                                staged = tuple(
+                                    path for path in self._publicPaths.values()
+                                    if publication is not None and publication.pending(path)
+                                )
+                                if staged:
+                                    publication.mark_finalized(
+                                        staged, deferred=self._singleLapseFile
+                                    )
+                                    # HDF5 was safely closed and finalized.
+                                    # Even if publication fails, NEVER route
+                                    # its data through destructive abortStream.
+                                    self._stream_cleanup_done.set()
+                                    if self._publishHdf5OnFinalize:
+                                        publication.publish(staged)
                                 self._recordingManager.registerPayloadLocators(
                                     self._recordingGeneration,
                                     finalLocators,
@@ -3505,6 +3583,10 @@ class WriterThread(threading.Thread):
             # thread never blocks forever on a full queue.
             logger.exception(f"WriterThread failed during write loop: {e}")
             self._write_exception = e
+            # A finalized staged file is valid acquisition data even when
+            # publication fails. Never delete it in the abort/error path.
+            if isinstance(e, Hdf5PublicationError):
+                self._stream_cleanup_done.set()
             # A write/finalize failure is not a successful recording. Remove
             # the partial stream in this writer thread so callers cannot
             # mistake a truncated output for a completed acquisition.
@@ -3868,16 +3950,20 @@ class RecordingWorker(Worker):
             self.acquisitionTicket = None
     
     def _getFileDests(self):
-        """Prepare file destinations and paths for streaming."""
+        """Resolve physical destinations and unchanged public recording names.
+
+        Only disk-backed HDF5 timelapses are staged. The writer must receive
+        physical paths for its post-close metadata rewrite and abort cleanup.
+        The public-path mapping is retained separately for payload locators.
+        """
         singleMultiDetectorFile = self.singleMultiDetectorFile
-        singleLapseFile = (
-            self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
-            and self.singleLapseFile
+        lapse = self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+        singleLapseFile = lapse and self.singleLapseFile
+        stageHdf5 = (
+            lapse and self.saveFormat == SaveFormat.HDF5
+            and self.saveMode == SaveMode.Disk
         )
-        
-        fileDests = {}
-        filePaths = {}
-        
+
         if self.saveFormat == SaveFormat.TIFF:
             extension = 'ome.tiff'
         elif self.saveFormat == SaveFormat.HDF5:
@@ -3886,38 +3972,42 @@ class RecordingWorker(Worker):
             extension = 'zarr'
         else:
             raise ValueError(f'Unsupported save format: {self.saveFormat}')
-        
-        # Determine file paths
+
+        publicPaths = {}
+        filePaths = {}
+        resolved = {}
+        publication = self.__recordingManager._hdf5Publication
         for detectorName in self.detectorNames:
             if singleMultiDetectorFile and self.saveFormat != SaveFormat.TIFF:
                 baseFilePath = f'{self.savename}.{extension}'
             else:
                 baseFilePath = f'{self.savename}_{detectorName}.{extension}'
-            
-            # A lapse resolves its destination ONCE, at its first timepoint,
-            # and every later timepoint reuses what that resolved to. The
-            # exemption from de-duplication exists so timepoints 1..N-1 can
-            # append to the file timepoint 0 created; expressed as "this path
-            # may always be overwritten", it also swallowed the first timepoint
-            # of the NEXT run, which then appended into the previous run's file
-            # with group numbering that continued from it while every recorded
-            # time-partition index restarted at 0.
+
             pinned = self.__recordingManager._lapseFilePaths
             isLaterLapseItem = singleLapseFile and int(
                 getattr(self, 'recLapseIndex', 0) or 0
             ) > 0
-            if isLaterLapseItem and baseFilePath in pinned:
-                filePaths[detectorName] = pinned[baseFilePath]
-                continue
-            filePaths[detectorName] = self.__recordingManager.getSaveFilePath(
-                baseFilePath,
-                allowOverwriteDisk=isLaterLapseItem and self.saveMode != SaveMode.RAM,
-                allowOverwriteMem=isLaterLapseItem and self.saveMode == SaveMode.RAM
-            )
+            if baseFilePath in resolved:
+                public = resolved[baseFilePath]
+            elif isLaterLapseItem and baseFilePath in pinned:
+                public = pinned[baseFilePath]
+            elif stageHdf5:
+                public = self.__recordingManager.reserveStagedHdf5Path(baseFilePath)
+            else:
+                public = self.__recordingManager.getSaveFilePath(
+                    baseFilePath,
+                    allowOverwriteDisk=isLaterLapseItem and self.saveMode != SaveMode.RAM,
+                    allowOverwriteMem=isLaterLapseItem and self.saveMode == SaveMode.RAM,
+                )
+            resolved[baseFilePath] = public
+            publicPaths[detectorName] = public
             if singleLapseFile:
-                pinned[baseFilePath] = filePaths[detectorName]
-        
-        # Determine file destinations (path or BytesIO)
+                pinned[baseFilePath] = public
+            filePaths[detectorName] = (
+                publication.working_path(public) if stageHdf5 else public
+            )
+
+        fileDests = {}
         for detectorName in self.detectorNames:
             if self.saveMode == SaveMode.RAM:
                 memRecordings = self.__recordingManager._memRecordings
@@ -3927,26 +4017,26 @@ class RecordingWorker(Worker):
                 fileDests[detectorName] = memRecordings[filePaths[detectorName]]
             else:
                 fileDests[detectorName] = filePaths[detectorName]
-        
-        # Publish where this session's data is going. The paths are resolved
-        # here and nowhere else -- getSaveFilePath de-duplicates against what
-        # already exists, so a caller that guessed would name a file that is
-        # not the one being written.
+
+        self._publicFilePaths = publicPaths
+        # Only independent files publish at the writer terminal. A shared
+        # single-file lapse is owned by RecordingController's run terminal.
+        self._publishHdf5OnFinalize = bool(stageHdf5 and not singleLapseFile)
+
+        # Public names remain authoritative; their "complete" flag stays
+        # false until the physical working file has actually been published.
         try:
             self.__recordingManager.registerPayloadLocators(
                 getattr(self, 'recordingGeneration', None),
                 {
                     name: PayloadLocator(path=str(path), detector=name)
-                    for name, path in filePaths.items()
+                    for name, path in publicPaths.items()
                 },
             )
         except Exception:
-            # Locators are a convenience for callers that index the output;
-            # failing to publish them must not fail the recording itself.
             pass
-
         return fileDests, filePaths
-    
+
     def _augment_attrs_with_recording_metadata(
         self,
         attrs: Dict[str, Dict[str, Any]],
@@ -4239,6 +4329,8 @@ class RecordingWorker(Worker):
             ),
             saveMode=self.saveMode,
             filePaths=filePaths,
+            publicPaths=self._publicFilePaths,
+            publishHdf5OnFinalize=self._publishHdf5OnFinalize,
             recordingManager=self.__recordingManager,
             recordingGeneration=getattr(self, 'recordingGeneration', None),
             recordingMode=mode,
@@ -4553,6 +4645,12 @@ class RecordingWorker(Worker):
                     emitLegacy=emitLegacy,
                 )
             if cleanupErrors:
+                if any(isinstance(error, Hdf5PublicationError)
+                       for error in cleanupErrors):
+                    raise RuntimeError(
+                        'HDF5 publication failed; finalized .partial file '
+                        'was preserved for recovery'
+                    ) from cleanupErrors[0]
                 raise RuntimeError(
                     'Recording cleanup failed; partial output was aborted'
                 ) from cleanupErrors[0]
