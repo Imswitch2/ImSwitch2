@@ -883,6 +883,10 @@ class ZarrStorer(Storer):
         self._stores = {}
         self._roots = {}
         self._datasets = {}
+        # Shared lapse stores may contain already sealed scanN groups. Never
+        # remove such a directory on abort of one later timepoint.
+        self._preexistingStores = {}
+        self._singleLapseFile = bool(singleLapseFile)
         self._attrs = attrs
         self._fileDests = fileDests
         self._currentFrames = {}
@@ -892,6 +896,7 @@ class ZarrStorer(Storer):
         for detectorName in detectorNames:
             dest = fileDests[detectorName]
             if dest not in self._stores:
+                self._preexistingStores[dest] = os.path.exists(dest)
                 store = self._make_store(dest)
                 self._stores[dest] = store
                 root = zarr.group(store=store, overwrite=not singleLapseFile)
@@ -1037,18 +1042,62 @@ class ZarrStorer(Storer):
         )
 
     def abortStream(self, filePaths, fileDests, saveMode):
-        """Close Zarr stores and remove the partial .zarr directories."""
+        """Discard only this writer's unfinished partition, not earlier scanN.
+
+        A single-file lapse reuses the same Zarr directory across successive
+        writer generations. Deleting it would destroy the already finalized
+        timepoints. Remove only this generation's scan group(s), including its
+        NGFF discovery entries. Non-shared stores retain destructive abort.
+        """
+        roots = getattr(self, '_roots', {})
+        paths = getattr(self, '_groupPaths', {})
+        destinations = getattr(self, '_fileDests', {})
+        for dest, root in roots.items():
+            groups = {paths.get(det) for det, path in destinations.items()
+                      if path == dest and paths.get(det)}
+            if not groups:
+                continue
+            for group in groups:
+                try:
+                    if group in root:
+                        del root[group]
+                except Exception as e:
+                    logger.warning(f'Zarr abort: could not discard {dest}/{group}: {e}')
+                    # An unremovable incomplete group remains non-finalized;
+                    # continue writer teardown rather than risking earlier data.
+            try:
+                ome = dict(root.attrs.get('ome', {}) or {})
+                if 'series' in ome:
+                    ome['series'] = [entry for entry in ome['series']
+                                     if not (isinstance(entry, dict) and
+                                             any(str(entry.get('path', '')).startswith(group + '/')
+                                                 for group in groups))]
+                    root.attrs['ome'] = ome
+            except Exception as e:
+                logger.warning(f'Zarr abort: could not update NGFF series: {e}')
+        remove_empty_shared = {
+            dest for dest, root in roots.items()
+            if (getattr(self, '_singleLapseFile', False)
+                and not getattr(self, '_preexistingStores', {}).get(dest, True)
+                and not list(root.keys()))
+        }
         for store in getattr(self, '_stores', {}).values():
             try:
                 self._close_store(store)
             except Exception as e:
                 logger.warning(f'Zarr abort: failed to close store: {e}')
-        for dest in set(getattr(self, '_fileDests', {}).values()):
+        for dest in set(destinations.values()):
             try:
-                if isinstance(dest, str) and os.path.isdir(dest):
-                    shutil.rmtree(dest, ignore_errors=True)
+                if not isinstance(dest, str) or not os.path.isdir(dest):
+                    continue
+                if not getattr(self, '_singleLapseFile', False):
+                    shutil.rmtree(dest)
+                elif dest in remove_empty_shared:
+                    # Entirely new, still-empty shared store: no scientific
+                    # timepoint exists to keep or advertise for discovery.
+                    shutil.rmtree(dest)
             except Exception as e:
-                logger.warning(f'Zarr abort: failed to remove store {dest}: {e}')
+                logger.warning(f'Zarr abort: failed to remove empty store {dest}: {e}')
 
 
 class HDF5Storer(Storer):

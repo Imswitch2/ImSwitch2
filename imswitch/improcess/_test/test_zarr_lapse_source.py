@@ -615,3 +615,120 @@ def test_zarr_lapse_does_not_advance_from_still_writing_scan(tmp_zarr_path):
         assert reader.is_complete()
     finally:
         reader.close()
+
+
+@pytest.mark.parametrize('remove', ('array', 'scan'))
+def test_live_zarr_abort_waits_for_terminal_after_active_scan_disappears(
+    tmp_zarr_path, remove,
+):
+    """The writer may remove scan2/CAM/data while Follow is polling scan2.
+
+    The source must not fail before the Session sees the terminal sidecar and
+    cancels Follow, and it must never silently pronounce a 2/5 lapse complete.
+    """
+    from imswitch.imcommon.model.hdf5_lapse_terminal import write_lapse_terminal
+
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    for t in range(3):
+        det_group = root.create_group(f'scan{t}').create_group('CAM')
+        data = np.full((4, 2, 3), t + 1, dtype=np.uint16)
+        array = ZarrStorer._create_array(
+            det_group, 'data', data=data, chunks=(2, 2, 3),
+        )
+        array.attrs.update({
+            'recording:frames_per_stack': 4,
+            'recording:num_timepoints': 5,
+            'recording:frames_committed': 0 if t == 2 else 4,
+            'writing': t == 2,
+        })
+
+    reader = ZarrLapseSource(detector_name='CAM', chunk_size=2)
+    reader.open(tmp_zarr_path)
+    try:
+        chunks = reader.poll()
+        assert sum(chunk.end - chunk.start for chunk in chunks) == 8
+        assert reader._current_group_index == 2
+        assert reader.poll() == []  # scan2 exists but has no committed frames
+        assert not reader.is_complete()
+
+        if remove == 'scan':
+            del root['scan2']
+        else:
+            del root['scan2']['CAM']['data']
+
+        # This is the failure window: abort cleanup has run, but the
+        # operation-level terminal has not yet been published.
+        assert reader.poll() == []
+        assert not reader.is_complete()
+        write_lapse_terminal(
+            tmp_zarr_path, completed=2, planned=5, outcome='aborted',
+        )
+        assert reader.poll() == []
+        assert not reader.is_complete()  # queue, not reader, finalizes 2/5
+        assert 'scan0' in root and 'scan1' in root
+    finally:
+        reader.close()
+
+
+def test_live_zarr_missing_current_scan_without_terminal_eventually_fails(
+    tmp_zarr_path,
+):
+    """An unexpected data loss must not be disguised as an endless live wait."""
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    det_group = root.create_group('scan0').create_group('CAM')
+    array = ZarrStorer._create_array(
+        det_group, 'data', data=np.ones((2, 2, 3), dtype=np.uint16),
+        chunks=(1, 2, 3),
+    )
+    array.attrs.update({
+        'recording:frames_per_stack': 2,
+        'recording:num_timepoints': 3,
+        'recording:frames_committed': 2,
+        'writing': False,
+    })
+    reader = ZarrLapseSource(detector_name='CAM')
+    reader.open(tmp_zarr_path)
+    try:
+        assert sum(c.end - c.start for c in reader.poll()) == 2
+        del root['scan0']['CAM']['data']
+        assert reader.poll() == []
+        reader._missing_current_since -= reader._DISCARDED_SCAN_GRACE_S + 1
+        with pytest.raises(ValueError, match='without an acquisition terminal'):
+            reader.poll()
+    finally:
+        reader.close()
+
+
+def test_live_zarr_abort_removes_next_scan_after_it_was_enumerated(tmp_zarr_path):
+    """Deletion between discovering scan1 and opening it must not fail Follow."""
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    for t in range(2):
+        det_group = root.create_group(f'scan{t}').create_group('CAM')
+        array = ZarrStorer._create_array(
+            det_group, 'data', data=np.ones((4, 2, 3), dtype=np.uint16),
+            chunks=(2, 2, 3),
+        )
+        array.attrs.update({
+            'recording:frames_per_stack': 4,
+            'recording:num_timepoints': 3,
+            'recording:frames_committed': 0 if t else 4,
+            'writing': bool(t),
+        })
+    reader = ZarrLapseSource(detector_name='CAM', chunk_size=2)
+    reader.open(tmp_zarr_path)
+    original_refresh = reader._refresh_scan_groups
+
+    def enumerated_then_deleted():
+        original_refresh()
+        del root['scan1']
+        reader._refresh_scan_groups = original_refresh
+
+    reader._refresh_scan_groups = enumerated_then_deleted
+    try:
+        chunks = reader.poll()
+        assert sum(c.end - c.start for c in chunks) == 4
+        assert reader._current_group_index == 0
+        assert reader.poll() == []
+        assert not reader.is_complete()
+    finally:
+        reader.close()

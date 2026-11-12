@@ -107,6 +107,12 @@ def test_early_stop_preserves_existing_groups_and_planned_count(paths):
             assert int(ds.attrs["recording:num_timepoints"]) == 3
             assert int(ds.attrs["recording:lapse_index"]) == index
     assert not list(watch.glob("*.partial*"))
+    marker = watch / "rec_CAM.hdf5.lapse-stopped.json"
+    assert marker.exists()
+    import json
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["completed_timepoints"] == 2
+    assert payload["planned_timepoints"] == 3
 
 
 def test_multifile_early_stop_publishes_only_finished_points(paths):
@@ -115,6 +121,9 @@ def test_multifile_early_stop_publishes_only_finished_points(paths):
     assert len(results) == 2
     assert all(p.exists() for p in results)
     assert not (watch / "rec_scan2_CAM.hdf5").exists()
+    import json
+    sidecar = watch / "rec_scan0_CAM.hdf5.lapse-stopped.json"
+    assert json.loads(sidecar.read_text())["completed_timepoints"] == 2
 
 
 def test_legacy_direct_write_remains_available(paths, monkeypatch):

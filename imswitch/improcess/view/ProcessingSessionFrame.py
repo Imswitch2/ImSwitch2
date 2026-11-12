@@ -778,9 +778,21 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.sessionTitleLabel.setFont(font)
         self.statusLabel = _ElidingLabel("")
         self.statusLabel.setMinimumWidth(0)
-        self.statusLabel.setMaximumWidth(150)
         self.statusLabel.setStyleSheet("color: #d08b28;")
         self.statusLabel.hide()
+        self.statusDismissBtn = QtWidgets.QToolButton()
+        self.statusDismissBtn.setText("×")
+        self.statusDismissBtn.setToolTip("Dismiss Session notice")
+        self.statusDismissBtn.setAutoRaise(True)
+        self.statusDismissBtn.clicked.connect(self._dismissStatus)
+        self.statusRow = QtWidgets.QWidget()
+        status_layout = QtWidgets.QHBoxLayout(self.statusRow)
+        status_layout.setContentsMargins(4, 0, 0, 0)
+        status_layout.setSpacing(4)
+        status_layout.addWidget(self.statusLabel, 1)
+        status_layout.addWidget(self.statusDismissBtn)
+        self.statusRow.hide()
+        self._lastQueueFailure = None
         self._statusGeneration = 0
         self.sessionNameLabel = _ElidingLabel("")
         self.startSessionBtn = QtWidgets.QPushButton("Start session…")
@@ -838,7 +850,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.actionsBtn.setMenu(self.actionsMenu)
 
         header.addWidget(self.sessionTitleLabel)
-        header.addWidget(self.statusLabel)
         header.addWidget(self.sessionNameLabel, 1)
         header.addWidget(self.startSessionBtn)
         header.addWidget(self.watchingControls)
@@ -846,6 +857,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         header.addWidget(self.actionsBtn)
         header.addWidget(self.settingsBtn)
         root.addLayout(header)
+        root.addWidget(self.statusRow)
 
         self.addingRow = QtWidgets.QWidget()
         adding_layout = QtWidgets.QHBoxLayout(self.addingRow)
@@ -1409,8 +1421,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._sessionActive = bool(active)
         self._statusGeneration += 1
         self.statusLabel.clear()
-        self.statusLabel.setMinimumWidth(0)
-        self.statusLabel.hide()
+        self.statusRow.hide()
+        self._lastQueueFailure = None
         self.sigSessionActiveChanged.emit(self._sessionActive)
         self.sessionTitleLabel.setText("SESSION:" if active else "SESSION")
         self.sessionNameLabel.setText(str(name or ""))
@@ -1454,23 +1466,18 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.cancelAddingBtn.setEnabled(True)
 
     def setStatus(self, text: str) -> None:
-        """Surface only important Session notices in the compact header.
+        """Keep actionable notices readable *below* the Session name row.
 
-        Routine progress/status is already visible in dedicated controls and
-        should not permanently consume vertical space. Errors and warnings are
-        shown transiently beside SESSION; routine informational chatter stays
-        out of the layout.
+        Full text remains available on hover if the dock is narrow. Errors
+        persist until dismissed; non-error notices expire after seven seconds.
         """
         text = str(text or "").strip()
         lowered = text.lower()
         error = any(token in lowered for token in (
             "could not", "failed", "error", "does not exist"
         ))
-        warning = (
-            lowered.startswith("no ")
-            or lowered.startswith("already ")
-            or lowered.startswith("cancelling")
-        )
+        warning = (lowered.startswith("no ") or lowered.startswith("already ")
+                   or lowered.startswith("cancelling"))
         main_info = lowered.startswith("session closed")
         if not (error or warning or main_info):
             return
@@ -1479,19 +1486,22 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.statusLabel.setStyleSheet(
             "color: #d34a4a;" if error else "color: #d08b28;"
         )
-        self.statusLabel.setMinimumWidth(48)
         self.statusLabel.setText(text)
         self.statusLabel.show()
-        QtCore.QTimer.singleShot(
-            7000, lambda: self._clearHeaderStatus(generation)
-        )
+        self.statusRow.show()
+        if not error:
+            QtCore.QTimer.singleShot(
+                7000, lambda: self._clearHeaderStatus(generation)
+            )
+
+    def _dismissStatus(self) -> None:
+        self._clearHeaderStatus(self._statusGeneration)
 
     def _clearHeaderStatus(self, generation: int) -> None:
         if int(generation) != self._statusGeneration:
             return
         self.statusLabel.clear()
-        self.statusLabel.setMinimumWidth(0)
-        self.statusLabel.hide()
+        self.statusRow.hide()
 
     def _dataset_changed(self, current, _previous):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
@@ -1703,6 +1713,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def setProcessingQueue(self, snapshot: dict | None) -> None:
         snapshot = dict(snapshot or {})
         self._lastQueueSnapshot = snapshot
+        terminal = dict(snapshot.get("last_terminal_status") or {})
+        failure = ((str(terminal.get("label") or "") + ": "
+                    + str(terminal.get("status") or ""))
+                   if terminal.get("kind") == "error" else None)
+        if failure and failure != self._lastQueueFailure:
+            self.setStatus(failure)
+        self._lastQueueFailure = failure
         paused = bool(snapshot.get("paused", False))
         auto_enabled = bool(snapshot.get("auto_enabled", False))
         current = snapshot.get("current")
@@ -1990,6 +2007,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 str(entry.get("status", "")),
                 "●" if entry.get("panel_link") else "",
             ])
+            if entry.get("provisional"):
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
+                item.setText(0, "")
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
             item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
             item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
@@ -2023,7 +2043,11 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             if self.datasetList.topLevelItemCount() and self.datasetList.currentItem() is None:
                 # Initial selection is intentional and should update controller
                 # context exactly like a user click.
-                self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
+                first = next((self.datasetList.topLevelItem(i)
+                              for i in range(self.datasetList.topLevelItemCount())
+                              if self.datasetList.topLevelItem(i).data(0, QtCore.Qt.UserRole)), None)
+                if first is not None:
+                    self.datasetList.setCurrentItem(first)
             elif not self.datasetList.topLevelItemCount():
                 self.sigDatasetSelectionChanged.emit(None)
         self.datasetList.fitAuxiliaryColumns()

@@ -36,6 +36,9 @@ class AutoTimepointState:
     publisher: object
     reuse_overrides: dict = field(default_factory=dict)
     calibration_resolved: bool = False
+    # The acquisition ended before its originally planned final T. A retained
+    # scientific prefix must be finalized as partial, not falsely complete.
+    terminal_early: bool = False
 
 
 def _native_bool(value):

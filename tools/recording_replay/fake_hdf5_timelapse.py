@@ -401,6 +401,20 @@ def main(argv=None):
             # including deliberate early STOP, not after each writer terminal.
             if not args.direct_write and args.mode == "single-file":
                 _publish_finalized(shared_working, paths[0])
+            if completed < args.timepoints:
+                # Same operation-level STOP record as ImControl.  It is not a
+                # substitute for the per-timepoint HDF5 completion barriers.
+                marker = Path(str(paths[0]) + ".lapse-stopped.json")
+                payload = {"version": 1, "outcome": "stopped_early",
+                           "anchor": paths[0].name, "completed_timepoints": completed,
+                           "planned_timepoints": args.timepoints}
+                draft = marker.with_name("." + marker.name + ".tmp")
+                with open(draft, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, separators=(",", ":"))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(draft, marker)
+                print(f"  Early STOP terminal: {marker.name}", flush=True)
         except BaseException:
             if not args.direct_write:
                 print("Replay failed; staged .partial file(s) and .claim(s) "

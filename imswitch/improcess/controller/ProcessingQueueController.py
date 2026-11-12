@@ -128,6 +128,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._incrementalMissingRanges = ()
         self._incrementalPublishedResult = None
         self._incrementalCompletedTimepoints = 0
+        self._incrementalTerminalCount = None
         self._resultPublisher = None
         self._closing = False
         self._currentProgress = {}
@@ -237,13 +238,28 @@ class ProcessingQueueController(ImProcessWidgetController):
                     or self.queue.contains_dataset(dataset_id)
                     or self._sessionController.isDatasetProcessed(dataset_id)):
                 continue
+            # If the terminal was discovered before the first Auto admission,
+            # run only its independently verified prefix, not missing future T.
+            scope = TimepointScope.all()
+            if getattr(dataset, 'kind', '') == 'time-lapse':
+                progress = getattr(self._sessionController, '_acquisitionProgress', {}).get(
+                    str(dataset.id)
+                )
+                if getattr(progress, 'status', None) == 'finished_early':
+                    completed = tuple(getattr(progress, 'completed_timepoints', ()) or ())
+                    if completed != tuple(range(len(completed))) or not completed:
+                        continue
+                    scope = TimepointScope.range(0, len(completed) - 1)
             job = self._job_for_dataset(
                 dataset, reconstructor, recipe.get("params", {}),
                 origin=ProcessingOrigin.AUTO,
-                timepoint_scope=TimepointScope.all(),
+                timepoint_scope=scope,
             )
-            job.execution_requirement = ExecutionRequirement(
-                recipe.get("execution_requirement", ExecutionRequirement.FINITE.value)
+            job.execution_requirement = (
+                ExecutionRequirement.FINITE if scope != TimepointScope.all() else
+                ExecutionRequirement(
+                    recipe.get("execution_requirement", ExecutionRequirement.FINITE.value)
+                )
             )
             jobs.append(job)
         added = self.queue.enqueue_many(jobs, position="end")
@@ -255,6 +271,79 @@ class ProcessingQueueController(ImProcessWidgetController):
     def enqueueAutoEligible(self, dataset_ids=None) -> int:
         """Retired historical-backfill entry point (M3B)."""
         return 0
+
+    def _retire_waiting_auto_for_stopped_lapse(self, dataset_id: str) -> None:
+        """A manual request may replace an Auto job waiting for nonexistent T.
+
+        Already published progressive Auto results are retained as cancelled;
+        an actively running reconstruction is never interrupted implicitly.
+        """
+        waiting = [job.id for job in self.queue.waiting
+                   if str(job.dataset_id) == str(dataset_id)
+                   and job.origin == ProcessingOrigin.AUTO]
+        for job in self.queue.remove_waiting(waiting):
+            self._cancel_waiting_auto_timepoints(job.id)
+            self._clear_readiness(job.id)
+
+    def acquisitionTerminated(self, dataset_id: str, progress) -> None:
+        """Retire absent future T from Auto after verified operation termination.
+
+        The Session has already checked that every timepoint in the terminal
+        claim is a contiguous, physically finalized prefix. Changing the
+        requested scope does not change the original planned T provenance.
+        Never silently interrupt an active worker; it finishes its sealed batch.
+        """
+        if getattr(progress, 'status', None) != 'finished_early':
+            return
+        completed = tuple(getattr(progress, 'completed_timepoints', ()) or ())
+        if completed != tuple(range(len(completed))):
+            return
+        count = len(completed)
+        affected = False
+        for job in tuple(self.queue.waiting):
+            if (str(job.dataset_id) != str(dataset_id)
+                    or job.origin != ProcessingOrigin.AUTO):
+                continue
+            state = self._autoTimepointStates.get(str(job.id))
+            if count == 0 or (state is not None and state.next_t >= count):
+                for removed in self.queue.remove_waiting([job.id]):
+                    # Preserve a published scientific prefix. No phantom
+                    # missing timepoints should survive as a waiting job.
+                    self._cancel_waiting_auto_timepoints(removed.id)
+                    self._clear_readiness(removed.id)
+                affected = True
+                continue
+            job.timepoint_scope = TimepointScope.range(0, count - 1)
+            job.execution_requirement = ExecutionRequirement.FINITE
+            job.readiness_status = ''
+            if state is not None:
+                state.stop_t = count
+                state.terminal_early = True
+            self._clear_readiness(job.id)
+            affected = True
+        current = self.queue.current
+        if (current is not None and current.origin == ProcessingOrigin.AUTO
+                and str(current.dataset_id) == str(dataset_id)):
+            stage = self._autoTimepointStates.get(str(current.id))
+            if stage is not None and count > 0:
+                current.timepoint_scope = TimepointScope.range(0, count - 1)
+                current.execution_requirement = ExecutionRequirement.FINITE
+                stage.stop_t = count
+                stage.terminal_early = True
+                affected = True
+            elif self._incrementalRunner is not None:
+                # The growing Zarr Follow reader still expects all planned T.
+                # Do not abandon an already-running scientific prefix: let it
+                # consume the verified last complete T, then cancel its idle
+                # poll. The publisher owns its already completed snapshots.
+                self._incrementalTerminalCount = count
+                affected = True
+                if self._incrementalCompletedTimepoints >= count:
+                    self._incrementalRunner.cancel()
+        if affected:
+            self._emit_changed()
+            if not self._closing and not self.queue.paused:
+                self._process_next()
 
     def enqueueSessionDatasets(
         self,
@@ -293,6 +382,24 @@ class ProcessingQueueController(ImProcessWidgetController):
                 if len(dataset_ids) == 1 and getattr(dataset, "kind", "") == "time-lapse"
                 else TimepointScope.all()
             )
+            # "All T" on a deliberately stopped lapse means the *available*
+            # sealed prefix for manual reconstruction, not the absent future
+            # timepoints. Keep the original planned total in the queue job and
+            # result provenance. Explicit Single/Range selections win.
+            if (origin == ProcessingOrigin.MANUAL
+                    and getattr(dataset, "kind", "") == "time-lapse"
+                    and scope == TimepointScope.all()):
+                progress = getattr(self._sessionController, "_acquisitionProgress", {}).get(
+                    str(dataset.id)
+                )
+                completed = tuple(getattr(progress, "completed_timepoints", ()) or ())
+                if (getattr(progress, "status", None) == "finished_early"
+                        and completed == tuple(range(len(completed)))
+                        and len(completed) > 0):
+                    retire = getattr(self, "_retire_waiting_auto_for_stopped_lapse", None)
+                    if callable(retire):
+                        retire(dataset.id)
+                    scope = TimepointScope.range(0, len(completed) - 1)
             jobs.append(self._job_for_dataset(
                 dataset, reconstructor, params, origin=origin, timepoint_scope=scope
             ))
@@ -939,6 +1046,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._incrementalMissingRanges = ()
         self._incrementalPublishedResult = None
         self._incrementalCompletedTimepoints = 0
+        self._incrementalTerminalCount = None
         self._resultPublisher = self._new_result_publisher(
             job, scope=scope, total=total, relation="timepoint",
         )
@@ -1041,6 +1149,9 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
         if self._resultPublisher is not None:
             self._resultPublisher.timepoint_completed(self._incrementalCompletedTimepoints)
+        if (self._incrementalTerminalCount is not None
+                and self._incrementalCompletedTimepoints >= self._incrementalTerminalCount):
+            self._incrementalRunner.cancel()
         self._currentProgress = {
             "fraction": min(1., completed / total) if total else None,
             "status": f"Timepoint {completed}/{total}" if total else f"Timepoint {completed}",
@@ -1071,6 +1182,8 @@ class ProcessingQueueController(ImProcessWidgetController):
         result = self._incrementalResult
         error = self._incrementalError
         publisher = self._resultPublisher
+        terminal_count = self._incrementalTerminalCount
+        self._incrementalTerminalCount = None
         self._resultPublisher = None
         self._incrementalReconstructor = None
         self._incrementalResult = None
@@ -1080,6 +1193,17 @@ class ProcessingQueueController(ImProcessWidgetController):
             if publisher is not None:
                 publisher.finish("cancelled")
             self._finish_current(skipped=True)
+            return
+        if terminal_count is not None:
+            # Verified early termination is neither a failed reconstruction
+            # nor a complete 5/5 result. Finalize the same published object
+            # with its actual scientific T prefix.
+            if publisher is not None:
+                publisher.finish("cancelled")
+            if terminal_count and (publisher is None or publisher.published is None):
+                self._finish_current(error=error or "No completed incremental result was published")
+            else:
+                self._finish_current()
             return
         if not success or result is None:
             if publisher is not None:
@@ -1667,7 +1791,10 @@ class ProcessingQueueController(ImProcessWidgetController):
                 if state == "completed" and not self._skipRequested:
                     if publisher.published is None:
                         raise RuntimeError("Offline processing produced no output")
-                    publisher.finish("complete")
+                    publisher.finish(
+                        "cancelled" if stage is not None and stage.terminal_early
+                        else "complete"
+                    )
                 else:
                     publisher.finish("cancelled" if state == "skipped" or self._skipRequested else "failed")
             except Exception as exc:
@@ -1751,6 +1878,8 @@ class ProcessingQueueController(ImProcessWidgetController):
             self._lastTerminalStatus = {}
         elif error:
             detail = str(error or "")
+            self._logger.error("Reconstruction failed for %s (%s): %s",
+                               job.label, job.dataset_id, detail)
             self.queue.fail_current(detail)
             self._lastTerminalStatus = {
                 "kind": "error",

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import numpy as np
 import zarr
 
 from imswitch.imcommon.model.logging import initLogger
+from imswitch.imcommon.model.hdf5_lapse_terminal import read_lapse_terminal
 from imswitch.imcommon.model.acquisition_metadata import (
     RecordingLifecycleMarkers,
     normalize_recording_lifecycle,
@@ -1073,6 +1075,7 @@ class ZarrLapseSource(LiveSource):
     """Polls a single-file scan{N} timelapse store as one continuous global frame stream."""
 
     idles_between_stacks = True  # Single file with multiple scan{N} groups; worker idles while recorder prepares next timepoint.
+    _DISCARDED_SCAN_GRACE_S = 60.0
 
     def __init__(
         self, detector_name: str | None = None, chunk_size: int | None = None,
@@ -1105,6 +1108,7 @@ class ZarrLapseSource(LiveSource):
         self._current_array_path: tuple[str, ...] = ()
         self._resolved_detector_name: str | None = None
         self._writing = True
+        self._missing_current_since: float | None = None
 
     def open(self, path_or_handle: Any) -> StackInfo:
         """Open the Zarr store and return stack metadata."""
@@ -1112,6 +1116,7 @@ class ZarrLapseSource(LiveSource):
         self._local_cursor = 0
         self._current_group_index = self._scope_start
         self.skipped_frame_ranges.clear()
+        self._missing_current_since = None
         
         self._root = self._open_root(path_or_handle)
         
@@ -1216,13 +1221,15 @@ class ZarrLapseSource(LiveSource):
         queued = 0
 
         while True:
-            # Refresh current array and re-enumerate scan groups to detect new ones
-            self._refresh_current_array()
+            # Abort can delete scanN/CAM/data after we already opened it.
+            # The operation-terminal marker is published only AFTER writer
+            # teardown, so its watcher cannot always cancel Follow first.
+            # Keep the reader idle until that handoff, retaining sealed T.
+            attrs = self._refresh_current_array()
+            if attrs is None:
+                self._await_discarded_current_scan()
+                break
             self._refresh_scan_groups()
-            
-            # Read current group's attributes
-            current_group = self._root[f"scan{self._current_group_index}"]
-            _, attrs = self._open_detector_array(current_group, self._resolved_detector_name)
             self._refresh_state_from_attrs(attrs)
             
             # Determine how many frames we can read from current group
@@ -1250,7 +1257,14 @@ class ZarrLapseSource(LiveSource):
                     break
 
                 next_group_name = f"scan{nxt}"
-                next_group = self._root[next_group_name]
+                # A previously enumerated next group can also disappear
+                # during abort, before this reader has advanced into it.
+                if next_group_name not in self._root:
+                    break
+                try:
+                    next_group = self._root[next_group_name]
+                except KeyError:
+                    break
                 detector = self._resolved_detector_name
                 # A Zarr writer creates scanN, then CAM, then CAM/data.
                 # Seeing scanN alone must not terminate live reconstruction.
@@ -1263,7 +1277,15 @@ class ZarrLapseSource(LiveSource):
 
                 # Only commit the advance after the array is actually present.
                 # Retain physical scan numbering (including genuine gaps).
-                next_array, _ = self._open_detector_array(next_group, detector)
+                try:
+                    next_array, _ = self._open_detector_array(next_group, detector)
+                except (KeyError, ValueError):
+                    # Disappeared between the readiness check and opening.
+                    if (next_group_name not in self._root
+                            or detector not in next_group
+                            or 'data' not in next_group[detector]):
+                        break
+                    raise
                 next_start = (nxt - self._scope_start) * self._frames_per_stack
                 if next_start > self._global_cursor:
                     self.skipped_frame_ranges.append((self._global_cursor, next_start))
@@ -1312,9 +1334,10 @@ class ZarrLapseSource(LiveSource):
                 if self._global_cursor >= expected_total:
                     return True
             if self._current_group_index >= int(self._scope_stop) - 1:
-                self._refresh_current_array()
-                current_group = self._root[f"scan{self._current_group_index}"]
-                _, attrs = self._open_detector_array(current_group, self._resolved_detector_name)
+                attrs = self._refresh_current_array()
+                if attrs is None:
+                    self._await_discarded_current_scan()
+                    return False
                 self._refresh_state_from_attrs(attrs)
                 readable_length = min(
                     self._current_array.shape[0],
@@ -1335,9 +1358,10 @@ class ZarrLapseSource(LiveSource):
         if self._num_timepoints is not None:
             if self._current_group_index >= self._num_timepoints - 1:
                 # We're on or past the last expected group
-                self._refresh_current_array()
-                current_group = self._root[f"scan{self._current_group_index}"]
-                _, attrs = self._open_detector_array(current_group, self._resolved_detector_name)
+                attrs = self._refresh_current_array()
+                if attrs is None:
+                    self._await_discarded_current_scan()
+                    return False
                 self._refresh_state_from_attrs(attrs)
                 
                 readable_length = min(self._current_array.shape[0], self._frames_per_stack or self._current_array.shape[0])
@@ -1354,6 +1378,7 @@ class ZarrLapseSource(LiveSource):
         self._current_array = None
         self._current_array_path = ()
         self._scan_groups = ()
+        self._missing_current_since = None
 
     def _auto_detect_detector(self, scan_group: Any) -> str:
         """Auto-detect detector name from scan group contents."""
@@ -1415,15 +1440,71 @@ class ZarrLapseSource(LiveSource):
         self._path = str(path)
         return _open_live_zarr(str(path))
 
-    def _refresh_current_array(self) -> None:
-        """Re-open current array to see new frames."""
-        if self._path is None or self._current_array is None:
-            return
-        
-        self._root = _open_live_zarr(self._path)
-        current_group = self._root[f"scan{self._current_group_index}"]
-        det_group = current_group[self._resolved_detector_name]
-        self._current_array = det_group['data']
+    def _refresh_current_array(self) -> dict[str, Any] | None:
+        """Re-open a scan's array and attrs in one pass.
+
+        ``None`` means that an *already-opened* scan disappeared. The writer
+        removes precisely that unfinished group on abort; it is not an error
+        while its terminal handoff is pending. Opening a new scan still uses
+        the normal strict validation in ``open()`` and the advance logic.
+        """
+        if self._current_array is None:
+            return None
+        if self._path is not None:
+            if not os.path.isdir(self._path):
+                return None
+            self._root = _open_live_zarr(self._path)
+        group_name = f"scan{self._current_group_index}"
+        if group_name not in self._root:
+            return None
+        current_group = self._root[group_name]
+        detector = self._resolved_detector_name
+        if detector not in current_group:
+            return None
+        det_group = current_group[detector]
+        if not _is_zarr_group(det_group) or 'data' not in det_group:
+            return None
+        try:
+            array, attrs = self._open_detector_array(current_group, detector)
+        except (KeyError, ValueError):
+            # A deletion between the membership check and metadata opening
+            # must be treated the same way as a deletion before the check.
+            if (group_name not in self._root
+                    or detector not in current_group
+                    or 'data' not in current_group[detector]):
+                return None
+            raise
+        self._current_array = array
+        self._missing_current_since = None
+        return attrs
+
+    def _await_discarded_current_scan(self) -> None:
+        """Bridge Zarr abort cleanup to the Session's verified terminal event.
+
+        A missing *previously opened* group is expected briefly while the
+        writer removes the partial scan and publishes its sidecar. Never
+        declare the truncated stream complete here: the queue must first
+        verify which scientific timepoints really finished. If no matching
+        terminal appears, fail after a grace period rather than hiding
+        unexpected store corruption indefinitely.
+        """
+        if self._path is None:
+            raise ValueError('Previously opened Zarr scan disappeared')
+        terminal = read_lapse_terminal(self._path)
+        if terminal is not None:
+            if int(terminal['completed_timepoints']) <= self._current_group_index:
+                return
+            raise ValueError(
+                'Zarr lapse terminal claims a deleted scan was completed'
+            )
+        now = time.monotonic()
+        if self._missing_current_since is None:
+            self._missing_current_since = now
+        elif now - self._missing_current_since >= self._DISCARDED_SCAN_GRACE_S:
+            raise ValueError(
+                f'Zarr scan{self._current_group_index}/{self._resolved_detector_name}/data '
+                'disappeared without an acquisition terminal'
+            )
 
     def _refresh_scan_groups(self) -> None:
         """Re-enumerate scan groups to detect newly added ones."""
