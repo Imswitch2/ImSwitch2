@@ -685,6 +685,22 @@ class TilingController(ImConWidgetController):
         return report.summary() if report is not None else ''
 
     @APIExport()
+    def isTilingRunning(self) -> bool:
+        """ Whether a tiling run is in progress. True from the moment
+        ``startTiling`` accepted the run until its tiles, mosaic and manifest
+        are written and the stage is back at the start, so a script can wait
+        for it: ``waitUntil(lambda: not api.imcontrol.isTilingRunning())``. """
+        with self._getActivityLock():
+            return bool(self.__dict__.get('_scanning', False))
+
+    @APIExport()
+    def getLastTilingFolder(self) -> str:
+        """ The folder the last saved tiling run was written to (it holds
+        ``tiles.json``), or an empty string when no run saved its tiles in this
+        session. A run with *Save tiles* off leaves it unchanged. """
+        return str(self.__dict__.get('_lastSaveFolder') or '')
+
+    @APIExport()
     def getStitchedImage(self) -> Optional[np.ndarray]:
         """ Returns the stitched overview of the tiling run as an array, or
         None before the first run. """
@@ -967,6 +983,10 @@ class TilingController(ImConWidgetController):
                 # usable dataset rather than orphaned files.
                 self._saveMosaic(camera, saveFolder, self._canvasOriginStage())
                 dataset.extra['completed'] = bool(scan_completed)
+                # Which stage the stage_um coordinates belong to, so a script
+                # or processor can drive it back to a tile without guessing.
+                dataset.extra['xy_positioner'] = tilingInfo.xyPositioner
+                dataset.extra['xy_axes'] = [x_axis, y_axis]
                 written = dataset.write(saveFolder)
                 self._logger.info(
                     f'Tiling: saved {len(dataset.tiles)} tiles, the mosaic and '

@@ -408,7 +408,11 @@
    "5fdc6ea81a37db5788cd02a560b88bada900a78708aabfefaaedddcbe60365ad"
   ],
   "scripts/workflows/README.md": [
-   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270"
+   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270",
+   "cfa00a3bf5a4f7f1156c0d2e2019af5ab15a7dae204fa0065e814215cfe8cb60"
+  ],
+  "scripts/workflows/event_trigger/01_spot_tiles_confocal.py": [
+   "e521d4e87a919b39782e77bcca6a917c44cf2e6efd917fcb6ead4d1d0bc80914"
   ],
   "scripts/workflows/timeresolved/01_binned_photon_arrivals.py": [
    "dd1d25460ea63e07ade1ec9cc41c1ee0f75fcb59691cd351b919808f32a98e70"

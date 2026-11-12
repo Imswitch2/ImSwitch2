@@ -515,6 +515,8 @@ label-morphology        Processor      Fill, erode, dilate, open, close or water
 threshold               Processor      Otsu or absolute threshold to connected-component labels, per plane
 regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
 pick                    Processor      One point out of many: largest, brightest, first or nearest
+spot-count              Processor      Diffraction-limited spots per frame (SMLM net-gradient detection) as a count curve and ``points``
+tile-spots              Processor      Spots per tile of a tiling run; tiles ranked by count with their stage targets
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
 psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
 bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane
