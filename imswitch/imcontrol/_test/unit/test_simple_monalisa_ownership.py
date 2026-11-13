@@ -244,3 +244,105 @@ def test_a_state_load_during_screening_switches_the_lasers_off(qtbot, monkeypatc
         assert rig.scan.__dict__.get('_screeningActive') is False
     finally:
         rig.close()
+
+
+@pytest.mark.parametrize('final_part', [False, True])
+def test_monalisa_retained_scanlapse_owner_can_start_next_external_part(
+    qtbot, monkeypatch, final_part
+):
+    """T1 and the final T2 must both pass despite the retained run token."""
+    from types import SimpleNamespace
+
+    rig = CloakRig('SimpleMoNaLISA')
+    original_coordinator = rig.scan._scanCoordinator
+    token = object()
+    events = []
+    try:
+        rig.scan._scanRunToken = token
+        rig.scan._scanCoordinator = SimpleNamespace(
+            activeToken=None,
+            activeRunToken=token,
+        )
+        rig.scan.isRunning = False
+        rig.scan._scanCompletionPublishing = False
+        rig.scan._repeatPending = False
+        rig.scan.awaitingPipeline = False
+        rig.scan._scanRunFailed = False
+        rig.scan._scanStopRequested = False
+        rig.scan._pendingExternalScanRequestCompletions = []
+        monkeypatch.setattr(rig.scan, '_unreferencedScanStartRefusal', lambda: '')
+        monkeypatch.setattr(
+            rig.scan, '_beginAcquisitionTriggerOverride',
+            lambda **_kwargs: events.append('prepare-trigger'),
+        )
+        monkeypatch.setattr(rig.scan, '_restoreAcquisitionTrigger', lambda: None)
+        assert rig.scan._isBusy() is True
+
+        result = rig.scan._runSimpleAcquisition(
+            lambda: events.append('start-part') or 'accepted',
+            requireLiveView=False,
+            refreshSetup=False,
+            keepPreparedIfIdle=not final_part,
+            external=True,
+        )
+
+        assert result == 'accepted'
+        assert events == ['prepare-trigger', 'start-part']
+    finally:
+        rig.scan._scanRunToken = None
+        rig.scan._scanCoordinator = original_coordinator
+        rig.close()
+
+
+def test_monalisa_external_start_refuses_active_or_foreign_iteration_before_trigger(
+    qtbot, monkeypatch
+):
+    from types import SimpleNamespace
+
+    rig = CloakRig('SimpleMoNaLISA')
+    original_coordinator = rig.scan._scanCoordinator
+    token = object()
+    events = []
+    try:
+        rig.scan._scanRunToken = token
+        rig.scan.isRunning = False
+        rig.scan._scanCompletionPublishing = False
+        rig.scan._pendingExternalScanRequestCompletions = []
+        monkeypatch.setattr(
+            rig.scan, '_beginAcquisitionTriggerOverride',
+            lambda **_kwargs: events.append('trigger-touched'),
+        )
+        monkeypatch.setattr(rig.scan, '_unreferencedScanStartRefusal', lambda: '')
+        for active_iteration, active_run in (
+            (object(), token),
+            (None, object()),
+        ):
+            rig.scan._scanCoordinator = SimpleNamespace(
+                activeToken=active_iteration, activeRunToken=active_run
+            )
+            assert rig.scan._runSimpleAcquisition(
+                lambda: events.append('start'),
+                requireLiveView=False, refreshSetup=False, external=True,
+            ) is None
+        assert events == []
+    finally:
+        rig.scan._scanRunToken = None
+        rig.scan._scanCoordinator = original_coordinator
+        rig.close()
+
+
+@pytest.mark.parametrize('nonfinal', [True, False])
+def test_monalisa_external_dispatch_selects_ownership_preflight(
+    qtbot, monkeypatch, nonfinal
+):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        monkeypatch.setattr(
+            rig.scan, '_runSimpleAcquisition',
+            lambda _start, **kwargs: kwargs,
+        )
+        options = rig.scan.runScanExternal(False, nonfinal)
+        assert options['external'] is True
+        assert options['keepPreparedIfIdle'] is nonfinal
+    finally:
+        rig.close()

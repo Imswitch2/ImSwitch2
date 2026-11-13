@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import math
 
+from imswitch.imcontrol.controller.basecontrollers import SuperScanController
 from imswitch.imcontrol.model import (
     LaserPowerMode,
     configfiletools,
@@ -1603,13 +1604,20 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def _runSimpleAcquisition(
         self, start, *, requireLiveView, keepPreparedIfIdle=False,
-        refreshSetup=True,
+        refreshSetup=True, external=False,
     ):
-        # Refused before the camera is touched: a second start while an
-        # acquisition runs used to rewrite the running camera's trigger
-        # before the base refused it.
-        if self._isBusy():
-            self._recordScanStartRejection('An acquisition is already running.')
+        # Preflight before touching the camera trigger. A direct UI start
+        # cannot use a retained ScanLapse run, but an externally dispatched
+        # continuation may reuse its *own* idle run token. The base preflight
+        # distinguishes that case from an active iteration or foreign owner.
+        refusal = (
+            SuperScanController._externalScanStartRefusal(self)
+            if external else (
+                'An acquisition is already running.' if self._isBusy() else ''
+            )
+        )
+        if refusal:
+            self._recordScanStartRejection(refusal)
             return None
         # The first point captures ROI/readout-speed changes immediately before
         # compilation. Continuations of one retained ScanLapse deliberately do
@@ -1678,6 +1686,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             requireLiveView=False,
             keepPreparedIfIdle=bool(isNonFinalPartOfSequence),
             refreshSetup=bool(recalculateSignals),
+            external=True,
         )
 
     def _onStopClicked(self):
