@@ -474,6 +474,7 @@ image-calculator        Processor      Pixel-wise arithmetic between two compati
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
 psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
+bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -667,6 +668,13 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.
      - ``PSFResolutionResult`` table with axes ``ROI, Metric`` and FWHM plot
        payload.  Intended as an analysis output, not an image-stack input.
+   * - ``bead-fwhm``
+     - Measurement
+     - Any rank >= 2 image-like result.  Every leading axis is analysed plane
+       by plane.
+     - ``BeadFwhmResult`` points table, one row per kept bead (FWHM x/y/mean,
+       SNR, fit R²), the image with kept and rejected beads marked, and for a
+       stack two graphs: mean FWHM and mean SNR per plane.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
