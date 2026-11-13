@@ -32,9 +32,10 @@ from imswitch.improcess.processors.colocalization import (
     ColocalizationProcessor,
     ColocalizationResult,
 )
+from imswitch.improcess.processors.psf_bead_select import PSFBeadSelectProcessor
 from imswitch.improcess.processors.psf_resolution import (
+    PSFMeasurementResult,
     PSFResolutionProcessor,
-    PSFResolutionResult,
 )
 
 
@@ -67,11 +68,22 @@ def _coloc_result():
     )
 
 
+def _psf_outputs(params=None):
+    output = PSFResolutionProcessor().apply(_psf_result(), params or {})
+    return dict(zip(output.keys, output.results))
+
+
+class _TableResult(MinimalResult):
+    kind = "table"
+
+
 def _table_result():
-    return PSFResolutionProcessor().apply(
-        _psf_result(),
-        {"pixel_size": 1.0, "unit": "px"},
-    )
+    """A table the PSF panel can do nothing with: not a PSF measurement."""
+    return _TableResult(name="table", data=np.zeros((3, 2)), axis_labels=["Row", "Metric"])
+
+
+def _used(measurement):
+    return [row for row in measurement.bead_rows() if row["selected"]]
 
 
 def _roi_manager(rois):
@@ -101,9 +113,11 @@ def test_psf_panel_emits_processor_contract_params(qtbot):
     assert emitted_result is result
     assert isinstance(panel.processor, PSFResolutionProcessor)
     # End-to-end: the real processor must accept the panel's params.
-    psf_result = panel.processor.apply(emitted_result, params)
-    assert isinstance(psf_result, PSFResolutionResult)
-    assert psf_result.analysis.metadata["source"] == "full-image"
+    output = panel.processor.apply(emitted_result, params)
+    psf = dict(zip(output.keys, output.results))["psf"]
+    assert isinstance(psf, PSFMeasurementResult)
+    assert psf.analysis.source == "auto"
+    assert len(_used(psf)) == 1  # the one bead, selected
 
 
 def test_psf_panel_roi_source_forwards_roi_manager_rois(qtbot):
@@ -119,8 +133,10 @@ def test_psf_panel_roi_source_forwards_roi_manager_rois(qtbot):
     assert len(runs) == 1
     _, params = runs[0]
     assert params["rois"] == rois
-    psf_result = panel.processor.apply(_psf_result(), params)
-    assert psf_result.analysis.rows()[0]["name"] == "roi-bead"
+    output = panel.processor.apply(_psf_result(), params)
+    psf = dict(zip(output.keys, output.results))["psf"]
+    assert psf.analysis.source == "rois"
+    assert len(_used(psf)) == 1
 
 
 def test_psf_panel_roi_source_requires_roi_manager(qtbot):
@@ -158,7 +174,54 @@ def test_psf_panel_rejects_incompatible_result_kind(qtbot):
 
     assert runs == []
     assert not panel.fitButton.isEnabled()
-    assert "not compatible" in panel.summaryLabel.text()
+    assert "neither an image" in panel.summaryLabel.text()
+
+
+def test_psf_panel_shows_a_measurement_and_reselects_it(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    runs = _capture_runs(panel)
+    psf = _psf_outputs()["psf"]
+
+    panel.setCurrentResult(psf)
+    assert isinstance(panel.processor, PSFBeadSelectProcessor)
+    assert not panel.fitButton.isEnabled() and panel.setupBox.isHidden()
+    assert not panel.resultBox.isHidden() and "FWHM lateral" in panel.headlineLabel.text()
+    assert not panel.applySelectionButton.isEnabled()  # nothing to re-select yet
+    panel.selectForm.set_values({"fwhm_lat_min": 100.0, "fwhm_lat_max": 200.0})  # excludes the bead
+    assert panel.applySelectionButton.isEnabled() and "0</b> of 1" in panel.countLabel.text()
+    panel.applySelection()
+
+    assert len(runs) == 1
+    emitted, params = runs[0]
+    assert emitted is psf
+    output = panel.processor.apply(emitted, params)
+    assert output.keys[-1] == "psf"
+
+
+def test_psf_panel_range_slider_sets_the_lateral_bounds(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    panel.setCurrentResult(_psf_outputs()["psf"])
+    if panel.region is None:
+        return
+    panel.region.setRegion((3.0, 6.0))
+    panel._regionToSpins()
+
+    values = panel.selectForm.get_values()
+    assert values["fwhm_lat_min"] == 3.0 and values["fwhm_lat_max"] == 6.0
+
+
+def test_psf_panel_returns_to_the_setup_for_images(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    panel.setCurrentResult(_psf_outputs()["psf"])
+    panel.selectForm.set_values({"fwhm_lat_min": 3.0, "fwhm_lat_max": 6.0})
+    panel.setCurrentResult(_psf_result())
+    assert isinstance(panel.processor, PSFResolutionProcessor)
+    assert panel.fitButton.isEnabled() and panel.resultBox.isHidden()
+    # Leaving a measurement does not carry its bounds to the next fit.
+    assert panel.selectForm.get_values()["fwhm_lat_max"] == 0.0
 
 
 # --- Colocalization panel ---
