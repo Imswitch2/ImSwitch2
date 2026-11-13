@@ -7,6 +7,7 @@ opening so HDF5, legacy Zarr, and OME-NGFF Zarr can share one dataset contract.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -347,12 +348,20 @@ def _resolve_hdf5_image(
 
     if is_array_node(node):
         attrs = dict(node.attrs)
+        axis_labels = _axis_labels_from_hdf5_attrs(attrs, node.ndim)
+        axis_scales = scale_unit = None
+        if axis_labels is None and "element_size_um" not in attrs:
+            legacy = _legacy_snouty_calibration(node)
+            if legacy is not None:
+                axis_labels, axis_scales, scale_unit = legacy
         return ResolvedImage(
             name=dataset_name,
             array=node,
             attrs=attrs,
             array_path=dataset_name,
-            axis_labels=_axis_labels_from_hdf5_attrs(attrs, node.ndim),
+            axis_labels=axis_labels,
+            axis_scales=axis_scales,
+            scale_unit=scale_unit,
             source_format="hdf5",
             acquisition_layout=(
                 decode_layout_attrs(attrs) if validate_layout_metadata else None
@@ -361,6 +370,33 @@ def _resolve_hdf5_image(
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
+
+
+def _legacy_snouty_calibration(node: h5py.Dataset) -> tuple[list[str], list[float], str] | None:
+    """Axes and voxel size of a SNOUTY deskew volume from before the writer
+    stored them.
+
+    The SNOUTY HDF5 writer used to put only its parameters on the file (the
+    output voxel ``sample_vx_size`` in nm among them) and nothing on its
+    ``volume`` (Z, Y, X) or per-timepoint ``t###`` datasets, so the volume
+    reloaded as uncalibrated channels. Recognised by those dataset names and
+    the SNOUTY geometry attributes on the file.
+    """
+    if node.ndim != 3:
+        return None
+    root = node.file.attrs
+    if "sample_vx_size" not in root or "alpha_deg" not in root:
+        return None
+    name = node.name.rsplit("/", 1)[-1]
+    if name != "volume" and not re.fullmatch(r"t\d{3}", name):
+        return None
+    try:
+        voxel_um = float(root["sample_vx_size"]) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(voxel_um) or voxel_um <= 0:
+        return None
+    return ["Z", "Y", "X"], [voxel_um] * 3, "um"
 
 
 def _resolve_tiff_image(
