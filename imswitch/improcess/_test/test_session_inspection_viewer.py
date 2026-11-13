@@ -242,3 +242,79 @@ def test_open_inspection_reports_viewer_autoload_failure(monkeypatch):
         controller.openInspection("time-lapse", object())
 
     assert controller._main._activeReconstructor is active
+
+
+def _pass_through_controller():
+    controller = ReconstructorManagerController.__new__(ReconstructorManagerController)
+    controller._passThroughLapse = None
+    controller._logger = MagicMock()
+    controller.reconstruct = MagicMock()
+    controller.openInspection = MagicMock(return_value="started")
+    return controller
+
+
+def _lapse():
+    from imswitch.improcess.model.DataObj import DataObj
+    from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
+
+    return DataObj.fromMetadataSource(
+        "lapse_rec", "raw/lapse_rec_scan0_APD.hdf5", TIME_LAPSE_SOURCE_KIND,
+        SimpleNamespace(name="lapse_rec"),
+    )
+
+
+def _timepoint(lapse, position):
+    return SimpleNamespace(
+        name=f"lapse_rec_scan{position}_APD.hdf5",
+        _timeLapseParent=lapse, _timeLapsePosition=position,
+    )
+
+
+def test_view_only_shows_a_current_lapse_whole_once_not_per_timepoint():
+    """Current data holds one timepoint of a lapse at a time.
+
+    With View only active every timepoint used to become its own
+    one-timepoint result. The lapse opens once in the Time lapse viewer, as
+    Session's "Open in viewer" does, from a source of its own: closing that
+    result unloads its backing object, and Current data still navigates it.
+    """
+    lapse = _lapse()
+    controller = _pass_through_controller()
+
+    controller.showPassThrough(_timepoint(lapse, 0))
+    controller.showPassThrough(_timepoint(lapse, 1))
+
+    controller.reconstruct.assert_not_called()
+    controller.openInspection.assert_called_once()
+    plugin_id, source = controller.openInspection.call_args.args
+    assert plugin_id == "time-lapse"
+    assert source is not lapse
+    assert (source.sourceKind, source.dataPath, source.sourceMetadata) == (
+        lapse.sourceKind, lapse.dataPath, lapse.sourceMetadata,
+    )
+
+
+def test_switching_to_view_only_shows_the_lapse_again_and_images_as_before():
+    lapse = _lapse()
+    image = SimpleNamespace(name="scan.hdf5")
+    controller = _pass_through_controller()
+
+    controller.showPassThrough(_timepoint(lapse, 0))
+    controller.showPassThrough(_timepoint(lapse, 0), again=True)
+    controller.showPassThrough(image)
+    controller.showPassThrough(_timepoint(lapse, 2))
+
+    assert controller.openInspection.call_count == 3
+    controller.reconstruct.assert_called_once_with([image], consolidate=False)
+
+
+def test_a_lapse_the_time_lapse_viewer_cannot_open_shows_its_timepoint():
+    lapse = _lapse()
+    timepoint = _timepoint(lapse, 0)
+    controller = _pass_through_controller()
+    controller.openInspection.side_effect = RuntimeError("no Time Lapse viewer")
+
+    controller.showPassThrough(timepoint)
+
+    controller.reconstruct.assert_called_once_with([timepoint], consolidate=False)
+    assert controller._passThroughLapse is None

@@ -266,7 +266,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
             )
         ):
             try:
-                self.reconstructorManager.reconstruct([dataObj], consolidate=False)
+                self.reconstructorManager.showPassThrough(dataObj)
             except Exception as exc:
                 self._logger.warning(
                     f"Pass-through auto-route failed for {self._activeReconstructor.id}: {exc}"

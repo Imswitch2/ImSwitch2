@@ -54,6 +54,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._localizationPendingJob = None
         self._localizationRequestCounter = 0
         self._localizationExpectedRequestId = None
+        # The logical lapse a pass-through plugin last showed whole; see
+        # showPassThrough.
+        self._passThroughLapse = None
         current_result_changed = getattr(self._commChannel, "sigCurrentResultChanged", None)
         if current_result_changed is not None:
             current_result_changed.connect(lambda _result: self.refreshUpdateReconstructionAvailability())
@@ -421,7 +424,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     and self._main._currentDataObj is not None
                 ):
                     try:
-                        self.reconstruct([self._main._currentDataObj], consolidate=False)
+                        self.showPassThrough(self._main._currentDataObj, again=True)
                     except Exception as exc:
                         self._logger.warning(
                             f"Pass-through auto-route on reconstructor switch failed: {exc}"
@@ -804,6 +807,42 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
 
         self.reconstruct([self._main._currentDataObj], consolidate=False)
+
+    def showPassThrough(self, data_obj, *, again: bool = False) -> None:
+        """Show Current data through the active pass-through plugin.
+
+        The data is the result. One timepoint of a logical lapse stands for
+        the whole lapse: it is opened once in the Time lapse viewer, as
+        Session's ``Open in viewer`` does, and stepping through its timepoints
+        adds no result per timepoint. ``again`` shows a lapse already shown,
+        for an explicit switch to the pass-through plugin.
+        """
+        lapse = getattr(data_obj, '_timeLapseParent', None)
+        if lapse is None:
+            self._passThroughLapse = None
+            self.reconstruct([data_obj], consolidate=False)
+            return
+        if lapse is self._passThroughLapse and not again:
+            return
+        self._passThroughLapse = lapse
+
+        from imswitch.improcess.model.DataObj import DataObj
+
+        # A source of its own: closing the result unloads its backing object,
+        # and Current data still navigates this lapse.
+        source = DataObj.fromMetadataSource(
+            lapse.name, lapse.dataPath, lapse.sourceKind, lapse.sourceMetadata,
+            originalPath=getattr(lapse, 'sourceOriginalPath', None),
+        )
+        try:
+            self.openInspection('time-lapse', source)
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not open {lapse.name} as a time lapse ({exc}); "
+                "showing the current timepoint only"
+            )
+            self._passThroughLapse = None
+            self.reconstruct([data_obj], consolidate=False)
 
     def openInspection(self, plugin_id: str, data_obj) -> str:
         """Publish one inspection result without changing the active plugin.
