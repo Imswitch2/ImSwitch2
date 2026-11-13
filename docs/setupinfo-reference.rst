@@ -1299,9 +1299,10 @@ Key fields:
 
 **Required devices**: a ``SwabianTimeTaggerManager`` detector that names the
 roles (``click_role``, ``start_role``, ``line_role``), see
-:doc:`devices/detectors`. A detector *without* this block keeps working from
-its legacy ``click_channel`` / ``start_channel`` / ``line_channel``
-properties and logs the equivalent block to move them into.
+:doc:`devices/detectors`. Without this block such a detector has no card:
+it starts, refuses every scan, and logs the block to add, built from its
+retired ``click_channel`` / ``start_channel`` / ``line_channel`` properties
+when it still has them.
 
 **See also**: :class:`TimeTaggerInfo`
 

@@ -37,33 +37,11 @@
         "code:optional(get)"
       ]
     },
-    "click_channel": {
-      "description": "The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "click_role": {
       "description": "Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "click_trigger": {
-      "description": "Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -105,33 +83,11 @@
         "code:optional(get)"
       ]
     },
-    "line_channel": {
-      "description": "The line-clock input, read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "line_role": {
       "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges, starting ``pixelPatternOffsetPs`` (block field, default 10 ns) plus a positive ``lineClockDelayPs`` after each edge.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "line_trigger": {
-      "description": "Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -172,33 +128,11 @@
         "docs:integer"
       ]
     },
-    "start_channel": {
-      "description": "The laser-sync input, read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "start_role": {
       "description": "Role whose input receives the TCSPC start (laser sync).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "start_trigger": {
-      "description": "Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -213,14 +147,6 @@
       "x-imswitch-source": [
         "code:default:integer",
         "code:int()",
-        "code:optional(get)"
-      ]
-    },
-    "trigger_levels": {
-      "description": "Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "object",
-      "x-imswitch-source": [
-        "code:default:object",
         "code:optional(get)"
       ]
     }

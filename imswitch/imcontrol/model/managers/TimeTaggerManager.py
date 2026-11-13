@@ -118,12 +118,11 @@ class TimeTaggerHealth:
 class TimeTaggerManager(SignalInterface):
     """See the module docstring.
 
-    ``setupInfo`` and ``nidaqManager`` are optional so a detector can build a
-    private instance from its own properties (the compatibility path for
-    setups without a ``timeTagger`` block) and so tests can construct one
-    bare. With a ``nidaqManager``, the mock fallback is honoured only while
-    the NI-DAQ is simulated too, and the mock card is fed the scan's line
-    and frame edges from every scan the NI-DAQ builds.
+    ``setupInfo`` and ``nidaqManager`` are optional so tests can construct
+    one bare, and so :meth:`notConfigured` can stand in for a card the setup
+    does not describe. With a ``nidaqManager``, the mock fallback is honoured
+    only while the NI-DAQ is simulated too, and the mock card is fed the
+    scan's line and frame edges from every scan the NI-DAQ builds.
     """
 
     #: A ``TimeTaggerHealth``, from the background sampler (off unless
@@ -134,10 +133,13 @@ class TimeTaggerManager(SignalInterface):
     HEALTH_INTEGRATION_S = 0.2
 
     def __init__(self, info: TimeTaggerInfo, setupInfo=None, nidaqManager=None,
-                 api=None):
+                 api=None, *, notConfiguredReason: Optional[str] = None):
         super().__init__()
         self.__logger = initLogger(self)
         self._info = info
+        #: Set for a stand-in (:meth:`notConfigured`): no card is ever opened,
+        #: not even the mock, and every use that needs one is refused with it.
+        self._notConfiguredReason = notConfiguredReason
         self._setupInfo = setupInfo
         self._nidaqManager = nidaqManager
         self._api = api  # injected vendor-or-mock module (tests, mock rigs)
@@ -186,6 +188,22 @@ class TimeTaggerManager(SignalInterface):
         if scanDone is not None and hasattr(scanDone, "connect"):
             scanDone.connect(self._onScanDone)
 
+    @classmethod
+    def notConfigured(cls, reason: str) -> "TimeTaggerManager":
+        """A stand-in for a card the setup does not describe.
+
+        Its roles are the ``timeTagger`` block's defaults, so a detector
+        built on it starts and shows them; it never opens a card or the mock,
+        and :meth:`ensureConnected` refuses every scan with ``reason``. A
+        FLIM detector in a setup without a ``timeTagger`` block gets one.
+        """
+        return cls(TimeTaggerInfo(), notConfiguredReason=reason)
+
+    @property
+    def configured(self) -> bool:
+        """Whether the setup describes this card (False for a stand-in)."""
+        return self._notConfiguredReason is None
+
     # ------------------------------------------------------------------ #
     # Connection                                                           #
     # ------------------------------------------------------------------ #
@@ -202,6 +220,12 @@ class TimeTaggerManager(SignalInterface):
                 return True
             if self._finalized:
                 raise TimeTaggerError("TimeTaggerManager has been finalized")
+            if self._notConfiguredReason is not None:
+                # Nothing to open and nothing to fall back to: the setup
+                # does not describe a card. Refused quietly here; whoever
+                # needs the card says why (ensureConnected).
+                self._connectError = TimeTaggerError(self._notConfiguredReason)
+                return False
 
             info = self._info
             api = self._api
