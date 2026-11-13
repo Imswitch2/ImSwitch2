@@ -79,9 +79,14 @@ def test_a_failure_after_the_primary_link_is_rolled_back(tmp_path, monkeypatch):
 
     monkeypatch.setattr(protocol.os, "unlink", unlink_fails_for_staged_primary)
     target = tmp_path / "x.ome.tif"
-    _image().save(target)                     # an unlinkable staged copy is not a failed save
+    receipt = _image().save(target)  # Publication succeeds even if stage cleanup fails.
     assert target.exists()
-    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".x.ome.tif.")]
+    staged = [p for p in tmp_path.iterdir() if p.name.startswith(".x.ome.tif.staging-")]
+    assert len(staged) == 1
+    # The save contract reports failed post-publication cleanup rather than
+    # claiming success with no warning or deleting the published result.
+    assert receipt.primary == target
+    assert receipt.leftovers and str(staged[0]) in receipt.leftovers[0]
 
 
 def test_a_publish_that_raises_after_creating_the_target_rolls_it_back(tmp_path, monkeypatch):

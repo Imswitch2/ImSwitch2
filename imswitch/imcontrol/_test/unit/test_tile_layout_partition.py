@@ -283,6 +283,7 @@ def _writer_with(layout, *, scan_driven=True):
     writer._scanDims = [16, 16, 5]
     writer._scanDrivenDetectors = {'APD': scan_driven}
     writer._filePaths = {'APD': 'rec_APD.h5'}
+    writer._publicPaths = dict(writer._filePaths)
     return writer
 
 

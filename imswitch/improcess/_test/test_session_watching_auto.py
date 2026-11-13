@@ -85,21 +85,40 @@ def test_enabling_auto_does_not_enqueue_existing_catalog():
     assert fake._processWhileAcquiring is False
 
 
-def test_recipe_records_growing_policy_but_finished_job_is_finite():
-    reconstructor = SimpleNamespace(id="robust", result_role="derived")
+def test_recipe_records_growing_policy_only_for_streaming_capable_reconstructors():
+    robust = SimpleNamespace(id="robust", result_role="derived", supports_streaming=False)
     fake = SimpleNamespace(
         autoPolicy=SimpleNamespace(enabled=True),
         _processWhileAcquiring=True,
-        _main=SimpleNamespace(_activeReconstructor=reconstructor),
-        _snapshot_params=lambda recon: {"quality": "robust"},
+        _main=SimpleNamespace(_activeReconstructor=robust),
+        _snapshot_params=lambda recon: {"quality": recon.id},
     )
     recipe = ProcessingQueueController.captureAutoRecipe(fake)
     assert recipe["reconstructor_id"] == "robust"
-    assert recipe["execution_requirement"] == ExecutionRequirement.FOLLOW.value
+    assert recipe["execution_requirement"] == ExecutionRequirement.FINITE.value
+
+    # A compatible streaming reconstructor may follow an unfinished recording.
+    fast = SimpleNamespace(
+        id="fast", result_role="derived", supports_streaming=True,
+        streaming_capability=lambda params: (True, ""),
+    )
+    fake._main._activeReconstructor = fast
+    growing_recipe = ProcessingQueueController.captureAutoRecipe(fake)
+    assert growing_recipe["execution_requirement"] == ExecutionRequirement.FOLLOW.value
+    assert growing_recipe["params"] == {"quality": "fast"}
+
+    # Even a streaming plugin must choose finite if its selected parameters
+    # are unsupported by the actual streaming implementation.
+    fast.streaming_capability = lambda params: (False, "Unsupported settings")
+    incompatible = ProcessingQueueController.captureAutoRecipe(fake)
+    assert incompatible["execution_requirement"] == ExecutionRequirement.FINITE.value
+    fast.streaming_capability = lambda params: (True, "")
+
+    # Turning off 'process while acquiring' affects only future arrivals.
     fake._processWhileAcquiring = False
-    recipe2 = ProcessingQueueController.captureAutoRecipe(fake)
-    assert recipe2["execution_requirement"] == ExecutionRequirement.FINITE.value
-    assert recipe["execution_requirement"] == ExecutionRequirement.FOLLOW.value
+    finished_recipe = ProcessingQueueController.captureAutoRecipe(fake)
+    assert finished_recipe["execution_requirement"] == ExecutionRequirement.FINITE.value
+    assert growing_recipe["execution_requirement"] == ExecutionRequirement.FOLLOW.value
 
 
 def test_old_auto_exclusion_not_shown_in_session_list(qtbot):
@@ -227,10 +246,18 @@ def _fake_watch_controller(tmp_path, *, auto_enabled=True):
             str(dataset.primary_path) == str(path) for dataset in session.datasets
         ),
         _render=lambda: None,
-        _logger=SimpleNamespace(exception=lambda *_args: None),
+        # Unexpected reconciliation exceptions must fail this test, rather
+        # than silently appearing as a missed Zarr discovery notification.
+        _logger=SimpleNamespace(exception=lambda *_args: pytest.fail(
+            "Unexpected Session watcher reconciliation exception"
+        )),
         _widget=SimpleNamespace(setStatus=lambda _message: None),
         sigCatalogChanged=Signal(), sigDatasetsAdded=Signal(),
         sigAutoAcquisitionsAdmitted=emitted,
+    )
+    fake._source_paths = ProcessingSessionController._source_paths
+    fake._dataset_ids_for_watch_path = lambda path: (
+        ProcessingSessionController._dataset_ids_for_watch_path(fake, path)
     )
     fake._syncWatchRetryTimer = lambda: ProcessingSessionController._syncWatchRetryTimer(fake)
     fake._sessionPathRemoved = lambda path: ProcessingSessionController._sessionPathRemoved(fake, path)

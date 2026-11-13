@@ -383,6 +383,7 @@ def test_quick_load_catalog_recognizes_lapse_without_switching_reconstructor(
         sigCurrentDataChanged=SimpleNamespace(emit=lambda _obj: None)
     )
     io._loadedDataObjs = []
+    io._replaceLoadedCatalogOnNextRegistration = False
     io._widget = SimpleNamespace(
         loadedDataFrame=_LoadedFrame(),
         raiseCurrentDataDock=lambda: None,

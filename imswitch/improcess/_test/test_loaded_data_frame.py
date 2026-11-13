@@ -60,7 +60,14 @@ def test_select_sources_selects_whole_quick_load_group(qapp, tmp_path):
         frame.addOrUpdateDataObj(obj)
 
     frame.selectSources([a_path, c_path])
+    assert frame.dataList.currentItem() is frame.dataList.topLevelItem(0)
     assert set(map(id, frame.selectedDataObjs())) == {id(a), id(c)}
+
+    # Changing the programmatic selection must replace the old scope, not
+    # leave behind the previously focused row or lose another selected item.
+    frame.selectSources([b_path])
+    assert frame.dataList.currentItem() is frame.dataList.topLevelItem(1)
+    assert frame.selectedDataObjs() == [b]
 
     frame.deleteLater()
 

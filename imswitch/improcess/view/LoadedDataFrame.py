@@ -289,7 +289,7 @@ class LoadedDataFrame(QtWidgets.QFrame):
         if not wanted:
             return
         self.dataList.clearSelection()
-        first = None
+        matched_items = []
         for index in range(self.dataList.topLevelItemCount()):
             item = self.dataList.topLevelItem(index)
             data_obj = item.data(0, QtCore.Qt.UserRole)
@@ -308,11 +308,13 @@ class LoadedDataFrame(QtWidgets.QFrame):
                 except Exception:
                     resolved.add(value)
             if wanted.intersection(resolved):
+                matched_items.append(item)
+        if matched_items:
+            # Qt may reset extended selection when the current row changes.
+            # Focus the first match *before* selecting the entire requested set.
+            self.dataList.setCurrentItem(matched_items[0])
+            for item in matched_items:
                 item.setSelected(True)
-                if first is None:
-                    first = item
-        if first is not None:
-            self.dataList.setCurrentItem(first)
         self._selection_changed()
 
     def setCurrentDataObj(self, data_obj) -> None:

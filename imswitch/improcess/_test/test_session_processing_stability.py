@@ -12,7 +12,9 @@ from imswitch.improcess.model.processing_queue import (
     ProcessingJob,
     ProcessingOrigin,
     ProcessingQueue,
+    ExecutionRequirement,
 )
+from imswitch.improcess.execution.readiness import Readiness, ReadinessState
 
 
 class _Timer:
@@ -67,24 +69,51 @@ def test_unresolved_new_entry_is_retried_when_its_stat_changes():
     assert fake._watchReconcileTimer.starts == 1
 
 
+def _auto_follow_queue_stub(queue, session, events):
+    """Small queue fixture for active, readable Follow sources.
+
+    Auto enters the streaming preflight only when a source is acquiring, the
+    user requested Follow, and the physical reader is safe. Keep this gate
+    explicit in tests instead of depending on whichever readiness probe runs.
+    """
+    return SimpleNamespace(
+        _closing=False,
+        queue=queue,
+        _offlineThread=None,
+        _incrementalRunner=None,
+        _autoTimepointStates={},
+        _sessionController=SimpleNamespace(session=session),
+        _resolve_job_source=lambda job: session.dataset_by_id(job.dataset_id),
+        _source_kind=lambda source: source.kind,
+        _probe_auto_readiness=lambda *_args: Readiness(
+            ReadinessState.ACQUIRING, "Acquisition in progress", live_readable=True,
+        ),
+        _streaming_job_path=lambda source: source.primary_path,
+        _clear_readiness=lambda _job_id: None,
+        _emit_changed=lambda: events.append("changed"),
+        _emit_progress_changed=lambda: events.append("progress"),
+    )
+
+
 def test_auto_readiness_probe_does_not_toggle_queue_state(monkeypatch):
-    """Unreadable Auto sources remain WAITING without Session UI churn."""
+    """A pending Follow stream stays WAITING; its repeated probe is silent."""
     queue = ProcessingQueue()
-    queue.enqueue(ProcessingJob(
+    job = ProcessingJob(
         dataset_id="scan",
         label="scan",
         reconstructor_id="streaming",
         params={},
         origin=ProcessingOrigin.AUTO,
-    ))
-    dataset = SimpleNamespace(id="scan", primary_path="/tmp/scan.hdf5")
-    reconstructor = SimpleNamespace(id="streaming", supports_streaming=True)
-    session = SimpleNamespace(
-        dataset_by_id=lambda _dataset_id: dataset,
-        raw_root="/tmp",
+        execution_requirement=ExecutionRequirement.FOLLOW,
     )
+    queue.enqueue(job)
+    dataset = SimpleNamespace(
+        id="scan", kind="scan", primary_path="/tmp/scan.hdf5",
+    )
+    reconstructor = SimpleNamespace(id="streaming", supports_streaming=True)
+    session = SimpleNamespace(dataset_by_id=lambda _dataset_id: dataset)
     registry = SimpleNamespace(
-        get_reconstructor=lambda _id, raise_on_missing=False: reconstructor
+        get_reconstructor=lambda _id, raise_on_missing=False: reconstructor,
     )
 
     import imswitch.improcess.controller.ProcessingQueueController as queue_module
@@ -97,43 +126,44 @@ def test_auto_readiness_probe_does_not_toggle_queue_state(monkeypatch):
         lambda _path, _reconstructor: LiveJobResolution(LiveJobState.PENDING),
     )
 
-    emitted = []
-    fake = SimpleNamespace(
-        _closing=False,
-        queue=queue,
-        _offlineThread=None,
-        _sessionController=SimpleNamespace(session=session),
-        _emit_changed=lambda: emitted.append(True),
-    )
+    events = []
+    fake = _auto_follow_queue_stub(queue, session, events)
 
     ProcessingQueueController._process_next(fake)
 
     assert queue.current is None
-    assert [job.dataset_id for job in queue.waiting] == ["scan"]
-    assert emitted == []
+    assert queue.waiting == (job,)
+    assert job.readiness_status == "Waiting for committed frames — stream not initialized"
+    assert events == ["changed"]  # One legitimate readiness-status update.
+
+    ProcessingQueueController._process_next(fake)
+    assert queue.current is None
+    assert queue.waiting == (job,)
+    assert events == ["changed"]  # No redundant UI updates on the next probe.
 
 
 def test_persistent_live_access_error_fails_queue_instead_of_waiting(monkeypatch):
-    """A non-retryable source conflict becomes terminal queue history."""
+    """A non-retryable Follow reader conflict becomes terminal queue history."""
     from imswitch.improcess.live.job import LiveJobResolution, LiveJobState
     from imswitch.improcess.model.processing_queue import ProcessingJobState
 
     queue = ProcessingQueue()
-    queue.enqueue(ProcessingJob(
+    job = ProcessingJob(
         dataset_id="scan",
         label="scan",
         reconstructor_id="streaming",
         params={},
         origin=ProcessingOrigin.AUTO,
-    ))
-    dataset = SimpleNamespace(id="scan", kind="scan", primary_path="/tmp/scan.hdf5")
-    reconstructor = SimpleNamespace(id="streaming", supports_streaming=True)
-    session = SimpleNamespace(
-        dataset_by_id=lambda _dataset_id: dataset,
-        raw_root="/tmp",
+        execution_requirement=ExecutionRequirement.FOLLOW,
     )
+    queue.enqueue(job)
+    dataset = SimpleNamespace(
+        id="scan", kind="scan", primary_path="/tmp/scan.hdf5",
+    )
+    reconstructor = SimpleNamespace(id="streaming", supports_streaming=True)
+    session = SimpleNamespace(dataset_by_id=lambda _dataset_id: dataset)
     registry = SimpleNamespace(
-        get_reconstructor=lambda _id, raise_on_missing=False: reconstructor
+        get_reconstructor=lambda _id, raise_on_missing=False: reconstructor,
     )
 
     import imswitch.improcess.controller.ProcessingQueueController as queue_module
@@ -143,29 +173,33 @@ def test_persistent_live_access_error_fails_queue_instead_of_waiting(monkeypatch
         queue_module,
         "prepare_entry_job",
         lambda _path, _reconstructor: LiveJobResolution(
-            LiveJobState.FAILED, reason="persistent raw HDF5 access conflict"
+            LiveJobState.FAILED, reason="persistent raw HDF5 access conflict",
         ),
     )
 
-    errors = []
-    fake = SimpleNamespace(
-        _closing=False,
-        queue=queue,
-        _offlineThread=None,
-        _sessionController=SimpleNamespace(session=session),
-        _logger=SimpleNamespace(error=lambda *args, **kwargs: None),
-        _emit_changed=lambda: None,
-        _finish_current=lambda *, error="", skipped=False: (
-            errors.append(error), queue.fail_current(error)
-        ),
+    events = []
+    fake = _auto_follow_queue_stub(queue, session, events)
+    fake._display_error_for_source_failure = (
+        ProcessingQueueController._display_error_for_source_failure
     )
+    errors = []
+
+    def finish(*, error="", display_error=""):
+        errors.append((error, display_error))
+        queue.fail_current(error)
+
+    fake._finish_current = finish
 
     ProcessingQueueController._process_next(fake)
 
     assert queue.current is None
     assert queue.waiting == ()
     assert queue.history[-1].state == ProcessingJobState.FAILED
-    assert errors == ["persistent raw HDF5 access conflict"]
+    assert errors == [(
+        "persistent raw HDF5 access conflict",
+        "Reconstruction failed: persistent raw HDF5 access conflict",
+    )]
+    assert events == ["changed", "progress"]
 
 
 def test_hdf5_access_conflict_gets_concise_queue_ui_message():
