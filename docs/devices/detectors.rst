@@ -594,12 +594,20 @@ reads.
         }
     }
 
-A setup **without** a ``timeTagger`` block still works: the detector then
-builds a private card manager from the legacy ``click_channel`` /
-``start_channel`` / ``line_channel`` and ``*_trigger`` properties listed at
-the end of the table, and logs, once at startup, the equivalent block to
-move them into. Put the card in the block as soon as a script or a second
-consumer needs it.
+A setup **without** a ``timeTagger`` block has no card. The detector still
+starts, so the rest of ImControl does, but every scan with it is refused,
+and the startup log prints the block to add. The detector-level
+``click_channel`` / ``start_channel`` / ``line_channel`` / ``*_trigger`` /
+``trigger_levels`` properties that described the card before the block
+existed are retired: they are not read, except that the printed block is
+built from them when a detector still has them. Remove them once the block
+is in; with the block present, a warning names any that are left.
+
+A value that is blank, unreadable or out of range (``"n_bins": ""``,
+``"binwidth_ps": "fast"``, ``"laser_rep_rate_mhz": 0``) is dropped with a
+warning naming it and takes its default, and a role the card does not have
+falls back to the default role: a slip in the setup file never stops
+ImControl.
 
 **managerProperties**
 
@@ -663,38 +671,10 @@ consumer needs it.
      - bool
      - ``true``
      - Whether the detector takes part in scans; also a runtime parameter (``'True'`` / ``'False'``). Off, the manager is constructed but ``initiateScan`` is a no-op, so another detector images while the card is not held and a calibration can run during the scan (tutorials 07 to 09).
-   * - ``click_channel``
-     - int
-     - legacy, **required** without a ``timeTagger`` block
-     - The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.
-   * - ``start_channel``
-     - int
-     - legacy, **required** without a ``timeTagger`` block
-     - The laser-sync input, read only without a ``timeTagger`` block.
-   * - ``line_channel``
-     - int
-     - legacy, **required** without a ``timeTagger`` block
-     - The line-clock input, read only without a ``timeTagger`` block.
-   * - ``click_trigger``
-     - float
-     - legacy, ``trigger_levels[str(click_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.
-   * - ``start_trigger``
-     - float
-     - legacy, ``trigger_levels[str(start_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.
-   * - ``line_trigger``
-     - float
-     - legacy, ``trigger_levels[str(line_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.
-   * - ``trigger_levels``
-     - dict
-     - legacy, ``{}``
-     - Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.
 
-The three ``*_trigger`` detector *parameters* exist with either
-configuration: they show the card's current trigger levels for the chosen
-roles and write a new value through to the card. A write is refused, with a
+The three ``*_trigger`` detector *parameters* show the card's current
+trigger levels for the chosen roles and write a new value through to the
+card. A write is refused, with a
 log line, while a scan holds the card, and the parameter then shows the
 card's real value again.
 

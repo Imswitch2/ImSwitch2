@@ -380,12 +380,7 @@ def test_pixel_marker_channels_are_gone_after_the_scan_and_frames_carry_t0():
     assert det.pixel_marker_channels() == {}, "released with the scan's hold"
 
 
-def test_finalize_frees_a_private_card_only():
+def test_finalize_leaves_the_card_to_its_manager():
     nidaq, card, det = _rig()
     det.finalize()
-    assert card.connected, "a shared card is the TimeTaggerManager's to free"
-    private = TimeTaggerManager(TimeTaggerInfo(simulation=True))
-    det._timeTagger = private
-    det._ownsTimeTagger = True
-    det.finalize()
-    assert not private.connected, "the private card is freed with its detector"
+    assert card.connected, "the card is the TimeTaggerManager's to free"

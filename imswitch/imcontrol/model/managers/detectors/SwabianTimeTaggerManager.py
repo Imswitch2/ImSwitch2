@@ -45,19 +45,19 @@ from .DetectorManager import (
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
 
 #: Detector properties that described the card before the setup-level
-#: ``timeTagger`` block existed. Read only when that block is absent.
-_LEGACY_CARD_PROPS = frozenset({
+#: ``timeTagger`` block existed. Retired: the block describes the card, and
+#: these are read only to print the block that replaces them.
+_RETIRED_CARD_PROPS = frozenset({
     'click_channel', 'start_channel', 'line_channel',
     'click_trigger', 'start_trigger', 'line_trigger', 'trigger_levels',
 })
 
-#: Legacy channel property -> the ``timeTagger`` block field whose default
-#: stands in for it when it is missing or unreadable.
-_LEGACY_CHANNEL_FIELDS = {
-    'click_channel': 'photonsChannel',
-    'start_channel': 'laserSyncChannel',
-    'line_channel': 'lineClockChannel',
-}
+#: Retired property prefix -> the block's channel and trigger-level fields.
+_RETIRED_CHANNELS = (
+    ('click', 'photonsChannel', 'photonsTriggerV'),
+    ('start', 'laserSyncChannel', 'laserSyncTriggerV'),
+    ('line', 'lineClockChannel', 'lineClockTriggerV'),
+)
 
 #: The role each of the detector's three role properties falls back to.
 _DEFAULT_ROLES = {'click': 'photons', 'start': 'laser_sync', 'line': 'line_clock'}
@@ -123,21 +123,12 @@ def _choiceRule(options):
     return parse
 
 
-def _channelRule(value):
-    """A Time Tagger input: a non-zero whole number (negative = falling edge)."""
-    channel = _setupNumber(value, int)
-    return channel if channel else None
-
-
 #: What each of the detector's own managerProperties must be: key ->
 #: (parser returning the value or ``None``, what the warning asks for). A
 #: value that does not parse is dropped before the properties are read, so
 #: the read falls back to its default: a slip in the setup file -- a blank
 #: field, a word where a number goes -- must not stop ImControl.
 _ROLE_RULE = (_choiceRule(ROLES), f'one of {", ".join(ROLES)}')
-_CHANNEL_RULE = (_channelRule, 'a Time Tagger input (a non-zero whole '
-                               'number, negative for the falling edge)')
-_VOLTS_RULE = (_numberRule(float), 'a number of volts')
 _PROPERTY_RULES = {
     'enabled': (_setupBool, 'true or false'),
     'click_role': _ROLE_RULE,
@@ -153,19 +144,33 @@ _PROPERTY_RULES = {
     'min_counts_per_pixel': (_numberRule(int, 0), 'a whole number, 0 or more'),
     'laser_rep_rate_mhz': (_numberRule(float, 0.0, strict=True), 'a number above 0'),
     'background_rate_hz': (_numberRule(float, 0.0), 'a number, 0 or more'),
-    'click_channel': _CHANNEL_RULE,
-    'start_channel': _CHANNEL_RULE,
-    'line_channel': _CHANNEL_RULE,
-    'click_trigger': _VOLTS_RULE,
-    'start_trigger': _VOLTS_RULE,
-    'line_trigger': _VOLTS_RULE,
 }
 
 
-def _timeTaggerDefault(fieldName):
-    """The ``timeTagger`` block's default for one field."""
-    return next(f.default for f in dataclasses.fields(TimeTaggerInfo)
-                if f.name == fieldName)
+def _blockFromRetiredProps(props):
+    """The channel part of a ``timeTagger`` block, for the log line that asks
+    for one: the block's defaults, overridden by whatever of a detector's
+    retired card properties is readable (``trigger_levels`` included)."""
+    defaults = {f.name: f.default for f in dataclasses.fields(TimeTaggerInfo)}
+    block = {field: defaults[field]
+             for _prefix, channelField, triggerField in _RETIRED_CHANNELS
+             for field in (channelField, triggerField)}
+    # Only the retired keys, iterated: a read by computed key would be a
+    # property the config-editor schema has to offer.
+    retired = {key: value for key, value in props.items()
+               if key in _RETIRED_CARD_PROPS}
+    levels = retired.get('trigger_levels')
+    levels = levels if isinstance(levels, dict) else {}
+    for prefix, channelField, triggerField in _RETIRED_CHANNELS:
+        channel = _setupNumber(retired.get(f'{prefix}_channel'), int)
+        if channel:
+            block[channelField] = channel
+        volts = _setupNumber(retired.get(f'{prefix}_trigger'), float)
+        if volts is None:
+            volts = _setupNumber(levels.get(str(block[channelField])), float)
+        if volts is not None:
+            block[triggerField] = volts
+    return block
 
 
 #: A TCSPC window shorter than this fraction of the laser period is warned
@@ -196,11 +201,16 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     resolved channels show as read-only parameters; the trigger-level
     parameters write through to the card between scans.
 
-    Setups without a ``timeTagger`` block keep working: the detector builds a
-    private card manager from its own ``click_channel`` / ``start_channel`` /
-    ``line_channel`` and trigger properties and logs the equivalent block
-    (deprecated; the block is where a second consumer or a script finds the
-    card).
+    A setup without a ``timeTagger`` block has no card: the detector still
+    starts, on a stand-in (``TimeTaggerManager.notConfigured``) that refuses
+    every scan, and logs the block to add -- built from the retired
+    ``click_channel`` / ``start_channel`` / ``line_channel`` / ``*_trigger``
+    / ``trigger_levels`` properties when the detector still has them. Those
+    are not read otherwise.
+
+    A value that is blank, unreadable or out of range is dropped with a
+    warning and takes its default; a role the card does not have falls back
+    to the default role. A setup-file slip never stops ImControl.
 
     Optional config properties:
       click_role, start_role, line_role (role names, see above),
@@ -208,11 +218,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
       min_counts_per_pixel (default 20), fit_method (default 'moment'),
       laser_rep_rate_mhz (default 80.0; used by phasor fit to set ω),
       t0_ps (default 0), enabled (default True)
-
-    Legacy config properties (used only without a ``timeTagger`` block):
-      click_channel, start_channel, line_channel,
-      click_trigger / start_trigger / line_trigger,
-      trigger_levels (dict {channel_str: volts}, seeds the trigger defaults)
 
     Pixel markers are generated internally via EventGenerator using
     auto-assigned virtual channel IDs — no physical channels are consumed.
@@ -229,7 +234,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         # a warning), so every read below falls back to its default instead
         # of stopping ImControl over a blank field.
         props = dict(getattr(detectorInfo, 'managerProperties', {}) or {})
-        self._dropUnreadableProperties(props, legacy=timeTaggerManager is None)
+        self._dropUnreadableProperties(props)
 
         self._enabled = bool(props.get('enabled', True))
 
@@ -242,19 +247,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         # Per-pixel fits during the scan every this many seconds; 0 fits the
         # final frame only and previews the intensity (cheap on big frames).
         self._live_fit_period_s = float(props.get('live_fit_period_s', 1.0))
+        retired = sorted(_RETIRED_CARD_PROPS.intersection(props))
         if timeTaggerManager is not None:
             self._timeTagger = timeTaggerManager
-            self._ownsTimeTagger = False
-            legacy = sorted(_LEGACY_CARD_PROPS.intersection(props))
-            if legacy:
-                self._logger.info(
-                    f'The setup has a timeTagger block, so these detector '
-                    f'properties are ignored: {", ".join(legacy)}. Channels '
-                    f'and trigger levels come from the block\'s roles.'
+            if retired:
+                self._logger.warning(
+                    f'These detector properties are no longer read: '
+                    f'{", ".join(retired)}. The setup\'s "timeTagger" block '
+                    f'describes the card; remove them from the setup file.'
                 )
         else:
-            self._timeTagger = self._buildPrivateTimeTagger(props, nidaqManager)
-            self._ownsTimeTagger = True
+            self._timeTagger = self._cardNotConfigured(props, retired)
 
         # Internal state — always kept in sync with parameters via setParameter()
         self._fallBackToConfiguredRoles()
@@ -433,11 +436,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._scanWorker = None
 
     def finalize(self) -> None:
-        """Stop the worker, release the card, and free a *private* card.
+        """Stop the worker and release the card.
 
-        A detector built without a ``timeTagger`` block owns the card it
-        made (the compatibility path); nothing else will free it. A shared
-        card is the TimeTaggerManager's and is finalized by it.
+        The card is the setup's TimeTaggerManager, finalized by it; a
+        stand-in for a setup without one never opened anything.
         """
         try:
             self.stopAcquisition()
@@ -451,22 +453,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._releaseCard()
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
-        if getattr(self, '_ownsTimeTagger', False):
-            try:
-                self._timeTagger.finalize()
-            except Exception as e:
-                self._logger.warning(f'Failed to free the private Time Tagger: {e}')
 
     def __del__(self):
         if not self.__dict__.get('_baseInitialised'):
             # __init__ raised before the base classes existed: nothing was
             # started, and asking them to stop only logs that they were never
-            # initialised. A private card already opened still needs freeing.
-            if self.__dict__.get('_ownsTimeTagger'):
-                try:
-                    self._timeTagger.finalize()
-                except Exception:
-                    pass
+            # initialised.
             return
         try:
             self.stopAcquisition()
@@ -480,11 +472,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._releaseCard()
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
-        if self.__dict__.get('_ownsTimeTagger'):
-            try:
-                self._timeTagger.finalize()
-            except Exception:
-                pass
         if hasattr(super(), '__del__'):
             super().__del__()
 
@@ -537,31 +524,23 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     # The shared card: roles, trigger levels, scan hold                    #
     # ------------------------------------------------------------------ #
 
-    def _dropUnreadableProperties(self, props, legacy):
+    def _dropUnreadableProperties(self, props):
         """Remove from ``props`` (in place) every value this detector cannot
         read, each with a warning, and replace the readable ones by their
         parsed form (``"false"`` becomes False, ``"32"`` becomes 32).
 
         The reads in ``__init__`` then fall back to their defaults: a blank
         field or a word where a number goes is a slip to warn about, not a
-        reason to stop ImControl. ``legacy`` is whether the card properties
-        are read at all (no ``timeTagger`` block); with the block they are
-        ignored, so there is nothing to warn about.
+        reason to stop ImControl.
         """
         for key, raw in list(props.items()):
-            if not legacy and key in _LEGACY_CARD_PROPS:
+            rule = _PROPERTY_RULES.get(key)
+            if rule is None:
                 continue
             if raw is None:
                 # null reads as absent -- the default, quietly; left in,
                 # ``props.get(key, default)`` would return the None.
-                if key in _PROPERTY_RULES:
-                    del props[key]
-                continue
-            if key == 'trigger_levels':
-                self._dropUnreadableTriggerLevels(props, raw)
-                continue
-            rule = _PROPERTY_RULES.get(key)
-            if rule is None:
+                del props[key]
                 continue
             parse, wanted = rule
             value = parse(raw)
@@ -573,30 +552,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 )
             else:
                 props[key] = value
-
-    def _dropUnreadableTriggerLevels(self, props, levels):
-        """The legacy ``trigger_levels`` map, {channel: volts}, without the
-        entries that are not numbers (each with a warning)."""
-        if not isinstance(levels, dict):
-            del props['trigger_levels']
-            self._logger.warning(
-                f'managerProperties["trigger_levels"] = {levels!r} is not a '
-                f'{{"channel": volts}} map; ignoring it. Correct it in the '
-                f'setup file.'
-            )
-            return
-        usable = {}
-        for channel, raw in levels.items():
-            volts = _setupNumber(raw, float)
-            if volts is None:
-                self._logger.warning(
-                    f'managerProperties["trigger_levels"]["{channel}"] = '
-                    f'{raw!r} is not a number of volts; using the default '
-                    f'trigger level instead. Correct it in the setup file.'
-                )
-                continue
-            usable[str(channel)] = volts
-        props['trigger_levels'] = usable
 
     def _fallBackToConfiguredRoles(self):
         """A role the card does not have falls back to the default role
@@ -627,70 +582,29 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             )
             self._frame_role = 'auto'
 
-    def _buildPrivateTimeTagger(self, props, nidaqManager):
-        """Compatibility: no ``timeTagger`` block, channels on the detector.
+    def _cardNotConfigured(self, props, retired):
+        """No ``timeTagger`` block, so no card: a stand-in that lets the
+        detector start and refuses every scan, saying which block to add.
 
-        ``props`` has been through :meth:`_dropUnreadableProperties`, so a
-        value here is readable; a missing channel takes the block's default
-        channel with a warning rather than stopping ImControl.
+        The block is built from the retired card properties the detector
+        still has, if any, and the block's defaults for the rest.
         """
-        tl = props.get('trigger_levels', {}) or {}
-        # Optional in the schema (a setup with a timeTagger block has none
-        # of them), needed here: without the block they are the card.
-        click_channel = props.get('click_channel')
-        start_channel = props.get('start_channel')
-        line_channel = props.get('line_channel')
-        channels = {}
-        for key, channel in (('click_channel', click_channel),
-                             ('start_channel', start_channel),
-                             ('line_channel', line_channel)):
-            if channel is None:
-                channel = _timeTaggerDefault(_LEGACY_CHANNEL_FIELDS[key])
-                self._logger.warning(
-                    f'managerProperties["{key}"] is not set, and the setup has '
-                    f'no "timeTagger" block to take it from; using input '
-                    f'{channel}, the block\'s default. Check the cabling and '
-                    f'set it in the setup file.'
-                )
-            channels[key] = channel
-        # Resolved again from the roles once the card exists.
-        self._click_ch = int(channels['click_channel'])
-        self._start_ch = int(channels['start_channel'])
-        self._line_ch = int(channels['line_channel'])
-        info = TimeTaggerInfo(
-            photonsChannel=self._click_ch,
-            photonsTriggerV=float(
-                props.get('click_trigger', tl.get(str(self._click_ch), 0.5))
-            ),
-            laserSyncChannel=self._start_ch,
-            laserSyncTriggerV=float(
-                props.get('start_trigger', tl.get(str(self._start_ch), 0.5))
-            ),
-            lineClockChannel=self._line_ch,
-            lineClockTriggerV=float(
-                props.get('line_trigger', tl.get(str(self._line_ch), 0.5))
-            ),
+        source = (
+            f'from this detector\'s {", ".join(retired)}, which are no longer '
+            f'read; remove them once the block is in'
+            if retired else
+            'with the block\'s default channels; set them to the cabling'
         )
-        # The roles must be the three the legacy properties describe.
-        self._click_role, self._start_role, self._line_role = (
-            'photons', 'laser_sync', 'line_clock'
+        reason = (
+            'the setup has no top-level "timeTagger" block. Add one to the '
+            f'setup file ({source}): "timeTagger": '
+            + json.dumps(_blockFromRetiredProps(props))
         )
-        block = {
-            'photonsChannel': info.photonsChannel,
-            'photonsTriggerV': info.photonsTriggerV,
-            'laserSyncChannel': info.laserSyncChannel,
-            'laserSyncTriggerV': info.laserSyncTriggerV,
-            'lineClockChannel': info.lineClockChannel,
-            'lineClockTriggerV': info.lineClockTriggerV,
-        }
-        self._logger.warning(
-            'This setup has no top-level "timeTagger" block; the Time Tagger '
-            'is configured from this detector\'s click/start/line properties '
-            '(deprecated). Move them to the block so scripts and other '
-            'consumers can find the card: "timeTagger": '
-            + json.dumps(block)
+        self._logger.error(
+            f'No Time Tagger for this detector -- a scan with it is refused: '
+            f'{reason}'
         )
-        return TimeTaggerManager(info, nidaqManager=nidaqManager)
+        return TimeTaggerManager.notConfigured(reason)
 
     def _resolveRoles(self, publish=True):
         """Mirror the roles' channels and trigger levels into the attributes

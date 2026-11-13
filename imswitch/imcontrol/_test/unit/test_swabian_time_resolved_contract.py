@@ -65,13 +65,8 @@ class _StuckScanThread:
 
 
 def _make_manager(props=None):
-    defaults = {
-        "click_channel": 1,
-        "start_channel": 2,
-        "line_channel": 3,
-    }
-    defaults.update(props or {})
-    return SwabianTimeTaggerManager(_DetectorInfo(defaults), "FLIM", _Nidaq())
+    # No timeTagger block: a stand-in card, block-default channels 1/2/3.
+    return SwabianTimeTaggerManager(_DetectorInfo(dict(props or {})), "FLIM", _Nidaq())
 
 
 def _store_synthetic_products(manager, *, is_final=True):
@@ -95,27 +90,8 @@ def _store_synthetic_products(manager, *, is_final=True):
     return cube, intensity, lifetime_s, decay, t_axis_ns
 
 
-def test_constructor_honors_direct_trigger_properties():
-    manager = _make_manager(
-        {
-            "click_trigger": -0.1,
-            "start_trigger": 0.2,
-            "line_trigger": -0.3,
-            "trigger_levels": {"1": 9.0, "2": 9.0, "3": 9.0},
-        }
-    )
-
-    assert manager._click_trigger == -0.1
-    assert manager._start_trigger == 0.2
-    assert manager._line_trigger == -0.3
-
-
-def test_constructor_falls_back_to_trigger_levels():
-    manager = _make_manager({"trigger_levels": {"1": -0.1, "2": 0.2, "3": -0.3}})
-
-    assert manager._click_trigger == -0.1
-    assert manager._start_trigger == 0.2
-    assert manager._line_trigger == -0.3
+# Trigger levels live on the timeTagger block (test_swabian_shared_card.py);
+# the detector's own click/start/line_trigger properties are retired.
 
 
 def test_time_resolved_products_retain_cube_when_requested():
