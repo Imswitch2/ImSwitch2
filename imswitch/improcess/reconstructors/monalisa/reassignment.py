@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .extraction import ExtractionOperator, ExtractionResult
+from .local_extraction import LocalExtractionOperator
 from .placement import HOLE_DENSITY, OutputRaster, PlacedImage, sample_positions
 
 DEFAULT_OFFSETS = (
@@ -291,7 +292,7 @@ def pinhole_stack(
 
 def reassign(
     frames: np.ndarray,
-    operator: ExtractionOperator,
+    operator: ExtractionOperator | LocalExtractionOperator,
     x: np.ndarray,
     y: np.ndarray,
     offsets: np.ndarray,
@@ -304,12 +305,12 @@ def reassign(
 ) -> PlacedImage:
     """Reconstruct by placing every footprint pixel where it was measured.
 
-    Every pixel of a focus' footprint, cleared of the background and of the
-    other foci by the joint fit, is a sample of the specimen at
+    Every pixel of a focus' footprint, corrected for fitted background (and
+    additionally for neighboring foci with Joint extraction), is a sample at
     ``q + alpha * d``. The samples are combined by least squares with the
     spot model as the weight: ``sum(g v) / sum(g^2)``, accumulated on the
-    raster by bilinear splatting. With ``alpha = 0`` this is the amplitude
-    image of the joint fit.
+    raster by bilinear splatting. With ``alpha = 0`` this recovers the fitted
+    amplitude for non-overlapping footprints with the same support and units.
 
     Args:
         frames: ``(K, rows, cols)``.

@@ -76,6 +76,7 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         _directoryWatcher=None,
         _widget=SimpleNamespace(
             setSessionMode=lambda mode: events.append(("ui", mode)),
+            setWatchingActive=lambda active: events.append(("watching", active)),
             setStatus=lambda message: events.append(("status", message)),
         ),
         _watchPendingPaths=set(),
@@ -87,6 +88,11 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
         _watchReconcileTimer=SimpleNamespace(stop=lambda: None),
         _pathBelongsToResults=lambda path: False,
         _sessionKnowsRootEntry=lambda path: path == "/tmp/old.zarr",
+        # The mocked watcher only records signal connections; callbacks are
+        # not fired here. Still provide the slots added to the real controller.
+        _sessionPathFound=lambda path: None,
+        _sessionPathChanged=lambda path: None,
+        _sessionPathRemoved=lambda path: None,
         _render=lambda: events.append("render"),
         sigCatalogChanged=_Signal(),
         sigDatasetsAdded=_Signal(),
@@ -120,6 +126,7 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
     ProcessingSessionController.setSessionMode(fake, "follow")
     assert len(_FakeWatcher.instances) == 1
     assert events.count("reconcile") == 1
+    assert ("watching", True) in events
 
     watcher = fake._directoryWatcher
     ProcessingSessionController.setSessionMode(fake, "review")

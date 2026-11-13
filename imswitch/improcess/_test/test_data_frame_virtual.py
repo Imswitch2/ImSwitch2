@@ -52,6 +52,7 @@ def _controller_stub():
     widget = SimpleNamespace(
         setImage=lambda image, autoLevels: calls.images.append((image, autoLevels)),
         setNumFrames=lambda value: calls.frames.append(value),
+        setTimepointControls=lambda *args, **kwargs: None,
         setDataName=lambda value: calls.names.append(value),
         setDatasetName=lambda value: calls.datasets.append(value),
     )
@@ -64,10 +65,14 @@ def _controller_stub():
                                 warning=lambda *_: None),
         _commChannel=comm_channel,
         _dataObj=None,
+        _invalidateTimepointRequests=lambda **kwargs: None,
+        _setCurrentDataProcessingEnabled=lambda enabled: None,
+        currentDataReadyForProcessing=lambda: True,
     )
     controller._currentDataArray = DataFrameController._currentDataArray.__get__(controller)
     controller._currentAxisLabels = DataFrameController._currentAxisLabels.__get__(controller)
     controller.showMean = DataFrameController.showMean.__get__(controller)
+    controller._showImageDataObj = DataFrameController._showImageDataObj.__get__(controller)
     controller.currentDataChanged = DataFrameController.currentDataChanged.__get__(controller)
     controller.setImgSlice = DataFrameController.setImgSlice.__get__(controller)
     return controller, calls

@@ -56,7 +56,8 @@ def test_prepared_lapse_uses_logical_timelapse_provenance_identity():
             frames_per_stack=576,
             num_timepoints=10,
         ),
-        make_source=lambda detector_name=None: object(),
+        make_source=lambda detector_name=None, timepoint_scope=None,
+                           total_timepoints=None, timepoint_origin=0: object(),
     )
 
     assert start_prepared_live_job(

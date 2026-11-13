@@ -185,7 +185,7 @@ def test_the_layout_outranks_a_contradicting_linestep_attribute():
 def test_live_session_takes_its_condition_count_from_the_layout(resolved_factory):
     stack_info = SimpleNamespace(acquisition_layout=resolved_factory())
     assert MonalisaLiveSession._geometry_from_recorded_layout(stack_info) == (
-        COLS, ROWS, 1, CONDITIONS,
+        COLS, ROWS, CONDITIONS,
     )
 
 

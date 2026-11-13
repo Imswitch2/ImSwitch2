@@ -39,9 +39,9 @@ def test_loaded_ordinary_image_is_reused_in_multidata():
 def test_loaded_logical_timelapse_expands_into_multidata_timepoints():
     ctl = _controller()
     refs = (
-        SimpleNamespace(path=Path("/raw/scan0_CAM.hdf5"), dataset="Camera"),
-        SimpleNamespace(path=Path("/raw/scan1_CAM.hdf5"), dataset="Camera"),
-        SimpleNamespace(path=Path("/raw/scan2_CAM.hdf5"), dataset="Camera"),
+        SimpleNamespace(path=Path(str(Path("/raw/scan0_CAM.hdf5"))), dataset="Camera"),
+        SimpleNamespace(path=Path(str(Path("/raw/scan1_CAM.hdf5"))), dataset="Camera"),
+        SimpleNamespace(path=Path(str(Path("/raw/scan2_CAM.hdf5"))), dataset="Camera"),
     )
     index = SimpleNamespace(
         channel=lambda: SimpleNamespace(candidates=refs),
@@ -55,17 +55,17 @@ def test_loaded_logical_timelapse_expands_into_multidata_timepoints():
 
     assert ctl.multiDataFrameController.existing == []
     assert ctl.multiDataFrameController.made == [
-        ("scan0_CAM.hdf5", "Camera", "/raw/scan0_CAM.hdf5"),
-        ("scan1_CAM.hdf5", "Camera", "/raw/scan1_CAM.hdf5"),
-        ("scan2_CAM.hdf5", "Camera", "/raw/scan2_CAM.hdf5"),
+        ("scan0_CAM.hdf5", "Camera", str(Path("/raw/scan0_CAM.hdf5"))),
+        ("scan1_CAM.hdf5", "Camera", str(Path("/raw/scan1_CAM.hdf5"))),
+        ("scan2_CAM.hdf5", "Camera", str(Path("/raw/scan2_CAM.hdf5"))),
     ]
 
 
 def test_loaded_single_file_timelapse_keeps_group_dataset_names():
     ctl = _controller()
     refs = (
-        SimpleNamespace(path=Path("/raw/lapse_CAM.hdf5"), dataset="scan0/Camera"),
-        SimpleNamespace(path=Path("/raw/lapse_CAM.hdf5"), dataset="scan1/Camera"),
+        SimpleNamespace(path=Path(str(Path("/raw/lapse_CAM.hdf5"))), dataset="scan0/Camera"),
+        SimpleNamespace(path=Path(str(Path("/raw/lapse_CAM.hdf5"))), dataset="scan1/Camera"),
     )
     index = SimpleNamespace(
         channel=lambda: SimpleNamespace(candidates=refs),
@@ -78,8 +78,8 @@ def test_loaded_single_file_timelapse_keeps_group_dataset_names():
     ctl._addDataObjToWorkingSet(data_obj)
 
     assert ctl.multiDataFrameController.made == [
-        ("lapse_CAM.hdf5", "scan0/Camera", "/raw/lapse_CAM.hdf5"),
-        ("lapse_CAM.hdf5", "scan1/Camera", "/raw/lapse_CAM.hdf5"),
+        ("lapse_CAM.hdf5", "scan0/Camera", str(Path("/raw/lapse_CAM.hdf5"))),
+        ("lapse_CAM.hdf5", "scan1/Camera", str(Path("/raw/lapse_CAM.hdf5"))),
     ]
 
 

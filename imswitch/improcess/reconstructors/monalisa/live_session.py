@@ -333,7 +333,7 @@ class MonalisaLiveSession(StreamingSession):
 
         orientation_indices = self._condition_frame_indices(0)
         manual_orientation = (
-            str(params.get("orientation_mode", "Auto")) == "Manual"
+            str(params.get("orientation_mode", "Auto")) in ("Manual", "Setup default", "Recorded")
             and params.get("orientation")
         )
         if manual_orientation:
@@ -644,8 +644,23 @@ class MonalisaLiveSession(StreamingSession):
             return
         if str(params.get("preset", "")) == PRESET_LEGACY:
             raise ValueError(
-                "Legacy DLL mode is offline-only; live MoNaLISA reconstruction uses "
-                "the Fast-compatible Gaussian path."
+                "Legacy DLL mode is offline-only; use the separate classic "
+                "reconstructor for offline processing."
+            )
+        if str(params.get("preset", "")) == "DLL-equivalent":
+            raise ValueError("DLL-equivalent extraction is offline-only")
+        if str(params.get("preset", "")) == "Full":
+            raise ValueError(
+                "Full mode is offline-only. Select Fast for streaming; "
+                "the incremental engine may impose additional estimator limits."
+            )
+        # This older incremental engine uses a distinct rectangular Gauss
+        # extractor. Never pretend it implements the selected new Local or
+        # Joint extraction configuration; offline processing remains valid.
+        if "estimator" in params:
+            raise ValueError(
+                "Selected Gaussian estimator/footprint is offline-only in the "
+                "current streaming engine; use finite MoNaLISA reconstruction."
             )
         unsupported = []
         if params.get("intensity_correction", False):

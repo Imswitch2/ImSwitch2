@@ -208,7 +208,9 @@ def test_startup_uses_the_saved_folders(channel, monkeypatch):
     commChannel, emitted = channel
     monkeypatch.setattr(fileio, "load_folder_preferences",
                         lambda: FolderPreferences(dataFolder="/data/raw", saveFolder="/out"))
-    factory = SimpleNamespace(createController=lambda *_a, **_k: SimpleNamespace())
+    factory = SimpleNamespace(createController=lambda *_a, **_k: SimpleNamespace(
+        setAddDataDelegate=lambda _callback: None,
+    ))
     widget = SimpleNamespace(multiDataFrame=None, pickDatasetsDialog=None)
 
     controller = fileio.FileIOController(commChannel, widget=widget, factory=factory,

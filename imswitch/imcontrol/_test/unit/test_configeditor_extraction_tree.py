@@ -87,6 +87,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # (reconnect 2.0 R-3: the fallback mock became an explicit opt-in);
     # 242: and on Photometrics, Allied Vision and PiCam. 244: the APD's and the
     # Hamamatsu's mockSample (SimplePointScan / SimpleMoNaLISA mock setups).
+    # MoNaLISA reconstruction defaults now belong to processing, not
+    # detector hardware schemas (244 rather than 244 + 18).
     assert report.keys == 244
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
@@ -95,7 +97,7 @@ def test_the_coverage_the_plan_is_built_on(report):
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
     assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
-    assert report.optional == 178  # +2 mockSample
+    assert report.optional == 178
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.

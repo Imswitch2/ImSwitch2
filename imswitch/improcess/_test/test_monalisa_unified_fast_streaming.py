@@ -216,20 +216,33 @@ def test_multi_plane_two_timepoints_keep_one_result_and_correct_z():
     session.close()
 
 
-def test_interleaved_xyz_extracts_each_frame_exactly_once(monkeypatch):
-    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
 
+def _count_gaussian_device_extractions(monkeypatch, calls):
+    """Count both scientific estimators (the default Fast mode is Local).
+
+    ExtractionOperator is the Joint fitter; LocalExtractionOperator is a
+    separate implementation, not its subclass. Instrumenting only the former
+    silently reports zero frames for the default Local mode.
+    """
+    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
+    from imswitch.improcess.reconstructors.monalisa.local_extraction import LocalExtractionOperator
+
+    for operator_type in (ExtractionOperator, LocalExtractionOperator):
+        original_apply = operator_type.apply_device
+
+        def counted(self, batch, *args, _original=original_apply, **kwargs):
+            calls.append(len(batch))
+            return _original(self, batch, *args, **kwargs)
+
+        monkeypatch.setattr(operator_type, "apply_device", counted)
+
+
+def test_interleaved_xyz_extracts_each_frame_exactly_once(monkeypatch):
     frames, layout, per_t = _multi_plane_fixture(("x", "y", "z"), interleaved=True)
     plugin, params = MonalisaReconstructor(), _params()
     finite = plugin.process(_source(frames, layout), params)
     calls = []
-    original_apply = ExtractionOperator.apply_device
-
-    def counted(self, batch, device="CPU", chunk=64):
-        calls.append(len(batch))
-        return original_apply(self, batch, device, chunk)
-
-    monkeypatch.setattr(ExtractionOperator, "apply_device", counted)
+    _count_gaussian_device_extractions(monkeypatch, calls)
     monkeypatch.setattr(plugin, "process", lambda *a, **kw: pytest.fail(
         "Completed incremental XYZ must finalize retained coefficients, not refit"
     ))
@@ -319,9 +332,13 @@ def test_multi_timepoint_first_preview_and_commit_boundaries():
     assert np.isnan(session.result().data[1:]).all()
     session.push(frames[7:], len(frames) + 7, len(frames) * 2)
     assert session.provisional_preview() is None
-    index, plane = session.live_plane()
-    assert index == 1 and plane.shape[0] == 1
-    np.testing.assert_allclose(plane[0], first.data[0], rtol=1e-5, atol=1e-5)
+    # A reconstruction with secondary scientific layers (background here)
+    # must publish an owned full snapshot, not a data-only plane that would
+    # leave the displayed background slice stale.
+    assert session.live_plane() is None
+    complete = session.result()
+    np.testing.assert_allclose(complete.data[1], first.data[0], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(complete.background[1], first.background[0], rtol=1e-5, atol=1e-5)
     session.push(frames, len(frames) * 2, len(frames) * 3)
     final = session.finish()
     assert final.data.shape[0] == 3
@@ -602,7 +619,6 @@ def test_m4b_explicit_fast_finalizes_retained_extraction_without_process(
     monkeypatch, stagger, placement_mode,
 ):
     """Each raw frame is fitted exactly once, including the final frame."""
-    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
 
     frames = _scan(stagger=stagger)
     layout = _resolved(stagger=stagger)
@@ -612,16 +628,11 @@ def test_m4b_explicit_fast_finalizes_retained_extraction_without_process(
     offline = plugin.process(_source(frames, layout), params)
 
     calls = []
-    original_apply = ExtractionOperator.apply_device
-
-    def tracked_apply(self, batch, device="CPU", chunk=64):
-        calls.append(len(batch))
-        return original_apply(self, batch, device, chunk)
+    _count_gaussian_device_extractions(monkeypatch, calls)
 
     def unexpected_process(*args, **kwargs):
         pytest.fail("M4B completed a locked/manual timepoint by repeating process()")
 
-    monkeypatch.setattr(ExtractionOperator, "apply_device", tracked_apply)
     monkeypatch.setattr(plugin, "process", unexpected_process)
     session, _ = _start(
         plugin, frames[:1], params, layout, frames_per_timepoint=len(frames),
@@ -677,7 +688,6 @@ def test_m4b1_timepoint_finalization_matches_finite_without_refit(
     monkeypatch, stagger, placement_mode, intensity, offsets,
 ):
     """Complete timepoint corrections reuse frame fits, also on an off-grid lattice."""
-    from imswitch.improcess.reconstructors.monalisa.extraction import ExtractionOperator
 
     frames = _scan(stagger=stagger)
     # Nontrivial frame-dependent brightness, the case gain fitting corrects.
@@ -693,13 +703,7 @@ def test_m4b1_timepoint_finalization_matches_finite_without_refit(
     plugin = MonalisaReconstructor()
     offline = plugin.process(_source(frames, layout), params)
     calls = []
-    original = ExtractionOperator.apply_device
-
-    def counted(self, batch, device="CPU", chunk=64):
-        calls.append(len(batch))
-        return original(self, batch, device, chunk)
-
-    monkeypatch.setattr(ExtractionOperator, "apply_device", counted)
+    _count_gaussian_device_extractions(monkeypatch, calls)
     monkeypatch.setattr(plugin, "process", lambda *a, **kw: pytest.fail(
         "Incrementally completed timepoint must not call process() again"
     ))

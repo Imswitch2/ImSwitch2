@@ -43,11 +43,13 @@ from .extraction import (
 )
 from .lattice import Lattice, detect_lattice
 from .localization_settings import LocalizationSettings
+from .dll_equivalent import DllFastExtractionOperator
 from .placement import (
     COMMENSURATE_TOLERANCE,
     DEFAULT_SMOOTHING,
     Coverage,
     OutputRaster,
+    PlacementPlan,
     PlacedImage,
     commensurability,
     coverage,
@@ -72,8 +74,11 @@ from .scan_frame import (
     orient_step_columns,
     raster_scan_index,
 )
+from .local_extraction import LocalExtractionOperator
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
+from .footprint_suggestion import suggest_local_footprint_size
+from .footprint_config import footprint_from_params
 
 # A haze term is only used when it removes this share of the residual.
 HAZE_RESIDUAL_RATIO = 0.8
@@ -86,7 +91,9 @@ class PipelineParams:
     """What remains to choose once the geometry is read from the data.
 
     Attributes:
-        reach_sigma: Footprint radius in spot sigmas.
+        reach_sigma: Automatic Joint fit-pixel radius in spot sigmas.
+        joint_footprint_mode: Joint pixel support selection: auto/fixed/lattice.
+        joint_fit_radius_px: Fixed Joint circular fit radius in camera pixels.
         background: ``"none"``, ``"constant"``, ``"constant+haze"``, or
             ``"auto"``: constant, plus haze when the mean frame calls for it.
         haze_sigma_px: Haze width; fitted to the mean frame when ``None``.
@@ -136,9 +143,22 @@ class PipelineParams:
     """
 
     reach_sigma: float = DEFAULT_REACH_SIGMA
+    joint_footprint_mode: str = "auto"
+    joint_fit_radius_px: float = 4.5
     background: str = "constant"
     haze_sigma_px: float | None = None
     joint: bool = True
+    estimator: str = "joint"
+    pixel_size_nm: float | None = None
+    local_footprint_mode: str = "fixed"
+    local_footprint_shape: str = "square"
+    local_footprint_size: int = 9
+    local_sampling: str = "camera_pixels"
+    # None means a historical caller with estimator-specific footprint keys.
+    footprint_shape: str | None = None
+    footprint_mode: str | None = None
+    footprint_size_px: float = 9.0
+    footprint_sigma_factor: float = 2.5
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
     # ``fast`` detects the general lattice directly from the mean frame (the
@@ -177,7 +197,7 @@ class StackGeometry:
     localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
-    operator: ExtractionOperator
+    operator: ExtractionOperator | LocalExtractionOperator | DllFastExtractionOperator
     raster: OutputRaster
     step: np.ndarray
     index_matrix: np.ndarray
@@ -259,7 +279,10 @@ def projected_axis_period(lattice: Lattice, axis: int) -> float:
     translation used historically.
     """
     axis = int(axis)
-    basis = np.asarray([lattice.a1, lattice.a2], dtype=float)
+    # A reduced basis has the shortest vectors, whose projections are the
+    # column spacings; a long basis vector's projection need not be.
+    reduced = lattice.reduced()
+    basis = np.asarray([reduced.a1, reduced.a2], dtype=float)
     components = np.abs(basis[:, axis])
     scale = float(np.max(components))
     if scale <= 1e-12:
@@ -357,7 +380,9 @@ def prepare_geometry(
             camera's x and y, as columns. A column of NaN, or ``None`` for
             both, is taken from the lattice (:func:`complete_step`): the
             period along that axis over the number of positions the scan
-            has along it -- for an axis that is not scanned, the period.
+            has along it -- for an axis that is not scanned, the spacing
+            of the lattice's focus columns along it
+            (:func:`projected_axis_period`).
         scan_index: ``(frames, 2)`` integer scan positions in steps.
         params: Pipeline parameters.
         lattice: The illumination lattice, when already known; detected
@@ -422,6 +447,15 @@ def prepare_geometry(
         else float(first.shared_sigma)
     )
     margin = 3.0 * final_sigma
+    fit = footprint_from_params(vars(params), estimator=params.estimator)
+    if fit.shape == "lattice" or params.estimator == "dll_python":
+        if len(localization.motif) != 1:
+            raise ValueError(
+                "Unit cells require a single-motif axis-aligned rectangular lattice"
+            )
+        # Preserve neighboring canonical cells at camera boundaries so their
+        # ownership is not accidentally expanded into the nearest valid cell.
+        margin = max(margin, 0.6 * max(np.linalg.norm(lattice.matrix, axis=0)))
     x, y = localization.points_in_frame(rows, cols, margin=margin)
     if params.spot_sigma_px is not None:
         spot_model = SpotModel.uniform(x, y, final_sigma)
@@ -446,15 +480,78 @@ def prepare_geometry(
         use_haze = haze_ratio is not None and haze_ratio <= HAZE_RESIDUAL_RATIO
         background = "constant+haze" if use_haze else "constant"
 
-    operator = ExtractionOperator.build(
-        spot_model.x, spot_model.y, sigma, (rows, cols),
-        reach_sigma=params.reach_sigma,
-        background=background,
-        haze_sigma=haze_sigma if background == "constant+haze" else None,
-        joint=params.joint,
-        pixel_mask=pixel_mask,
-        min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
-    )
+    estimator = str(params.estimator).lower()
+    # A single geometric support policy is resolved independently of the
+    # estimator. Changing Local <-> Joint must not silently change fit pixels.
+    shared_sigma = float(np.median(np.asarray(sigma)))
+    resolved_size = fit.resolved_size(localization, shared_sigma)
+    if estimator == "local":
+        if background not in ("none", "constant"):
+            raise ValueError("Local Gaussian extraction supports constant or no background")
+        if pixel_mask is not None:
+            raise ValueError("Local Gaussian extraction does not support pixel masks")
+        if params.variance_weighting:
+            raise ValueError("Variance weighting requires Joint Gaussian extraction")
+        # ISM uses the original sensor pixels. Local bilinear interpolation
+        # changes those observations, so only native camera sampling can feed
+        # the shared reassignment stage. Raw pinhole stacks are independent of
+        # the Gaussian estimator and need no such restriction.
+        if params.reassignment != "off" and params.local_sampling != "camera_pixels":
+            raise ValueError(
+                "Local reassignment requires original camera-pixel sampling"
+            )
+        # Unit-cell support uses actual camera pixels; Local's existing DLL
+        # geometry path already implements this without changing its solver.
+        if fit.shape == "lattice" and params.local_sampling != "camera_pixels":
+            raise ValueError("Lattice unit cells require original camera-pixel sampling")
+        sampling = params.local_sampling
+        operator = LocalExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            background=background,
+            footprint_shape={"square": "rectangular", "circle": "circular",
+                             "lattice": "lattice"}[fit.shape],
+            footprint_size=int(resolved_size) if fit.shape == "square" else 3,
+            pinhole_radius_px=(resolved_size / 2.0 if resolved_size is not None else 1.0),
+            sampling=sampling, lattice=lattice if fit.shape == "lattice" else None,
+            focus_coordinates="localized",
+        )
+    elif estimator == "dll_python":
+        if background != "constant":
+            raise ValueError("DLL-equivalent requires the 9999-nm constant background basis")
+        if pixel_mask is not None:
+            raise ValueError("DLL-equivalent does not support camera pixel masks")
+        if params.variance_weighting or params.reassignment != "off" or params.pinhole_stack != "off":
+            raise ValueError("DLL-equivalent does not support variance weighting, ISM or pinhole stacks")
+        operator = DllFastExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            lattice=lattice, background=background, pixel_size_nm=params.pixel_size_nm,
+        )
+    elif estimator == "joint":
+        if fit.shape == "lattice":
+            support_mode, radius = "lattice", None
+        elif fit.shape == "square":
+            support_mode, radius = "fixed", None
+        elif fit.mode == "fwhm":
+            # Preserve exact per-focus sigma scaling of historical Joint Auto.
+            support_mode, radius = "auto", None
+        else:
+            support_mode, radius = "fixed", resolved_size / 2.0
+        operator = ExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            reach_sigma=fit.sigma_factor,
+            footprint_mode=support_mode,
+            fit_shape="square" if fit.shape == "square" else "circle",
+            fit_size_px=resolved_size if fit.shape == "square" else None,
+            fit_radius_px=radius,
+            lattice=lattice if fit.shape == "lattice" else None,
+            background=background,
+            haze_sigma=haze_sigma if background == "constant+haze" else None,
+            joint=params.joint,
+            pixel_mask=pixel_mask,
+            min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
+        )
+    else:
+        raise ValueError(f"Unknown Gaussian estimator {params.estimator!r}")
 
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
     step, completed = complete_step(step, lattice, scan_index, step_aspect)
@@ -494,6 +591,31 @@ def prepare_geometry(
         "haze_sigma_px": haze_sigma if background == "constant+haze" else None,
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
+        "estimator": estimator,
+        "dll_equivalent_model": (
+            "independent DLL unit cells; integrated Gaussian (2πσ²); "
+            "9999 nm background; CPU extraction" if estimator == "dll_python" else None
+        ),
+        "footprint_shape": fit.shape,
+        "footprint_mode": fit.mode,
+        "footprint_size_px": fit.size_px,
+        "footprint_sigma_factor": fit.sigma_factor,
+        "resolved_footprint_size_px": resolved_size,
+        # Historical aliases remain for old diagnostic consumers, but report
+        # the *effective* common support rather than stale old UI defaults.
+        "joint_footprint_mode": (
+            "lattice" if fit.shape == "lattice" else
+            "auto" if fit.shape == "circle" and fit.mode == "fwhm" else "fixed"
+        ) if estimator == "joint" else None,
+        "joint_fit_radius_px": (
+            resolved_size / 2.0 if estimator == "joint" and fit.shape == "circle"
+            and fit.mode != "fwhm" else None
+        ),
+        "joint_fit_pixel_count": operator.num_fit_pixels if estimator == "joint" else None,
+        "local_footprint_mode": fit.mode if estimator == "local" else None,
+        "local_footprint_shape": fit.shape if estimator == "local" else None,
+        "local_footprint_size": resolved_size if estimator == "local" else None,
+        "local_sampling": params.local_sampling if estimator == "local" else None,
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,
         "step_completed_axes": tuple("xy"[axis] for axis in completed),
@@ -946,6 +1068,31 @@ def resolve_scan_frame_gain(
         "frame_gain_range": (float(gain.min()), float(gain.max())),
     }
 
+def prepare_stack_placement(
+    geometry: StackGeometry, scan_index: np.ndarray
+) -> tuple[PlacementPlan, np.ndarray]:
+    """Prepare the invariant placement mapping of one in-plane scan.
+
+    Timepoints/Z planes of one recording normally traverse the same scan
+    positions.  The unified merger initially rebuilt this mapping for every
+    stack; mature Fast Gauss prepared the equivalent scatter map once.  Keep
+    the generic placement implementation, but make its reusable part explicit.
+    """
+    scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
+    gx, gy = _raster_coordinates(geometry, scan_index)
+    valid = geometry.operator.valid
+    gx, gy = gx[:, valid], gy[:, valid]
+    plan = prepare_placement(
+        gx, gy, geometry.raster.shape,
+        tolerance=geometry.params.commensurate_tolerance,
+        smoothing=geometry.params.smoothing,
+        mode=geometry.params.placement_mode,
+    )
+    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
+    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
+    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
+    return plan, owner
+
 
 def reconstruct_stack(
     frames: np.ndarray | None,
@@ -953,6 +1100,7 @@ def reconstruct_stack(
     scan_index: np.ndarray,
     frame_gain: np.ndarray | None = None,
     extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct one stack: the frames of one scan of the cell.
 
@@ -986,9 +1134,7 @@ def reconstruct_stack(
         raise ValueError(
             f"{num_frames} frames but {extracted.amplitude.shape[0]} extracted rows"
         )
-    gx, gy = _raster_coordinates(geometry, scan_index)
     valid = operator.valid
-    gx, gy = gx[:, valid], gy[:, valid]
 
     gain = np.ones(num_frames)
     if frame_gain is not None:
@@ -1008,12 +1154,10 @@ def reconstruct_stack(
         if not np.all(np.isfinite(variance)):
             variance = None
 
-    placement_plan = prepare_placement(
-        gx, gy, geometry.raster.shape,
-        tolerance=geometry.params.commensurate_tolerance,
-        smoothing=geometry.params.smoothing,
-        mode=geometry.params.placement_mode,
-    )
+    if prepared_placement is None:
+        placement_plan, owner = prepare_stack_placement(geometry, scan_index)
+    else:
+        placement_plan, owner = prepared_placement
 
     def placed(values: np.ndarray | None, with_variance: bool) -> PlacedImage | None:
         if values is None:
@@ -1022,11 +1166,10 @@ def reconstruct_stack(
             values[:, valid], variance=variance if with_variance else None
         )
 
-    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
-    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
-    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
     offsets, offset_share = None, None
     if geometry.params.cell_offsets == "seams":
+        gx, gy = _raster_coordinates(geometry, scan_index)
+        gx, gy = gx[:, valid], gy[:, valid]
         cells = place_nearest(gx, gy, amplitudes[:, valid], geometry.raster.shape)
         offsets, offset_share = fit_cell_offsets(
             cells.image, owner, operator.num_foci, return_share=True
@@ -1078,6 +1221,7 @@ def reconstruct_stack(
             amplitude.image, geometry.params.sharpen_sigma_px,
             geometry.params.sharpen_regularization,
         )
+    finite_noise = extracted.noise_sigma[np.isfinite(extracted.noise_sigma)]
     diagnostics = {
         "placement": amplitude.method,
         "shift_factor_used": alpha,
@@ -1085,7 +1229,9 @@ def reconstruct_stack(
         "cell_offset_share": offset_share,
         "max_placement_residual": amplitude.max_residual,
         "holes": int(np.sum(~np.isfinite(amplitude.image))),
-        "noise_sigma_mean": float(np.mean(extracted.noise_sigma)),
+        "noise_sigma_mean": (
+            float(np.mean(finite_noise)) if finite_noise.size else None
+        ),
     }
     return StackReconstruction(
         amplitude=amplitude,
@@ -1146,6 +1292,8 @@ def reconstruct_scan(
     scan_index: np.ndarray | None = None,
     gain_positions: tuple[np.ndarray, np.ndarray] | None = None,
     step_aspect: float | None = None,
+    extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct the frames of one raster scan, reading all it can from them.
 
@@ -1180,8 +1328,8 @@ def reconstruct_scan(
             the stage-to-camera mapping (:func:`.scan_frame.orient_recorded_index`),
             chosen by smoothness when ``None``. ``step`` has the stage axes'
             steps as columns. Either axis may have one position: it is then
-            not scanned, and the output raster is one lattice period along
-            it.
+            not scanned, and the output raster has one pixel per focus
+            column of the lattice along it (:func:`projected_axis_period`).
         gain_positions: With ``scan_index``, the ``(fast, slow)`` position
             of every frame in the order visited, for the gain of the frames
             (:func:`.frame_gain.fit_frame_gain`); ``scan_index`` itself
@@ -1237,7 +1385,12 @@ def reconstruct_scan(
     # and general lattices.  The returned result is host-readable for the
     # compact calibration/correction steps, while the expensive sparse solve
     # uses the selected device.
-    extracted = operator.apply_device(frames, params.device)
+    if extracted is None:
+        extracted = operator.apply_device(frames, params.device)
+    elif extracted.amplitude.shape[0] != frames.shape[0]:
+        raise ValueError(
+            f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
+        )
     gain, gain_diagnostics = resolve_scan_frame_gain(
         extracted, valid, (num_fast, num_slow), gain_positions, params.frame_gain,
     )
@@ -1356,7 +1509,8 @@ def reconstruct_scan(
             diagnostics["shift_factor_spread"] = factor.spread
 
     result = reconstruct_stack(
-        frames, geometry, scan_index, frame_gain=gain, extracted=extracted
+        frames, geometry, scan_index, frame_gain=gain, extracted=extracted,
+        prepared_placement=prepared_placement,
     )
     geometry_diagnostics = dict(geometry.diagnostics)
     geometry_diagnostics.update(

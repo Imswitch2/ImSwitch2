@@ -26,14 +26,18 @@ class _FakeLive(QtCore.QObject):
         super().__init__()
         self.start_calls = []
         self.start_names = []
+        self.start_dataset_names = []
         self.start_return = True
         self.stops = 0
         self.stop_kwargs = []
 
-    def start(self, reconstructor, source, params, source_arg=None, name=None,
-              source_dataset_name=None):
+    def start(
+        self, reconstructor, source, params, source_arg=None, name=None,
+        source_dataset_name=None,
+    ):
         self.start_calls.append(source_arg)
         self.start_names.append(name)
+        self.start_dataset_names.append(source_dataset_name)
         return self.start_return
 
     def stop(self, *, graceful=True, notify_finished=False):
@@ -94,11 +98,7 @@ def _controller(reconstructor=None):
     return c
 
 
-def test_live_mode_owns_its_watcher_and_leaves_a_borrowed_one_running(tmp_path):
-    """Live mode never borrows the Session watcher: Review tears it down.
-
-    A watcher it does not own is still left running when Live mode stops.
-    """
+def test_legacy_live_does_not_borrow_or_stop_session_watcher(tmp_path):
     from imswitch.improcess.live.discovery import DirectoryWatcher
 
     watcher = DirectoryWatcher(str(tmp_path), poll_interval_ms=50)
@@ -109,8 +109,10 @@ def test_live_mode_owns_its_watcher_and_leaves_a_borrowed_one_running(tmp_path):
         directoryWatcher=watcher,
     )
 
+    # Review tears Session watchers down; legacy Live must have its own.
     assert c._session_watcher_for(str(tmp_path)) is None
 
+    # Even when an external watcher is attached, legacy stop never owns it.
     c._directory_watcher = watcher
     c._owns_directory_watcher = False
     c._stop_live()
@@ -240,6 +242,7 @@ def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
     assert mock_factory.call_args.args[0] == seed
     assert mock_factory.call_args.args[1].layout == LAYOUT_MULTIFILE_LAPSE
     assert c._live_rec_ctr.start_calls == [seed]
+    assert c._live_rec_ctr.start_dataset_names == ["time-lapse"]
 
 
 def _h5_dataset(folder, name="solo.h5", *, frames=6):
@@ -272,6 +275,7 @@ def test_a_single_dataset_job_is_started_too(tmp_path):
     mock_factory.assert_called_once()
     assert mock_factory.call_args.args[1].layout == LAYOUT_SINGLE
     assert c._live_rec_ctr.start_calls == [seed]
+    assert c._live_rec_ctr.start_dataset_names == [None]
 
 
 def test_a_job_the_reconstructor_cannot_use_is_skipped(tmp_path):

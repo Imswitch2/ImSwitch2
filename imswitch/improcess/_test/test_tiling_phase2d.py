@@ -280,6 +280,8 @@ def test_manager_selects_only_a_source_compatible_reconstructor(monkeypatch):
         ),
         _logger=SimpleNamespace(warning=lambda *_args: None, debug=lambda *_args: None),
         _install_reconstructor_params=lambda _candidate: None,
+        # Auto-localization is a separate deferred job, not part of source selection.
+        _defer_auto_localization=lambda _data: None,
     )
     for method in (
         "_accepts_current_source",
@@ -288,6 +290,7 @@ def test_manager_selects_only_a_source_compatible_reconstructor(monkeypatch):
         "_publishReconstructorChoices",
         "_inspect_current_source",
         "currentDataChanged",
+        "_invalidate_localization_requests",
     ):
         setattr(
             controller,

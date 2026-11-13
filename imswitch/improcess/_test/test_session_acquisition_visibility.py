@@ -200,7 +200,7 @@ def test_watcher_detects_selected_nested_zarr_metadata(tmp_path):
     assert changed == [str(store)]
 
 
-def _render_fake(progress, *, queue_state=None, queue_progress=None):
+def _render_fake(progress, *, queue_state=None, queue_progress=None, recon_entries=None):
     dataset = SimpleNamespace(
         id="dataset",
         label="Recording",
@@ -226,8 +226,8 @@ def _render_fake(progress, *, queue_state=None, queue_progress=None):
         _acquisitionProgress={"dataset": progress} if progress else {},
         _queueProgressByDatasetId={"dataset": queue_progress or {}}
         if queue_progress else {},
-        _reconstruction_entries=lambda _dataset: [],
-        _dataset_info=lambda _dataset: ("2D · T=5", ""),
+        _reconstruction_entries=lambda _dataset: list(recon_entries or []),
+        _dataset_info=ProcessingSessionController._dataset_info,
         _dataset_source_tooltip=lambda _dataset: "Path: /tmp/recording.hdf5",
         _dataset_search_text=lambda _dataset: "Recording",
         _dataset_timestamp=lambda _dataset: None,
@@ -241,7 +241,7 @@ def _render_fake(progress, *, queue_state=None, queue_progress=None):
     )
 
 
-def test_acquisition_status_has_priority_over_processing_status():
+def test_running_reconstruction_has_priority_over_acquisition_status():
     progress = AcquisitionProgress(
         planned_timepoints=5,
         scope=(0, 5),
@@ -254,7 +254,9 @@ def test_acquisition_status_has_priority_over_processing_status():
     entry = _render_fake(progress, queue_state="running",
                           queue_progress={"status": "Timepoint 2/5"})
 
-    assert entry["status"] == "Acquiring 2/5"
+    assert entry["status"] == "▶ Processing… 2/5"
+    assert entry["state"] == "processing"
+    assert "T=2/5" in entry["info"]
     assert "Acquisition: 2/5 timepoints complete" in entry["tooltip"]
     assert "Processing: Active reconstruction" in entry["tooltip"]
 
@@ -296,10 +298,22 @@ def test_explicit_incomplete_acquisition_remains_visible():
         reason="Recording stopped early",
     )
 
-    entry = _render_fake(progress, queue_state="waiting")
+    entry = _render_fake(progress)
 
     assert entry["status"] == "Incomplete 3/5"
+    assert "T=3/5" in entry["info"]
     assert "Recording stopped early" in entry["tooltip"]
+
+
+def test_queue_status_takes_priority_over_incomplete_acquisition():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        completed_timepoints=(0, 1), status="incomplete",
+    )
+    entry = _render_fake(progress, queue_state="waiting")
+    assert entry["status"] == "… Queued"
+    assert entry["state"] == "queued"
+    assert "T=2/5" in entry["info"]
 
 
 def test_inconclusive_acquisition_does_not_replace_existing_raw_label():
@@ -338,6 +352,7 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
         progress=progress,
     )
     retried = []
+    terminal_notifications = []
     fake = SimpleNamespace(
         _acquisitionProbeGeneration=0,
         _session=SimpleNamespace(dataset_by_id=lambda _id: dataset),
@@ -349,6 +364,9 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
         _syncWatchRetryTimer=lambda: None,
         _update_watcher_detail_paths=lambda: None,
         _queue_states=lambda: {},
+        _queue_controller=lambda: SimpleNamespace(
+            acquisitionTerminated=lambda *args: terminal_notifications.append(args),
+        ),
         _selectedDatasetId=None,
         _renderDataset=lambda *args, **kwargs: retried.append((args, kwargs)),
         _logger=SimpleNamespace(warning=lambda *args: None),
@@ -362,3 +380,78 @@ def test_hdf5_probe_retry_path_is_reused_after_access_contention():
 
     assert path in fake._watchAcquisitionRetryPaths
     assert fake._watchRetrySchedule
+    assert not terminal_notifications
+
+
+def test_confirmed_early_stop_shows_actual_timepoints_and_no_result():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        catalog_timepoints=(0, 1), completed_timepoints=(0, 1),
+        status="finished_early", reason="Recording stopped before all planned timepoints",
+    )
+    entry = _render_fake(progress)
+    assert entry["info"].startswith("2D · T=2")
+    assert "T=2/5" not in entry["info"]
+    assert entry["status"] == "— No result"
+    assert entry["state"] == "raw"
+    assert entry["planned_timepoints"] == 5
+    assert "Planned timepoints: 5" in entry["info_tooltip"]
+    assert "Verified complete timepoints: 2" in entry["info_tooltip"]
+    assert "Acquisition stopped early (user STOP)" in entry["tooltip"]
+    assert "Available timepoints: T0–T1" in entry["tooltip"]
+
+
+def test_confirmed_early_stop_result_is_visible_without_losing_provenance():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        completed_timepoints=(0, 1), status="finished_early",
+    )
+    entries = [{"loaded": object()}]
+    entry = _render_fake(progress, recon_entries=entries)
+    assert entry["status"] == "✓ Result (1)"
+    assert entry["state"] == "reconstructed"
+    assert entry["info"].startswith("2D · T=2")
+    assert entry["result_count"] == 1
+    assert entry["planned_timepoints"] == 5
+    assert "Acquisition stopped early" in entry["tooltip"]
+    # The same verified progress snapshot can be presented after a Session
+    # reopen; the view doesn't depend on a transient recording controller.
+    restored = _render_fake(progress, recon_entries=[{"loaded": None}])
+    assert restored["status"] == "✓ Result (1)"
+    assert restored["info"].startswith("2D · T=2")
+
+
+def test_in_progress_result_is_not_hidden_by_acquiring_label():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        completed_timepoints=(0, 1), status="acquiring",
+    )
+    entry = _render_fake(progress, recon_entries=[{"loaded": object()}])
+    assert entry["status"] == "✓ Result (1)"
+    assert entry["state"] == "reconstructed"
+    assert "T=2/5" in entry["info"]
+    assert "Acquisition: 2/5 timepoints complete" in entry["tooltip"]
+
+
+def test_unconfirmed_prefix_keeps_planned_total_and_never_claims_stop():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        completed_timepoints=(0, 1), status="acquiring",
+        reason="Waiting for next timepoint",
+    )
+    entry = _render_fake(progress)
+    assert entry["info"].startswith("2D · T=2/5")
+    assert entry["status"] == "Acquiring 2/5"
+    assert "stopped early" not in entry["tooltip"].lower()
+    assert entry["planned_timepoints"] == 5
+
+
+def test_completed_lapse_uses_verified_count_and_keeps_normal_result_status():
+    progress = AcquisitionProgress(
+        planned_timepoints=5, scope=(0, 5),
+        completed_timepoints=(0, 1, 2, 3, 4), status="complete",
+    )
+    entry = _render_fake(progress, recon_entries=[{"loaded": object()}])
+    assert entry["info"].startswith("2D · T=5")
+    assert entry["status"] == "✓ Result (1)"
+    assert "stopped early" not in entry["tooltip"].lower()

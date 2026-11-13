@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +18,7 @@ from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
     discover_time_lapse,
 )
+from imswitch.improcess.model.processing_queue import supports_session_auto
 from imswitch.improcess.model.processing_session import (
     ProcessingSession,
     result_role_for_result,
@@ -25,6 +27,9 @@ from imswitch.improcess.model.provenance import graph_of, output_node
 from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
 from imswitch.improcess.model.session_result_presentation import reconstruction_presentation
 from imswitch.improcess.model.timepoint_scope import logical_time_lapse_identity
+from imswitch.imcommon.model.hdf5_lapse_terminal import (
+    TERMINAL_SUFFIX, read_lapse_terminal,
+)
 from imswitch.improcess.model.session_result_store import FORMAT_SUFFIX, SessionResultStore
 
 
@@ -192,6 +197,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         # when the *root entry first appeared*. They survive later Auto/mode
         # changes until that entry resolves, without retroactive admission.
         self._watchAutoArrivals: dict[str, dict] = {}
+        self._stagedHdf5Paths: set[str] = set()  # presentation only: never opened
         # One transient calibration update per job, after its first scientific
         # timepoint. Provisional live frames are not resolved calibrations.
         self._autoCalibrationSeenJobs: set[str] = set()
@@ -338,8 +344,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         reconstructor = getattr(self._main, "_activeReconstructor", None)
         available = bool(
             self._session is not None and self._sessionMode == "follow"
-            and reconstructor is not None
-            and str(getattr(reconstructor, "result_role", "derived")) != "inspection"
+            and supports_session_auto(reconstructor)
         )
         view = getattr(self._main, "_widget", None)
         if view is not None and hasattr(view, "setSessionAutoProcessingAvailable"):
@@ -442,6 +447,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._sessionMode = "review"
         self._widget.setSessionMode("review")
         self._watchAutoArrivals.clear()
+        getattr(self, "_stagedHdf5Paths", set()).clear()
         self._watchLapseChildren.clear()
         self._reset_add_queue()
         self._session = None
@@ -542,6 +548,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         getattr(self, "_acquisitionProbeInFlight", set()).clear()
         self._sessionMode = "review"
         self._watchAutoArrivals.clear()
+        getattr(self, "_stagedHdf5Paths", set()).clear()
         self._autoCalibrationSeenJobs.clear()
         self._watchLapseChildren.clear()
         self._widget.setSessionMode("review")
@@ -605,6 +612,8 @@ class ProcessingSessionController(ImProcessWidgetController):
             str(path)
             for path in initial_entries
             if not self._pathBelongsToResults(path)
+            and not ProcessingSessionController._is_hdf5_stage(path)
+            and not str(path).lower().endswith(TERMINAL_SUFFIX)
             and not self._sessionKnowsRootEntry(path)
         }
         for path in self._watchUnresolvedPaths:
@@ -626,6 +635,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._disableSessionAuto()
             self._widget.setStatus(f"Could not start watching: {exc}")
             return
+        refresh_stages = getattr(self, "_refresh_staged_hdf5", None)
+        if callable(refresh_stages):
+            refresh_stages()
         self._sync_auto_availability()
         # Monitor is a one-click start: arm Auto after the observer has
         # successfully started and its pre-existing entries are baselined.
@@ -633,8 +645,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         queue_getter = getattr(self, "_queue_controller", None)
         queue = queue_getter() if callable(queue_getter) else None
         reconstructor = getattr(getattr(self, "_main", None), "_activeReconstructor", None)
-        if (queue is not None and reconstructor is not None
-                and str(getattr(reconstructor, "result_role", "derived")) != "inspection"):
+        if queue is not None and supports_session_auto(reconstructor):
             queue.setAutoEnabled(True)
         update_details = getattr(self, "_update_watcher_detail_paths", None)
         if callable(update_details):
@@ -743,7 +754,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             # Verified complete acquisitions are stable historical entries.
             # They are still rendered from the cached snapshot, but never
             # reopened just because an unrelated watcher entry changed.
-            if progress is not None and progress.status in {"complete", "incomplete"}:
+            if progress is not None and progress.status in {"complete", "incomplete", "finished_early"}:
                 continue
             self._acquisitionProbePending.add(str(dataset.id))
             if activity_observed:
@@ -787,7 +798,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         details: dict[str, set[str]] = {}
         for dataset in session.datasets:
             progress = self._acquisitionProgress.get(str(dataset.id))
-            if progress is not None and progress.status in {"complete", "incomplete"}:
+            if progress is not None and progress.status in {"complete", "incomplete", "finished_early"}:
                 continue
             refs = list(getattr(dataset, "source_refs", ()) or ())
             if progress is not None:
@@ -867,10 +878,11 @@ class ProcessingSessionController(ImProcessWidgetController):
                 progress = self._merge_acquisition_progress(
                     previous, readiness.progress
                 )
+                progress = ProcessingSessionController._early_stop_progress(dataset, progress)
                 self._acquisitionProgress[dataset_id] = progress
                 if previous != progress:
                     changed.append(dataset_id)
-                if progress.status in {"complete", "incomplete"}:
+                if progress.status in {"complete", "incomplete", "finished_early"}:
                     for path in self._source_paths(dataset):
                         self._watchAcquisitionRetryPaths.discard(str(path))
                         self._watchRetrySchedule.discard(str(path))
@@ -884,7 +896,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                         self._watchRetrySchedule.discard(str(path))
             elif retry:
                 paths = self._source_paths(dataset)
-                if previous is not None and previous.status in {"complete", "incomplete"}:
+                if previous is not None and previous.status in {"complete", "incomplete", "finished_early"}:
                     for path in paths:
                         self._watchAcquisitionRetryPaths.discard(str(path))
                         self._watchRetrySchedule.discard(str(path))
@@ -896,6 +908,16 @@ class ProcessingSessionController(ImProcessWidgetController):
                 self._logger.warning(
                     "Acquisition metadata probe failed for %s: %s", dataset_id, error
                 )
+        # Terminal metadata says no more timepoints will arrive; tell the Auto
+        # scheduler even if no manual reconstruction has been requested.
+        # This does NOT bypass the physical per-timepoint readiness checks.
+        queue = self._queue_controller()
+        notify = getattr(queue, 'acquisitionTerminated', None) if queue is not None else None
+        if callable(notify):
+            for dataset_id, readiness, _refs, _retry, _error in results or ():
+                progress = self._acquisitionProgress.get(str(dataset_id))
+                if progress is not None and progress.status == 'finished_early':
+                    notify(str(dataset_id), progress)
         self._update_watcher_detail_paths()
         self._syncWatchRetryTimer()
         if changed:
@@ -928,7 +950,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         # the Session row look queued/unknown again.
         if previous.status == "complete":
             return previous
-        if previous.status == "incomplete":
+        if previous.status in {"incomplete", "finished_early"}:
             return previous
 
         completed = tuple(sorted(set(previous.completed_timepoints)
@@ -1085,15 +1107,134 @@ class ProcessingSessionController(ImProcessWidgetController):
         except OSError:
             return frozenset()
 
+    @staticmethod
+    def _is_hdf5_stage(path: str) -> bool:
+        return str(path).lower().endswith((".hdf5.partial", ".h5.partial"))
+
+    @staticmethod
+    def _staged_public_path(path: str) -> str:
+        return str(path)[:-len(".partial")]
+
+    def _collect_staged_hdf5(self) -> set[str]:
+        """List names only. Neither this nor Session opens a growing HDF5."""
+        session = self._session
+        if session is None:
+            return set()
+        paths = set()
+        try:
+            roots = tuple(session.raw_root.iterdir())
+        except OSError:
+            return paths
+        for root in roots:
+            if self._is_hdf5_stage(str(root)) and root.is_file():
+                paths.add(str(root))
+            elif root.is_dir() and root != session.results_root:
+                try:
+                    paths.update(str(p) for p in root.iterdir()
+                                 if self._is_hdf5_stage(str(p)) and p.is_file())
+                except OSError:
+                    continue
+        return paths
+
+    def _is_known_lapse_member(self, path: str) -> bool:
+        """Distinguish an additional scanN file from a *new* Auto arrival."""
+        session = self._session
+        if session is None:
+            return False
+        name = Path(path).name
+        normalized = re.sub(r"(?i)_scan\d+(?=_)", "_scan", name)
+        if normalized == name:  # Not an ImControl multi-file scanN name.
+            return False
+        for dataset in session.datasets:
+            if getattr(dataset, "kind", "") != "time-lapse":
+                continue
+            for ref in getattr(dataset, "source_refs", ()):
+                if (Path(ref.path).parent == Path(path).parent
+                        and re.sub(r"(?i)_scan\d+(?=_)", "_scan", Path(ref.path).name)
+                        == normalized):
+                    return True
+        return False
+
+    def _refresh_staged_hdf5(self) -> None:
+        stages = self._collect_staged_hdf5()
+        if stages != self._stagedHdf5Paths:
+            self._stagedHdf5Paths = stages
+            self._render()
+
+    @staticmethod
+    def _early_stop_progress(dataset, progress):
+        """A sidecar marks operation STOP, never certifies image data itself."""
+        if (progress is None or getattr(dataset, "kind", "") != "time-lapse"
+                or progress.status == "complete"):
+            return progress
+        try:
+            t0_ref = next((ref for ref in getattr(dataset, "source_refs", ())
+                           if getattr(ref, "timepoint_index", None) == 0), None)
+            anchor = getattr(t0_ref, "path", None) or dataset.primary_path
+            terminal = read_lapse_terminal(
+                anchor, expected_total=progress.planned_timepoints
+            )
+            completed = (terminal['completed_timepoints']
+                         if terminal is not None else None)
+        except ValueError:
+            return progress
+        # Every claimed timepoint must independently have passed the existing
+        # strict HDF5 completion/metadata check. No missing or gapped T is
+        # promoted into a reconstructable prefix by the JSON marker.
+        if (completed is not None
+                and tuple(progress.completed_timepoints) == tuple(range(completed))):
+            reason = ("Recording aborted before all planned timepoints"
+                      if terminal['outcome'] == 'aborted' else
+                      "Recording stopped before all planned timepoints")
+            return replace(progress, status="finished_early", reason=reason)
+        return progress
+
+    def _stopped_marker_arrived(self, path: str) -> None:
+        anchor = str(path)[:-len(TERMINAL_SUFFIX)]
+        session = self._session
+        if session is None:
+            return
+        # Refresh the *sealed* logical lapse membership before checking status
+        # or queueing manual work; the original T0 discovery may predate T1.
+        entry = (anchor if Path(anchor).parent == session.raw_root
+                 else str(Path(anchor).parent))
+        self._watchPendingPaths.add(str(entry))
+        ids = self._dataset_ids_for_watch_path(anchor)
+        if ids:
+            self._queue_acquisition_probes(ids, activity_observed=True)
+        self._watchReconcileTimer.start()
+
     @QtCore.Slot(str)
     def _sessionPathFound(self, path: str) -> None:
         if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
             return
         path = str(path)
+        if ProcessingSessionController._is_hdf5_stage(path):
+            public = ProcessingSessionController._staged_public_path(path)
+            queue = self._queue_controller()
+            known_lapse = getattr(self, "_is_known_lapse_member", None)
+            already_known = bool(known_lapse(public)) if callable(known_lapse) else False
+            if (not already_known and public not in self._watchAutoArrivals
+                    and queue is not None
+                    and getattr(queue.autoPolicy, "enabled", False)):
+                recipe = queue.captureAutoRecipe()
+                if recipe is not None:
+                    self._watchAutoArrivals[public] = recipe
+            refresh_stages = getattr(self, "_refresh_staged_hdf5", None)
+            if callable(refresh_stages):
+                refresh_stages()
+            return
+        if path.lower().endswith(TERMINAL_SUFFIX):
+            self._stopped_marker_arrived(path)
+            return
         if self._sessionKnowsRootEntry(path):
             return
         queue = self._queue_controller()
-        if queue is not None and getattr(queue.autoPolicy, "enabled", False):
+        known_lapse = getattr(self, "_is_known_lapse_member", None)
+        already_known = bool(known_lapse(path)) if callable(known_lapse) else False
+        if (not already_known and path not in self._watchAutoArrivals
+                and queue is not None
+                and getattr(queue.autoPolicy, "enabled", False)):
             recipe = queue.captureAutoRecipe()
             if recipe is not None:
                 self._watchAutoArrivals[path] = recipe
@@ -1109,6 +1250,15 @@ class ProcessingSessionController(ImProcessWidgetController):
         if (self._sessionMode != "follow" or self._session is None
                 or self._pathBelongsToResults(path)):
             return
+        if ProcessingSessionController._is_hdf5_stage(path):
+            return  # Changed bytes are never an invitation to open HDF5.
+        if path.lower().endswith(TERMINAL_SUFFIX):
+            self._stopped_marker_arrived(path)
+            return
+        if Path(path).is_dir():
+            refresh_stages = getattr(self, "_refresh_staged_hdf5", None)
+            if callable(refresh_stages):
+                refresh_stages()
         finder = getattr(self, "_dataset_ids_for_watch_path", None)
         known_ids = finder(path) if callable(finder) else ()
         if known_ids:
@@ -1148,6 +1298,13 @@ class ProcessingSessionController(ImProcessWidgetController):
     @QtCore.Slot(str)
     def _sessionPathRemoved(self, path: str) -> None:
         if self._sessionMode != "follow" or self._session is None or self._pathBelongsToResults(path):
+            return
+        if ProcessingSessionController._is_hdf5_stage(path):
+            refresh_stages = getattr(self, "_refresh_staged_hdf5", None)
+            if callable(refresh_stages):
+                refresh_stages()
+            return  # Preserve the original Auto recipe for its published name.
+        if str(path).lower().endswith(TERMINAL_SUFFIX):
             return
         self._watchUnresolvedPaths.discard(str(path))
         self._watchAcquisitionRetryPaths.discard(str(path))
@@ -1636,7 +1793,8 @@ class ProcessingSessionController(ImProcessWidgetController):
         return "\n".join(lines)
 
     @classmethod
-    def _dataset_info(cls, dataset) -> tuple[str, str]:
+    def _dataset_info(cls, dataset, *, acquisition=None) -> tuple[str, str]:
+        """Present verified acquired T separately from the planned metadata."""
         bits = []
         tooltip = []
         dimension_tag = str(getattr(dataset, "dimension_tag", "") or "")
@@ -1646,8 +1804,21 @@ class ProcessingSessionController(ImProcessWidgetController):
         if dimension_tag:
             tooltip.append(f"Dimensions: {dimension_tag}")
         if dataset.kind == "time-lapse" and dataset.planned_timepoints:
-            bits.append(f"T={dataset.planned_timepoints}")
-            tooltip.append(f"Timepoints: {dataset.planned_timepoints}")
+            planned = int(dataset.planned_timepoints)
+            completed = (
+                int(acquisition.completed_count) if acquisition is not None else 0
+            )
+            status = str(getattr(acquisition, "status", "") or "")
+            if status in {"complete", "finished_early"}:
+                # Terminal only after the independent readiness/STOP checks.
+                bits.append(f"T={completed}")
+            elif acquisition is not None and (completed > 0 or status in {"acquiring", "incomplete"}):
+                bits.append(f"T={completed}/{planned}")
+            else:
+                bits.append(f"T={planned}")
+            tooltip.append(f"Planned timepoints: {planned}")
+            if acquisition is not None:
+                tooltip.append(f"Verified complete timepoints: {completed}")
         decoded = cls._format_bytes(getattr(dataset, "decoded_bytes", None))
         if decoded:
             bits.append(decoded)
@@ -1723,20 +1894,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         total_count = len(recon_entries)
         loaded_count = sum(1 for item in recon_entries if item["loaded"] is not None)
         acquisition = getattr(self, "_acquisitionProgress", {}).get(str(dataset.id))
-        acquisition_visible = bool(
-            acquisition is not None
-            and acquisition.status in {"acquiring", "incomplete"}
-        )
-        if acquisition_visible:
-            status = self._acquisition_progress_label(acquisition)
-            # Keep the row's filter/style state truthful even though the
-            # acquisition text intentionally outranks queue presentation.
-            state = (
-                "processing" if queue_state == "running"
-                else "queued" if queue_state == "waiting"
-                else "raw"
-            )
-        elif self._loadingDatasetId == dataset.id:
+        if self._loadingDatasetId == dataset.id:
             status = "Loading…"
             state = "loading"
         elif queue_state == "running":
@@ -1751,15 +1909,20 @@ class ProcessingSessionController(ImProcessWidgetController):
         elif queue_state == "waiting":
             status = "… Queued"
             state = "queued"
-        elif total_count == 0:
-            status = "— No result"
-            state = "raw"
-        else:
+        elif total_count:
             status = f"✓ Result ({total_count})"
             state = "reconstructed"
+        elif acquisition is not None and acquisition.status in {"acquiring", "incomplete"}:
+            # Terminal early STOP is conveyed by the T count and tooltip;
+            # until a result exists, the actionable status is No result.
+            status = self._acquisition_progress_label(acquisition)
+            state = "raw"
+        else:
+            status = "— No result"
+            state = "raw"
         if getattr(dataset, "raw_deleted", False):
             status += " · data deleted"
-        info, info_tooltip = self._dataset_info(dataset)
+        info, info_tooltip = self._dataset_info(dataset, acquisition=acquisition)
         search = self._dataset_search_text(dataset)
         tooltip = self._dataset_source_tooltip(dataset)
         if info_tooltip:
@@ -1801,10 +1964,11 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     @staticmethod
     def _acquisition_progress_label(progress) -> str:
-        if progress is None or progress.status not in {"acquiring", "incomplete"}:
+        if progress is None or progress.status not in {"acquiring", "incomplete", "finished_early"}:
             return ""
         planned = int(progress.planned_timepoints or 0)
-        prefix = "Acquiring" if progress.status == "acquiring" else "Incomplete"
+        prefix = ("Acquiring" if progress.status == "acquiring" else
+                  "Finished" if progress.status == "finished_early" else "Incomplete")
         if planned > 1:
             return f"{prefix} {progress.completed_count}/{planned}"
         return prefix
@@ -1827,8 +1991,20 @@ class ProcessingSessionController(ImProcessWidgetController):
         if progress is None:
             return ""
         planned = int(progress.planned_timepoints or 0)
+        completed = int(progress.completed_count)
+        if progress.status == "finished_early":
+            # This status is granted only after the STOP sidecar matches a
+            # contiguous, independently verified prefix of the acquisition.
+            available = (f"T0–T{completed - 1}" if completed > 1 else
+                         "T0" if completed == 1 else "none")
+            action = ("aborted" if "aborted" in str(progress.reason).lower()
+                      else "stopped early (user STOP)")
+            return (
+                f"Acquisition {action}: {completed} of {planned} "
+                f"planned timepoints completed.\nAvailable timepoints: {available}"
+            )
         if planned > 1:
-            label = f"{progress.completed_count}/{planned} timepoints complete"
+            label = f"{completed}/{planned} timepoints complete"
         elif progress.status == "acquiring":
             label = "Acquisition in progress"
         elif progress.status == "complete":
@@ -1882,6 +2058,23 @@ class ProcessingSessionController(ImProcessWidgetController):
             )
             for dataset in session.datasets
         ]
+        # Presentation-only HDF5 placeholders. They are not SessionDataset
+        # objects and have no load/reconstruct action until publication.
+        for stage in sorted(getattr(self, "_stagedHdf5Paths", ())):
+            public = ProcessingSessionController._staged_public_path(stage)
+            if Path(public).exists():
+                continue
+            # Published T0 already represents a multi-file logical lapse.
+            # Do not show an extra independent row for each staged T1/T2.
+            if ProcessingSessionController._is_known_lapse_member(self, public):
+                continue
+            entries.append({
+                "id": None, "label": Path(public).name,
+                "status": "Acquiring", "state": "acquiring",
+                "search": Path(public).name, "kind": "provisional",
+                "provisional": True, "timestamp": None, "favorite": False,
+                "tooltip": "Staged HDF5 acquisition; file not opened until published",
+            })
         self._widget.setDatasets(entries)
         if self._selectedDatasetId and session.dataset_by_id(self._selectedDatasetId) is None:
             self._selectedDatasetId = None

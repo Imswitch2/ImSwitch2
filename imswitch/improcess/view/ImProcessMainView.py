@@ -1705,8 +1705,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def setSessionAutoProcessingAvailable(self, available: bool) -> None:
         tooltip = (
-            'Automatically reconstruct only new acquisitions observed while '
-            'Watching and Auto are enabled. Existing recordings are never backfilled.'
+            'Automatically run the selected method on new acquisitions observed '
+            'while Watching and Auto are enabled. Existing recordings are never backfilled.'
             if available else 'Enable Watching to use Auto-reconstruction.'
         )
         self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)

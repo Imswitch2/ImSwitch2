@@ -3,7 +3,7 @@
   "key": "processing",
   "group": "system",
   "display": "ImProcess",
-  "summary": "ImProcess module configuration. Select which reconstructors and processors are loaded for this setup.",
+  "summary": "ImProcess module configuration, reconstructor selection and reconstruction calibration defaults.",
   "fields": [
     {
       "key": "parameterPanel",
@@ -252,6 +252,16 @@
       "opts": [
         "__improcess_processors__"
       ]
+    },
+    {
+      "key": "monalisa",
+      "label": "MoNaLISA reconstruction defaults",
+      "type": "json",
+      "default": {},
+      "req": false,
+      "grp": "Calibration",
+      "tip": "ImProcess-owned detector defaults. JSON object with detectorDefaults keyed by detector name; each value may contain spotFwhmNm, scanOrientation, estimator, footprint (shape, mode, sizePx, sigmaFactor). Save from the MoNaLISA reconstructor to populate automatically; these are never hardware detector properties.",
+      "opts": []
     }
   ]
 }

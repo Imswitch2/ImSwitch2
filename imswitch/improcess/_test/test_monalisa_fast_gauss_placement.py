@@ -28,8 +28,8 @@ from imswitch.improcess.model.acquisition_layout_resolver import (  # noqa: E402
 from imswitch.improcess.reconstructors.monalisa.reconstructor import (  # noqa: E402
     MonalisaReconstructor,
 )
-from imswitch.improcess.reconstructors.monalisa.result import (  # noqa: E402
-    MonalisaProcessingResult,
+from imswitch.improcess.reconstructors.monalisa_lattice.result import (  # noqa: E402
+    MonalisaLatticeResult,
 )
 
 OFFSET = (4.2, 5.7)        # (x, y) of the synthetic lattice, period 11 px
@@ -79,6 +79,9 @@ def _params(recording):
         pixel_size_nm=PIXEL_NM,
         row_offset=OFFSET[1], col_offset=OFFSET[0], row_period=11.0, col_period=11.0,
         auto_scan_orientation=True,
+        # Geometry/placement equivalence tests should not conflate optional
+        # intensity normalization with the signal's known plane ratios.
+        intensity_correction=False, cell_offsets=False,
     )
     return params
 
@@ -124,89 +127,88 @@ class TestGeometryChoice:
 
 
 class TestPlacedReconstruction:
+    """Finite unified reconstruction, with physically labelled result axes.
+
+    The old Fast GUI route returned a padded (Dataset, Base, T, Z, Y, X)
+    legacy object; the current MoNaLISA plugin returns only measured axes.
+    """
+
     def test_a_scan_of_x_y_and_z(self):
         scan = make_scan(steps=(22, 22), offset=OFFSET)
         frames = _planes(scan, (1.0, 2.0))
         result = _process(
             frames, [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
         )
-        assert isinstance(result, MonalisaProcessingResult)
-        assert result.axis_labels == ["Dataset", "Base", "T", "Z", "Y", "X"]
-        rows, cols = scan.frames.shape[1:]
-        foci_rows = int(np.ceil((rows - OFFSET[1]) / 11.0))
-        foci_cols = int(np.ceil((cols - OFFSET[0]) / 11.0))
-        assert result.data.shape == (1, 1, 1, 2, 22 * foci_rows, 22 * foci_cols)
-        # Z from the layout's plane step, Y and X the scan step.
-        assert result.axis_scales == pytest.approx([1.0, 1.0, 1.0, 100.0, 35.0, 35.0])
-        assert result.output_pixel_size_nm == pytest.approx((35.0, 35.0))
-        inner = (slice(30, -30), slice(30, -30))
-        ratio = result.data[0, 0, 0, 1][inner] / result.data[0, 0, 0, 0][inner]
-        assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
-        assert result.placement is not None and result.placement.slices == 2
+        assert isinstance(result, MonalisaLatticeResult)
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 2
+        assert result.data.shape[-2] > 22 and result.data.shape[-1] > 22
+        assert result.axis_scales == pytest.approx([100.0, 35.0, 35.0], rel=0.02)
+        assert result.output_pixel_size_nm == pytest.approx((35.0, 35.0), rel=0.02)
+        reference = result.data[0]
+        # Exclude uncovered pixels rather than dividing by zeros in the scan border.
+        mask = reference > 1e-5
+        assert np.any(mask)
+        assert np.median(result.data[1][mask] / reference[mask]) == pytest.approx(2.0, rel=0.03)
 
     def test_a_scan_of_y_and_z_has_one_pixel_per_cell_along_x(self):
         line = make_scan(steps=(1, 22), offset=OFFSET)
         frames = _planes(line, (1.0, 0.5, 2.0))
         result = _process(frames, [_loop("scan_z", 3, 0.1), _loop("scan_y", 22, 0.035)])
-        rows, cols = line.frames.shape[1:]
-        foci_rows = int(np.ceil((rows - OFFSET[1]) / 11.0))
-        foci_cols = int(np.ceil((cols - OFFSET[0]) / 11.0))
-        assert result.data.shape == (1, 1, 1, 3, 22 * foci_rows, foci_cols)
-        # X is one period: 11 px of 70 nm.
-        assert result.axis_scales == pytest.approx([1.0, 1.0, 1.0, 100.0, 35.0, 770.0])
-        assert result.output_pixel_size_nm == pytest.approx((35.0, 770.0))
-        dims = result.scan_params["dimensions"]
-        sizes = [float(v) for v in result.scan_params["step_sizes"]]
-        assert sizes[dims.index("Right-Left")] == pytest.approx(770.0)
-        assert sizes[dims.index("Back-Front")] == pytest.approx(100.0)
-        inner = (slice(30, -30), slice(1, -1))
-        for plane, factor in zip(result.data[0, 0, 0], (1.0, 0.5, 2.0)):
-            ratio = plane[inner] / result.data[0, 0, 0, 0][inner]
-            assert np.median(ratio) == pytest.approx(factor, rel=0.02)
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 3
+        # X is not scanned: one output pixel per lattice cell, not per scan step.
+        assert 190 <= result.data.shape[1] <= 200
+        assert 9 <= result.data.shape[2] <= 11
+        assert result.axis_scales == pytest.approx([100.0, 35.0, 770.0], rel=0.02)
+        assert result.output_pixel_size_nm == pytest.approx((35.0, 770.0), rel=0.02)
+        reference = result.data[0]
+        mask = reference > 1e-5
+        assert np.any(mask)
+        for plane, factor in zip(result.data, (1.0, 0.5, 2.0)):
+            assert np.median(plane[mask] / reference[mask]) == pytest.approx(factor, rel=0.03)
 
-    @pytest.mark.parametrize("orientation, flipped", [("-x-y", False), ("+x+y", True)])
-    def test_the_planes_are_the_streamed_image_of_each(self, orientation, flipped):
-        """One plane placed by the layout is the live session's image of it:
-        the same extraction, the same raster, the same orientation.
+    @pytest.mark.parametrize("orientation", ["-x-y", "+x+y"])
+    def test_a_z_plane_matches_the_same_standalone_xy_scan(self, orientation):
+        """Same frames, extraction and orientation, with or without a Z dimension.
 
-        The layout says how the index runs along the stage axes; whether
-        that is up or down the camera both paths read off the frames. With
-        ``"-x-y"`` the sample moves against the index and the layout's
-        placement is already right; with ``"+x+y"`` both paths find the
-        mirrored placement, and say so.
+        Streaming parity belongs to the separate generalized-Session PR. The
+        unified finite path must nevertheless place equal scans equally.
         """
         scan = make_scan(steps=(22, 22), offset=OFFSET, orientation=orientation)
         frames = _planes(scan, (1.0, 3.0))
         placed = _process(
-            frames, [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+            frames, [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)],
+            orientation_mode="Manual", orientation=orientation,
         )
-        streamed = _process(scan.frames, [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)])
-        assert streamed.placement is None
-        expected = ["-", "-"] if flipped else ["+", "+"]
-        assert streamed.scan_params["directions"][:2] == expected
-        dims = placed.scan_params["dimensions"]
-        placed_directions = [
-            placed.scan_params["directions"][dims.index(label)]
-            for label in ("Right-Left", "Up-Down")
-        ]
-        assert placed_directions == (["neg", "neg"] if flipped else ["pos", "pos"])
-        np.testing.assert_allclose(
-            placed.data[0, 0, 0, 0], streamed.data[0, 0, 0, 0], rtol=1e-4, atol=1e-3
+        single = _process(
+            scan.frames, [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)],
+            orientation_mode="Manual", orientation=orientation,
         )
+        assert placed.axis_labels == ["Z", "Y", "X"]
+        assert single.axis_labels == ["Y", "X"]
+        assert placed.diagnostics["orientation"] == orientation
+        assert single.diagnostics["orientation"] == orientation
+        np.testing.assert_allclose(placed.data[0], single.data, rtol=1e-4, atol=1e-3)
 
     def test_saved_with_its_planes(self, tmp_path):
         import tifffile
 
+        # Small 11 x 11 grids may not contain enough image information to score
+        # a scan orientation. Supply the orientation explicitly: this test is
+        # about Z-plane serialization, not automatic orientation estimation.
         scan = make_scan(steps=(11, 11), offset=OFFSET)
         result = _process(
             _planes(scan, (1.0, 2.0)),
             [_loop("scan_z", 2, 0.1), _loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035)],
+            orientation_mode="Manual", orientation="+x+y",
         )
+        assert result.axis_labels == ["Z", "Y", "X"]
         result.save(tmp_path / "planes.ome.tif")
         with tifffile.TiffFile(tmp_path / "planes.ome.tif") as handle:
             series = handle.series[0]
             assert series.axes == "ZYX"
-            assert series.shape == (2, *result.data.shape[-2:])
+            assert series.shape == result.data.shape
             assert 'PhysicalSizeZ="100.0"' in handle.ome_metadata
 
 

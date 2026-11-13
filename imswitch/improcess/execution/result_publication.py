@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from copy import deepcopy
 from typing import Callable
 
+import numpy as np
+
 from .result_assembly import ResultAssemblyPlan, ResultCoverage
+from imswitch.improcess.model.timepoint_scope import TimepointScope
 from .progressive_results import ProgressiveResultAssembler
 
 
@@ -176,6 +179,36 @@ class ResultPublication:
         if self.published is not None:
             self._tag(self.published)
 
+    def _trim_streaming_completed_prefix(self) -> None:
+        """Discard preallocated, unacquired T after a cancelled Follow run.
+
+        Follow reconstructor snapshots may allocate all planned T even though
+        only the completed prefix is scientifically valid. Unlike independent
+        finite T assembly, they do not have a ProgressiveResultAssembler.
+        """
+        if self._assembler is not None or self.published is None or self.plan.axis != "T":
+            return
+        count = len(self.coverage.completed_ordinals)
+        if count < 1 or self.coverage.completed_ordinals != set(range(count)):
+            return
+        labels = list(getattr(self.published, "axis_labels", ()) or ())
+        if labels.count("T") != 1:
+            return
+        axis = labels.index("T")
+        data = getattr(self.published, "data", None)
+        if data is None or np.ndim(data) != len(labels) or np.shape(data)[axis] < count:
+            return
+        for name in ("data", "background", "sharpened", "pinholes"):
+            value = getattr(self.published, name, None)
+            if value is None:
+                continue
+            arr = np.asarray(value)
+            if arr.ndim != len(labels) or arr.shape[axis] <= count:
+                continue
+            index = [slice(None)] * arr.ndim
+            index[axis] = slice(0, count)
+            setattr(self.published, name, np.array(arr[tuple(index)], copy=True))
+
     def finish(self, status: str, result=None):
         """Finalize the already published entry, or publish final-only output.
 
@@ -200,12 +233,31 @@ class ResultPublication:
                 self.snapshot(result)
         else:
             self.coverage.finalize(status if status in ("cancelled", "failed") else "failed")
+            if self._assembler is not None:
+                # Finite Auto may have preallocated all planned T before the
+                # writer aborted. Never expose missing future T as zero frames
+                # in the retained, finalized scientific result.
+                self._assembler.trim_completed_prefix()
+            else:
+                self._trim_streaming_completed_prefix()
         self._finalized = True
         if self.published is None:
             if self._provisional_view is not None:
                 self.hooks.discard_provisional(self.plan.job_id)
                 self._provisional_view = None
             return None
+        if status != "complete" and self.plan.axis == "T":
+            # The originally requested All-T scope is NOT the scientific
+            # output's extent after an interrupted acquisition. Record the
+            # verified prefix as the effective input scope, retaining the
+            # original planned total and requested scope in result_assembly.
+            count = len(self.coverage.completed_ordinals)
+            if (count > 0 and self.coverage.completed_ordinals == set(range(count))):
+                start, _ = self.plan.scope.bounds(self.plan.total_timepoints)
+                self.hooks.annotate_scope(
+                    self.published, TimepointScope.range(start, start + count - 1),
+                    self.plan.total_timepoints,
+                )
         self._tag(self.published)
         # Remove a GUI-only overlay of the unfinished timepoint. The viewer
         # switches back to the Session-owned completed scientific object.

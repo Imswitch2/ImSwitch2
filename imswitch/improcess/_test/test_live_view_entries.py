@@ -119,6 +119,9 @@ def _controller():
     stub._resultsChanged = lambda: None
     stub._liveItemIsAlive = ReconstructionViewController._liveItemIsAlive.__get__(stub)
     # Bound under its real name too: liveTimepointUpdated schedules it by name.
+    stub._displayLiveUpdate = (
+        ReconstructionViewController._displayLiveUpdate.__get__(stub)
+    )
     stub._renderPendingLiveResult = (
         ReconstructionViewController._renderPendingLiveResult.__get__(stub)
     )

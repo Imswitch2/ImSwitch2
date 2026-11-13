@@ -636,7 +636,8 @@ class ReconstructionView(QtWidgets.QFrame):
                 pairs = []
                 for layer, arr in zip(targets, arrays):
                     arr = np.asarray(arr)
-                    if transposeOrder and len(transposeOrder) == arr.ndim:
+                    if (transposeOrder and len(transposeOrder) == arr.ndim
+                            and tuple(transposeOrder) != tuple(range(arr.ndim))):
                         arr = arr.transpose(*transposeOrder)
                     if tuple(arr.shape) != tuple(np.shape(layer.data)):
                         return False

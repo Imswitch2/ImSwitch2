@@ -214,6 +214,26 @@ class ProgressiveResultAssembler:
         self._received.add(ordinal)
         return self.result
 
+    def trim_completed_prefix(self) -> None:
+        """Drop never-published trailing T from a cancelled finite acquisition.
+
+        The public result object retains identity, but its scientific arrays
+        now contain only the proven complete prefix. Coverage/provenance still
+        record the originally requested/planned extent. A non-contiguous
+        result is left alone: shifting source T coordinates would be unsafe.
+        """
+        if (self.result is None or self.plan.relation != AssemblyRelation.TIMEPOINT
+                or not self._received):
+            return
+        count = len(self._received)
+        if self._received != set(range(count)) or count == self.plan.expected_count:
+            return
+        for layer in self._layers:
+            index = [slice(None)] * layer.destination.ndim
+            index[layer.axis] = slice(0, count)
+            setattr(self.result, layer.name,
+                    np.array(layer.destination[tuple(index)], copy=True))
+
     @property
     def completed_count(self):
         return len(self._received)

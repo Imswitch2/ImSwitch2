@@ -627,7 +627,7 @@ class TestRecordedScans:
             "x: one period, y: the period over the steps"
         )
         assert result.diagnostics["orientation"] in ("+x+y", "-x+y")
-        assert "only y is scanned" in result.diagnostics["reassignment"]
+        assert result.diagnostics["reassignment axes"] == "y only"
         assert result.diagnostics["output pixel (µm)"] == "Y 0.035 / X 0.77"
         # The planes are the same image at their brightness.
         inner = (slice(20, -20), slice(1, -1))
@@ -682,6 +682,72 @@ class TestRecordedScans:
         for (t, z), factor in expected.items():
             ratio = _interior(result.data[t, z]) / _interior(result.data[0, 0])
             assert np.median(ratio) == pytest.approx(factor, rel=0.02)
+
+    def test_fast_execution_matches_full_extraction_and_batches_recording(
+        self, monkeypatch
+    ):
+        """Unified Fast restores the mature Fast execution contract only.
+
+        The joint estimator and placed result stay identical; the recording
+        is extracted through the no-noise path once instead of once per T/Z
+        stack, and resolved Fast calibration must not scan every stack for a
+        representative modulation image.
+        """
+        from imswitch.improcess.reconstructors.monalisa.calibration import (
+            PatternLocalization,
+        )
+        from imswitch.improcess.reconstructors.monalisa.extraction import (
+            ExtractionOperator,
+        )
+        import imswitch.improcess.reconstructors.monalisa_lattice.reconstructor as module
+
+        scan = make_scan(steps=(11, 11), background=20.0)
+        frames = _planes(scan, (1.0, 1.1, 0.9, 1.2))
+        loops = [
+            _loop("time", 2), _loop("scan_z", 2, 0.1),
+            _loop("scan_y", 11, 0.07), _loop("scan_x", 11, 0.07),
+        ]
+        localization = PatternLocalization.manual_grid(11.0, 11.0, 4.2, 5.7)
+        common = _params(
+            **PLAIN,
+            background="constant",
+            variance_weighting=False,
+            sharpen=False,
+            spot_sigma_px=2.0,
+            localization_refinement="fast",
+            _pattern_localization=localization.to_dict(),
+        )
+
+        reference = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), {**common, "_fast_execution": False}
+        )
+
+        calls = []
+        original = ExtractionOperator.apply_fast_device
+
+        def counted(self, chunk, device="CPU", **kwargs):
+            calls.append(int(np.asarray(chunk).shape[0]))
+            return original(self, chunk, device, **kwargs)
+
+        monkeypatch.setattr(ExtractionOperator, "apply_fast_device", counted)
+        monkeypatch.setattr(
+            module,
+            "modulation_score",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("resolved Fast calibration must not rank T/Z stacks")
+            ),
+        )
+        fast = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), {**common, "_fast_execution": True}
+        )
+
+        np.testing.assert_allclose(fast.data, reference.data, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(
+            fast.background, reference.background, rtol=1e-6, atol=1e-6
+        )
+        assert sum(calls) == frames.shape[0]
+        assert len(calls) == 1  # this synthetic recording is well below 256 MiB
+        assert fast.diagnostics["fast execution"] == "batched amplitude-only extraction"
 
     def test_the_pinhole_stack_follows_the_planes(self):
         wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
@@ -900,6 +966,79 @@ class TestFailures:
         fractions = [update.fraction for update in seen]
         assert fractions == sorted(fractions)
 
+
+class TestReusedLocalization:
+    """A reused localization is the reference's lattice on this scan."""
+
+    def test_a_raster_reuse_takes_its_step_from_its_own_scan(self):
+        # The reference covers the cell in 11 steps, the reused scan in 9:
+        # the step and the raster are the reused scan's, as if localized.
+        reference = make_scan(steps=(11, 11), background=0.0)
+        other = make_scan(steps=(9, 9), background=0.0)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(
+            _recording(reference.frames, name="reference"),
+            _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN),
+        )
+        params = _params(scan_steps_fast=9, scan_steps_slow=9, **PLAIN)
+        fresh = MonalisaLatticeReconstructor().process(
+            _recording(other.frames, name="other"), params
+        )
+        reused = plugin.process(
+            _recording(other.frames, name="other"),
+            {**params, "reuse_localization": True},
+        )
+        assert reused.diagnostics["localization"] == "reused from reference"
+        assert reused.data.shape == fresh.data.shape
+        inner = (slice(20, -20), slice(20, -20))
+        assert np.allclose(
+            reused.data[inner], fresh.data[inner],
+            rtol=0.02, atol=0.02 * float(np.max(fresh.data[inner])),
+        )
+
+    def test_the_settings_of_the_extraction_are_the_references(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        params = _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(_recording(scan.frames, name="good"), params)
+        same = plugin.process(
+            _recording(scan.frames, name="again"),
+            {**params, "reuse_localization": True},
+        )
+        assert "localization_settings" not in same.diagnostics
+        changed = plugin.process(
+            _recording(scan.frames, name="again"),
+            {**params, "reuse_localization": True, "background": "none"},
+        )
+        assert changed.diagnostics["localization_settings"] == (
+            "background kept from good"
+        )
+
+    def test_a_run_that_did_not_finish_is_not_cached(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        params = _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(_recording(scan.frames, name="good"), params)
+
+        # Three scans; cancelled once the second has started, before the third.
+        token = CancellationToken()
+
+        def progress(update):
+            if update.phase == "assemble" and update.completed == 1:
+                token.cancel()
+
+        context = ReconstructionContext(
+            progress_callback=progress, cancellation_token=token
+        )
+        frames = np.concatenate([scan.frames] * 3)
+        with pytest.raises(ReconstructionCancelled):
+            plugin.process(_recording(frames, name="cancelled"), params, context=context)
+
+        reused = plugin.process(
+            _recording(scan.frames, name="later"),
+            {**params, "reuse_localization": True},
+        )
+        assert reused.diagnostics["localization"] == "reused from good"
 
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.

@@ -1,42 +1,25 @@
-"""Detector-scoped MoNaLISA reconstruction defaults recorded with the data."""
+"""Architecture regression: hardware and acquisition do not own MoNaLISA defaults."""
 
-from types import SimpleNamespace
+from pathlib import Path
 
-from imswitch.imcontrol.model.managers.RecordingManager import RecordingWorker, SaveFormat
-from imswitch.imcontrol.model.managers.detectors.DetectorManager import configuredMonalisaSpotFwhm
-
-
-def _worker(detector_properties):
-    detector = SimpleNamespace(
-        monalisaSpotFwhmNm=configuredMonalisaSpotFwhm(detector_properties)
-    )
-    manager = SimpleNamespace(detectorsManager={"Camera": detector})
-    worker = RecordingWorker.__new__(RecordingWorker)
-    worker._RecordingWorker__recordingManager = manager
-    worker.saveFormat = SaveFormat.HDF5
-    worker.recLapseTotal = 1
-    worker.recLapseIndex = 0
-    worker.singleLapseFile = False
-    worker.acquisitionLayouts = {}
-    # An uninitialised QObject raises RuntimeError, not AttributeError, for a
-    # missing attribute, so getattr() defaults cannot stand in for these.
-    worker.recLapseIntervalS = None
-    worker.recLapseScheduledTime = None
-    worker.recordingGeneration = 0
-    return worker
+from imswitch.imcontrol.model.configeditor import resources
 
 
-def test_detector_monalisa_fwhm_default_is_snapshotted_into_recording_attrs():
-    attrs = _worker({"monalisaSpotFwhmNm": 215.0})._augment_attrs_with_recording_metadata(
-        {"Camera": {}}
-    )["Camera"]
-    assert attrs["recording:detector_name"] == "Camera"
-    assert attrs["monalisa:spot_fwhm_nm"] == 215.0
+_ROOT = Path(__file__).resolve().parents[2] / "model"
 
 
-def test_missing_or_invalid_detector_fwhm_is_not_invented():
-    for properties in ({}, {"monalisaSpotFwhmNm": None}, {"monalisaSpotFwhmNm": "bad"}):
-        attrs = _worker(properties)._augment_attrs_with_recording_metadata(
-            {"Camera": {}}
-        )["Camera"]
-        assert "monalisa:spot_fwhm_nm" not in attrs
+def test_detector_manager_has_no_processing_calibration_properties():
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import DetectorManager
+
+    assert not hasattr(DetectorManager, "monalisaSpotFwhmNm")
+    assert not hasattr(DetectorManager, "monalisaScanOrientation")
+    for name in ("APDManager", "HamamatsuManager", "TISManager", "ThorCamTSIManager"):
+        props = resources.generated_schema_for(name)["properties"]
+        assert "monalisaSpotFwhmNm" not in props
+        assert "monalisaScanOrientation" not in props
+
+
+def test_acquisition_metadata_does_not_inject_reconstruction_defaults():
+    text = (_ROOT / "managers" / "RecordingManager.py").read_text(encoding="utf-8")
+    assert "new_attrs['monalisa:spot_fwhm_nm']" not in text
+    assert "new_attrs['monalisa:scan_orientation']" not in text

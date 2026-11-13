@@ -14,7 +14,7 @@ class Publisher:
             coordinate_for_ordinal=lambda i: start + i,
         )
 
-    def append_completed(self, result, ordinal):
+    def append_completed(self, result, ordinal, *, run=None):
         self.calls.append(("append", result, ordinal))
 
     def finish(self, status):
@@ -29,9 +29,10 @@ def fake_queue(count=2):
         _offlineThread=object(), _offlineWorker=worker, _offlineProgressive=True,
         _offlinePublisher=pub, _offlinePublishedCount=0,
         _offlineAtomicLapse=True, _offlinePendingOutcome=None,
+        _offlineAutoBatch=False, _offlineBatchIndices=(), _autoTimepointStates={},
         _offlinePendingResult=None, _offlineReconstructor=object(),
         _offlineDataObjs=[], _offlineResultScopes=[TimepointScope.single(3 + i) for i in range(count)],
-        _skipRequested=False, queue=SimpleNamespace(current=object()),
+        _skipRequested=False, queue=SimpleNamespace(current=SimpleNamespace(id="job")),
         _logger=SimpleNamespace(exception=lambda *a: events.append("error")),
         _release_data_objs=lambda values: events.append("release"),
         _finish_current=lambda **kwargs: events.append(("finish-queue", kwargs)),

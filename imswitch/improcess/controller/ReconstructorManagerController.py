@@ -3,10 +3,13 @@ import json
 import os
 import uuid
 
+import time
+
 from qtpy import QtCore
 
 from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
 from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
+from imswitch.improcess.model.processing_queue import supports_session_auto, supports_session_manual
 
 from .reconstruction_worker import (
     ReconstructionWorker,
@@ -530,19 +533,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # capability, like is_pass_through above -- not another id check.
         try:
             streaming = bool(getattr(reconstructor, 'supports_streaming', False))
-            derived = str(getattr(reconstructor, 'result_role', 'derived')) != 'inspection'
+            session_manual = supports_session_manual(reconstructor)
             # Auto after explicit finite readiness works for offline-only
             # reconstructors too. Only true acquisition-time following needs
             # a StreamingSession.
             session_controller = getattr(self._main, 'processingSessionController', None)
             auto_available = bool(
-                derived and session_controller is not None
+                supports_session_auto(reconstructor) and session_controller is not None
                 and getattr(session_controller, 'session', None) is not None
                 and getattr(session_controller, 'sessionMode', 'review') == 'follow'
             )
             self._widget.setDirectoryWatcherAvailable(streaming)
-            self._widget.processingSessionFrame.setProcessingAvailable(derived)
-            self._widget.setBatchProcessingAvailable(derived)
+            self._widget.processingSessionFrame.setProcessingAvailable(session_manual)
+            self._widget.setBatchProcessingAvailable(session_manual)
             self._widget.setSessionAutoProcessingAvailable(auto_available)
             # An unavailable Auto control must not leave a hidden policy armed.
             # Re-enabling Auto is an explicit user action for the new reconstructor.
@@ -662,7 +665,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def refreshUpdateReconstructionAvailability(self):
         """Keep the MoNaLISA Scan/Orientation update action exactly gated."""
         reconstructor = getattr(self._main, "_activeReconstructor", None)
-        widget = getattr(self._widget, "parTree", None)
+        widget = getattr(self, "_previewWidget", None)
+        if widget is None:
+            widget = getattr(self._widget, "parTree", None)
         setter = getattr(widget, "setUpdateReconstructionEnabled", None)
         if reconstructor is None or reconstructor.id != "monalisa" or not callable(setter):
             return
@@ -1239,6 +1244,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"
         )
+        self._timing_dispatch_started = time.perf_counter()
+        self._timing_requested = (reconstructor.id == "monalisa" and any(
+            bool(job.params.get("show_reconstruction_timings", False)) for job in jobs
+        ))
         self._set_reconstruction_job_state(
             True,
             progress=0.0,
@@ -1393,6 +1402,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     sync()
                 except Exception as exc:
                     self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
+        if reconstructor is not None and reconstructor.id == "monalisa" and getattr(self, "_timing_requested", False):
+            elapsed = time.perf_counter() - self._timing_dispatch_started
+            completed = outcome.results or ([outcome.merged] if outcome.merged is not None else [])
+            work = [(getattr(result, "diagnostics", None) or {}).get("timing_worker_s")
+                    for result in completed]
+            worker_seconds = sum(float(value) for value in work if value is not None)
+            worker_seconds = worker_seconds if any(value is not None for value in work) else None
+            widget = getattr(self, "_previewWidget", None)
+            setter = getattr(widget, "set_reconstruction_timings", None)
+            if callable(setter):
+                setter(worker_seconds, elapsed)
+            self._logger.info("MoNaLISA timing: worker=%s s, GUI-inclusive=%.3f s",
+                              worker_seconds, elapsed)
         inspection = (
             str(getattr(reconstructor, "result_role", "derived") or "derived")
             == "inspection"

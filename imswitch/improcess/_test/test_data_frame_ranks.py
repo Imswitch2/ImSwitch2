@@ -69,6 +69,7 @@ def _controller():
     widget = SimpleNamespace(
         setImage=lambda image, autoLevels: calls.images.append(image),
         setNumFrames=lambda value: calls.frames.append(value),
+        setTimepointControls=lambda *args, **kwargs: None,
         setDataName=lambda value: None,
         setDatasetName=lambda value: None,
     )
@@ -79,10 +80,13 @@ def _controller():
             sigDisplayedFrameChanged=SimpleNamespace(emit=lambda: None)
         ),
         _dataObj=None,
+        _invalidateTimepointRequests=lambda **kwargs: None,
+        _setCurrentDataProcessingEnabled=lambda enabled: None,
+        currentDataReadyForProcessing=lambda: True,
         _displayedImage=None,
     )
     for name in ("_currentDataArray", "_currentAxisLabels", "showMean",
-                 "currentDataChanged", "setImgSlice"):
+                 "_showImageDataObj", "currentDataChanged", "setImgSlice"):
         setattr(controller, name, getattr(DataFrameController, name).__get__(controller))
     return controller, calls
 

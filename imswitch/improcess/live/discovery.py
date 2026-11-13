@@ -49,6 +49,13 @@ _STORE_SUFFIX = (
 _DIR_STORE_SUFFIX = (
     ".zarr",
 )
+# These are *notifications only*. They are not raw stores and must never be
+# opened as raw data by Session discovery or a live reader.
+_SESSION_ACQUISITION_AUX_SUFFIX = (
+    ".hdf5.partial", ".h5.partial",
+    ".hdf5.lapse-stopped.json", ".h5.lapse-stopped.json",
+    ".zarr.lapse-stopped.json",
+)
 
 
 class DirectoryWatcher(QtCore.QObject):
@@ -204,7 +211,8 @@ class DirectoryWatcher(QtCore.QObject):
                     try:
                         name = entry.name.lower()
                         is_dataset_file = (
-                            name.endswith(_STORE_SUFFIX)
+                            (name.endswith(_STORE_SUFFIX) or
+                             name.endswith(_SESSION_ACQUISITION_AUX_SUFFIX))
                             and not name.endswith(_DIR_STORE_SUFFIX)
                         )
                         if entry.is_dir() or is_dataset_file:

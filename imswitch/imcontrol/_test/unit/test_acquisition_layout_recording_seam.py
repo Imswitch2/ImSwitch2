@@ -482,10 +482,16 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
             )
             assert _wait_for(lambda: len(ended) == index + 1, timeout=3.0)
             recording.endRecording(emitSignal=False, wait=True)
+            # Even a successfully finalized individual scanN must not expose
+            # a shared HDF5 lapse before the run-level terminal.
+            assert not (tmp_path / 'lapse_Camera.hdf5').exists()
+            assert (tmp_path / 'lapse_Camera.hdf5.partial').exists()
     finally:
         recording.endRecording(emitSignal=False, wait=True)
         nidaq.finalize()
 
+    # The production RecordingController performs this at recordingCycleEnded.
+    recording.publishPendingHdf5Lapse()
     path = tmp_path / 'lapse_Camera.hdf5'
     assert path.exists()
     assert not (tmp_path / 'lapse_Camera_1.hdf5').exists(), 'lapse items must share one file'
@@ -679,6 +685,7 @@ def _record_single_file_lapse(recording, nidaq, controller, base, tmp_path, tota
         assert _wait_for(lambda: len(ended) == index + 1, timeout=3.0)
         recording.endRecording(emitSignal=False, wait=True)
     recording.sigRecordingEndedDetailed.disconnect(connection)
+    recording.publishPendingHdf5Lapse()
 
 
 def test_a_second_lapse_run_does_not_append_to_the_first_ones_file(qt_app, tmp_path):
