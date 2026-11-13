@@ -625,6 +625,7 @@ regionprops             Processor      Centroid, area and intensity of every lab
 pick                    Processor      One point out of many: largest, brightest, first or nearest
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
 psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
+bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -854,6 +855,13 @@ its second input), and ``pick`` accepts only ``points``.
      - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
        (the average and the aberrations are recomputed).  A preset that lists
        ``psf-resolution`` gets this one with it.
+   * - ``bead-fwhm``
+     - Measurement
+     - Any rank >= 2 image-like result.  Every leading axis is analysed plane
+       by plane.
+     - ``BeadFwhmResult`` points table, one row per kept bead (FWHM x/y/mean,
+       SNR, fit R²), the image with kept and rejected beads marked, and for a
+       stack two graphs: mean FWHM and mean SNR per plane.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
