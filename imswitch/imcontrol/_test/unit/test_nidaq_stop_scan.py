@@ -88,6 +88,10 @@ class _OneShotTask(_PlayingTask):
 def _manager(generated=STOPPED_AT):
     manager = NidaqManager(_setup())
     manager._NidaqManager__simulating = False
+    # Fake tasks stand in for available hardware (CI has no nidaqmx), as in
+    # test_nidaq_scan_transaction; the unavailable backend is
+    # test_nidaq_simulation_startup's.
+    manager._NidaqManager__backendAvailable = True
     made = {}
 
     def builder(kind):

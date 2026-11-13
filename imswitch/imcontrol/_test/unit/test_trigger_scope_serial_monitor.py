@@ -124,6 +124,7 @@ def test_the_mock_port_never_has_anything_waiting():
 
 
 def test_the_pyserial_adapter_reads_what_is_waiting():
+    pytest.importorskip("pyvisa")  # RS232Driver imports pyvisa (the hardware extra)
     from imswitch.imcontrol.model.interfaces.RS232Driver import _SerialAdapter
 
     adapter = _SerialAdapter.__new__(_SerialAdapter)
@@ -136,6 +137,7 @@ def test_the_pyserial_adapter_reads_what_is_waiting():
 
 
 def test_the_driver_takes_only_the_bytes_in_the_buffer():
+    pytest.importorskip("pyvisa")  # RS232Driver imports pyvisa (the hardware extra)
     from imswitch.imcontrol.model.interfaces.RS232Driver import RS232Driver
 
     driver = RS232Driver('COM99')

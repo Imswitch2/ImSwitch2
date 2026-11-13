@@ -174,6 +174,7 @@ def _armedScan(timer, ao=None, phase_delay=30):
     from .test_nidaq_scan_transaction import _Device, _Setup, _Task
     manager = NidaqManager(_Setup({'X': _Device(analog='Dev1/ao0')}))
     manager._NidaqManager__simulating = False
+    manager._NidaqManager__backendAvailable = True               # fake tasks, as above
     manager._NidaqManager__scanSimulator = None
     manager._NidaqManager__timerCounterChannel = 'Dev1/ctr2'      # startTrigger stays False
     made = {}
