@@ -55,8 +55,7 @@ class _DetectorInfo:
 
 def _detector():
     return SwabianTimeTaggerManager(
-        _DetectorInfo({"click_channel": 1, "start_channel": 2, "line_channel": 3}),
-        "FLIM", _Nidaq(),
+        _DetectorInfo({}), "FLIM", _Nidaq(),
     )
 
 
