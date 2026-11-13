@@ -119,13 +119,8 @@ def test_changing_a_role_parameter_re_resolves_the_channel():
     assert manager.parameters["line_trigger"].value == 0.9
 
 
-def test_unconfigured_role_is_rejected_at_construction():
-    card = _shared_card()
-    with pytest.raises(ValueError, match="line_role 'frame_clock' is not"):
-        SwabianTimeTaggerManager(
-            _DetectorInfo({"line_role": "frame_clock"}), "FLIM", _Nidaq(),
-            timeTaggerManager=card,
-        )
+# An unconfigured role falls back to the default role with a warning, and is
+# refused only when the card lacks that too: test_swabian_setup_values.py.
 
 
 def test_channel_parameters_are_read_only_views():
