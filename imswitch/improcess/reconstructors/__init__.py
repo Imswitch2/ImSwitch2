@@ -27,6 +27,7 @@ from .tiling import TilingReconstructor
 from .monalisa.legacy import LegacyMonalisaReconstructor
 from .time_lapse import TimeLapseReconstructor
 from .polarisation_map import PolarisationMapReconstructor
+from .linestep_sum import LineStepSumReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -41,6 +42,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'monalisa-legacy': LegacyMonalisaReconstructor,
     'time-lapse': TimeLapseReconstructor,
     'polarisation-map': PolarisationMapReconstructor,
+    'linestep-sum': LineStepSumReconstructor,
 }
 
 # User drop-in reconstructors discovered from the plugins directory

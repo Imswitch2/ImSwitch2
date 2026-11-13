@@ -455,6 +455,7 @@ smlm-localizer          Reconstructor  SMLM localization table from camera frame
 beadrec                 Reconstructor  Raster bead reconstruction from a camera frame stream
 tiling-mosaic           Reconstructor  Offline assembly and refinement of saved tiling datasets
 time-lapse              Reconstructor  A saved camera or scan time lapse as one lazy T-stack
+linestep-sum            Reconstructor  Advanced Scan line steps summed per laser combination (e.g. two-colour STED)
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
 stack-subset            Processor      Crop/substack by labeled axis ranges

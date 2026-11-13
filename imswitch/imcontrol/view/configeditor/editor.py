@@ -299,6 +299,7 @@ def _load_section_schemas() -> dict:
 #: ``test_config_editor_plugin_fallback.py`` fails when they drift apart.
 IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "beadrec",
+    "linestep-sum",
     "monalisa",
     "monalisa-legacy",
     "polarisation-map",
