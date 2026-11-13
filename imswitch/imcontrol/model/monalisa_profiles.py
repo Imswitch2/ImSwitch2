@@ -733,7 +733,11 @@ def compile_profile_sequence(
                 f'Active step {step.label!r} has no enabled TTL devices.'
             )
         requested = step_durations_s.get(step.id, step.default_duration_s)
-        duration = step.default_duration_s if not step.duration_editable else float(requested)
+        # A readout step plays the setup's readout pulse time (the plan
+        # carries it), whatever the profile says about editing; any other
+        # fixed step plays its profile default.
+        fixed = not step.duration_editable and step.role != 'readout'
+        duration = step.default_duration_s if fixed else float(requested)
         duration = _snap_time_s(max(0.0, duration), sample_rate)
         if duration <= 0:
             raise MoNaLISAProfileError(
@@ -859,7 +863,7 @@ def parse_profile_sequence(
             raise MoNaLISASequenceNotCompatible(
                 f'Step {step.label!r} has a non-positive duration.'
             )
-        if not step.duration_editable:
+        if not step.duration_editable and step.role != 'readout':
             fixed = _snap_time_s(step.default_duration_s, sample_rate)
             if abs(duration - fixed) > tolerance:
                 raise MoNaLISASequenceNotCompatible(

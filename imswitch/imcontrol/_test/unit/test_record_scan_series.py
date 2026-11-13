@@ -3,8 +3,8 @@
 The entry point runs the Recording controller's own Scan-once transaction
 (bind, geometry and layouts, arm the writer, wait, start the scan) by pressing
 REC exactly as a user would, for an explicit scan source and detectors, and
-answers synchronously. Several frames become a scan timelapse with no
-interval in one file. It never rewrites the user's Recording panel: mode,
+answers synchronously. Several frames become a scan timelapse using the
+snapshotted interval in one file. It never rewrites the user's Recording panel: mode,
 detector selection and lapse settings stay as set, and the controller's own
 mode is restored when the recording ends.
 
@@ -64,6 +64,9 @@ class _Logger:
     def info(self, *args, **kwargs):
         pass
 
+    def warning(self, *args, **kwargs):
+        pass
+
 
 SOURCE = object()
 
@@ -96,6 +99,7 @@ def _nothingChanged(ctrl):
 @pytest.mark.parametrize('frames, reason', [
     (0, 'at least 1'),
     (-3, 'at least 1'),
+    (4.5, 'whole number'),
     ('many', 'whole number'),
 ])
 def test_a_frame_count_below_one_is_refused(frames, reason):
@@ -111,6 +115,15 @@ def test_no_detector_is_refused():
     result = ctrl.recordScanSeries(SOURCE, [], 1)
     assert result == ScanSeriesRecordingResult(False, 'Choose at least one detector to save.')
     _nothingChanged(ctrl)
+
+
+def test_invalid_interval_is_refused_without_touching_recording():
+    ctrl = _controller()
+    for interval in (-1, float('inf'), 'later'):
+        result = ctrl.recordScanSeries(SOURCE, ['APD'], 2, interval)
+        assert result.accepted is False
+        assert 'interval' in result.reason.lower()
+        _nothingChanged(ctrl)
 
 
 @pytest.mark.parametrize('state', [
@@ -134,15 +147,17 @@ def test_a_checked_rec_button_is_a_running_recording():
     assert ctrl._widget.presses == []
 
 
-def test_several_frames_in_tiff_are_refused_but_one_frame_is_not():
+def test_tiff_requires_separate_files_for_multi_timepoint_series():
     ctrl = _controller(saveFormat=SaveFormat.TIFF)
-    result = ctrl.recordScanSeries(SOURCE, ['APD'], 5)
+    result = ctrl.recordScanSeries(SOURCE, ['APD'], 5, singleFile=True)
     assert result.accepted is False
     assert 'HDF5 or Zarr' in result.reason
     _nothingChanged(ctrl)
 
     ctrl._widget.onPress = lambda checked: ctrl.__dict__.update(recording=True)
-    assert ctrl.recordScanSeries(SOURCE, ['APD'], 1).accepted is True
+    assert ctrl.recordScanSeries(
+        SOURCE, ['APD'], 5, singleFile=False
+    ).accepted is True
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +184,91 @@ def test_the_rec_press_records_the_callers_scan_and_detectors(frames, mode):
     assert seen['detectors'] == ['APD', 'PMT']
     assert seen['request'].source is SOURCE
     assert seen['request'].frames == frames
+    assert seen['request'].intervalSeconds == 0.0
+    assert seen['request'].singleFile is True
     # The widget's own detector selection was never consulted.
     assert ctrl._widget.detectorModeReads == 0
+
+
+
+
+def test_stop_scan_series_is_source_scoped_and_graceful():
+    ctrl = _controller()
+    other = object()
+    token = object()
+    finished = []
+    ctrl._seriesRequest = SimpleNamespace(source=SOURCE, frames=4)
+    ctrl._scanRequestAccepted = True
+    ctrl._acceptedScanRunToken = token
+    ctrl.stopRequested = False
+    ctrl.timer = None
+    ctrl._commChannel = SimpleNamespace(
+        scanWorkflow=SimpleNamespace(
+            finish_scan_run_after_current_from=(
+                lambda source, runToken=None:
+                    finished.append((source, runToken))
+            )
+        )
+    )
+
+    assert ctrl.stopScanSeries(other) is False
+    assert ctrl._widget.presses == []
+
+    assert ctrl.stopScanSeries(SOURCE) is True
+    assert ctrl.stopRequested is True
+    assert finished == [(SOURCE, token)]
+    # Graceful series Stop does not switch REC off or truncate the current
+    # writer; normal cycle cleanup resets REC after the timepoint finishes.
+    assert ctrl._widget.presses == []
+
+
+def test_stop_scan_series_does_not_offer_a_fake_stop_for_one_timepoint():
+    ctrl = _controller()
+    ctrl._seriesRequest = SimpleNamespace(source=SOURCE, frames=1)
+
+    assert ctrl.stopScanSeries(SOURCE) is False
+    assert ctrl._widget.presses == []
+
+
+def test_recording_cadence_edit_updates_shared_workflow_state():
+    class _Workflow:
+        def __init__(self):
+            self.calls = []
+
+        def set_scan_series_settings(self, **kwargs):
+            self.calls.append(kwargs)
+
+    ctrl = _controller()
+    workflow = _Workflow()
+    ctrl._commChannel = SimpleNamespace(recordingWorkflow=workflow)
+    ctrl._widget.getTimelapseTime = lambda: 8
+    ctrl._widget.getTimelapseFreq = lambda: 1.75
+    ctrl._widget.getTimelapseSingleFile = lambda: False
+
+    ctrl._scanSeriesSettingsEdited()
+
+    assert workflow.calls == [{
+        'timepoints': 8, 'interval_s': 1.75, 'single_file': False
+    }]
+
+
+def test_series_request_snapshots_interval_before_rec_press():
+    ctrl = _controller()
+    seen = {}
+
+    def press(checked):
+        seen['request'] = ctrl._seriesRequest
+        ctrl.recording = True
+
+    ctrl._widget.onPress = press
+    result = ctrl.recordScanSeries(
+        SOURCE, ['APD'], 4, 2.5, singleFile=False
+    )
+
+    assert result.accepted is True
+    assert seen['request'].frames == 4
+    assert seen['request'].intervalSeconds == 2.5
+    assert seen['request'].singleFile is False
 
 
 def test_the_users_mode_comes_back_when_the_recording_ends():
@@ -237,7 +335,7 @@ def test_the_rec_flow_reads_the_request_before_the_widget():
         toggle.index('elif self._commChannel.hasScanWidget():')
     )
     assert 'seriesRequest.frames if seriesRequest is not None' in toggle
-    assert 'True if seriesRequest is not None' in toggle
+    assert 'bool(seriesRequest.singleFile) if seriesRequest is not None' in toggle
 
     nextLapse = _method_body(source, 'nextLapse')
     assert nextLapse.index('self._recordingScanSource = seriesRequest.source') < (
@@ -245,7 +343,8 @@ def test_the_rec_flow_reads_the_request_before_the_widget():
     )
 
     cycle = _method_body(source, 'recordingCycleEnded')
-    assert "0 if self.__dict__.get('_seriesRequest') is not None" in cycle
+    assert 'interval_s = seriesRequest.intervalSeconds' in cycle
+    assert 'settings.interval_s' in cycle
     assert 'RecordingController._endScanSeriesRequest(self)' in cycle
 
     failure = _method_body(source, '_handleRecordingFailure')

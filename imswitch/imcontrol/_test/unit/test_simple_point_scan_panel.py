@@ -160,25 +160,26 @@ def test_other_drags_are_not_accepted(qtbot):
 # Controls that only the acquisition uses
 # ---------------------------------------------------------------------------
 
-def test_overview_greys_what_only_the_acquisition_uses(rig):
+def test_each_mode_shows_only_its_own_controls(rig):
+    """Hidden, not greyed: a simple panel shows what the mode uses."""
     widget = rig.widget
     rig.scan.setSimpleScanMode('overview')
 
-    assert not widget.regionControls.isEnabled()
-    assert not widget.samplingBox.isEnabled()
-    assert not widget.pixelSlider.isEnabled() and not widget.dwellSlider.isEnabled()
-    assert 'for the acquisition' in widget.samplingBox.title()
-    assert widget.regionControls.toolTip()
+    assert widget.regionControls.isHidden()
+    assert widget.samplingBox.isHidden()
+    assert not widget.overviewBox.isHidden()
     assert widget.estimateTitle.text() == 'Frame time'
-    # Still usable: drawing the region, the channels, the estimate.
+    # Still there: drawing the region, the channels, the estimate.
+    assert not widget.regionBox.isHidden()
     assert not widget.regionControls.isAncestorOf(widget.drawButton)
     assert widget.newChannelZone.isEnabled()
     assert widget.frameTimeLabel.isEnabled()
 
     rig.scan.setSimpleScanMode('acquisition')
 
+    assert not widget.regionControls.isHidden() and not widget.samplingBox.isHidden()
     assert widget.regionControls.isEnabled() and widget.samplingBox.isEnabled()
-    assert widget.samplingBox.title() == 'Sampling'
+    assert widget.overviewBox.isHidden()
     assert widget.estimateTitle.text() == 'Scan time'
 
 

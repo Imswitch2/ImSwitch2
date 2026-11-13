@@ -77,7 +77,7 @@ class _ElliptecRotatorLifecycle:
         )
 
 
-class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
+class ElliptecRotatorManager(RotatorManager):
     """Rotator manager for Thorlabs ELL14/ELL14K multidrop mounts.
 
     Each configured mount remains an independent logical/physical rotator in
@@ -174,6 +174,23 @@ class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
         # The command which discovers connection loss must still fail once;
         # subsequent commands use the mock resource normally.
         raise last_error
+
+    def readPosition(self):
+        self._update_position()
+        return self._position
+
+    @property
+    def isSimulated(self) -> bool:
+        """True unless this address is answered by real hardware now: the
+        shared bus falls back to cached (mock) positions per address, at
+        startup or after a communication error mid-run."""
+        bus = getattr(self, '_bus', None)
+        if bus is None:
+            return True
+        try:
+            return not bus.is_real(self._addr)
+        except Exception:
+            return True
 
     def _update_position(self) -> None:
         try:

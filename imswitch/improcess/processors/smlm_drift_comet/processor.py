@@ -256,6 +256,7 @@ class SmlmCometDriftProcessor(Processor):
     id = "smlm-drift-comet"
     category = "SMLM"
     kinds = ("localization",)
+    output_kind = "localization"
     #: Taken from a workflow or a script, not offered in the panel: a random
     #: cap on the localizations per window, to bound memory and time (COMET
     #: lowers it by itself if the pair search runs out of memory), and a seed

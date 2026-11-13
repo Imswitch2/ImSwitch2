@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "noiseDeg": {
+      "description": "Angular noise per reading.  Default 0.2.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "plate1Deg": {
+      "description": "Simulated angle of the first waveplate (quarter-wave).  Default 0.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "plate1Rotator": {
+      "description": "Rotator whose position is the first waveplate's angle, instead of ``plate1Deg``.  Optional.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:string"
+      ]
+    },
+    "plate2Deg": {
+      "description": "Simulated angle of the second waveplate (half-wave).  Default 0.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "plate2Rotator": {
+      "description": "Rotator whose position is the second waveplate's angle, instead of ``plate2Deg``.  Optional.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:string"
+      ]
+    },
+    "serial": {
+      "description": "Reported serial number.  Default ``\"MOCK-PAX\"``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "MockPAXManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MockPAXManager",
+    "InstrumentManager"
+  ]
+}

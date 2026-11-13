@@ -243,6 +243,7 @@ class TimeLapseReconstructor(Reconstructor):
 
     name = "Time lapse"
     id = "time-lapse"
+    output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff", "tif", "ome.tiff", "zarr"]
     description = "Stack a camera or scan time lapse along T, read as viewed"
     default_save_subdir = "timelapse"

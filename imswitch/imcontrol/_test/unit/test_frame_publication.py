@@ -4,8 +4,10 @@ For a scan whose ``scanInfoDict`` carries a frame geometry, the APD, PMT and
 Time Tagger managers publish display frames as ``ScanFrame`` views, from every
 place they publish: the throttled mid-scan preview, the latest frame, and the
 chunk drained for a recording (re-attached by the display latch). Each such
-scan gets fresh display storage, so a frame published for scan k keeps its
-pixels when scan k+1 starts, even if k+1's build then fails.
+scan gets fresh display storage when its pixels land elsewhere, so a frame
+published for scan k keeps its pixels when scan k+1 starts, even if k+1's build
+then fails; the same placement again (a live overview's next frame) overwrites
+in place.
 
 A scan without a geometry (every scan the existing panels run) takes exactly
 today's path: same buffer reuse, the very same array objects published, no
@@ -179,7 +181,7 @@ def test_a_retained_frame_keeps_its_pixels_when_the_next_scan_starts(manager):
     publishedRaw = manager._image
 
     second = _geometry(2, first=10.0)
-    _prepare(manager, second)            # same shape: fresh storage anyway
+    _prepare(manager, second)            # same shape, elsewhere: fresh storage
     _writeLine(manager, 3)
 
     assert manager._image is not publishedRaw
@@ -187,6 +189,28 @@ def test_a_retained_frame_keeps_its_pixels_when_the_next_scan_starts(manager):
     np.testing.assert_array_equal(shown, shownBefore)
     assert frame_geometry_of(shown) == first
     assert frame_geometry_of(manager.getLatestFrame(is_save=False)) == second
+
+
+def test_the_next_frame_in_the_same_place_overwrites_in_place(manager, qtbot):
+    """A live overview: frame k+1 is drawn over frame k line by line, as a
+    scan without a geometry is, instead of starting from a blank image."""
+    first = _geometry(1)
+    _prepare(manager, first)
+    manager._image[...] = 7
+    storage = manager._image
+
+    second = _geometry(2)                # same axes, the next iteration
+    _prepare(manager, second)
+    _writeLine(manager, 3)
+
+    assert manager._image is storage
+    assert np.all(manager._image[..., 0, :] == 3)
+    assert np.all(manager._image[..., 1:, :] == 7)   # not yet rescanned
+    received = []
+    manager.sigImageUpdated.connect(lambda im, init, scale: received.append(im))
+    manager._liveThrottle.reset()
+    manager.updateImage(np.ones(4), (1,))
+    assert frame_geometry_of(received[0]) == second
 
 
 def test_a_scan_that_never_gets_storage_changes_nothing(manager):

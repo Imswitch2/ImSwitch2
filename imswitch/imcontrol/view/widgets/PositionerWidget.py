@@ -185,6 +185,21 @@ class PositionerWidget(Widget):
     def setSpeedSize(self, positionerName, axis, speedSize):
         self.pars['SpeedEdit'].setText(str(speedSize))
 
+    def setPositionerUsable(self, positionerName, usable, reason=''):
+        """ Grey out every axis row of a stage that is not connected (absent
+        at startup, unplugged, faulted); ``reason`` becomes the tooltip. """
+        for axis in self._positionerAxes.get(positionerName, ()):
+            parNameSuffix = self._getParNameSuffix(positionerName, axis)
+            for key in ('UpButton', 'DownButton', 'StepEdit'):
+                widget = self.pars.get(key + parNameSuffix)
+                if widget is not None:
+                    widget.setEnabled(bool(usable))
+            for key in ('Label', 'Position'):
+                widget = self.pars.get(key + parNameSuffix)
+                if widget is not None:
+                    widget.setEnabled(bool(usable))
+                    widget.setToolTip('' if usable else reason)
+
     def updatePosition(self, positionerName, axis, position):
         parNameSuffix = self._getParNameSuffix(positionerName, axis)
         unit = self._positionUnits.get(parNameSuffix, 'µm')

@@ -2,6 +2,9 @@ from typing import Dict, Any
 
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.devices.status import (
+    DeviceNotConnectedError, device_usable, not_connected_reason,
+)
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from PyQt5.QtCore import QTimer 
 
@@ -42,8 +45,10 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
             self._deviceLifecycleListener = self._deviceLifecycleChanged
             lifecycleService.addListener(self._deviceLifecycleListener)
 
-        for name, _ in self._master.rotatorsManager:
-            self.updatePosition(name)
+        for name, manager in self._master.rotatorsManager:
+            if device_usable(manager):
+                self.updatePosition(name)
+        self._refreshRotatorUsability()
         
         # Register for unified state persistence (canonical name)
         getWidgetStatePersistence().register('Rotator', self)
@@ -69,19 +74,39 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
 
     def _refreshLifecycleAffectedRotators(self, device_ids):
         known = {name for name, _ in self._master.rotatorsManager}
-        for device_id in device_ids:
-            if device_id.name in known:
-                self.updatePosition(device_id.name)
+        names = tuple(d.name for d in device_ids if d.name in known)
+        self._refreshRotatorUsability(names)
+        for name in names:
+            if device_usable(self._master.rotatorsManager[name]):
+                self.updatePosition(name)
+
+    def _refreshRotatorUsability(self, names=None):
+        """Grey out rotators that are not connected (absent at startup,
+        unplugged, faulted) and enable the ones that are."""
+        for name, manager in self._master.rotatorsManager:
+            if names is not None and name not in names:
+                continue
+            usable = device_usable(manager)
+            self._widget.setRotatorUsable(
+                name, usable, '' if usable else not_connected_reason(manager))
 
     def moveRel(self, name, dir=1):
         dist = dir * self._widget.getRelStepSize(name)
-        self._master.rotatorsManager[name].move_rel(dist)
+        try:
+            self._master.rotatorsManager[name].move_rel(dist)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
         self.updatePosition(name)
 
     @APIExport(runOnUIThread=True)
     def moveAbs(self, name, pos): #change by Simone: for scriptable, add pos position
         #pos = self._widget.getAbsPos(name) #commented by Simone because we want it scriptable. Now connected to the widget through line 20
-        self._master.rotatorsManager[name].move_abs(pos)
+        try:
+            self._master.rotatorsManager[name].move_abs(pos)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
         self.updatePosition(name)
 
     def setZeroPos(self, name):

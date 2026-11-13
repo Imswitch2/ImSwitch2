@@ -47,5 +47,16 @@ def prepare_for_save(data: dict) -> dict:
     # Non-empty "others" is preserved (it contains real devices)
     if "others" in result and not result["others"]:
         del result["others"]
+
+    # Keep the editor-owned disabled-device store tidy.  Non-empty entries are
+    # preserved verbatim; empty category maps/root are just implementation
+    # residue after devices have been re-enabled.
+    disabled = result.get("disabledDevices")
+    if isinstance(disabled, dict):
+        for category in list(disabled):
+            if isinstance(disabled.get(category), dict) and not disabled[category]:
+                del disabled[category]
+        if not disabled:
+            del result["disabledDevices"]
     
     return result

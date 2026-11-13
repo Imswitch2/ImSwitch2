@@ -7,7 +7,7 @@
   "fields": [
     {"key": "timerCounterChannel", "label": "Timer counter channel", "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "Counter generating the pulse train (detectionRateHz, 1 MHz by default) the point detectors (APD/PMT) sample on, e.g. Dev1/ctr2 -- one no detector ctrInputLine uses. Integer N is also accepted and translated to Dev1/ctr{N}. Required on rigs with a point detector.", "opts": []},
     {"key": "startTrigger",        "label": "Start trigger",         "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Enable start-trigger sync between AO/AI/DO/counter tasks.", "opts": []},
-    {"key": "simulation",          "label": "Simulation mode",       "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Allow NI-DAQ commands without physical hardware (no-op).", "opts": []},
+    {"key": "simulation",          "label": "Simulation mode",       "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware. If false and NI-DAQmx is unavailable, NI-DAQ operations are disabled rather than simulated.", "opts": []},
     {"key": "detectionRateHz",     "label": "Detection rate (Hz)",   "type": "int",  "default": "null", "req": false, "grp": "Basic", "tip": "Rate of the timer pulse train the point detectors sample on. null = 1000000 (1 MHz), as it always was. Must be a whole multiple of scan.sampleRate; a PMT's analog input is also limited by the driver's ai_max_single_chan_rate (2 MS/s on a PCIe-6363).", "opts": []}
   ]
 }

@@ -30,6 +30,7 @@ class SmlmDriftProcessor(Processor):
     id = "smlm-drift"
     category = "SMLM"
     kinds = ("localization",)
+    output_kind = "localization"
 
     @classmethod
     def default_params(cls) -> dict:

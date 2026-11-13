@@ -17,6 +17,7 @@ from imswitch.imcommon.model import (
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
+from imswitch.imcontrol.model.resources import get_resource_registry
 from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.view import guitools
 from . import controllers
@@ -30,6 +31,8 @@ from .basecontrollers import ImConWidgetControllerFactory
 
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
+#: How long shutdown waits for hardware commands still in flight.
+_BUSY_BACKEND_WAIT_S = 5.0
 
 # Seconds a startup/shutdown message box waits for a person before it answers
 # itself; any key or mouse activity inside the box restarts the countdown.
@@ -151,11 +154,31 @@ class ImConMainController(MainController):
             widget=None,  # API-only, no widget
         )
         
+        # ReservationController exports reserve(): exclusive, owner-bound
+        # control of audited devices for scripts and measurement runs.
+        self.reservationController = self.__factory.createController(
+            controllers.ReservationController,
+            widget=None,  # API-only, no widget
+        )
+
+        # InstrumentsController exports the setup's instruments to scripts:
+        # list / connect / read, and the laser power LUT procedure.
+        # With the Instruments panel it is that panel's controller already.
+        self.instrumentsController = self.controllers.get('Instruments')
+        if self.instrumentsController is None:
+            self.instrumentsController = self.__factory.createController(
+                controllers.InstrumentsController,
+                widget=None,  # API-only, no widget
+            )
+
         # Generate API
         self.__api = None
         apiObjs = (
             list(self.controllers.values())
-            + [self.setupModeController, self.__commChannel, self.workflowFacadeController]
+            + [self.setupModeController, self.__commChannel,
+               self.workflowFacadeController, self.reservationController]
+            + ([self.instrumentsController]
+               if self.instrumentsController not in self.controllers.values() else [])
         )
         self.__api = generateAPI(
             apiObjs,
@@ -893,11 +916,32 @@ class ImConMainController(MainController):
         if lifecycleService is not None:
             lifecycleService.beginShutdown()
 
+        # Reservations end here, after the scripting drain: the controllers'
+        # shutdown safety actions (lasers off) must be admitted.
+        registry = get_resource_registry()
+        ended = registry.end_all_reservations()
+        if ended:
+            self.__logger.warning(
+                'Ended reservations at shutdown: '
+                + ', '.join(f'{r.owner} ({", ".join(sorted(r.resources))})' for r in ended)
+            )
+
         controllersClosed = True
         if self.__factory is not None:
             controllersClosed = self.__factory.closeAllCreatedControllers(
                 waitTimeoutS=30.0
             )
+
+        # A command still inside a backend (e.g. a move whose deadline passed
+        # on a device that cannot stop) makes finalization unsafe: wait, bounded.
+        # (Scan holds of the waveform outputs are not commands: the controller
+        # drain above already covers scans.)
+        commandKeys = {t.key for t in registry.in_flight() if t.reentrant}
+        if commandKeys and not registry.wait_idle(commandKeys, _BUSY_BACKEND_WAIT_S):
+            busy = sorted({t.key for t in registry.in_flight()
+                           if t.reentrant and t.key in commandKeys})
+            shutdownState.recordBusyBackends(
+                busy, 'hardware commands still running: ' + ', '.join(busy))
         if self.__masterController is not None and not serverStopped:
             self.__logger.error(
                 'Skipping hardware-manager finalization because the server '

@@ -6,8 +6,14 @@ from qtpy import QtWidgets
 
 from imswitch.imcontrol.model.simple_monalisa_scan import (
     CONFIG_DEFAULTS,
+    DEFAULT_RECORDING_NAMING,
     DEFAULT_SLIDER_RANGES,
+    MoNaLISARecordingNaming,
+    RECORDING_NAMING_TEMPLATE_FIELDS,
+    RecordingNamingTemplateError,
     SCAN_TYPES,
+    example_recording_suffix,
+    validate_recording_naming_template,
 )
 
 
@@ -27,6 +33,11 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
         resolved = dict(resolved or {})
 
         root = QtWidgets.QVBoxLayout(self)
+        self.tabs = QtWidgets.QTabWidget()
+        root.addWidget(self.tabs)
+        acquisition_tab = QtWidgets.QWidget()
+        acquisition_root = QtWidgets.QVBoxLayout(acquisition_tab)
+        self.tabs.addTab(acquisition_tab, 'Acquisition setup')
 
         detector_box = QtWidgets.QGroupBox('Detector-derived values')
         detector_form = QtWidgets.QFormLayout(detector_box)
@@ -61,7 +72,7 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
             'information only; it never changes scan timing automatically.'
         )
         detector_form.addRow('Current detector readout', self.detectorReadoutLabel)
-        root.addWidget(detector_box)
+        acquisition_root.addWidget(detector_box)
 
         optics_box = QtWidgets.QGroupBox('Optics and timing')
         optics_form = QtWidgets.QFormLayout(optics_box)
@@ -122,7 +133,7 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
         optics_form.addRow('Readout safety margin', self.cameraReadoutSafetyMarginSpin)
         optics_form.addRow('Readout tolerance', self.cameraReadoutToleranceSpin)
         optics_form.addRow('Unoptimized threshold', self.cameraReadoutUnoptimizedSpin)
-        root.addWidget(optics_box)
+        acquisition_root.addWidget(optics_box)
 
         defaults_box = QtWidgets.QGroupBox('Scan defaults')
         defaults_form = QtWidgets.QFormLayout(defaults_box)
@@ -146,7 +157,7 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
         defaults_form.addRow('Default lateral step', self.lateralStep)
         defaults_form.addRow('Default Z range', self.zLength)
         defaults_form.addRow('Default Z step', self.zStep)
-        root.addWidget(defaults_box)
+        acquisition_root.addWidget(defaults_box)
 
         ranges_box = QtWidgets.QGroupBox('Slider ranges')
         ranges_grid = QtWidgets.QGridLayout(ranges_box)
@@ -173,14 +184,64 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
             ranges_grid.addWidget(low_spin, row, 1)
             ranges_grid.addWidget(high_spin, row, 2)
             self.rangeSpins[key] = (low_spin, high_spin)
-        root.addWidget(ranges_box)
+        acquisition_root.addWidget(ranges_box)
 
         note = QtWidgets.QLabel(
             'Save writes these values into the active setup configuration. '
             'Profiles and their sequence definitions are edited separately.'
         )
         note.setWordWrap(True)
-        root.addWidget(note)
+        acquisition_root.addWidget(note)
+        acquisition_root.addStretch(1)
+
+        naming_tab = QtWidgets.QWidget()
+        naming_root = QtWidgets.QVBoxLayout(naming_tab)
+        self.tabs.addTab(naming_tab, 'Recording naming')
+
+        naming_note = QtWidgets.QLabel(
+            'Enable or disable the suffix from the Simple MoNaLISA main panel. '
+            'This tab configures how the suffix is built.'
+        )
+        naming_note.setWordWrap(True)
+        naming_root.addWidget(naming_note)
+
+        template_box = QtWidgets.QGroupBox('Suffix template')
+        template_layout = QtWidgets.QVBoxLayout(template_box)
+        self.namingTemplate = QtWidgets.QLineEdit()
+        self.namingTemplate.setPlaceholderText('{mode}_{sequence}')
+        template_layout.addWidget(self.namingTemplate)
+        token_text = '  '.join(
+            '{' + token + '}' for token in RECORDING_NAMING_TEMPLATE_FIELDS
+        )
+        self.namingTokens = QtWidgets.QLabel('Available: ' + token_text)
+        self.namingTokens.setWordWrap(True)
+        template_layout.addWidget(self.namingTokens)
+        naming_root.addWidget(template_box)
+
+        self.namingIncludePower = QtWidgets.QCheckBox('Include laser powers')
+        self.namingIncludeScanInfo = QtWidgets.QCheckBox('Include scan information')
+        naming_root.addWidget(self.namingIncludePower)
+        naming_root.addWidget(self.namingIncludeScanInfo)
+
+        labels_box = QtWidgets.QGroupBox('Scan labels')
+        labels_form = QtWidgets.QFormLayout(labels_box)
+        self.scanLabelEdits = {}
+        for scan_type in SCAN_TYPES:
+            edit = QtWidgets.QLineEdit()
+            self.scanLabelEdits[scan_type] = edit
+            labels_form.addRow(scan_type, edit)
+        naming_root.addWidget(labels_box)
+
+        preview_box = QtWidgets.QGroupBox('Preview')
+        preview_layout = QtWidgets.QVBoxLayout(preview_box)
+        self.namingPreview = QtWidgets.QLabel()
+        self.namingPreview.setWordWrap(True)
+        self.namingPreviewError = QtWidgets.QLabel()
+        self.namingPreviewError.setWordWrap(True)
+        preview_layout.addWidget(self.namingPreview)
+        preview_layout.addWidget(self.namingPreviewError)
+        naming_root.addWidget(preview_box)
+        naming_root.addStretch(1)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
@@ -191,6 +252,11 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
 
         self.fovSource.currentIndexChanged.connect(self._updateEnabled)
         self.ulensPolicy.currentIndexChanged.connect(self._updateEnabled)
+        self.namingTemplate.textChanged.connect(self._updateNamingPreview)
+        self.namingIncludePower.toggled.connect(self._updateNamingPreview)
+        self.namingIncludeScanInfo.toggled.connect(self._updateNamingPreview)
+        for edit in self.scanLabelEdits.values():
+            edit.textChanged.connect(self._updateNamingPreview)
         self._load()
 
     def _value(self, key):
@@ -234,14 +300,62 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
             low, high = configured_ranges.get(key, DEFAULT_SLIDER_RANGES[key])
             low_spin.setValue(float(low))
             high_spin.setValue(float(high))
+
+        naming_raw = self._configured.get('recordingNaming', DEFAULT_RECORDING_NAMING)
+        if not isinstance(naming_raw, dict):
+            naming_raw = DEFAULT_RECORDING_NAMING
+        naming = MoNaLISARecordingNaming.from_config(naming_raw)
+        self._recordingNamingEnabled = bool(naming.enabled)
+        self.namingTemplate.setText(naming.template)
+        self.namingIncludePower.setChecked(naming.include_power)
+        self.namingIncludeScanInfo.setChecked(naming.include_scan_info)
+        for scan_type, edit in self.scanLabelEdits.items():
+            edit.setText(str(naming.scan_labels.get(scan_type, '')))
         self._updateEnabled()
+        self._updateNamingPreview()
 
     def _updateEnabled(self, *args):
         self.fovX.setEnabled(self.fovSource.currentData() == 'manual')
         self.fovY.setEnabled(self.fovSource.currentData() == 'manual')
         self.ulensSpin.setEnabled(self.ulensPolicy.currentData() == 'fixed')
 
+    def _recordingNaming(self):
+        naming = MoNaLISARecordingNaming.from_config({
+            'enabled': self._recordingNamingEnabled,
+            'template': self.namingTemplate.text(),
+            'includePower': self.namingIncludePower.isChecked(),
+            'includeScanInfo': self.namingIncludeScanInfo.isChecked(),
+            'scanLabels': {
+                scan_type: edit.text().strip()
+                for scan_type, edit in self.scanLabelEdits.items()
+            },
+        })
+        validate_recording_naming_template(naming.template)
+        return naming
+
+    def _updateNamingPreview(self, *args):
+        self.namingTemplate.setEnabled(True)
+        self.namingIncludePower.setEnabled(True)
+        self.namingIncludeScanInfo.setEnabled(True)
+        for edit in self.scanLabelEdits.values():
+            edit.setEnabled(self.namingIncludeScanInfo.isChecked())
+        try:
+            suffix = example_recording_suffix(self._recordingNaming())
+        except RecordingNamingTemplateError as error:
+            self.namingPreview.setText('')
+            self.namingPreviewError.setText(str(error))
+            return
+        self.namingPreview.setText('_' + suffix if suffix else '(empty suffix)')
+        self.namingPreviewError.setText('')
+
     def accept(self):
+        try:
+            self._recordingNaming()
+        except RecordingNamingTemplateError as error:
+            QtWidgets.QMessageBox.warning(self, 'Invalid recording naming template', str(error))
+            self.tabs.setCurrentIndex(1)
+            self.namingTemplate.setFocus()
+            return
         for key, (low_spin, high_spin) in self.rangeSpins.items():
             if high_spin.value() <= low_spin.value():
                 QtWidgets.QMessageBox.warning(
@@ -272,6 +386,7 @@ class MoNaLISASetupEditor(QtWidgets.QDialog):
                 key: [low_spin.value(), high_spin.value()]
                 for key, (low_spin, high_spin) in self.rangeSpins.items()
             },
+            'recordingNaming': self._recordingNaming().to_config(),
         }
 
 

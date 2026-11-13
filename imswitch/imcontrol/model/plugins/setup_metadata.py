@@ -32,6 +32,7 @@ _SETUP_KINDS: tuple[SetupKindMetadata, ...] = (
     SetupKindMetadata("rs232", "rs232devices", "rs232devices", "rs232", True),
     SetupKindMetadata("slm", "slms", "slms", "slms", True),
     SetupKindMetadata("flip_mirror", "flipMirrors", "flipMirrors", "flipMirrors", True),
+    SetupKindMetadata("instrument", "instruments", "instruments", "instruments", True),
     SetupKindMetadata("stand", "stands", "microscopeStand", "stands", True),
     # Scan engines run scan programs (docs/design/plans/
     # scan-engines-and-expert-scan.md); a standalone registry-backed loader.

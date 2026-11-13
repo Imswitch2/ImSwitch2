@@ -94,6 +94,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         self._view.sigOverviewFieldChanged.connect(self.setOverviewField)
         self._view.sigRegionDrawn.connect(self._onRegionDrawn)
         self._view.sigDrawRegionClicked.connect(self._onDrawClicked)
+        self._view.sigRegionAccepted.connect(self._onRegionAccepted)
         self._view.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
         self._commChannel.sigScanGeometryShown.connect(self._onScanGeometryShown)
 
@@ -142,8 +143,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 # each detector's layer shows (plan D1 point 6).
                 'reference': next(iter(self._pointDetectorNames()), None),
                 'shown': {},
-                # The rectangle shows in Acquisition, or in Overview once
-                # Draw was clicked; the overview alone has no region to show.
+                # The rectangle shows from Draw until Accept (or back to
+                # Overview): left up, it covers the image it was drawn on.
                 'regionRequested': False,
             }
             state['overview'] = self._planOverview()
@@ -338,7 +339,14 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         be built (plan D5). The check reads the plan, not the dicts: the dicts
         cannot even express power for a laser without an analog channel."""
         if self._onSimplePage():
-            refusal = power_refusal(self.currentPlan(), self._scanLimits())
+            plan = self.currentPlan()
+            limits = self._scanLimits()
+            if not plan.channels and limits.gates:
+                # Only where a laser can be chosen: on a scanner whose lasers
+                # the scan engine cannot switch (analog only), the panel shows
+                # none, and its scan runs with them as the Laser panel set them.
+                raise ScanDesignRefusedError('Choose at least one laser.')
+            refusal = power_refusal(plan, limits)
             if refusal:
                 raise ScanDesignRefusedError(refusal)
         return super()._buildScanSignals()
@@ -588,7 +596,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 False, f'{reference} shows no scanned image yet: start the overview first.')
         else:
             self._view.setDrawing(True)
-        visible = state['mode'] == ACQUISITION or state['regionRequested']
+        visible = state['regionRequested']
         extents = self._regionExtents(shown) if visible and shown is not None else None
         self._view.showRegion(
             extents_to_rectangle(extents, shown) if extents is not None else None)
@@ -596,6 +604,13 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     def _onDrawClicked(self):
         self._simple()['regionRequested'] = True
         self._pushRegion()
+
+    def _onRegionAccepted(self):
+        """The rectangle is the region already (every edit is adopted as it
+        lands); accepting only takes it, and its layer, off the viewer."""
+        self._simple()['regionRequested'] = False
+        self._pushRegion()
+        self._view.showMessage('Region accepted.')
 
     def _onRegionDrawn(self, vertices):
         """A rectangle drawn, moved or resized on the reference layer.
@@ -651,7 +666,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         limits = state['limits']
         refusal = power_refusal(plan, limits)
         estimate = None
-        if not refusal and not plan.channels:
+        if not refusal and not plan.channels and limits.gates:
             refusal = 'Choose at least one laser.'
         analog, digital = plan_to_dicts(plan, limits)
         if not refusal:

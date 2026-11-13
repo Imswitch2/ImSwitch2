@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "serial": {
+      "description": "Serial number, as in the VISA resource ``USB0::0x1313::0x8078::<serial>::INSTR``.  Required.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "code:str()"
+      ]
+    },
+    "timeoutMs": {
+      "description": "VISA timeout in ms.  Default 2000.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "visaBackend": {
+      "description": "pyvisa backend: ``\"\"`` (NI-VISA, default) or ``\"@py\"`` (pyvisa-py).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "wavelengthNm": {
+      "description": "Correction wavelength set on connect.  Optional; otherwise the meter keeps its own.",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    }
+  },
+  "required": [
+    "serial"
+  ],
+  "title": "ThorlabsPM100Manager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ThorlabsPM100Manager",
+    "InstrumentManager"
+  ]
+}

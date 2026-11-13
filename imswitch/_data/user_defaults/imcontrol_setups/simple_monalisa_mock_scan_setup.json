@@ -1,16 +1,29 @@
 {
-  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The mock AV camera is included mainly so the configured read-out detector and its TTL pulse are visible in Advanced; this first cloak has no overview mode.",
+  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The camera is a mock Hamamatsu: it has the 'Trigger source' the cloak switches between Live (internal) and acquisition (external frame trigger), reports a readout time, and takes one frame per camera TTL of the simulated scan. Its mockSample block makes each frame show the synthetic cell/bead sample of the point-scan mock under a 0.72 um square foci lattice (the profile's uLens period; 9.6 px at the 75 nm camera pixel, in the range real MoNaLISA recordings have and the pattern finder looks in), placed from the X/Y scan waveforms at 5 um/V, so a scan over one period reconstructs to the sample. Record, then reconstruct with the monalisa reconstructor.",
   "detectors": {
     "Camera": {
       "analogChannel": null,
       "digitalLine": "Dev1/port0/line4",
-      "managerName": "AVManager",
+      "managerName": "HamamatsuManager",
       "managerProperties": {
         "cameraListIndex": "mock",
-        "cameraPixelSizeUm": 0.1,
-        "avcam": {
-          "exposure": 1,
-          "gain": 1
+        "cameraPixelSizeUm": 0.075,
+        "hamamatsu": {
+          "exposure_time": 0.001,
+          "trigger_source": 1,
+          "subarray_hpos": 0,
+          "subarray_vpos": 0,
+          "subarray_hsize": 512,
+          "subarray_vsize": 512,
+          "image_width": 512,
+          "image_height": 512
+        },
+        "mockSample": {
+          "axes": {
+            "X": 5.0,
+            "Y": 5.0
+          },
+          "latticePeriodUm": 0.72
         }
       },
       "forAcquisition": true,
@@ -119,8 +132,8 @@
     "simpleMoNaLISA": {
       "fovSource": "manual",
       "fovUm": [
-        40.0,
-        40.0
+        38.4,
+        38.4
       ],
       "ulensPeriodPolicy": "fixed",
       "ulensPeriodUm": 0.72,

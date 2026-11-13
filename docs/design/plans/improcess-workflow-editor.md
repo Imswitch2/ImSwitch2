@@ -559,6 +559,8 @@ Each phase leaves the suite green and is independently useful.
   existing widgets keep overriding.
 - A graph canvas as a second view over the document (pyqtgraph's flowchart
   module is available; a read-only DAG picture is enough at first).
+  Superseded by `improcess-workflow-editor-2.md` (an editable canvas with
+  interactive runs).
 - Undo/redo through `QUndoStack` on the document operations.
 
 ### Effort

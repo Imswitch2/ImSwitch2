@@ -292,6 +292,10 @@ class MoNaLISAView(ScanCloakView):
     sigProfileRenameRequested = QtCore.Signal(str)
     sigProfileDeleteRequested = QtCore.Signal(str)
     sigSetupEditRequested = QtCore.Signal()
+    sigRecordingSuffixToggled = QtCore.Signal(bool)
+    sigSaveAcquisitionToggled = QtCore.Signal(bool)
+    sigScanSeriesSettingsEdited = QtCore.Signal(int, float, bool)
+    sigScanStopClicked = QtCore.Signal()
     sigCameraReadoutAutoRequested = QtCore.Signal()
     sigScreeningRequested = QtCore.Signal()
     sigLiveSourceToggled = QtCore.Signal(str, bool)
@@ -312,40 +316,27 @@ class MoNaLISAView(ScanCloakView):
         self._liveSourceChecks = {}
 
         self.liveBox.hide()
-        self.startButton.setText('Acquire')
-        self.startButton.setToolTip('Run one MoNaLISA acquisition with these settings.')
-        self.screeningButton = QtWidgets.QPushButton('Live')
+        self._seriesActive = False
+
+        # Live and scan are separate operator actions. The shared cloak
+        # progress widget is moved into the RUN SCAN row in _buildUi(), but its
+        # progress plumbing remains owned by ScanCloakView.
+        self.startButton.setText('RUN SCAN')
+        self.startButton.setToolTip('Run the configured MoNaLISA scan acquisition.')
+        self.screeningButton = QtWidgets.QPushButton('LIVE')
+        self.screeningButton.setFixedWidth(86)
+        self.startButton.setFixedWidth(86)
         self.screeningButton.setToolTip(
             'Use the selected Live illumination sources at their current Live laser powers.'
         )
         self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
-        # Base layout: stretch, hidden generic Live, Acquire, Stop. Reorder the
-        # visible Simple controls as Live / Stop / Acquire.
-        self.runRow.removeWidget(self.startButton)
-        self.runRow.removeWidget(self.stopButton)
-        self.runRow.addWidget(self.screeningButton)
-        self.runRow.addWidget(self.stopButton)
-        self.runRow.addSpacing(12)
-        self.saveAcquireCheck = QtWidgets.QCheckBox('Save')
-        self.saveAcquireCheck.setToolTip(
-            'Record this acquisition using the Recording panel folder, file name and '
-            'save format. Recording is armed before the scan starts.'
-        )
-        self.runRow.addWidget(self.saveAcquireCheck)
-        self.runRow.addWidget(self.startButton)
+        self.stopButton.setText('STOP')
         self.stopButton.setToolTip(
             'During Live screening: switch off its lasers and prepare the acquisition '
             'camera for external frame trigger (camera live view keeps running). '
             'During Acquire: stop the acquisition now; its unfinished frame is dropped.'
         )
-        # MoNaLISA keeps the operational controls at the very top. The scan
-        # estimate is shown once, inside the compact Scan summary instead of
-        # consuming a second top row.
-        self.runTitle = QtWidgets.QLabel('LIVE')
-        run_font = self.runTitle.font()
-        run_font.setBold(True)
-        self.runTitle.setFont(run_font)
-        self.runRow.insertWidget(0, self.runTitle)
+
         self.liveSourcesButton = QtWidgets.QToolButton()
         self.liveSourcesButton.setText('…')
         self.liveSourcesButton.setAutoRaise(True)
@@ -354,7 +345,78 @@ class MoNaLISAView(ScanCloakView):
             'Choose which illumination sources are available for Live screening.'
         )
         self.liveSourcesButton.clicked.connect(self.sigLiveSourcesEditRequested.emit)
-        self.runRow.insertWidget(1, self.liveSourcesButton)
+
+        # Rebuild the generic run row for MoNaLISA only. Simple Point Scan and
+        # other cloaks retain ScanCloakView's default row unchanged.
+        while self.runRow.count():
+            self.runRow.takeAt(0)
+        self.liveActionTitle = QtWidgets.QLabel('LIVE')
+        liveTitleFont = self.liveActionTitle.font()
+        liveTitleFont.setBold(True)
+        self.liveActionTitle.setFont(liveTitleFont)
+        self.runRow.addWidget(self.liveActionTitle)
+        self.runRow.addWidget(self.screeningButton)
+        self.runRow.addWidget(self.stopButton)
+        self.runRow.addWidget(self.liveSourcesButton)
+        self.runRow.addStretch(1)
+
+        self.scanStopButton = QtWidgets.QPushButton('STOP')
+        self.scanStopButton.setToolTip(
+            'Stop the timelapse after the current scan finishes. If waiting '
+            'between timepoints, stop immediately.'
+        )
+        self.scanStopButton.clicked.connect(self.sigScanStopClicked.emit)
+        self.scanStopButton.hide()
+        self._seriesStopAvailable = False
+
+        self.saveAcquireCheck = QtWidgets.QCheckBox('Save')
+        self.saveAcquireCheck.setToolTip(
+            'Record this acquisition using the Recording panel folder, file name and '
+            'save format. Timelapse controls are available only for saved acquisitions.'
+        )
+        self.saveAcquireCheck.toggled.connect(self._saveAcquisitionChanged)
+        self.recordingSuffixCheck = QtWidgets.QCheckBox('Suffix')
+        self.recordingSuffixCheck.setToolTip(
+            'Add the configured Simple MoNaLISA suffix to recorded filenames. '
+            'Configurable in Setup… → Recording naming.'
+        )
+        self.recordingSuffixCheck.toggled.connect(self._recordingSuffixChanged)
+
+        self.seriesEnabledCheck = QtWidgets.QCheckBox('Timepoints')
+        self.seriesEnabledCheck.setToolTip(
+            'Repeat this recorded scan using the configured number of timepoints and interval. '
+            'Uncheck to run one scan without changing the stored cadence.'
+        )
+        self.seriesEnabledCheck.toggled.connect(self._scanSeriesEnabledChanged)
+
+        self.seriesTimepointsSpin = QtWidgets.QSpinBox()
+        self.seriesTimepointsSpin.setRange(1, 1000000)
+        self.seriesTimepointsSpin.setValue(1)
+        self.seriesTimepointsSpin.setKeyboardTracking(False)
+        self.seriesTimepointsSpin.setToolTip(
+            'Number of recorded scan acquisitions. Shared with Recording → Timelapse scan.'
+        )
+        self.seriesIntervalSpin = QtWidgets.QDoubleSpinBox()
+        self.seriesIntervalSpin.setRange(0.0, 1000000000.0)
+        self.seriesIntervalSpin.setDecimals(3)
+        self.seriesIntervalSpin.setSuffix(' s')
+        self.seriesIntervalSpin.setKeyboardTracking(False)
+        self.seriesIntervalSpin.setToolTip(
+            'Delay after one acquisition finishes before the next begins. '
+            'Shared with Recording → Timelapse scan.'
+        )
+        self.seriesTimepointsSpin.valueChanged.connect(self._scanSeriesSettingsChanged)
+        self.seriesIntervalSpin.valueChanged.connect(self._scanSeriesSettingsChanged)
+        self.seriesSingleFileCheck = QtWidgets.QCheckBox('Single file')
+        self.seriesSingleFileCheck.setChecked(True)
+        self.seriesSingleFileCheck.setToolTip(
+            'Save all timelapse timepoints in one HDF5/Zarr file. Uncheck to save '
+            'one file per timepoint. TIFF requires separate files.'
+        )
+        self.seriesSingleFileCheck.toggled.connect(self._scanSeriesSettingsChanged)
+
+        # The scan estimate is shown once, inside the compact Scan summary
+        # instead of consuming another top row.
         self.estimateTitle.hide()
         self.frameTimeLabel.hide()
         self.estimateNote.hide()
@@ -394,6 +456,45 @@ class MoNaLISAView(ScanCloakView):
             'screening. Live power remains owned by the Laser widget.'
         )
         self.content.addWidget(self.liveRolesWidget)
+
+        scanAction = QtWidgets.QWidget()
+        scanActionLayout = QtWidgets.QHBoxLayout(scanAction)
+        scanActionLayout.setContentsMargins(0, 2, 0, 0)
+        scanActionLayout.setSpacing(2)
+        self.acquireActionTitle = QtWidgets.QLabel('ACQUIRE')
+        acquireTitleFont = self.acquireActionTitle.font()
+        acquireTitleFont.setBold(True)
+        self.acquireActionTitle.setFont(acquireTitleFont)
+        self.acquireActionTitle.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed,
+            QtWidgets.QSizePolicy.Preferred,
+        )
+        scanActionLayout.addWidget(self.acquireActionTitle)
+        scanActionLayout.addWidget(self.startButton)
+        scanActionLayout.addWidget(self.saveAcquireCheck)
+        self.placeProgressRow(scanActionLayout, stretch=1)
+        scanActionLayout.addWidget(self.scanStopButton)
+        self.content.addWidget(scanAction)
+
+        acquireSeparator = QtWidgets.QFrame()
+        acquireSeparator.setFrameShape(QtWidgets.QFrame.HLine)
+        acquireSeparator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.content.addWidget(acquireSeparator)
+
+        acquisitionOptions = QtWidgets.QWidget()
+        optionsLayout = QtWidgets.QHBoxLayout(acquisitionOptions)
+        optionsLayout.setContentsMargins(4, 0, 4, 2)
+        optionsLayout.setSpacing(8)
+        optionsLayout.addWidget(self.recordingSuffixCheck)
+        optionsLayout.addSpacing(6)
+        optionsLayout.addWidget(self.seriesEnabledCheck)
+        optionsLayout.addWidget(self.seriesTimepointsSpin)
+        optionsLayout.addWidget(QtWidgets.QLabel('Interval'))
+        optionsLayout.addWidget(self.seriesIntervalSpin)
+        optionsLayout.addSpacing(6)
+        optionsLayout.addWidget(self.seriesSingleFileCheck)
+        optionsLayout.addStretch(1)
+        self.content.addWidget(acquisitionOptions)
 
         # Profile + mode is the main acquisition recipe selector. Setup stays
         # one click away but no longer consumes a summary row in the main UI.
@@ -659,7 +760,7 @@ class MoNaLISAView(ScanCloakView):
             self._liveUnavailableReason = str(reason or '')
             baseTip = (
                 'Choose which illumination sources participate in screening. '
-                'Use the button next to LIVE to change which sources are shown. '
+                'Use the … button to change which sources are shown. '
                 'Live power stays in the Laser widget.'
             )
             self.liveRolesWidget.setToolTip(
@@ -682,6 +783,82 @@ class MoNaLISAView(ScanCloakView):
 
     def saveAcquisitionRequested(self) -> bool:
         return bool(self.saveAcquireCheck.isChecked())
+
+    def setSaveAcquisitionRequested(self, enabled: bool):
+        self._updating = True
+        try:
+            self.saveAcquireCheck.setChecked(bool(enabled))
+        finally:
+            self._updating = False
+        self._updateControlState()
+
+    def _saveAcquisitionChanged(self, checked):
+        self._updateControlState()
+        if not self._updating:
+            self.sigSaveAcquisitionToggled.emit(bool(checked))
+
+    def _scanSeriesEnabledChanged(self, checked):
+        if self._updating:
+            return
+        if checked and self.seriesTimepointsSpin.value() < 2:
+            self.seriesTimepointsSpin.setValue(2)
+        self._updateControlState()
+
+    def scanSeriesEnabled(self) -> bool:
+        return bool(self.seriesEnabledCheck.isChecked())
+
+    def _scanSeriesSettingsChanged(self, *_args):
+        if self._updating:
+            return
+        if self.seriesEnabledCheck.isChecked() and self.seriesTimepointsSpin.value() < 2:
+            self.seriesEnabledCheck.setChecked(False)
+        self._updateControlState()
+        self.sigScanSeriesSettingsEdited.emit(
+            int(self.seriesTimepointsSpin.value()),
+            float(self.seriesIntervalSpin.value()),
+            bool(self.seriesSingleFileCheck.isChecked()),
+        )
+
+    def setScanSeriesSettings(
+        self, timepoints: int, interval_s: float, single_file: bool = True
+    ):
+        self._updating = True
+        try:
+            normalizedTimepoints = max(1, int(timepoints))
+            self.seriesTimepointsSpin.setValue(normalizedTimepoints)
+            self.seriesIntervalSpin.setValue(max(0.0, float(interval_s)))
+            self.seriesSingleFileCheck.setChecked(bool(single_file))
+            if normalizedTimepoints < 2:
+                self.seriesEnabledCheck.setChecked(False)
+        finally:
+            self._updating = False
+        self._updateControlState()
+
+    def setAcquisitionSeriesActive(self, active: bool):
+        active = bool(active)
+        if active and not self._seriesActive:
+            # Snapshot whether this transaction is actually a timelapse. The
+            # cadence used by Recording is frozen at acquisition start.
+            self._seriesStopAvailable = bool(
+                self.seriesEnabledCheck.isChecked()
+                and int(self.seriesTimepointsSpin.value()) > 1
+            )
+        elif not active:
+            self._seriesStopAvailable = False
+        self._seriesActive = active
+        self._updateControlState()
+
+    def _recordingSuffixChanged(self, checked):
+        if self._updating:
+            return
+        self.sigRecordingSuffixToggled.emit(bool(checked))
+
+    def setRecordingSuffixEnabled(self, enabled: bool):
+        self._updating = True
+        try:
+            self.recordingSuffixCheck.setChecked(bool(enabled))
+        finally:
+            self._updating = False
 
     def setScreeningActive(self, active: bool):
         self._screeningActive = bool(active)
@@ -746,6 +923,7 @@ class MoNaLISAView(ScanCloakView):
             self.yLengthControl.setRange(*ranges['lateralScanLengthUm'])
             self.zStepControl.setRange(*ranges['zStepNm'])
             self.zLengthControl.setRange(*ranges['zScanLengthUm'])
+            self.recordingSuffixCheck.setChecked(bool(limits.recording_naming.enabled))
             self.profileCombo.clear()
             for profile_id, profile in limits.profile_store.profiles.items():
                 self.profileCombo.addItem(profile.label, profile_id)
@@ -882,8 +1060,14 @@ class MoNaLISAView(ScanCloakView):
                 enabled = bool(active_devices)
                 badge.setVisible(enabled)
                 duration.setVisible(enabled)
-                badge.setEnabled(enabled and self._bindingIsBound() and not self.isRunning())
-                duration.setEnabled(enabled and self._bindingIsBound() and not self.isRunning())
+                badge.setEnabled(
+                    enabled and self._bindingIsBound()
+                    and not self.isRunning() and not self._seriesActive
+                )
+                duration.setEnabled(
+                    enabled and self._bindingIsBound()
+                    and not self.isRunning() and not self._seriesActive
+                )
                 if step.role != 'readout' and not step.duration_editable:
                     duration.setText(_format_time(
                         plan.step_durations_s.get(step.id, step.default_duration_s)
@@ -1032,14 +1216,21 @@ class MoNaLISAView(ScanCloakView):
 
     def _updateProfileActions(self):
         profile_id = self.currentProfileId()
-        available = profile_id is not None and not self.isRunning() and not self._screeningActive
+        available = (
+            profile_id is not None
+            and not self.isRunning()
+            and not self._seriesActive
+            and not self._screeningActive
+        )
         self.duplicateProfileAction.setEnabled(available)
         self.editProfileAction.setEnabled(available)
         self.renameProfileAction.setEnabled(available)
         self.deleteProfileAction.setEnabled(available)
         self.profileReloadButton.setEnabled(available)
         self.profileDefaultsButton.setEnabled(available)
-        self.newProfileAction.setEnabled(not self.isRunning())
+        self.newProfileAction.setEnabled(
+            not self.isRunning() and not self._seriesActive
+        )
 
     def _profileChanged(self, index):
         if self._updating:
@@ -1105,26 +1296,49 @@ class MoNaLISAView(ScanCloakView):
     def _updateControlState(self):
         bound = self._bindingIsBound()
         running = self.isRunning()
+        seriesActive = self._seriesActive
+        busy = running or seriesActive
         screening = self._screeningActive
-        editable = bound and not running and not screening
-        self.startButton.setEnabled(bound and not running)
-        self.saveAcquireCheck.setEnabled(bound and not running)
-        # Stop means now, also for Acquire (plan scan-stop-now)
+        editable = bound and not busy and not screening
+        saving = bool(self.saveAcquireCheck.isChecked())
+        timepoints = int(self.seriesTimepointsSpin.value())
+        self.startButton.setEnabled(bound and not busy)
+        self.saveAcquireCheck.setEnabled(bound and not busy)
+        self.recordingSuffixCheck.setEnabled(
+            saving and bound and not busy and not screening
+        )
+        seriesEnabled = bool(self.seriesEnabledCheck.isChecked())
+        seriesEditable = saving and bound and not busy and not screening
+        self.seriesEnabledCheck.setEnabled(seriesEditable)
+        self.seriesTimepointsSpin.setEnabled(seriesEditable and seriesEnabled)
+        self.seriesIntervalSpin.setEnabled(
+            seriesEditable and seriesEnabled and timepoints > 1
+        )
+        self.seriesSingleFileCheck.setEnabled(
+            seriesEditable and seriesEnabled and timepoints > 1
+        )
+        # Stop means now, also for Acquire (plan scan-stop-now): the top-row
+        # Stop ends screening, or the acquisition that is running. A recorded
+        # multi-timepoint acquisition also has its graceful STOP in the RUN
+        # SCAN row, which ends it after the current timepoint.
         self.stopButton.setEnabled(screening or running)
+        scanStoppable = seriesActive and self._seriesStopAvailable
+        self.scanStopButton.setVisible(scanStoppable)
+        self.scanStopButton.setEnabled(scanStoppable)
         self.screeningButton.setEnabled(
-            bound and self._liveAvailable and not running and not screening
+            bound and self._liveAvailable and not busy and not screening
         )
         liveTip = self._liveUnavailableReason if not self._liveAvailable else (
             'Use the selected Live illumination sources at their current Live powers.'
         )
         self.screeningButton.setToolTip(liveTip)
-        self.liveSourcesButton.setEnabled(not running and not screening)
+        self.liveSourcesButton.setEnabled(not busy and not screening)
         hasProfiles = bool(
             self._limits is not None and self._limits.profile_store.profiles
         )
-        self.profileCombo.setEnabled(hasProfiles and not running and not screening)
-        self.profileMenuButton.setEnabled(not running and not screening)
-        self.setupButton.setEnabled(not running and not screening)
+        self.profileCombo.setEnabled(hasProfiles and not busy and not screening)
+        self.profileMenuButton.setEnabled(not busy and not screening)
+        self.setupButton.setEnabled(not busy and not screening)
         self._updateProfileActions()
         self.modeCombo.setEnabled(editable)
         self.scanTypeCombo.setEnabled(editable)
@@ -1209,7 +1423,7 @@ class MoNaLISAView(ScanCloakView):
             for widget in widgets:
                 widget.setEnabled(step_enabled)
         for check in self._liveSourceChecks.values():
-            check.setEnabled(bound and self._liveAvailable and not running)
+            check.setEnabled(bound and self._liveAvailable and not busy)
 
     def _runningChanged(self, running: bool):
         self._updateControlState()

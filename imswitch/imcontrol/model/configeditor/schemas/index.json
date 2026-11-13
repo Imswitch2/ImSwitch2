@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 48,
-    "docs_agree": 170,
-    "docs_documented": 170,
-    "keys": 250,
-    "managers": 68,
-    "none_default_only": 54,
+    "constrained": 57,
+    "docs_agree": 198,
+    "docs_documented": 198,
+    "keys": 278,
+    "managers": 72,
+    "none_default_only": 59,
     "none_only": 16,
-    "optional": 188,
-    "reads_any": 64,
+    "optional": 214,
+    "reads_any": 68,
     "refs": 15,
-    "required": 62,
-    "typed_by_code": 103,
-    "typed_with_docs": 194,
-    "typed_with_examples": 141,
+    "required": 64,
+    "typed_by_code": 126,
+    "typed_with_docs": 222,
+    "typed_with_examples": 167,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 64,
+    "with_keys": 68,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -25,7 +25,7 @@
   "kinds": {
     "detector": {
       "class": "DetectorInfo",
-      "fields": 8,
+      "fields": 10,
       "required": 1
     },
     "flip_mirror": {
@@ -33,14 +33,19 @@
       "fields": 6,
       "required": 1
     },
+    "instrument": {
+      "class": "InstrumentInfo",
+      "fields": 8,
+      "required": 1
+    },
     "laser": {
       "class": "LaserInfo",
-      "fields": 14,
+      "fields": 16,
       "required": 4
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 16,
+      "fields": 18,
       "required": 2
     },
     "pulse_generator": {
@@ -50,7 +55,7 @@
     },
     "rotator": {
       "class": "DeviceInfo",
-      "fields": 6,
+      "fields": 8,
       "required": 1
     },
     "rs232": {
@@ -65,7 +70,7 @@
     },
     "slm": {
       "class": "SLMsInfo",
-      "fields": 16,
+      "fields": 18,
       "required": 8
     },
     "stand": {
@@ -102,7 +107,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 2
     },
     "BSC203StageManager": {
@@ -262,7 +267,7 @@
         "DetectorManager"
       ],
       "overridden": true,
-      "properties": 3,
+      "properties": 4,
       "required": 2
     },
     "HamamatsuSLMdviManager": {
@@ -319,7 +324,7 @@
         "RotatorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 1
     },
     "KinesisStageManager": {
@@ -329,7 +334,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 6,
+      "properties": 7,
       "required": 1
     },
     "LEDMatrixManager": {
@@ -399,6 +404,16 @@
       "properties": 7,
       "required": 1
     },
+    "MockPAXManager": {
+      "category": "instruments",
+      "classes": [
+        "MockPAXManager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 6,
+      "required": 0
+    },
     "MockPositionerManager": {
       "category": "positioners",
       "classes": [
@@ -407,6 +422,16 @@
       ],
       "overridden": false,
       "properties": 0,
+      "required": 0
+    },
+    "MockPowerMeterManager": {
+      "category": "instruments",
+      "classes": [
+        "MockPowerMeterManager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 3,
       "required": 0
     },
     "NidaqLaserManager": {
@@ -485,7 +510,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 1
     },
     "PiCamManager": {
@@ -495,7 +520,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 5,
       "required": 3
     },
     "PiezoconceptZManager": {
@@ -632,7 +657,7 @@
         "RotatorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 5,
       "required": 4
     },
     "StepBoardLaserManager": {
@@ -702,7 +727,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 6,
+      "properties": 7,
       "required": 0
     },
     "ThorlabsMFFManager": {
@@ -722,6 +747,26 @@
       "overridden": false,
       "properties": 2,
       "required": 0
+    },
+    "ThorlabsPAX1000Manager": {
+      "category": "instruments",
+      "classes": [
+        "ThorlabsPAX1000Manager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 7,
+      "required": 1
+    },
+    "ThorlabsPM100Manager": {
+      "category": "instruments",
+      "classes": [
+        "ThorlabsPM100Manager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 1
     },
     "TriggerScopeLaserManager": {
       "category": "lasers",

@@ -1,10 +1,10 @@
-"""The setup a new installation starts with (``simple_mock_setup.json``).
+"""The shipped ``simple_mock_setup.json``.
 
 A hardware-free point-scanning microscope: one mock camera for live
 widefield, one simulated APD imaging the synthetic sample through the
-SimplePointScan panel. Checked here: what the file holds, that a fresh
-installation picks it, and that it runs -- camera live view and the APD
-overview together, without errors in the log.
+SimplePointScan panel. Checked here: what the file holds and that it runs
+-- camera live view and the APD overview together, without errors in the
+log.
 """
 import json
 import logging
@@ -13,13 +13,13 @@ import numpy as np
 import pytest
 from qtpy import QtTest
 
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model.devices.status import DeviceRuntimeMode
 from imswitch.imcontrol.model.managers.detectors._mock_sample import MockSample
 from imswitch.imcontrol.model.scan_frame import frame_geometry_of
 from .test_simple_point_scan_controller import Rig
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-DEFAULT = SETUPS + configfiletools.DEFAULT_SETUP_FILE
+DEFAULT = SETUPS + 'simple_mock_setup.json'
 
 
 @pytest.fixture(scope='module')
@@ -46,45 +46,6 @@ def test_the_apd_images_its_sample_in_the_scanners_micrometres(setup):
     axes = apd['managerProperties']['mockSample']['axes']
     for device, umPerVolt in axes.items():
         assert umPerVolt == setup['positioners'][device]['managerProperties']['conversionFactor']
-
-
-# ---------------------------------------------------------------------------
-# A new installation starts with it
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def setupsDir(tmp_path, monkeypatch):
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(tmp_path))
-    return tmp_path
-
-
-def test_the_default_is_picked_when_the_installation_has_it(setupsDir):
-    for name in ('a_rig.json', configfiletools.DEFAULT_SETUP_FILE, 'z_rig.json'):
-        (setupsDir / name).write_text('{}')
-    assert configfiletools.getDefaultSetup() == configfiletools.DEFAULT_SETUP_FILE
-
-
-def test_without_it_the_first_setup_in_order(setupsDir):
-    for name in ('m_rig.json', 'b_rig.json'):
-        (setupsDir / name).write_text('{}')
-    assert configfiletools.getSetupList() == ['b_rig.json', 'm_rig.json']
-    assert configfiletools.getDefaultSetup() == 'b_rig.json'
-
-
-def test_without_any_setup_there_is_no_default(setupsDir):
-    assert configfiletools.getDefaultSetup() is None
-
-
-def test_a_fresh_installation_starts_with_the_default(setupsDir, tmp_path, monkeypatch):
-    (setupsDir / 'a_rig.json').write_text('{}')
-    (setupsDir / configfiletools.DEFAULT_SETUP_FILE).write_text('{}')
-    monkeypatch.setattr(configfiletools, '_optionsFilePath', str(tmp_path / 'none.json'))
-    monkeypatch.setattr(configfiletools, '_options', None)
-
-    options, didNotExist = configfiletools.loadOptions()
-
-    assert didNotExist is True
-    assert options.setupFileName == configfiletools.DEFAULT_SETUP_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -117,14 +78,14 @@ def test_camera_live_view_runs_beside_the_apd_without_errors(rig, caplog):
     assert problems == []
 
 
-def test_the_mock_camera_is_named_not_failed_over_to(qtbot, caplog):
-    with caplog.at_level(logging.INFO):
-        rig = Rig(open(DEFAULT).read())
-        rig.close()
-    camera = [r.getMessage() for r in caplog.records if 'AVManager' in r.getMessage()
-              or 'camera' in r.getMessage().lower()]
-    assert any('Initialized mock camera' in message for message in camera)
-    assert not any('Failed to initialize AV camera' in message for message in camera)
+def test_the_mock_camera_is_named_not_failed_over_to(rig, caplog):
+    """``cameraListIndex: "mock"`` installs the mock as the configured
+    backend; no real camera is tried, so nothing fails over or warns."""
+    camera = rig.master.detectorsManager['Camera']
+    assert camera.runtimeMode is DeviceRuntimeMode.MOCK
+    assert camera.backendHolder.configured_mock is True
+    assert camera.connectionFailureKind is None
+    assert not any('Failed to initialize AV camera' in r.getMessage() for r in caplog.records)
 
 
 def test_the_overview_images_the_sample(rig, qtbot, setup):

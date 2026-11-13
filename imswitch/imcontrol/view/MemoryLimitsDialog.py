@@ -1,6 +1,6 @@
 """Preferences > Memory limits…: the per-machine memory settings, edited in place.
 
-The three limits live in ``imcontrol_options.json`` (``Options.memory``)
+The four limits live in ``imcontrol_options.json`` (``Options.memory``)
 because they describe the computer, not the microscope; see
 :mod:`imswitch.imcommon.model.memory_limits`. This dialog shows what is in
 force, lets it be changed, and hands the values to the controller, which
@@ -25,6 +25,10 @@ FIELDS = (
      'Memory ImProcess may spend on work nobody asked for: contrast sampling '
      'and the mean preview on load. Above it the preview shows the first '
      'plane and large opens are announced first.'),
+    ('workflowCacheMB', 'Workflow editor cache',
+     'Results the workflow editor keeps between runs, so changing one step '
+     're-runs only what follows it. Above it the least recently used results '
+     'are dropped and recomputed when needed.'),
 )
 
 #: Largest value offered, in MiB (1 TiB).
@@ -32,7 +36,7 @@ MAX_MIB = 1024 * 1024
 
 
 class MemoryLimitsDialog(QtWidgets.QDialog):
-    """Edit the three memory limits; the controller saves and applies them."""
+    """Edit the memory limits; the controller saves and applies them."""
 
     #: ({option field: MiB}) -- the operator asked to save these values.
     sigSaveRequested = QtCore.Signal(dict)

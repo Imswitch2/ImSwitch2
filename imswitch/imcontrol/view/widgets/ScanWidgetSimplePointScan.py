@@ -33,7 +33,6 @@ from .ScanWidgetAdvanced import ScanWidgetAdvanced
 _SLIDER_TICKS = 1000
 _MAX_DIMS = 3
 _LASER_MIME = 'application/x-imswitch-laser'
-_ACQUISITION_ONLY_TIP = 'Used by the acquisition. Switch to Acquisition to change it.'
 
 
 def _formatLength(um: float) -> str:
@@ -236,12 +235,14 @@ class ScanRegionOverlay:
         return self._layer
 
     def show(self, corners):
-        """Show the rectangle with these world corners [row, col], or none."""
-        corners = None if corners is None else np.asarray(corners, dtype=float)
-        if corners is None and self._layer is None:
+        """Show the rectangle with these world corners [row, col]; with none,
+        take the layer out of the viewer: an empty layer is clutter."""
+        if corners is None:
+            self._removeLayer()
             return
+        corners = np.asarray(corners, dtype=float)
         layer = self._ensureLayer()
-        if (corners is not None and self._corners is not None and len(layer.data) == 1
+        if (self._corners is not None and len(layer.data) == 1
                 and corners.shape == self._corners.shape
                 and np.allclose(corners, self._corners)):
             return
@@ -249,17 +250,24 @@ class ScanRegionOverlay:
         self._updating = True
         try:
             layer.data = []
-            if corners is not None:
-                layer.add_rectangles(
-                    [corners], edge_color=self._EDGE, face_color=list(self._FACE),
-                    edge_width=self._edgeWidth(),
-                )
-                layers = self._viewer.layers
-                index = layers.index(layer)
-                if index != len(layers) - 1:
-                    layers.move(index, len(layers))    # above the live layers
+            layer.add_rectangles(
+                [corners], edge_color=self._EDGE, face_color=list(self._FACE),
+                edge_width=self._edgeWidth(),
+            )
+            layers = self._viewer.layers
+            index = layers.index(layer)
+            if index != len(layers) - 1:
+                layers.move(index, len(layers))    # above the live layers
         finally:
             self._updating = False
+
+    def _removeLayer(self):
+        layer, self._layer, self._corners = self._layer, None, None
+        if layer is None:
+            return
+        layer.events.data.disconnect(self._onData)
+        if layer in self._viewer.layers:
+            self._viewer.layers.remove(layer)
 
     def startDrawing(self):
         layer = self._ensureLayer()
@@ -307,6 +315,7 @@ class PointScanView(ScanCloakView):
     sigOverviewChannelChanged = QtCore.Signal(int)
     sigOverviewFieldChanged = QtCore.Signal(float)     # µm, both axes
     sigDrawRegionClicked = QtCore.Signal()
+    sigRegionAccepted = QtCore.Signal()
     sigRegionDrawn = QtCore.Signal(object)             # world vertices [[row, col], ...]
     sigReferenceDetectorChanged = QtCore.Signal(str)
 
@@ -387,6 +396,7 @@ class PointScanView(ScanCloakView):
         layout.addWidget(QtWidgets.QLabel('Overview uses'), 2, 0)
         layout.addWidget(self.overviewChannelCombo, 2, 1)
         layout.addWidget(self.measuredLabel, 2, 2)
+        self.overviewBox = box
         self.content.addWidget(box)
 
         # --- region and dimensions ---
@@ -396,6 +406,11 @@ class PointScanView(ScanCloakView):
         self.drawButton.setToolTip('Draw the acquisition region on the live image.')
         self.drawButton.setEnabled(False)
         self.drawButton.clicked.connect(self._startDrawing)
+        self.acceptRegionButton = QtWidgets.QPushButton('Accept as ROI')
+        self.acceptRegionButton.setToolTip(
+            'Keep this rectangle as the acquisition region and remove it from the viewer.')
+        self.acceptRegionButton.setVisible(False)
+        self.acceptRegionButton.clicked.connect(self.sigRegionAccepted.emit)
         self.referenceLabel = QtWidgets.QLabel('on')
         self.referenceCombo = QtWidgets.QComboBox()
         self.referenceCombo.setToolTip(
@@ -407,11 +422,12 @@ class PointScanView(ScanCloakView):
         self.dimsSpin.valueChanged.connect(self._onDimsCount)
         drawRow = QtWidgets.QHBoxLayout()
         drawRow.addWidget(self.drawButton)
+        drawRow.addWidget(self.acceptRegionButton)
         drawRow.addStretch(1)
         drawRow.addWidget(self.referenceLabel)
         drawRow.addWidget(self.referenceCombo)
         outer.addLayout(drawRow, 0, 0)
-        # The numbers: greyed in Overview, which scans its own field.
+        # The numbers: hidden in Overview, which scans its own field.
         self.regionControls = QtWidgets.QWidget()
         layout = QtWidgets.QGridLayout(self.regionControls)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -556,9 +572,11 @@ class PointScanView(ScanCloakView):
             'Draw the acquisition region on the live image.' if available else reason)
 
     def showRegion(self, corners):
-        """The rectangle at these world corners [row, col], or none."""
+        """The rectangle at these world corners [row, col], or none (which
+        also removes its layer from the viewer)."""
         if self._regionOverlay is not None:
             self._regionOverlay.show(corners)
+        self.acceptRegionButton.setVisible(corners is not None and self.hasViewer())
 
     def _startDrawing(self):
         if self._regionOverlay is None:
@@ -594,16 +612,14 @@ class PointScanView(ScanCloakView):
             self._updating = False
 
     def _showModeControls(self, mode):
-        """Region numbers and sampling only drive the acquisition: in
-        Overview they are greyed (drawing the region still works)."""
+        """Each mode shows only what drives it: region numbers and sampling
+        in Acquisition, the overview's size and channel in Overview. Drawing
+        the region works in both."""
         acquisition = mode == 'acquisition'
-        self.regionControls.setEnabled(acquisition)
-        self.samplingBox.setEnabled(acquisition)
-        tip = '' if acquisition else _ACQUISITION_ONLY_TIP
-        self.regionControls.setToolTip(tip)
-        self.samplingBox.setToolTip(tip)
+        self.overviewBox.setVisible(not acquisition)
+        self.regionControls.setVisible(acquisition)
+        self.samplingBox.setVisible(acquisition)
         self.regionBox.setTitle('Region' if acquisition else 'Region (for the acquisition)')
-        self.samplingBox.setTitle('Sampling' if acquisition else 'Sampling (for the acquisition)')
         self.estimateTitle.setText('Scan time' if acquisition else 'Frame time')
 
     def setEstimate(self, frameS, totalS, note, refusal):

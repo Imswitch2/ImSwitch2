@@ -15,6 +15,7 @@ from imswitch.imcontrol.model.managers.RecordingManager import (
     FailureKind,
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ..WorkflowServices import ScanSeriesSettings
 from imswitch.imcommon.model import initLogger
 from ._acquisition_layout_source import with_lapse_partition
 
@@ -26,6 +27,19 @@ _LAPSE_RECORDING_DRAIN_RETRY_MS = 25
 # Long camera lapses are scheduled in bounded chunks so intervals longer than
 # roughly 24 days cannot wrap into an immediate timer.
 _MAX_LAPSE_TIMER_MS = 2_147_000_000
+
+
+def _compose_recording_savename(base_savename: str, suffix=None) -> str:
+    base_savename = str(base_savename or '').strip('_')
+    suffix = str(suffix or '').strip('_')
+
+    if base_savename and suffix:
+        return f'{base_savename}_{suffix}_rec'
+    if suffix:
+        return f'{suffix}_rec'
+    if base_savename:
+        return f'{base_savename}_rec'
+    return 'rec'
 
 
 @dataclass(frozen=True)
@@ -53,6 +67,8 @@ class _ScanSeriesRequest:
     source: Any
     detectorNames: tuple
     frames: int
+    intervalSeconds: float
+    singleFile: bool
     previousMode: Any
 
 
@@ -128,6 +144,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._shutdownRequested = False
         # See recordScanSeries: set only while a panel-requested recording runs.
         self._seriesRequest = None
+        self._activeScanSeriesSettings = None
         self._lastRecordingFailure = ''
         # Set while a scan-once recording is armed and waiting for the operator
         # to start a scan from one of several scan widgets. The frame
@@ -143,6 +160,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # "a scan was expected and somebody else published its start".
         self._scanStartOwnedByScanSource = False
         self._producerAcquisitionLayouts = None
+        self._recordingBaseSavename = None
+        self._recordingFilenameSuffix = None
+        self._recordingFilenameSuffixFrozen = False
 
         self._widget.setsaveFormat(SaveFormat.HDF5.value)
         self._widget.setSnapSaveMode(SaveMode.Disk.value)
@@ -226,7 +246,30 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         self._widget.sigSnapRequested.connect(self.snap)
         self._widget.sigRecToggled.connect(self.toggleREC)
-        
+        self._widget.sigScanSourceChanged.connect(self._refreshScanFilenameSuffixPreview)
+        scanSeriesEdited = getattr(
+            self._widget, 'sigScanSeriesSettingsEdited', None
+        )
+        if scanSeriesEdited is not None:
+            scanSeriesEdited.connect(self._scanSeriesSettingsEdited)
+
+        recordingWorkflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        settingsChanged = getattr(
+            recordingWorkflow, 'sigScanSeriesSettingsChanged', None
+        )
+        if settingsChanged is not None:
+            settingsChanged.connect(self._scanSeriesSettingsChanged)
+        ownerChanged = getattr(
+            recordingWorkflow, 'sigRecordingAcquisitionOwnerChanged', None
+        )
+        if ownerChanged is not None:
+            ownerChanged.connect(self._recordingAcquisitionOwnerChanged)
+        self._syncScanSeriesSettingsFromWorkflow()
+        self._recordingAcquisitionOwnerChanged(
+            self._recordingAcquisitionOwner()
+        )
+        self._refreshScanFilenameSuffixPreview()
+
         # Register for unified state persistence (canonical name)
         getWidgetStatePersistence().register('Recording', self)
 
@@ -236,6 +279,76 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if not os.path.exists(folder):
             os.makedirs(folder)
         ostools.openFolderInOS(folder)
+
+    def _scanSeriesSettingsSnapshot(self) -> ScanSeriesSettings:
+        workflow = getattr(
+            getattr(self, '_commChannel', None), 'recordingWorkflow', None
+        )
+        getter = getattr(workflow, 'get_scan_series_settings', None)
+        if callable(getter):
+            settings = getter()
+            return ScanSeriesSettings(
+                timepoints=int(settings.timepoints),
+                interval_s=float(settings.interval_s),
+                single_file=bool(getattr(settings, 'single_file', True)),
+            )
+
+        # Compatibility for standalone/lightweight controller tests and older
+        # CommunicationChannel adapters. Production owns these values in
+        # RecordingWorkflowService.
+        return ScanSeriesSettings(
+            timepoints=max(1, int(float(self._widget.getTimelapseTime()))),
+            interval_s=max(0.0, float(self._widget.getTimelapseFreq())),
+            single_file=bool(getattr(
+                self._widget, 'getTimelapseSingleFile', lambda: True
+            )()),
+        )
+
+    def _syncScanSeriesSettingsFromWorkflow(self) -> None:
+        try:
+            settings = self._scanSeriesSettingsSnapshot()
+        except Exception:
+            return
+        self._scanSeriesSettingsChanged(settings)
+
+    def _scanSeriesSettingsChanged(self, settings) -> None:
+        try:
+            self._widget.setTimelapseTime(int(settings.timepoints))
+            self._widget.setTimelapseFreq(float(settings.interval_s))
+            self._widget.setTimelapseSingleFile(bool(settings.single_file))
+        except Exception:
+            self.__logger.debug(
+                'Could not mirror shared scan-series settings into Recording.',
+                exc_info=True,
+            )
+
+    def _scanSeriesSettingsEdited(self) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_scan_series_settings', None)
+        if not callable(setter):
+            return
+        try:
+            setter(
+                timepoints=self._widget.getTimelapseTime(),
+                interval_s=self._widget.getTimelapseFreq(),
+                single_file=self._widget.getTimelapseSingleFile(),
+            )
+        except Exception as error:
+            self.__logger.warning(
+                'Invalid scan-series cadence: %s', error
+            )
+            self._syncScanSeriesSettingsFromWorkflow()
+
+    def _publishScanSeriesActivity(self, source, active: bool) -> None:
+        # The workflow is an optional collaborator during partial construction
+        # and teardown. Read it from ``__dict__`` so an absent channel stays a
+        # normal no-op instead of reaching Qt's uninitialized attribute lookup.
+        workflow = getattr(
+            self.__dict__.get('_commChannel'), 'recordingWorkflow', None
+        )
+        publish = getattr(workflow, 'publish_scan_series_activity', None)
+        if callable(publish):
+            publish(source, bool(active))
 
     def snapSaveModeChanged(self):
         saveMode = SaveMode(self._widget.getSnapSaveMode())
@@ -304,9 +417,60 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                                                     image,
                                                     attrs)
 
+    def _recordingAcquisitionOwner(self):
+        workflow = getattr(
+            self.__dict__.get('_commChannel'), 'recordingWorkflow', None
+        )
+        getter = getattr(workflow, 'recording_acquisition_owner', None)
+        return getter() if callable(getter) else None
+
+    def _recordingAcquisitionStartAllowed(self) -> bool:
+        owner = self._recordingAcquisitionOwner()
+        if owner is None:
+            return True
+        request = self.__dict__.get('_seriesRequest')
+        return request is not None and request.source is owner
+
+    def _restoreRecordingModeControls(self) -> None:
+        mode = getattr(self, 'recMode', None)
+        if mode == RecMode.SpecFrames:
+            self._widget.setEnabledParams(specFrames=True)
+        elif mode == RecMode.SpecTime:
+            self._widget.setEnabledParams(specTime=True)
+        elif mode == RecMode.CameraLapse:
+            self._widget.setEnabledParams(specLapse=True)
+        elif mode == RecMode.ScanLapse:
+            self._widget.setEnabledParams(scanLapse=True)
+        else:
+            self._widget.setEnabledParams()
+
+    def _recordingAcquisitionOwnerChanged(self, owner) -> None:
+        locked = owner is not None
+        setter = getattr(self._widget, 'setAcquisitionControlsLocked', None)
+        if callable(setter):
+            setter(
+                locked,
+                'Acquisition is configured by the scan widget while Save is '
+                'enabled. Use Acquire/Stop in the scan widget.',
+            )
+        if not locked:
+            self._restoreRecordingModeControls()
+        self._refreshScanFilenameSuffixPreview()
+
     def toggleREC(self, checked):
         """ Start or end recording. """
         if self.__dict__.get('_shutdownRequested', False):
+            return
+        if checked and not self._recordingAcquisitionStartAllowed():
+            self.__logger.info(
+                'Recording acquisition is currently configured by a scan widget; '
+                'start it from that scan widget instead.'
+            )
+            self._finalizingRecCycle = True
+            try:
+                self._widget.setRecButtonChecked(False)
+            finally:
+                self._finalizingRecCycle = False
             return
         if self._finalizingRecCycle:
             # Programmatic REC-button reset during scan/lapse cycle finalization
@@ -351,6 +515,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._recordingFailureAwaitingScanEnd = False
             self._recordingFailedCurrent = False
             self._recordingCycleTerminalHandled = False
+            self._recordingBaseSavename = None
+            self._recordingFilenameSuffix = None
+            self._recordingFilenameSuffixFrozen = False
+            self._activeScanSeriesSettings = None
             try:
                 managerGeneration = getattr(
                     self._master.recordingManager,
@@ -361,14 +529,24 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     managerGeneration
                     if isinstance(managerGeneration, int) else None
                 )
+                if (
+                    self.recMode == RecMode.ScanLapse
+                    and self.__dict__.get('_seriesRequest') is None
+                ):
+                    self._activeScanSeriesSettings = (
+                        self._scanSeriesSettingsSnapshot()
+                    )
                 self.updateRecAttrs(isSnapping=False)
 
                 folder = self._widget.getRecFolder()
                 if not os.path.exists(folder):
                     os.makedirs(folder)
                 time.sleep(0.01)
-                self.savename = (
-                    os.path.join(folder, self.getFileName()) + '_rec'
+                self._recordingBaseSavename = os.path.join(
+                    folder, self.getFileName()
+                )
+                self.savename = _compose_recording_savename(
+                    self._recordingBaseSavename
                 )
 
                 if self.recMode == RecMode.ScanOnce:
@@ -394,6 +572,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         # to _armScanOnceFromActiveSource, and leave both
                         # lifecycle boundaries with the controller that runs.
                         self._awaitingScanSourceArm = True
+
+                if self._recordingScanSource is not None:
+                    self._freezeRecordingFilenameSuffix(
+                        self._recordingScanSource
+                    )
 
                 detectorsBeingCaptured = self.getDetectorNamesToCapture()
 
@@ -500,9 +683,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         return
             elif self.recMode == RecMode.ScanLapse:
                 seriesRequest = self.__dict__.get('_seriesRequest')
+                if (
+                    seriesRequest is None
+                    and self._activeScanSeriesSettings is None
+                ):
+                    self._activeScanSeriesSettings = (
+                        self._scanSeriesSettingsSnapshot()
+                    )
                 singleFile = (
-                    True if seriesRequest is not None
-                    else self._widget.getTimelapseSingleFile()
+                    bool(seriesRequest.singleFile) if seriesRequest is not None
+                    else bool(self._activeScanSeriesSettings.single_file)
                 )
                 if singleFile and SaveFormat(
                     self._widget.getSaveFormat()
@@ -519,7 +709,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.recordingArgs['singleLapseFile'] = singleFile
                 self.lapseTotal = (
                     seriesRequest.frames if seriesRequest is not None
-                    else self._widget.getTimelapseTime()
+                    else self._activeScanSeriesSettings.timepoints
                 )
                 self.lapseCurrent = 0
                 if not self.nextLapse():
@@ -1055,6 +1245,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     )
                     return False
 
+            if self._recordingScanSource is not None:
+                self._freezeRecordingFilenameSuffix(
+                    self._recordingScanSource
+                )
+
         if not self.recordingArgs['singleLapseFile']:
             lapseCurrentStr = str(self.lapseCurrent).zfill(len(str(self.lapseTotal)))
             self.recordingArgs['savename'] = f'{self.savename}_scan{lapseCurrentStr}'
@@ -1452,6 +1647,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # generation that controller happens to be running by then.
         self._acceptedScanRunToken = self._scanRunTokenFor(source)
         self._scanRequestAccepted = True
+        self._freezeRecordingFilenameSuffix(source)
         if not self._applyScanGeometryToRecordingArgs():
             return False
         if not self._startManagerRecording():
@@ -2513,10 +2709,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         'retained scan run reached its final part.'
                     )
                 else:
-                    nextDelayMs = (
-                        0 if self.__dict__.get('_seriesRequest') is not None
-                        else int(self._widget.getTimelapseFreq() * 1000)
-                    )
+                    seriesRequest = self.__dict__.get('_seriesRequest')
+                    if seriesRequest is not None:
+                        interval_s = seriesRequest.intervalSeconds
+                    else:
+                        settings = self.__dict__.get('_activeScanSeriesSettings')
+                        if settings is None:
+                            settings = self._scanSeriesSettingsSnapshot()
+                        interval_s = settings.interval_s
+                    nextDelayMs = int(float(interval_s) * 1000)
             except Exception as error:
                 cadenceFailure = (
                     'Could not inspect recording-lapse cadence state while its '
@@ -2656,6 +2857,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._scanLifecycleEndedObserved = False
         self._recordingScanSource = None
         self._producerAcquisitionLayouts = None
+        self._recordingBaseSavename = None
+        self._recordingFilenameSuffix = None
+        self._recordingFilenameSuffixFrozen = False
         self._awaitingScanSourceArm = False
         self._scanStartOwnedByScanSource = False
         self._recordingOperationActive = False
@@ -2664,6 +2868,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._recordingFailureAwaitingScanEnd = False
         self._recordingFailedCurrent = False
         RecordingController._endScanSeriesRequest(self)
+        self._activeScanSeriesSettings = None
         self._cameraLapseIntervalS = None
         self._cameraLapseNextDeadline = None
         self._cameraLapsePlannedStart = None
@@ -2987,27 +3192,32 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.checkSpecFrames()
         self._widget.setEnabledParams(specFrames=True)
         self.recMode = RecMode.SpecFrames
+        self._refreshScanFilenameSuffixPreview()
 
     def specTime(self):
         self._widget.checkSpecTime()
         self._widget.setEnabledParams(specTime=True)
         self.recMode = RecMode.SpecTime
+        self._refreshScanFilenameSuffixPreview()
 
     def specLapse(self):
         self._widget.checkSpecLapse()
         self._widget.setEnabledParams(specLapse=True)
         self.recMode = RecMode.CameraLapse
+        self._refreshScanFilenameSuffixPreview()
 
     def recScanOnce(self):
         self._widget.checkScanOnce()
         self._widget.setEnabledParams()
         self.recMode = RecMode.ScanOnce
+        self._refreshScanFilenameSuffixPreview()
 
     def recScanLapse(self):
         self._widget.checkScanLapse()
         self._widget.setEnabledParams(scanLapse=True)
         self._refreshScanSourceOptions()
         self.recMode = RecMode.ScanLapse
+        self._refreshScanFilenameSuffixPreview()
 
     def _refreshScanSourceOptions(self) -> None:
         """Repopulate the timelapse-scan source chooser.
@@ -3081,6 +3291,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.checkUntilStop()
         self._widget.setEnabledParams()
         self.recMode = RecMode.UntilStop
+        self._refreshScanFilenameSuffixPreview()
 
     def setRecMode(self, recMode):
         if recMode == RecMode.SpecFrames:
@@ -3121,6 +3332,78 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         elif detectorMode == -3:  # A specific detector
             return self._widget.getSelectedSpecificDetectors()
     
+    def _scanFilenameSuffixFromSource(self, source):
+        getter = getattr(source, 'getRecordingFilenameSuffix', None)
+        if not callable(getter):
+            return None
+        try:
+            suffix = getter()
+        except Exception:
+            self.__logger.warning(
+                'Could not read recording filename suffix from scan source.',
+                exc_info=True,
+            )
+            return None
+        suffix = str(suffix or '').strip('_')
+        return suffix or None
+
+    def _scanSourceForFilenamePreview(self):
+        owner = self._recordingAcquisitionOwner()
+        if owner is not None:
+            return owner
+        seriesRequest = self.__dict__.get('_seriesRequest')
+        if seriesRequest is not None:
+            return seriesRequest.source
+        source = self.__dict__.get('_recordingScanSource')
+        if source is not None:
+            return source
+        if getattr(self, 'recMode', None) not in (RecMode.ScanOnce, RecMode.ScanLapse):
+            return None
+        resolve = getattr(self._commChannel, 'getRecordingScanSource', None)
+        if not callable(resolve):
+            return None
+        try:
+            if self.recMode == RecMode.ScanLapse:
+                selected = self._widget.getScanSource()
+                if selected:
+                    return resolve(selected)
+                if self._scanSourceChoiceRequired():
+                    return None
+                return resolve()
+            # Scan-once has no chooser. A canonical Scan controller or a lone
+            # standalone source can still be previewed safely; ambiguous
+            # standalone sources remain unknown until one starts.
+            return resolve()
+        except Exception:
+            return None
+
+    def _refreshScanFilenameSuffixPreview(self, *args):
+        setter = getattr(self._widget, 'setScanFilenameSuffix', None)
+        if not callable(setter):
+            return
+        source = self._scanSourceForFilenamePreview()
+        setter(self._scanFilenameSuffixFromSource(source) if source is not None else None)
+
+    def scanFilenameSuffixChanged(self, source=None) -> None:
+        """Optional scan-source notification used only for the UI preview."""
+        self._refreshScanFilenameSuffixPreview()
+
+    def _freezeRecordingFilenameSuffix(self, source) -> None:
+        """Snapshot one source suffix before this recording opens a writer."""
+        if self.__dict__.get('_recordingFilenameSuffixFrozen', False):
+            return
+        base = self.__dict__.get('_recordingBaseSavename')
+        if not base:
+            return
+        suffix = self._scanFilenameSuffixFromSource(source)
+        self._recordingFilenameSuffix = suffix
+        self._recordingFilenameSuffixFrozen = True
+        self.savename = _compose_recording_savename(base, suffix)
+        recordingArgs = self.__dict__.get('recordingArgs')
+        if isinstance(recordingArgs, dict):
+            recordingArgs['savename'] = self.savename
+        self._refreshScanFilenameSuffixPreview()
+
     @APIExport(runOnUIThread=True)
     def getFileName(self):
         """ Gets the filename of the data to save. """
@@ -3148,12 +3431,22 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         elif key[1] == _timeAttr:
             self._widget.setTimeToRec(value)
         elif key[1] == _lapseTimeAttr:
-            self._widget.setTimelapseTime(value)
+            workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+            setter = getattr(workflow, 'set_scan_series_settings', None)
+            if callable(setter):
+                setter(timepoints=value)
+            else:
+                self._widget.setTimelapseTime(value)
         elif key[1] == _freqAttr:
             if self.recMode == RecMode.CameraLapse:
                 self._widget.setCameraTimelapseInterval(value)
             else:
-                self._widget.setTimelapseFreq(value)
+                workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+                setter = getattr(workflow, 'set_scan_series_settings', None)
+                if callable(setter):
+                    setter(interval_s=value)
+                else:
+                    self._widget.setTimelapseFreq(value)
 
     def setSharedAttr(self, attr, value):
         self.settingAttr = True
@@ -3186,15 +3479,25 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     self._widget.getSpecTimelapseFrameTime(),
                 )
             elif self.recMode == RecMode.ScanLapse:
-                self.setSharedAttr(_lapseTimeAttr, self._widget.getTimelapseTime())
-                self.setSharedAttr(_freqAttr, self._widget.getTimelapseFreq())
+                request = self.__dict__.get('_seriesRequest')
+                if request is not None:
+                    timepoints = request.frames
+                    interval_s = request.intervalSeconds
+                else:
+                    settings = self.__dict__.get('_activeScanSeriesSettings')
+                    if settings is None:
+                        settings = self._scanSeriesSettingsSnapshot()
+                    timepoints = settings.timepoints
+                    interval_s = settings.interval_s
+                self.setSharedAttr(_lapseTimeAttr, timepoints)
+                self.setSharedAttr(_freqAttr, interval_s)
 
     def sendScanFreq(self):
         freq = self.getTimelapseFreq()
         self._commChannel.sigSendScanFreq.emit(freq)
 
     def getTimelapseFreq(self):
-        return self._widget.getTimelapseFreq()
+        return self._scanSeriesSettingsSnapshot().interval_s
 
     @APIExport(runOnUIThread=True)
     def snapImage(self, output: bool = False) -> Optional[np.ndarray]:
@@ -3252,16 +3555,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setCameraTimelapseInterval(intervalSeconds)
         self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
-    def recordScanSeries(self, source, detectorNames, frames: int = 1
-                         ) -> ScanSeriesRecordingResult:
-        """Record ``frames`` back-to-back scans of ``source``, then stop.
+    def recordScanSeries(
+        self, source, detectorNames, frames: int = 1, intervalSeconds: float = 0.0,
+        singleFile: bool = True,
+    ) -> ScanSeriesRecordingResult:
+        """Record ``frames`` scans of ``source`` at a snapshotted cadence.
 
         For a scan panel's "Acquire and save": it runs the Recording
         controller's own transaction -- bind the source, read its geometry
         and layouts, arm the writer, wait for the arm, then request the scan
         -- exactly as the REC button does, and answers synchronously. One
-        frame is a Scan-once recording; more are a scan timelapse with no
-        interval, one file with one time partition per frame.
+        frame is a Scan-once recording; more are a scan timelapse using
+        ``intervalSeconds`` as the delay after each completed point. ``singleFile``
+        chooses one grouped HDF5/Zarr file versus one file per timepoint.
 
         The source and detectors are the caller's, not the Recording widget's
         selection, and the widget's mode, detector choice and lapse settings
@@ -3270,8 +3576,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         Refused, with the reason and nothing changed, when a recording is
         running or finalizing, when ``frames`` is below 1, when no detector
-        is named, or when several frames are asked for in TIFF (a series is
-        one file, which TIFF cannot be reopened for). A failure while arming
+        is named, or when a grouped multi-timepoint series is asked for in TIFF (it is
+        not reopenable as one lapse file). A failure while arming
         or starting ends the attempt exactly as a REC press would, and its
         reason is returned.
         """
@@ -3279,14 +3585,32 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return ScanSeriesRecordingResult(False, reason)
 
         try:
-            frames = int(frames)
+            frames_number = float(frames)
         except (TypeError, ValueError):
             return refuse(f'The number of frames must be a whole number, not {frames!r}.')
+        if not np.isfinite(frames_number) or not frames_number.is_integer():
+            return refuse(f'The number of frames must be a whole number, not {frames!r}.')
+        frames = int(frames_number)
         if frames < 1:
             return refuse(f'The number of frames must be at least 1, not {frames}.')
+        try:
+            intervalSeconds = float(intervalSeconds)
+        except (TypeError, ValueError):
+            return refuse(
+                f'The interval must be a finite number >= 0, not {intervalSeconds!r}.'
+            )
+        if not np.isfinite(intervalSeconds) or intervalSeconds < 0:
+            return refuse(
+                f'The interval must be a finite number >= 0, not {intervalSeconds!r}.'
+            )
         names = tuple(str(name) for name in (detectorNames or ()))
         if not names:
             return refuse('Choose at least one detector to save.')
+        owner = self._recordingAcquisitionOwner()
+        if owner is not None and owner is not source:
+            return refuse(
+                'Recording acquisition is currently configured by another scan widget.'
+            )
         if (
             self.__dict__.get('_seriesRequest') is not None
             or self.recording
@@ -3297,18 +3621,28 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 'A recording is already running or being finalized; wait for '
                 'it to end.'
             )
-        if frames > 1 and SaveFormat(self._widget.getSaveFormat()) == SaveFormat.TIFF:
+        singleFile = bool(singleFile)
+        if (
+            frames > 1
+            and singleFile
+            and SaveFormat(self._widget.getSaveFormat()) == SaveFormat.TIFF
+        ):
             return refuse(
-                f'Saving {frames} frames writes one file with a time partition '
-                'per frame, which needs HDF5 or Zarr; the Recording panel is '
-                'set to TIFF.'
+                f'Saving {frames} frames in one file needs HDF5 or Zarr; '
+                'select separate files or change the Recording format.'
             )
 
         self._seriesRequest = _ScanSeriesRequest(
-            source=source, detectorNames=names, frames=frames,
+            source=source,
+            detectorNames=names,
+            frames=frames,
+            intervalSeconds=intervalSeconds,
+            singleFile=singleFile,
             previousMode=self.recMode,
         )
+        self._publishScanSeriesActivity(source, True)
         self.recMode = RecMode.ScanOnce if frames == 1 else RecMode.ScanLapse
+        self._refreshScanFilenameSuffixPreview()
         self._lastRecordingFailure = ''
         try:
             # The REC press itself: the button shows the recording and Stop
@@ -3336,6 +3670,69 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return
         self._seriesRequest = None
         self.recMode = request.previousMode
+        self._publishScanSeriesActivity(request.source, False)
+        self._refreshScanFilenameSuffixPreview()
+
+    def stopScanSeries(self, source) -> bool:
+        """Gracefully stop a panel-requested timelapse owned by ``source``.
+
+        An active timepoint is allowed to finish normally, including its
+        writer. The current scan part is merely promoted to the final part of
+        the retained scan run. If the lapse is waiting between timepoints, the
+        cadence timer and retained run are closed immediately.
+        """
+        request = self.__dict__.get('_seriesRequest')
+        if request is None or request.source is not source:
+            return False
+        if int(getattr(request, 'frames', 1)) <= 1:
+            return False
+        if self.__dict__.get('stopRequested', False):
+            return True
+
+        self.stopRequested = True
+        timer = self.__dict__.get('timer')
+        if timer is not None:
+            self.timer = None
+            try:
+                timer.stop()
+            except Exception:
+                self.__logger.error(
+                    'Could not cancel the requested scan-series cadence timer',
+                    exc_info=True,
+                )
+            # A completed point closes this guard before scheduling the next
+            # cadence callback. Re-open it so the retained run-level end can
+            # finalize the stopped series exactly once.
+            self._recordingCycleTerminalHandled = False
+
+        if self.__dict__.get('_scanRequestAccepted', False):
+            scanWorkflow = getattr(self._commChannel, 'scanWorkflow', None)
+            finish = getattr(
+                scanWorkflow, 'finish_scan_run_after_current_from', None
+            )
+            if not callable(finish):
+                self.stopRequested = False
+                return False
+            try:
+                finish(
+                    source,
+                    runToken=self.__dict__.get('_acceptedScanRunToken'),
+                )
+            except Exception:
+                self.stopRequested = False
+                self.__logger.error(
+                    'Could not gracefully stop the requested scan series',
+                    exc_info=True,
+                )
+                return False
+            return True
+
+        # A panel-requested timelapse normally has an accepted scan before its
+        # Stop control becomes available. Fail closed if that invariant is
+        # broken rather than switching REC off and truncating an unrelated
+        # writer.
+        self.stopRequested = False
+        return False
 
     @APIExport(runOnUIThread=True)
     def setRecModeScanOnce(self) -> None:
@@ -3347,9 +3744,17 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                                 timelapseSingleFile: bool = False) -> None:
         """ Sets the recording mode to record a timelapse of scans. """
         self.recScanLapse()
-        self._widget.setTimelapseTime(lapsesToRec)
-        self._widget.setTimelapseFreq(freqSeconds)
-        self._widget.setTimelapseSingleFile(timelapseSingleFile)
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_scan_series_settings', None)
+        if callable(setter):
+            setter(
+                timepoints=lapsesToRec, interval_s=freqSeconds,
+                single_file=timelapseSingleFile,
+            )
+        else:
+            self._widget.setTimelapseTime(lapsesToRec)
+            self._widget.setTimelapseFreq(freqSeconds)
+            self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
     @APIExport(runOnUIThread=True)
     def setRecModeUntilStop(self) -> None:
@@ -3432,7 +3837,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         """Snapshot current recording settings for both startup and setup modes.
         
         Returns recording output settings.
-        Does NOT include filename, recording status, or detector/laser selections.
+        Does NOT include filename, recording status, detector/laser selections,
+        or scan-series cadence. Timepoints/interval are runtime-owned by
+        RecordingWorkflowService and deliberately survive scan/setup state loads.
         
         The output folder is deliberately absent: it defaults to today's date
         (options.recording.includeDateInOutputFolder), so persisting it would

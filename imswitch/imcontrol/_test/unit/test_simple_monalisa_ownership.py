@@ -185,3 +185,62 @@ def test_a_saved_scan_with_a_centre_offset_loads_keeping_it(qtbot):
         assert _centre_of(target, device) == 4.0
     finally:
         target.close()
+
+
+def test_a_rejection_while_acquiring_leaves_the_camera_trigger_alone(qtbot, monkeypatch):
+    """sigScanRequestRejected is global: a REC press or another panel's start
+    refused during a running acquisition must not hand the camera back."""
+    rig, _ = _separated_rig(monkeypatch, set())
+    try:
+        workflow = rig.channel.liveScreeningWorkflow
+        rig.scan.__dict__['_acquisitionTriggerSnapshot'] = {'Camera': ('Trigger source', 'internal')}
+        workflow.set_trigger_mode('Camera', 'external_frame')
+
+        monkeypatch.setattr(rig.scan, '_isBusy', lambda: True)
+        rig.channel.sigScanRequestRejected.emit('Ignoring duplicate scan start')
+        assert workflow.get_trigger_setting('Camera') == 'external_frame'
+        assert '_acquisitionTriggerSnapshot' in rig.scan.__dict__
+
+        monkeypatch.setattr(rig.scan, '_isBusy', lambda: False)
+        rig.channel.sigScanRequestRejected.emit('refused before it started')
+        assert workflow.get_trigger_setting('Camera') == ('Trigger source', 'internal')
+        assert '_acquisitionTriggerSnapshot' not in rig.scan.__dict__
+    finally:
+        rig.close()
+
+
+def test_a_second_start_while_acquiring_does_not_touch_the_camera(qtbot, monkeypatch):
+    rig, _ = _separated_rig(monkeypatch, set())
+    try:
+        workflow = rig.channel.liveScreeningWorkflow
+        writes = []
+        monkeypatch.setattr(workflow, 'set_trigger_mode', lambda n, v: writes.append((n, v)))
+        monkeypatch.setattr(rig.scan, '_isBusy', lambda: True)
+
+        assert rig.scan._runSimpleAcquisition(lambda: None, requireLiveView=True) is None
+
+        assert writes == []
+        assert 'already running' in rig.scan._lastScanStartRejection
+    finally:
+        rig.close()
+
+
+def test_a_state_load_during_screening_switches_the_lasers_off(qtbot, monkeypatch):
+    """A saved Advanced scan loaded while Live screening: the page becomes
+    Advanced, where there is no Stop, so the screening lasers go off first."""
+    rig, lasers = _separated_rig(monkeypatch, set())
+    try:
+        monkeypatch.setattr(rig.scan, '_screeningLaserTargets', lambda sources=None: {'A', 'B'})
+        rig.scan._onScreeningRequested()
+        assert lasers == {'A': True, 'B': True}
+        assert rig.scan.__dict__['_screeningActive'] is True
+
+        state = rig.scan.getComponentState()
+        state['cloak'] = dict(state['cloak'], page='advanced')
+        rig.scan.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+        assert rig.scan.scanPage() == 'advanced'
+        assert lasers == {'A': False, 'B': False}
+        assert rig.scan.__dict__.get('_screeningActive') is False
+    finally:
+        rig.close()

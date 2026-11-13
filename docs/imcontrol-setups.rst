@@ -16,10 +16,10 @@ The user directory is:
 * ``~/ImSwitchConfig/`` on macOS / Linux
 
 The first time you start the hardware control module you will be
-prompted to select a setup file; ``simple_mock_setup.json`` is preselected,
-a hardware-free point-scanning microscope (one mock camera, one simulated
-APD, the SimplePointScan panel). To switch later, use
-**Hardware → Pick hardware setup…** in the menu bar.
+prompted to select a setup file; ``example_no_hardware.json`` is
+preselected. ``simple_mock_setup.json`` is a hardware-free point-scanning
+microscope (one mock camera, one simulated APD, the SimplePointScan panel).
+To switch later, use **Hardware → Pick hardware setup…** in the menu bar.
 
 .. image:: ./images/setup-picker.png
    :alt: The dialog that asks which hardware setup file to load
@@ -36,9 +36,10 @@ file holds the per-computer settings that are not part of any setup:
   **Preferences → Recordings folder…**
 * ``watcher.outputFolder``: the folder the **Watcher** panel starts on
   (default ``ImSwitchConfig/scripts``)
-* ``memory.writerQueueMB`` (512), ``memory.perDetectorQueueMB`` (256) and
-  ``memory.processingWorkingSetMB`` (1024): memory limits in MiB, editable
-  with **Preferences → Memory limits…** (see :ref:`improcess-memory-limits`)
+* ``memory.writerQueueMB`` (512), ``memory.perDetectorQueueMB`` (256),
+  ``memory.processingWorkingSetMB`` (1024) and ``memory.workflowCacheMB``
+  (4096): memory limits in MiB, editable with **Preferences → Memory
+  limits…** (see :ref:`improcess-memory-limits`)
 
 .. tip::
 
