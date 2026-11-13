@@ -241,17 +241,8 @@ def test_stale_point_worker_frame_boundary_cannot_publish_new_scan_frame(
 
 
 def _make_timetagger():
-    return SwabianTimeTaggerManager(
-        _DetectorInfo(
-            {
-                "click_channel": 1,
-                "start_channel": 2,
-                "line_channel": 3,
-            }
-        ),
-        "FLIM",
-        _Nidaq(),
-    )
+    # No timeTagger block: a stand-in card, block-default channels 1/2/3.
+    return SwabianTimeTaggerManager(_DetectorInfo({}), "FLIM", _Nidaq())
 
 
 class _FinishWorker:

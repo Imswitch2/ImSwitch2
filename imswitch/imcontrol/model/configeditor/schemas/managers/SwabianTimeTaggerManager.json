@@ -37,34 +37,12 @@
         "code:optional(get)"
       ]
     },
-    "click_channel": {
-      "description": "The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "click_role": {
       "description": "The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). Two FLIM detectors on one input are refused at startup, naming both; a counting detector may share any detector's input. The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.",
       "x-imswitch-alias-of": "photon_input",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "click_trigger": {
-      "description": "Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -106,33 +84,11 @@
         "code:optional(get)"
       ]
     },
-    "line_channel": {
-      "description": "The line-clock input, read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "line_role": {
       "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges, starting ``pixelPatternOffsetPs`` (block field, default 10 ns) plus a positive ``lineClockDelayPs`` after each edge.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "line_trigger": {
-      "description": "Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -192,33 +148,11 @@
         "code:optional(get)"
       ]
     },
-    "start_channel": {
-      "description": "The laser-sync input, read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-nullable": true,
-      "x-imswitch-source": [
-        "code:optional(get)",
-        "docs:integer"
-      ]
-    },
     "start_role": {
       "description": "Input or role that receives the TCSPC start (laser sync). FLIM only; a FLIM detector on a card without a sync is refused at startup (use ``measurement: \"counting\"``).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
-        "code:optional(get)"
-      ]
-    },
-    "start_trigger": {
-      "description": "Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:float()",
         "code:optional(get)"
       ]
     },
@@ -233,14 +167,6 @@
       "x-imswitch-source": [
         "code:default:integer",
         "code:int()",
-        "code:optional(get)"
-      ]
-    },
-    "trigger_levels": {
-      "description": "Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.",
-      "x-imswitch-kind": "object",
-      "x-imswitch-source": [
-        "code:default:object",
         "code:optional(get)"
       ]
     }

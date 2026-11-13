@@ -1290,10 +1290,10 @@ counting photons), in the ``inputs`` form:
 
 **Required devices**: ``SwabianTimeTaggerManager`` detectors that name their
 inputs (``photon_input``, ``start_role``, ``line_role``) and their
-``measurement`` (``flim`` or ``counting``), see :doc:`devices/detectors`. A
-detector *without* this block keeps working from its legacy
-``click_channel`` / ``start_channel`` / ``line_channel`` properties and logs
-the equivalent block to move them into.
+``measurement`` (``flim`` or ``counting``), see :doc:`devices/detectors`.
+Without this block such a detector has no card: it starts, refuses every
+scan, and logs the block to add, built from its retired ``click_channel`` /
+``start_channel`` / ``line_channel`` properties when it still has them.
 
 **See also**: :class:`TimeTaggerInfo`
 

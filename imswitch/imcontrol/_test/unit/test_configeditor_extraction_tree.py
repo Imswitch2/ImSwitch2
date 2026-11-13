@@ -113,7 +113,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # hardware schemas (main's PR #69 adds none here). 277: the Swabian
     # detector's measurement (flim / counting); its photon_input takes over
     # click_role's key, click_role becoming photon_input's older spelling.
-    assert report.keys == 277
+    # 270: the Swabian detector's seven card properties (click/start/line_channel,
+    # *_trigger, trigger_levels) are retired -- the timeTagger block describes
+    # the card.
+    assert report.keys == 270
     assert report.alias_spellings == 10
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -135,7 +138,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 212 with main: the instrument managers' optional keys, the seven
     # useMockOnFailure flags and the Hamamatsu's mockSample. 213: the Swabian
     # detector's optional measurement.
-    assert report.optional == 213
+    # 206: the seven retired Swabian card properties.
+    assert report.optional == 206
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -151,8 +155,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 53: the three Swabian legacy channels are read with a None default.
     # 58 with main: PM100 and PAX1000 read wavelengthNm with .get() (None =
     # keep the instrument's own), MockPAX plate1Rotator / plate2Rotator, and
-    # the Hamamatsu's mockSample block (None = no synthetic sample).
-    assert report.none_default_only == 58
+    # the Hamamatsu's mockSample block (None = no synthetic sample). 55: the
+    # three Swabian legacy channels are retired.
+    assert report.none_default_only == 55
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -175,7 +180,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # rotators, the seven useMockOnFailure rows and the Hamamatsu's mockSample.
     # 197: the Swabian detector's measurement row (photon_input has
     # click_role's row, click_role being its older spelling).
-    assert (report.docs_agree, report.docs_documented) == (197, 197)
+    # 190: the seven retired Swabian card-property rows are gone.
+    assert (report.docs_agree, report.docs_documented) == (190, 190)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -190,7 +196,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # with main: the 16 instrument keys read through float()/int()/str() and
     # the seven useMockOnFailure reads through bool(). 127: the Swabian
     # detector's measurement, read through str().
-    assert report.typed_by_code == 127
+    # 123: the retired Swabian card properties' float() and mapping reads.
+    assert report.typed_by_code == 123
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -210,8 +217,8 @@ def test_the_tree_has_no_unresolved_reads_today(report):
     """SwabianTimeTagger used to index trigger_levels by a channel number
     computed at runtime in __init__, the three reads the extractor reported
     as unresolved rather than guessed. The card's channels now live on the
-    setup's timeTagger block; the legacy trigger_levels fallback moved into
-    a helper the extractor follows for its literal keys only, so nothing is
+    setup's timeTagger block and the detector's card properties are retired
+    (read only, by iteration, to print the block to add), so nothing is
     reported. Not a rule -- a fact about the tree, so a future one is
     noticed."""
     assert report.unresolved == []
