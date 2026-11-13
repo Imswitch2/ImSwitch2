@@ -49,6 +49,9 @@ _STORE_SUFFIX = (
 _DIR_STORE_SUFFIX = (
     ".zarr",
 )
+# Session monitors finalized TIFFs as finite raw sources. The older Live
+# stream discovery must not treat them as streamable datasets.
+_SESSION_TIFF_SUFFIX = (".tif", ".tiff")
 # These are *notifications only*. They are not raw stores and must never be
 # opened as raw data by Session discovery or a live reader.
 _SESSION_ACQUISITION_AUX_SUFFIX = (
@@ -70,16 +73,19 @@ class DirectoryWatcher(QtCore.QObject):
         root_path: str,
         *,
         poll_interval_ms: int = 1000,
+        include_tiff_files: bool = False,
         parent=None,
     ) -> None:
         """
         Args:
             root_path: Folder to watch for new entries.
             poll_interval_ms: Delay between scans once started.
+            include_tiff_files: Include finite TIFF raw files for Session only.
             parent: Optional Qt parent (keeps the watcher on its thread).
         """
         super().__init__(parent)
         self._root_path = root_path
+        self._include_tiff_files = bool(include_tiff_files)
         self._logger = initLogger(self, tryInheritParent=False)
         self._seen_entries: set[str] = set()
         self._entry_signatures: dict[str, tuple] = {}
@@ -212,7 +218,9 @@ class DirectoryWatcher(QtCore.QObject):
                         name = entry.name.lower()
                         is_dataset_file = (
                             (name.endswith(_STORE_SUFFIX) or
-                             name.endswith(_SESSION_ACQUISITION_AUX_SUFFIX))
+                             name.endswith(_SESSION_ACQUISITION_AUX_SUFFIX) or
+                             (self._include_tiff_files and
+                              name.endswith(_SESSION_TIFF_SUFFIX)))
                             and not name.endswith(_DIR_STORE_SUFFIX)
                         )
                         if entry.is_dir() or is_dataset_file:

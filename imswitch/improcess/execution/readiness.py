@@ -146,9 +146,54 @@ def _read_zarr(path, dataset):
         int(obj.shape[0]))
 
 
+def _read_tiff(path, dataset):
+    """Inspect a TIFF's OME finalization metadata without decoding image data.
+
+    ImControl writes the public BigTIFF before its stream is complete, then
+    embeds OME MapAnnotations *after closing the writer*. A readable TIFF or
+    unchanged size therefore never proves Auto readiness on its own.
+    """
+    import tifffile
+    from imswitch.improcess.model.image_sources import (
+        _tiff_series_attrs, tiff_dataset_names,
+    )
+
+    with tifffile.TiffFile(path) as file:
+        names = tiff_dataset_names(file)
+        if not names:
+            return None
+        requested = str(dataset) if dataset not in (None, "") else None
+        if requested in names:
+            index = names.index(requested)
+        elif len(names) == 1:
+            # The generic pre-finalization name can become the OME detector
+            # name; a single series remains unambiguous across this change.
+            index = 0
+        else:
+            return None
+        series = file.series[index]
+        attrs = _tiff_series_attrs(file, index, series)
+        # Physical page count, independent of the counts declared by the
+        # writer. A truncated TIFF must never be certified by OME XML alone.
+        pages = len(series.pages)
+        if pages < 1:
+            return None
+        # The final MapAnnotation is the commit marker, not merely 'ome=True'.
+        # With no explicit outcome, leave the physical state unconfirmed.
+        outcome = attrs.get("recording:completion_outcome")
+        actual = attrs.get("recording:actual_frames")
+        markers = RecordingLifecycleMarkers(
+            writing=False if outcome in {"complete", "stopped_early"} else None,
+            frames_committed=actual if type(actual) is int else None,
+        )
+        return PhysicalEvidence("tiff", attrs, markers, pages)
+
+
 def inspect_physical_reference(ref: PhysicalReference) -> PhysicalEvidence | None:
     """Read headers only. HDF5 never becomes an actively followed reader."""
     suffix = Path(ref.path).suffix.lower()
+    if suffix in (".tif", ".tiff"):
+        return _read_tiff(ref.path, ref.dataset)
     if suffix == ".zarr":
         return _read_zarr(ref.path, ref.dataset)
     if suffix in (".hdf5", ".h5"):
@@ -162,6 +207,14 @@ def evaluate_evidence(evidence: PhysicalEvidence | None, *, is_lapse: bool = Fal
     if evidence is None:
         return Readiness(ReadinessState.UNKNOWN, "Waiting for readable ImControl metadata")
     markers = evidence.markers
+    if evidence.format_id == "tiff":
+        # TIFF exposes neither an active reader barrier nor SWMR semantics.
+        # Only the final ImControl OME annotation, embedded post-close, may
+        # certify a completed file. External TIFFs remain manual-only.
+        if evidence.attrs.get("recording:completion_outcome") not in {"complete", "stopped_early"}:
+            return Readiness(ReadinessState.UNKNOWN, "No TIFF finalization marker")
+        if type(evidence.attrs.get("recording:actual_frames")) is not int:
+            return Readiness(ReadinessState.UNKNOWN, "No final TIFF frame count")
     if markers.frames_committed is None:
         return Readiness(ReadinessState.UNKNOWN, "No committed-frame barrier")
     if evidence.format_id == "hdf5" and markers.stream_complete is None:
