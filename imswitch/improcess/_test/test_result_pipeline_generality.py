@@ -99,6 +99,9 @@ def test_only_allowlisted_view_modules_create_napari_layers():
         deliberately NOT allowed here anymore.
       - StackSubsetDialog: ephemeral X/Y crop-rectangle preview only, removed
         when the dialog closes; the crop itself publishes via StackSubsetProcessor.
+      - PSFResolutionWidget: ephemeral bead-preview points only, removed by
+        Clear or when the selected result changes; Fit publishes the
+        psf-resolution results.
     """
     view_dir = Path(__file__).resolve().parent.parent / "view"
     markers = ("add_image(", "add_labels(", "add_points(", "add_shapes(")
@@ -107,12 +110,13 @@ def test_only_allowlisted_view_modules_create_napari_layers():
         "SegmentationWidget.py": {"add_image(", "add_labels("},
         "MulticolorWidget.py": {"add_points(", "add_shapes("},
         "StackSubsetDialog.py": {"add_shapes("},
+        "PSFResolutionWidget.py": {"add_points("},
     }
 
     offenders = []
     for path in sorted(view_dir.glob("*.py")):
         allowed = allow.get(path.name, set())
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         for marker in markers:
             if marker in source and marker not in allowed:
                 offenders.append(f"{path.name}:{marker.rstrip('(')}")

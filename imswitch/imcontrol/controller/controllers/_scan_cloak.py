@@ -317,11 +317,18 @@ class ScanCloakController:
     def _onStopClicked(self):
         """Stop: the scan ends now and its unfinished frame is dropped (plan
         scan-stop-now, Lenny 2026-10-18; it used to finish the frame).
-        Unticking Live still lets the frame finish."""
+        Unticking Live still lets the frame finish.
+
+        Between two Live frames, unticking Repeat is the whole stop: the
+        pending re-arm sees it and ends the run as done. Aborting there
+        failed the run instead (an error logged, waiting requests told it
+        failed) for what is an ordinary stop.
+        """
         self._widget.setRepeatEnabled(False)
         if self._isBusy():
             self._view.showMessage('Stopped.')
-            self.abortScan()
+            if not getattr(self, '_repeatPending', False):
+                self.abortScan()
 
     def scanDone(self):
         if self._onSimplePage():

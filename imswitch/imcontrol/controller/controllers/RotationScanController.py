@@ -309,7 +309,9 @@ class RotationScanController(ImConWidgetController):
         self._widget.setCalibrationPrompt(text)
 
     @APIExport(runOnUIThread=True)
-    def changeRotationParameters(self, rotationPars): #Simone added this to allow imscripting (API)
+    def changeRotationParameters(self, rotationPars):
+        """ Sets the rotation scan's parameters, the fields of the Rotation
+        scan widget, from ``rotationPars``. """
         self._widget.setRotationParameters(rotationPars)
 
 

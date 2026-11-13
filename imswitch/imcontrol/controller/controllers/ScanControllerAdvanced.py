@@ -800,6 +800,12 @@ class ScanControllerAdvanced(SuperScanController):
             )
         return counts
 
+    def getNumScanPositions(self):
+        """Scan positions of the current parameters (a recording asks this
+        before anything else has rebuilt the dicts from the widget or cloak)."""
+        self.getParameters()
+        return super().getNumScanPositions()
+
     def getNumCamTTL(self):
         """Return the exact uniform detector-frame multiplier when expressible."""
         self.getParameters()
@@ -1318,10 +1324,14 @@ class ScanControllerAdvanced(SuperScanController):
 
     @APIExport(runOnUIThread=True)
     def changeScanCenterPos(self, positionerName, positionerScanCenterPos):
+        """ Sets the centre of the scan along a positioner, in µm (the Scan
+        widget's *Center*). """
         self._widget.setScanCenterPos(positionerName, positionerScanCenterPos)
 
     @APIExport(runOnUIThread=True)
     def changeScanSize(self, positioner: str, size: float):
+        """ Sets the size of the scan along a positioner, in µm (the Scan
+        widget's *Size*). """
         self._widget.setScanSize(positioner, size)
 
     # ------------------------------------------------------------------

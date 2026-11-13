@@ -182,6 +182,20 @@ def test_user_plugin_active_even_under_config_filter(tmp_path):
     assert registry.get_processor("user.invert", raise_on_missing=False) is not None
 
 
+def test_a_listed_builtin_brings_its_companions():
+    """A preset listing psf-resolution gets psf-bead-select too: it only works
+    on psf-resolution's measurement, and a recorded re-select replays."""
+    registry = PluginRegistry()
+    processors.register_default_processors(registry, ["psf-resolution"])
+
+    assert registry.get_processor("psf-bead-select", raise_on_missing=False) is not None
+    assert registry.get_processor("projection", raise_on_missing=False) is None
+
+    registry = PluginRegistry()
+    processors.register_default_processors(registry, ["psf-resolution", "psf-bead-select"])
+    assert registry.get_processor("psf-bead-select", raise_on_missing=False) is not None
+
+
 def test_register_processor_by_id_handles_user_plugin(tmp_path):
     _write(tmp_path, "invert.py", _VALID_PLUGIN)
     processors.load_user_plugins(str(tmp_path))

@@ -79,6 +79,7 @@ class DataObj:
         self._attrs = None
         self._resolvedImage = None
         self._axis_labels = None
+        self._axis_labels_declared = False
         self._axis_scales = None
         self._scale_unit = None
         self._source_info = None
@@ -174,6 +175,14 @@ class DataObj:
     def axis_labels(self):
         self._ensureMetadata()
         return self._axis_labels
+
+    @property
+    def axis_labels_declared(self) -> bool:
+        """Whether the file names its axes (an ``axes`` attribute, OME/NGFF
+        axes, a known writer's layout), rather than the labels being a
+        default guessed from the array's rank."""
+        self._ensureMetadata()
+        return self._axis_labels_declared
 
     @property
     def axis_scales(self):
@@ -585,6 +594,7 @@ class DataObj:
         fallback_scales, fallback_unit = axis_scales_from_element_size(image.attrs, ndim)
 
         self._axis_labels = image.axis_labels or default_axis_labels(ndim)
+        self._axis_labels_declared = bool(image.axis_labels)
         self._axis_scales = image.axis_scales or fallback_scales or [1.0] * ndim
         self._scale_unit = image.scale_unit or fallback_unit or "px"
         self._source_info = {

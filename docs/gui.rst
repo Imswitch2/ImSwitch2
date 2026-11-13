@@ -668,8 +668,9 @@ Standa mounts (``StandaRotatorManager``); on Kinesis and Elliptec mounts they
 log an error and do nothing.  Saved widget state keeps each mount's step and
 speed, never its angle.
 
-Scripts can turn a mount to an angle with
-``api.imcontrol.moveAbs(name, angle)``.
+Scripts turn a mount with ``api.imcontrol.setRotatorPosition(name,
+degrees)`` (absolute) and ``moveRotator(name, degrees)`` (relative), and
+read it with ``getRotatorPosition(name)``; see :doc:`api/api.imcontrol`.
 
 .. image:: ./images/auto/RotatorWidget.png
    :align: center
@@ -839,7 +840,9 @@ its header switches between the two, on the same scan.
 
 - **Overview** scans live at about one frame per second, and shows the
   measured frame rate. Its **Size** slider sets the field (default 60 µm,
-  up to what the scanners reach); pixels and dwell follow it.
+  up to what the scanners reach); pixels and dwell follow it, and nothing
+  else changes them. The measured rate also counts the re-arm between
+  frames, which the one second leaves out, so on a rig it reads lower.
 - **Acquisition** scans a chosen region, with sliders for pixel size
   (overview to Nyquist) and dwell, and an estimate of the scan time.
 - While a scan runs, a progress bar under the scan time shows the elapsed

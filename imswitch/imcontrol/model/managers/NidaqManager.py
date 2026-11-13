@@ -2125,7 +2125,17 @@ class NidaqManager(SignalInterface):
             strict=strict,
         )
 
-    def inputTaskDone(self, taskName, generation=None):
+    def inputTaskDone(self, taskName, generation=None, completeScan=True):
+        """Close a detector's input task; the last task closed completes the
+        scan, unless ``completeScan`` is False.
+
+        A detector closing its task inside its own teardown passes False and
+        calls :meth:`completeScanIfIdle` once that teardown has finished.
+        Completing the scan here would run every scan-done listener inside
+        the teardown -- and the final one releases the detector leases,
+        whose bounded stop then waits on the very teardown it interrupted
+        until both time out and the detector is quarantined.
+        """
         with self._scanStateLock:
             if taskName in self._taskGenerations and generation is None:
                 # Every in-tree input worker receives the token returned by
@@ -2145,6 +2155,12 @@ class NidaqManager(SignalInterface):
             # forever for its worker.
             self._terminalScanFailure(error)
             raise
+        if completeScan:
+            self.completeScanIfIdle()
+        return True
+
+    def completeScanIfIdle(self):
+        """Report the scan done if no task of it is left open."""
         with self._scanStateLock:
             complete = (
                 not self.tasks
@@ -2155,7 +2171,7 @@ class NidaqManager(SignalInterface):
             )
         if complete:
             self.scanDone()
-        return True
+        return complete
 
     def taskDone(self, taskName, taskWaiter, generation=None):
         with self._scanStateLock:
