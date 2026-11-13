@@ -26,6 +26,18 @@ Unreleased
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
 
+**Bug Fixes**
+
+- **A blank or unreadable value in the setup file no longer stops Hardware
+  Control.** A typed field the file gets wrong -- ``"lineClockTriggerV": ""``,
+  a word in a channel number, ``NaN`` -- is logged with its path and value and
+  the field's default is used, instead of ImControl refusing to start on
+  ``could not convert string to float``. ``"false"``, ``"no"``, ``"off"`` and
+  ``"0"`` in a true/false field now read as false (they read as true before,
+  so ``"simulation": "false"`` switched simulation *on*); any other text there
+  is logged and the default used. Free-form ``managerProperties`` are left as
+  written, and the file itself is not changed.
+
 v0.4.0 (2026-10-29)
 ===================
 
