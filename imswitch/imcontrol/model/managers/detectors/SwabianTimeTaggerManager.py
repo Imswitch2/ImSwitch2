@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import numpy as np
@@ -49,6 +50,122 @@ _LEGACY_CARD_PROPS = frozenset({
     'click_channel', 'start_channel', 'line_channel',
     'click_trigger', 'start_trigger', 'line_trigger', 'trigger_levels',
 })
+
+#: Legacy channel property -> the ``timeTagger`` block field whose default
+#: stands in for it when it is missing or unreadable.
+_LEGACY_CHANNEL_FIELDS = {
+    'click_channel': 'photonsChannel',
+    'start_channel': 'laserSyncChannel',
+    'line_channel': 'lineClockChannel',
+}
+
+#: The role each of the detector's three role properties falls back to.
+_DEFAULT_ROLES = {'click': 'photons', 'start': 'laser_sync', 'line': 'line_clock'}
+
+#: Fits the worker knows (``timeresolved.types`` validates the same three).
+_FIT_METHODS = ('moment', 'phasor', 'exp1')
+
+_TRUE_WORDS = ('true', '1', 'yes', 'on')
+_FALSE_WORDS = ('false', '0', 'no', 'off')
+
+
+def _setupNumber(value, kind):
+    """``value`` as a ``kind`` (``int`` or ``float``), or ``None`` if it is
+    not one: blank, not a number, not finite, a JSON ``true``/``false``, or
+    a fraction where an ``int`` is wanted. ``"32"`` and ``32.0`` read as 32."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    if kind is int:
+        return int(number) if number == int(number) else None
+    return number
+
+
+def _setupBool(value):
+    """``value`` as a bool, or ``None`` if it is not one. ``"false"`` is
+    False (``bool("false")`` is True)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    return None
+
+
+def _numberRule(kind, lowest=None, strict=False):
+    """A parser for a ``kind`` at or above (``strict``: above) ``lowest``."""
+    def parse(value):
+        number = _setupNumber(value, kind)
+        if number is None or lowest is None:
+            return number
+        return number if (number > lowest if strict else number >= lowest) else None
+    return parse
+
+
+def _choiceRule(options):
+    def parse(value):
+        word = value.strip() if isinstance(value, str) else None
+        return word if word in options else None
+    return parse
+
+
+def _channelRule(value):
+    """A Time Tagger input: a non-zero whole number (negative = falling edge)."""
+    channel = _setupNumber(value, int)
+    return channel if channel else None
+
+
+#: What each of the detector's own managerProperties must be: key ->
+#: (parser returning the value or ``None``, what the warning asks for). A
+#: value that does not parse is dropped before the properties are read, so
+#: the read falls back to its default: a slip in the setup file -- a blank
+#: field, a word where a number goes -- must not stop ImControl.
+_ROLE_RULE = (_choiceRule(ROLES), f'one of {", ".join(ROLES)}')
+_CHANNEL_RULE = (_channelRule, 'a Time Tagger input (a non-zero whole '
+                               'number, negative for the falling edge)')
+_VOLTS_RULE = (_numberRule(float), 'a number of volts')
+_PROPERTY_RULES = {
+    'enabled': (_setupBool, 'true or false'),
+    'click_role': _ROLE_RULE,
+    'start_role': _ROLE_RULE,
+    'line_role': _ROLE_RULE,
+    'frame_role': (_choiceRule(('auto', 'none') + ROLES),
+                   f'auto, none or one of {", ".join(ROLES)}'),
+    'fit_method': (_choiceRule(_FIT_METHODS), f'one of {", ".join(_FIT_METHODS)}'),
+    'live_fit_period_s': (_numberRule(float, 0.0), 'a number of seconds, 0 or more'),
+    'n_bins': (_numberRule(int, 0, strict=True), 'a whole number above 0'),
+    'binwidth_ps': (_numberRule(int, 0, strict=True), 'a whole number above 0'),
+    't0_ps': (_numberRule(int), 'a whole number of picoseconds'),
+    'min_counts_per_pixel': (_numberRule(int, 0), 'a whole number, 0 or more'),
+    'laser_rep_rate_mhz': (_numberRule(float, 0.0, strict=True), 'a number above 0'),
+    'background_rate_hz': (_numberRule(float, 0.0), 'a number, 0 or more'),
+    'click_channel': _CHANNEL_RULE,
+    'start_channel': _CHANNEL_RULE,
+    'line_channel': _CHANNEL_RULE,
+    'click_trigger': _VOLTS_RULE,
+    'start_trigger': _VOLTS_RULE,
+    'line_trigger': _VOLTS_RULE,
+}
+
+
+def _timeTaggerDefault(fieldName):
+    """The ``timeTagger`` block's default for one field."""
+    return next(f.default for f in dataclasses.fields(TimeTaggerInfo)
+                if f.name == fieldName)
 
 
 #: A TCSPC window shorter than this fraction of the laser period is warned
@@ -108,7 +225,11 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
         self._detectorInfo = detectorInfo
         self._nidaqManager = nidaqManager
-        props = getattr(detectorInfo, 'managerProperties', {}) or {}
+        # A copy without the values this detector cannot read (each named in
+        # a warning), so every read below falls back to its default instead
+        # of stopping ImControl over a blank field.
+        props = dict(getattr(detectorInfo, 'managerProperties', {}) or {})
+        self._dropUnreadableProperties(props, legacy=timeTaggerManager is None)
 
         self._enabled = bool(props.get('enabled', True))
 
@@ -136,6 +257,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._ownsTimeTagger = True
 
         # Internal state — always kept in sync with parameters via setParameter()
+        self._fallBackToConfiguredRoles()
         self._resolveRoles(publish=False)
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
         self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
@@ -229,7 +351,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             # --- Lifetime fitting ---
             'fit_method': DetectorListParameter(
                 group='Fitting', value=self._fit_method,
-                options=['moment', 'phasor', 'exp1'],
+                options=list(_FIT_METHODS),
                 editable=True),
             'laser_rep_rate_mhz': DetectorNumberParameter(
                 group='Fitting', value=self._laser_rep_rate_mhz,
@@ -295,6 +417,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         super().__init__(detectorInfo, name, fullShape=(64, 64),
                          supportedBinnings=[1], model=name,
                          parameters=parameters, croppable=False)
+        # From here on the base classes exist, so __del__ may ask them to stop.
+        self._baseInitialised = True
 
         self._nidaqManager.sigScanBuilt.connect(self._onScanBuilt)
         self._nidaqManager.sigScanStarted.connect(self.startScan)
@@ -334,6 +458,16 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 self._logger.warning(f'Failed to free the private Time Tagger: {e}')
 
     def __del__(self):
+        if not self.__dict__.get('_baseInitialised'):
+            # __init__ raised before the base classes existed: nothing was
+            # started, and asking them to stop only logs that they were never
+            # initialised. A private card already opened still needs freeing.
+            if self.__dict__.get('_ownsTimeTagger'):
+                try:
+                    self._timeTagger.finalize()
+                except Exception:
+                    pass
+            return
         try:
             self.stopAcquisition()
         except Exception as e:
@@ -403,24 +537,126 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     # The shared card: roles, trigger levels, scan hold                    #
     # ------------------------------------------------------------------ #
 
+    def _dropUnreadableProperties(self, props, legacy):
+        """Remove from ``props`` (in place) every value this detector cannot
+        read, each with a warning, and replace the readable ones by their
+        parsed form (``"false"`` becomes False, ``"32"`` becomes 32).
+
+        The reads in ``__init__`` then fall back to their defaults: a blank
+        field or a word where a number goes is a slip to warn about, not a
+        reason to stop ImControl. ``legacy`` is whether the card properties
+        are read at all (no ``timeTagger`` block); with the block they are
+        ignored, so there is nothing to warn about.
+        """
+        for key, raw in list(props.items()):
+            if not legacy and key in _LEGACY_CARD_PROPS:
+                continue
+            if raw is None:
+                # null reads as absent -- the default, quietly; left in,
+                # ``props.get(key, default)`` would return the None.
+                if key in _PROPERTY_RULES:
+                    del props[key]
+                continue
+            if key == 'trigger_levels':
+                self._dropUnreadableTriggerLevels(props, raw)
+                continue
+            rule = _PROPERTY_RULES.get(key)
+            if rule is None:
+                continue
+            parse, wanted = rule
+            value = parse(raw)
+            if value is None:
+                del props[key]
+                self._logger.warning(
+                    f'managerProperties["{key}"] = {raw!r} is not {wanted}; '
+                    f'using its default instead. Correct it in the setup file.'
+                )
+            else:
+                props[key] = value
+
+    def _dropUnreadableTriggerLevels(self, props, levels):
+        """The legacy ``trigger_levels`` map, {channel: volts}, without the
+        entries that are not numbers (each with a warning)."""
+        if not isinstance(levels, dict):
+            del props['trigger_levels']
+            self._logger.warning(
+                f'managerProperties["trigger_levels"] = {levels!r} is not a '
+                f'{{"channel": volts}} map; ignoring it. Correct it in the '
+                f'setup file.'
+            )
+            return
+        usable = {}
+        for channel, raw in levels.items():
+            volts = _setupNumber(raw, float)
+            if volts is None:
+                self._logger.warning(
+                    f'managerProperties["trigger_levels"]["{channel}"] = '
+                    f'{raw!r} is not a number of volts; using the default '
+                    f'trigger level instead. Correct it in the setup file.'
+                )
+                continue
+            usable[str(channel)] = volts
+        props['trigger_levels'] = usable
+
+    def _fallBackToConfiguredRoles(self):
+        """A role the card does not have falls back to the default role
+        (with a warning) when the card has that; ``frame_role`` to 'auto'.
+
+        Only a card without even the default role -- a block that sets the
+        line clock's channel to null, say -- is left for
+        :meth:`_resolveRoles` to refuse.
+        """
+        tt = self._timeTagger
+        configured = ', '.join(tt.channels()) or 'none'
+        for which, default in _DEFAULT_ROLES.items():
+            role = getattr(self, f'_{which}_role')
+            if tt.hasRole(role) or not tt.hasRole(default):
+                continue
+            self._logger.warning(
+                f'{which}_role {role!r} is not a configured Time Tagger role '
+                f'(configured: {configured}); using {default!r}. Correct it '
+                f'in the setup file.'
+            )
+            setattr(self, f'_{which}_role', default)
+        if self._frame_role not in ('auto', 'none') \
+                and not tt.hasRole(self._frame_role):
+            self._logger.warning(
+                f'frame_role {self._frame_role!r} is not a configured Time '
+                f'Tagger role (configured: {configured}); using \'auto\'. '
+                f'Correct it in the setup file.'
+            )
+            self._frame_role = 'auto'
+
     def _buildPrivateTimeTagger(self, props, nidaqManager):
-        """Compatibility: no ``timeTagger`` block, channels on the detector."""
+        """Compatibility: no ``timeTagger`` block, channels on the detector.
+
+        ``props`` has been through :meth:`_dropUnreadableProperties`, so a
+        value here is readable; a missing channel takes the block's default
+        channel with a warning rather than stopping ImControl.
+        """
         tl = props.get('trigger_levels', {}) or {}
         # Optional in the schema (a setup with a timeTagger block has none
-        # of them), required here: without the block they are the card.
+        # of them), needed here: without the block they are the card.
         click_channel = props.get('click_channel')
         start_channel = props.get('start_channel')
         line_channel = props.get('line_channel')
-        if click_channel is None or start_channel is None or line_channel is None:
-            raise ValueError(
-                f'{self._instanceName}: without a top-level "timeTagger" block, '
-                f'click_channel, start_channel and line_channel are required '
-                f'in managerProperties'
-            )
+        channels = {}
+        for key, channel in (('click_channel', click_channel),
+                             ('start_channel', start_channel),
+                             ('line_channel', line_channel)):
+            if channel is None:
+                channel = _timeTaggerDefault(_LEGACY_CHANNEL_FIELDS[key])
+                self._logger.warning(
+                    f'managerProperties["{key}"] is not set, and the setup has '
+                    f'no "timeTagger" block to take it from; using input '
+                    f'{channel}, the block\'s default. Check the cabling and '
+                    f'set it in the setup file.'
+                )
+            channels[key] = channel
         # Resolved again from the roles once the card exists.
-        self._click_ch = int(click_channel)
-        self._start_ch = int(start_channel)
-        self._line_ch = int(line_channel)
+        self._click_ch = int(channels['click_channel'])
+        self._start_ch = int(channels['start_channel'])
+        self._line_ch = int(channels['line_channel'])
         info = TimeTaggerInfo(
             photonsChannel=self._click_ch,
             photonsTriggerV=float(
