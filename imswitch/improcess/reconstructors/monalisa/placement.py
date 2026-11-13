@@ -623,7 +623,7 @@ def grid_bspline(
     shape: tuple[int, int],
     variance: np.ndarray | None = None,
     smoothing: float = DEFAULT_SMOOTHING,
-    rtol: float = 1e-8,
+    rtol: float = 1e-5,
     max_iterations: int = 500,
 ) -> PlacedImage:
     """Least-squares cubic B-spline surface through scattered samples.
@@ -634,11 +634,6 @@ def grid_bspline(
     roughness penalty only decides what the data leave open: it continues the
     surface smoothly through thinly sampled regions instead of pulling it to
     zero there.
-
-    The tight CG tolerance makes gridding reproducible when Gaussian
-    coefficients are extracted in streaming chunks rather than one batch.
-    A looser solve can amplify round-off differences after cell-offset
-    correction and cause finite/streaming disagreement.
 
     At the default ``smoothing`` noise is passed through, not smoothed: with
     one sample per pixel on the raster the result has the samples' noise.
