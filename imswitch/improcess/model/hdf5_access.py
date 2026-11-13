@@ -36,15 +36,8 @@ def _canonical_path(path: str | PathLike[str]) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.fsdecode(path))))
 
 
-def raw_hdf5_open_handle_count(
-    path: str | PathLike[str], *, include_writers: bool = True
-) -> int:
-    """Count live HDF5 file handles for ``path`` in this Python process.
-
-    ``include_writers=False`` leaves out handles opened read/write: ImControl's
-    recorder runs in this process and holds the file it is writing, and a SWMR
-    reader may share that handle.
-    """
+def raw_hdf5_open_handle_count(path: str | PathLike[str]) -> int:
+    """Count live HDF5 file handles for ``path`` in this Python process."""
     target = _canonical_path(path)
     count = 0
     for file_id in h5py.h5f.get_obj_ids(h5py.h5f.OBJ_ALL, h5py.h5f.OBJ_FILE):
@@ -58,15 +51,8 @@ def raw_hdf5_open_handle_count(
             candidate = _canonical_path(name)
         except (TypeError, ValueError, OSError):
             continue
-        if candidate != target:
-            continue
-        if not include_writers:
-            try:
-                if file_id.get_intent() & h5py.h5f.ACC_RDWR:
-                    continue
-            except Exception:
-                pass
-        count += 1
+        if candidate == target:
+            count += 1
     return count
 
 
@@ -78,7 +64,7 @@ def assert_raw_hdf5_new_reader_available(path: str | PathLike[str]) -> None:
     independent reader (for example a Session timelapse stream) while another
     handle to the same physical file is still alive.
     """
-    count = raw_hdf5_open_handle_count(path, include_writers=False)
+    count = raw_hdf5_open_handle_count(path)
     if count:
         plural = "handle" if count == 1 else "handles"
         raise RawHdf5AccessConflict(
