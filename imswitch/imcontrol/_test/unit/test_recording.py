@@ -814,6 +814,8 @@ def test_scanlapse_stop_in_cadence_gap_accepts_synchronous_run_terminal():
     )
     from imswitch.imcontrol.model import RecMode
 
+    events = []
+
     class _Timer:
         def __init__(self):
             self.stopped = False
@@ -823,9 +825,10 @@ def test_scanlapse_stop_in_cadence_gap_accepts_synchronous_run_terminal():
 
         def stop(self):
             self.stopped = True
+            events.append('cancel-cadence')
 
     timer = _Timer()
-    events = []
+    source = types.SimpleNamespace(isRunning=False)
     ctrl = types.SimpleNamespace(
         _shutdownRequested=False,
         _finalizingRecCycle=False,
@@ -838,8 +841,9 @@ def test_scanlapse_stop_in_cadence_gap_accepts_synchronous_run_terminal():
         _scanRequestAccepted=True,
         _acceptedScanRunToken=None,
         _acceptedScanCompletion=None,
-        _recordingScanSource=None,
+        _recordingScanSource=source,
         _scanStartPublished=True,
+        _scanStartOwnedByScanSource=False,
         _usesDetailedRecordingSignals=True,
         endedRecording=True,
         doneScan=False,
@@ -850,28 +854,32 @@ def test_scanlapse_stop_in_cadence_gap_accepts_synchronous_run_terminal():
             recordingManager=types.SimpleNamespace(record=False),
             scanExecutionCoordinator=None,
         ),
-        _scanRunIsActive=lambda: True,
     )
 
     def cycleEnded():
-        events.append("cycle")
+        events.append('cycle')
         ctrl.recording = False
         ctrl.lapseCurrent = -1
 
-    def abortOwned():
-        events.append("abort")
-        # The real owner may synchronously publish its run terminal from the
-        # targeted abort call.
+    def finish(source_arg, runToken=None):
+        assert source_arg is source
+        assert runToken is None
+        events.append('finish-after-current')
+        # Stopping in an idle gap may synchronously release the retained run.
         RecordingController._scanLifecycleEnded(ctrl)
 
+    ctrl._commChannel = types.SimpleNamespace(
+        scanWorkflow=types.SimpleNamespace(
+            finish_scan_run_after_current_from=finish,
+        )
+    )
     ctrl.recordingCycleEnded = cycleEnded
-    ctrl._abortOwnedScanSequence = abortOwned
 
     RecordingController.toggleREC(ctrl, False)
 
     assert timer.stopped is True
     assert ctrl.timer is None
-    assert events == ["abort", "cycle"]
+    assert events == ['finish-after-current', 'cycle', 'cancel-cadence']
     assert ctrl.recording is False
     assert ctrl.lapseCurrent == -1
     assert ctrl._scanRequestAccepted is False

@@ -103,7 +103,13 @@ def test_series_activity_and_stop_are_source_scoped():
         lambda owner, active: activity.append((owner, active))
     )
 
+    pending = []
+    service.sigScanSeriesStopPending.connect(pending.append)
+    service.publish_scan_series_stop_pending(source)  # not active
     service.publish_scan_series_activity(source, True)
+    service.publish_scan_series_stop_pending(other)  # foreign source
+    service.publish_scan_series_stop_pending(source)
+    assert pending == [source]
     assert service.scan_series_active_for(source)
     assert not service.scan_series_active_for(other)
     assert service.stop_scan_series(source) is True
@@ -113,4 +119,6 @@ def test_series_activity_and_stop_are_source_scoped():
     assert service.scan_series_active_for(source)
     service.publish_scan_series_activity(source, False)
     assert not service.scan_series_active_for(source)
+    service.publish_scan_series_stop_pending(source)  # completed; do not show it again
+    assert pending == [source]
     assert activity == [(source, True), (source, False)]

@@ -56,3 +56,19 @@ def test_scan_owner_lock_keeps_timepoint_file_grouping_editable(widget):
     assert not widget.recScanOnceBtn.isEnabled()
     assert not widget.recScanLapseBtn.isEnabled()
     assert widget.singleFileLapseBox.isEnabled()
+
+
+def test_pending_scanlapse_stop_changes_rec_text_only(widget):
+    original_style = widget.recButton.styleSheet()
+    original_enabled = widget.recButton.isEnabled()
+    widget.setRecButtonChecked(True)
+
+    widget.setRecButtonStopping(True)
+    assert widget.recButton.text() == 'STOPPING...'
+    assert widget.recButton.isChecked()
+    assert widget.recButton.styleSheet() == original_style
+    assert widget.recButton.isEnabled() == original_enabled
+
+    widget.setRecButtonStopping(False)
+    assert widget.recButton.text() == 'REC'
+    assert widget.recButton.isChecked()  # lifecycle controls checked state

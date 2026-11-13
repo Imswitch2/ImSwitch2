@@ -259,6 +259,7 @@ class RecordingWorkflowService(SignalInterface):
 
     sigScanSeriesSettingsChanged = Signal(object)
     sigScanSeriesActivityChanged = Signal(object, bool)
+    sigScanSeriesStopPending = Signal(object)
     sigRecordingAcquisitionOwnerChanged = Signal(object)
 
     def __init__(self, comm_channel) -> None:
@@ -358,6 +359,11 @@ class RecordingWorkflowService(SignalInterface):
             return
         self._activeScanSeriesSource = None
         self.sigScanSeriesActivityChanged.emit(source, False)
+
+    def publish_scan_series_stop_pending(self, source) -> None:
+        """Notify scan panels only while their recorded series remains active."""
+        if self._activeScanSeriesSource is source:
+            self.sigScanSeriesStopPending.emit(source)
 
     def scan_series_active_for(self, source) -> bool:
         return self._activeScanSeriesSource is source

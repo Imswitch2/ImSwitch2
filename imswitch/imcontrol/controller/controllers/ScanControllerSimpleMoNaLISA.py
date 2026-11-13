@@ -113,6 +113,11 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         if activityChanged is not None:
             activityChanged.connect(self._onScanSeriesActivityChanged)
+        stopPending = getattr(
+            recordingWorkflow, 'sigScanSeriesStopPending', None
+        )
+        if stopPending is not None:
+            stopPending.connect(self._onScanSeriesStopPending)
 
         self._refreshResolvedSetup(refreshView=False)
         state = self._monalisa()
@@ -422,6 +427,10 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         self._recordedSeriesActive = bool(active)
         self._view.setAcquisitionSeriesActive(active)
+
+    def _onScanSeriesStopPending(self, source) -> None:
+        if source is self and self._recordedSeriesActive:
+            self._view.setAcquisitionSeriesStopping(True)
 
     def _notifyRecordingFilenameSuffixChanged(self) -> None:
         workflow = getattr(self._commChannel, 'recordingWorkflow', None)

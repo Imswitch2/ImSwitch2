@@ -317,6 +317,7 @@ class MoNaLISAView(ScanCloakView):
 
         self.liveBox.hide()
         self._seriesActive = False
+        self._seriesStopping = False
 
         # Live and scan are separate operator actions. The shared cloak
         # progress widget is moved into the RUN SCAN row in _buildUi(), but its
@@ -832,8 +833,17 @@ class MoNaLISAView(ScanCloakView):
             self._updating = False
         self._updateControlState()
 
+    def setAcquisitionSeriesStopping(self, stopping: bool):
+        """Mark an accepted graceful stop; recording owns completion."""
+        self._seriesStopping = bool(stopping) and self._seriesActive
+        self.scanStopButton.setText(
+            'STOPPING...' if self._seriesStopping else 'STOP'
+        )
+
     def setAcquisitionSeriesActive(self, active: bool):
         active = bool(active)
+        if not active:
+            self.setAcquisitionSeriesStopping(False)
         if active and not self._seriesActive:
             # Snapshot whether this transaction is actually a timelapse. The
             # cadence used by Recording is frozen at acquisition start.

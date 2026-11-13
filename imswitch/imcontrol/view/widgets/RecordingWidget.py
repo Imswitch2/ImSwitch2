@@ -612,6 +612,10 @@ class RecordingWidget(Widget):
     def setRecButtonChecked(self, checked):
         self.recButton.setChecked(checked)
 
+    def setRecButtonStopping(self, stopping: bool):
+        """Show a pending graceful ScanLapse stop without changing button style."""
+        self.recButton.setText('STOPPING...' if stopping else 'REC')
+
     def setNumExpositions(self, numExpositions):
         self.numExpositionsEdit.setText(str(numExpositions))
 

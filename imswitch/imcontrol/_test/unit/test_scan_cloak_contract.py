@@ -1449,15 +1449,19 @@ def test_monalisa_series_activity_freezes_controls_and_routes_scan_stop(
     rig = CloakRig('SimpleMoNaLISA')
     try:
         stopped = []
+
+        def accepted_stop(source):
+            stopped.append(source)
+            rig.channel.recordingWorkflow.publish_scan_series_stop_pending(source)
+            return True
+
         monkeypatch.setattr(
-            rig.channel.recordingWorkflow,
-            'stop_scan_series',
-            lambda source: stopped.append(source) or True,
+            rig.channel.recordingWorkflow, 'stop_scan_series', accepted_stop,
         )
         rig.view.saveAcquireCheck.setChecked(True)
         rig.view.setScanSeriesSettings(3, 1.0)
         rig.view.seriesEnabledCheck.setChecked(True)
-        rig.scan._onScanSeriesActivityChanged(rig.scan, True)
+        rig.channel.recordingWorkflow.publish_scan_series_activity(rig.scan, True)
 
         assert not rig.view.stopButton.isEnabled()
         assert not rig.view.scanStopButton.isHidden()
@@ -1468,6 +1472,40 @@ def test_monalisa_series_activity_freezes_controls_and_routes_scan_stop(
 
         rig.scan._onScanStopClicked()
         assert stopped == [rig.scan]
+        assert rig.view.scanStopButton.text() == 'STOPPING...'
+        rig.channel.recordingWorkflow.publish_scan_series_activity(rig.scan, False)
+        assert rig.view.scanStopButton.text() == 'STOP'
+    finally:
+        rig.close()
+
+
+def test_monalisa_scan_stop_pending_label_tracks_recording_lifecycle(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        workflow = rig.channel.recordingWorkflow
+        rig.view.saveAcquireCheck.setChecked(True)
+        rig.view.setScanSeriesSettings(3, 1.0)
+        rig.view.seriesEnabledCheck.setChecked(True)
+        workflow.publish_scan_series_activity(rig.scan, True)
+        initial_style = rig.view.scanStopButton.styleSheet()
+        initial_enabled = rig.view.scanStopButton.isEnabled()
+
+        assert rig.view.scanStopButton.text() == 'STOP'
+        workflow.publish_scan_series_stop_pending(object())  # foreign source
+        assert rig.view.scanStopButton.text() == 'STOP'
+        workflow.publish_scan_series_stop_pending(rig.scan)
+        assert rig.view.scanStopButton.text() == 'STOPPING...'
+        assert rig.view.scanStopButton.styleSheet() == initial_style
+        assert rig.view.scanStopButton.isEnabled() == initial_enabled
+        assert rig.view.stopButton.text() == 'STOP'  # LIVE stop unchanged
+
+        # Repeated UI refreshes must not clear a pending stop.
+        rig.view._updateControlState()
+        assert rig.view.scanStopButton.text() == 'STOPPING...'
+        workflow.publish_scan_series_activity(rig.scan, False)
+        assert rig.view.scanStopButton.text() == 'STOP'
+        workflow.publish_scan_series_stop_pending(rig.scan)  # late signal ignored
+        assert rig.view.scanStopButton.text() == 'STOP'
     finally:
         rig.close()
 

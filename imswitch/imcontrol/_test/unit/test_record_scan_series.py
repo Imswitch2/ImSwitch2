@@ -31,6 +31,7 @@ class _Widget:
         self.saveFormat = saveFormat
         self.recChecked = recChecked
         self.presses = []
+        self.stopping = False
         self.onPress = None
         self.detectorModeReads = 0
 
@@ -52,6 +53,9 @@ class _Widget:
         self.recChecked = checked
         if self.onPress is not None:
             self.onPress(checked)
+
+    def setRecButtonStopping(self, stopping):
+        self.stopping = stopping
 
 
 class _Logger:
@@ -220,6 +224,145 @@ def test_stop_scan_series_is_source_scoped_and_graceful():
     # Graceful series Stop does not switch REC off or truncate the current
     # writer; normal cycle cleanup resets REC after the timepoint finishes.
     assert ctrl._widget.presses == []
+
+
+
+def _running_lapse_for_stop(*, between_points=False):
+    """A retained ScanLapse owner, without any detector or file writer."""
+    ctrl = _controller(recChecked=True)
+    ctrl.recMode = RecMode.ScanLapse
+    ctrl.recording = True
+    ctrl._finalizingRecCycle = False
+    ctrl.lapseCurrent = 1
+    ctrl.lapseTotal = 5
+    ctrl._seriesRequest = SimpleNamespace(source=SOURCE, frames=5)
+    ctrl._recordingScanSource = SOURCE
+    ctrl._scanRequestAccepted = True
+    token = object()
+    ctrl._acceptedScanRunToken = token
+    ctrl._recordingCycleTerminalHandled = between_points
+    ctrl.stopRequested = False
+    calls = []
+
+    class Timer:
+        def stop(self):
+            calls.append('cancel-cadence')
+
+    ctrl.timer = Timer() if between_points else None
+    ctrl._commChannel = SimpleNamespace(
+        scanWorkflow=SimpleNamespace(
+            finish_scan_run_after_current_from=lambda source, runToken: calls.append(
+                ('finish-after-current', source, runToken)
+            )
+        )
+    )
+    ctrl._master = SimpleNamespace(
+        recordingManager=SimpleNamespace(
+            record=not between_points,
+            abortRecording=lambda **_kw: calls.append('abort-writer'),
+        )
+    )
+    return ctrl, token, calls
+
+
+def test_scan_panel_stop_during_timepoint_preserves_writer_and_run():
+    ctrl, token, calls = _running_lapse_for_stop()
+
+    assert ctrl.stopScanSeries(SOURCE) is True
+    assert calls == [('finish-after-current', SOURCE, token)]
+    assert ctrl.stopRequested is True
+    assert ctrl.recording is True
+    assert ctrl._master.recordingManager.record is True
+    assert ctrl._widget.presses == []
+    assert ctrl._widget.stopping is True
+    # The normal scan+writer terminals, not the user STOP, end the operation.
+    assert ctrl.stopScanSeries(SOURCE) is True  # idempotent
+    assert len(calls) == 1
+
+
+def test_scan_panel_stop_between_timepoints_releases_retained_run():
+    ctrl, token, calls = _running_lapse_for_stop(between_points=True)
+
+    assert ctrl.stopScanSeries(SOURCE) is True
+    assert calls == [
+        ('finish-after-current', SOURCE, token),
+        'cancel-cadence',
+    ]
+    assert ctrl.timer is None
+    assert ctrl._recordingCycleTerminalHandled is False
+    assert ctrl.stopRequested is True
+
+
+def test_stop_recording_api_uses_same_graceful_scanlapse_path():
+    ctrl, token, calls = _running_lapse_for_stop()
+    ctrl._commChannel.recordingWorkflow = SimpleNamespace(
+        publish_scan_series_stop_pending=lambda source: calls.append(
+            ('pending', source)
+        )
+    )
+
+    assert ctrl.stopRecording() is True
+    assert calls == [('finish-after-current', SOURCE, token), ('pending', SOURCE)]
+    # Programmatic stop keeps the REC indicator until scan+writer cleanup.
+    assert ctrl._widget.presses == []
+    assert ctrl._widget.stopping is True
+    assert ctrl.recording is True
+
+
+def test_rec_button_stop_uses_graceful_path_and_keeps_active_indicator():
+    ctrl, token, calls = _running_lapse_for_stop()
+    ctrl._widget.onPress = ctrl.toggleREC
+
+    ctrl._widget.setRecButtonChecked(False)
+
+    assert calls == [('finish-after-current', SOURCE, token)]
+    assert ctrl._widget.isRecButtonChecked() is True
+    assert ctrl._widget.presses == [False, True]
+    assert ctrl._widget.stopping is True
+    assert ctrl.recording is True
+    assert ctrl.stopRequested is True
+
+
+def test_synchronous_stop_completion_does_not_leave_pending_label():
+    ctrl, _, calls = _running_lapse_for_stop(between_points=True)
+
+    def completed(source, runToken):
+        calls.append('completed')
+        # A synchronous run terminal has already reached cycle cleanup.
+        ctrl.recording = False
+        ctrl.stopRequested = False
+        ctrl._widget.setRecButtonStopping(False)
+
+    ctrl._commChannel.scanWorkflow.finish_scan_run_after_current_from = completed
+    assert ctrl.stopScanSeries(SOURCE) is True
+    assert calls == ['completed', 'cancel-cadence']
+    assert ctrl._widget.stopping is False
+
+
+def test_graceful_stop_is_not_a_forced_abort_if_backend_refuses():
+    ctrl, _, calls = _running_lapse_for_stop(between_points=True)
+
+    def unavailable(_source, runToken):
+        calls.append('refused')
+        raise RuntimeError('cannot finish the retained run')
+
+    ctrl._commChannel.scanWorkflow.finish_scan_run_after_current_from = unavailable
+    assert ctrl.stopScanSeries(SOURCE) is False
+    assert calls == ['refused']
+    assert ctrl.timer is not None  # no canceled timer on a failed request
+    assert ctrl.stopRequested is False
+    assert ctrl._widget.stopping is False
+    assert ctrl._recordingCycleTerminalHandled is True
+
+
+def test_graceful_stop_before_scan_acceptance_does_not_claim_completion():
+    ctrl, _, calls = _running_lapse_for_stop()
+    ctrl._scanRequestAccepted = False
+
+    assert ctrl.stopScanSeries(SOURCE) is False
+    assert calls == []
+    assert ctrl.stopRequested is False
+    assert ctrl.recording is True
 
 
 def test_stop_scan_series_does_not_offer_a_fake_stop_for_one_timepoint():

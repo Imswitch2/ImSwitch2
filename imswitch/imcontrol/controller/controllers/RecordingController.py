@@ -763,69 +763,25 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.recordingCycleEnded()
                 return
             if self.recMode == RecMode.ScanLapse and self.lapseCurrent != -1:
-                # Soft-stop the current point but also terminalize the retained
-                # run identity. Non-final lapse parts deliberately keep that
-                # reservation between points; merely cancelling the cadence
-                # timer would leak it and block every later NI scan.
-                self.stopRequested = True
-
-                timerWasActive = (
-                    self.timer is not None and hasattr(self.timer, 'isActive') and self.timer.isActive()
-                )
-                if self.timer is not None:
-                    self.timer.stop()
-                    self.timer = None
-
-                # The preceding non-final point closed its cycle guard when it
-                # scheduled this cadence timer. Re-open it before aborting the
-                # retained run: a targeted abort may synchronously emit the
-                # run terminal, which must be allowed to finalize the stopped
-                # lapse exactly once.
-                self._recordingCycleTerminalHandled = False
-                recordingManager = self._master.recordingManager
-                managerWasActive = bool(
-                    getattr(recordingManager, 'record', False)
-                )
-                if managerWasActive:
-                    try:
-                        # Stopping the scan without stopping its frame sink
-                        # strands the writer at its original frame target.
-                        # Abort both sides and classify their terminals as the
-                        # expected result of this user stop.
-                        recordingManager.abortRecording(
-                            emitSignal=False,
-                            wait=True,
-                        )
-                    except Exception as error:
-                        self._handleRecordingFailure(
-                            str(error), abortManager=False
-                        )
-                        return
-                    self.endedRecording = True
-
-                scanRunActive = (
-                    self._scanRequestAccepted
-                    and self._scanRunIsActive()
-                )
-                abortRetainedRun = (
-                    self._scanRequestAccepted
-                    and (scanRunActive or timerWasActive)
-                )
-                if abortRetainedRun:
-                    try:
-                        self._abortOwnedScanSequence()
-                    except Exception:
-                        self.__logger.error(
-                            'Failed to stop the recording-owned scan lapse',
-                            exc_info=True,
-                        )
-                if (
-                    not scanRunActive
-                    and (timerWasActive or managerWasActive)
+                # REC Stop, scan-panel Stop and stopRecording() share one
+                # graceful path. The running timepoint and its writer finish;
+                # error/shutdown paths still use a targeted forced abort.
+                if not RecordingController._stopScanLapseGracefully(
+                    self, self.__dict__.get('_recordingScanSource')
                 ):
-                    self.doneScan = True
-                    self._notifyScanEndedIfPending()
-                    self.recordingCycleEnded()
+                    self.__logger.error(
+                        'Could not request graceful ScanLapse stop; the '
+                        'current scan was left running.'
+                    )
+                # A user click already unchecked REC. Keep the active-state
+                # indication until the run + writer have really terminated.
+                # A synchronous idle-gap terminal may have finished already.
+                if self.recording:
+                    self._finalizingRecCycle = True
+                    try:
+                        self._widget.setRecButtonChecked(True)
+                    finally:
+                        self._finalizingRecCycle = False
                 return
             if (
                 self.recMode == RecMode.ScanOnce
@@ -2861,6 +2817,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self._finalizingRecCycle = False
 
+        # Clear the pending STOP label only after the scan and writer have
+        # both reached the normal recording-cycle terminal.
+        setStopping = getattr(self._widget, 'setRecButtonStopping', None)
+        if callable(setStopping):
+            try:
+                setStopping(False)
+            except Exception:
+                self.__logger.error(
+                    'Failed to restore the recording button label',
+                    exc_info=True,
+                )
+
         try:
             self._widget.setFieldsEnabled(True)
         except Exception:
@@ -3459,6 +3427,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         ``recordingFailed`` will follow), False if nothing was recording (no
         signal will follow, so do not wait for one). """
         wasRecording = bool(self.recording)
+        if (
+            wasRecording
+            and getattr(self, 'recMode', None) == RecMode.ScanLapse
+            and getattr(self, 'lapseCurrent', -1) != -1
+        ):
+            return RecordingController._stopScanLapseGracefully(
+                self, self.__dict__.get('_recordingScanSource')
+            )
         self._widget.setRecButtonChecked(False)
         return wasRecording
 
@@ -3878,26 +3854,48 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._publishScanSeriesActivity(request.source, False)
         self._refreshScanFilenameSuffixPreview()
 
-    def stopScanSeries(self, source) -> bool:
-        """Gracefully stop a panel-requested timelapse owned by ``source``.
+    def _stopScanLapseGracefully(self, source) -> bool:
+        """Finish this recording's retained scan run without aborting its writer.
 
-        An active timepoint is allowed to finish normally, including its
-        writer. The current scan part is merely promoted to the final part of
-        the retained scan run. If the lapse is waiting between timepoints, the
-        cadence timer and retained run are closed immediately.
+        Called by the panel, REC button and scripting stop. On success the
+        existing two-terminal (scan + writer) cleanup ends the operation.
         """
-        request = self.__dict__.get('_seriesRequest')
-        if request is None or request.source is not source:
-            return False
-        if int(getattr(request, 'frames', 1)) <= 1:
+        if source is None or not self.__dict__.get('_scanRequestAccepted', False):
             return False
         if self.__dict__.get('stopRequested', False):
             return True
 
+        scanWorkflow = getattr(self._commChannel, 'scanWorkflow', None)
+        finish = getattr(scanWorkflow, 'finish_scan_run_after_current_from', None)
+        if not callable(finish):
+            return False
+
+        # The preceding non-final point may have closed the per-cycle guard
+        # while scheduling the cadence timer. Re-open it *before* requesting
+        # the run end: an idle retained run may terminalize synchronously.
+        cycleHandled = self.__dict__.get('_recordingCycleTerminalHandled', False)
+        self._recordingCycleTerminalHandled = False
         self.stopRequested = True
+        try:
+            finish(
+                source,
+                runToken=self.__dict__.get('_acceptedScanRunToken'),
+            )
+        except Exception:
+            self.stopRequested = False
+            self._recordingCycleTerminalHandled = cycleHandled
+            self.__logger.error(
+                'Could not gracefully stop the recording-owned scan lapse',
+                exc_info=True,
+            )
+            return False
+
+        # No later point may start, including when STOP lands in the idle gap.
+        # The writer is deliberately *not* touched here; completed data still
+        # waits for its normal authoritative recording terminal.
         timer = self.__dict__.get('timer')
+        self.timer = None
         if timer is not None:
-            self.timer = None
             try:
                 timer.stop()
             except Exception:
@@ -3905,39 +3903,40 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     'Could not cancel the requested scan-series cadence timer',
                     exc_info=True,
                 )
-            # A completed point closes this guard before scheduling the next
-            # cadence callback. Re-open it so the retained run-level end can
-            # finalize the stopped series exactly once.
-            self._recordingCycleTerminalHandled = False
+        # An idle-gap stop can finish synchronously inside finish(). Do not
+        # show STOPPING... if normal terminal cleanup already completed.
+        if self.recording:
+            setStopping = getattr(self._widget, 'setRecButtonStopping', None)
+            if callable(setStopping):
+                try:
+                    setStopping(True)
+                except Exception:
+                    self.__logger.error(
+                        'Failed to show pending ScanLapse stop on REC button',
+                        exc_info=True,
+                    )
+            workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+            publish = getattr(workflow, 'publish_scan_series_stop_pending', None)
+            if callable(publish):
+                try:
+                    publish(source)
+                except Exception:
+                    self.__logger.error(
+                        'Failed to show pending ScanLapse stop in scan panel',
+                        exc_info=True,
+                    )
+        return True
 
-        if self.__dict__.get('_scanRequestAccepted', False):
-            scanWorkflow = getattr(self._commChannel, 'scanWorkflow', None)
-            finish = getattr(
-                scanWorkflow, 'finish_scan_run_after_current_from', None
-            )
-            if not callable(finish):
-                self.stopRequested = False
-                return False
-            try:
-                finish(
-                    source,
-                    runToken=self.__dict__.get('_acceptedScanRunToken'),
-                )
-            except Exception:
-                self.stopRequested = False
-                self.__logger.error(
-                    'Could not gracefully stop the requested scan series',
-                    exc_info=True,
-                )
-                return False
-            return True
-
-        # A panel-requested timelapse normally has an accepted scan before its
-        # Stop control becomes available. Fail closed if that invariant is
-        # broken rather than switching REC off and truncating an unrelated
-        # writer.
-        self.stopRequested = False
-        return False
+    def stopScanSeries(self, source) -> bool:
+        """Gracefully stop the matching scan panel's multi-point ScanLapse."""
+        request = self.__dict__.get('_seriesRequest')
+        if (
+            request is None
+            or request.source is not source
+            or int(getattr(request, 'frames', 1)) <= 1
+        ):
+            return False
+        return RecordingController._stopScanLapseGracefully(self, source)
 
     @APIExport(runOnUIThread=True)
     def setRecModeScanOnce(self) -> None:
