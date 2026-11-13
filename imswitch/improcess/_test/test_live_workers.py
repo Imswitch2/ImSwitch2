@@ -382,6 +382,78 @@ def test_stream_worker_startup_splits_oversized_first_chunk():
     np.testing.assert_array_equal(chunks[0].data, stack[4:])
 
 
+class _BatchPollSource(_RetryOpenSource):
+    """Return several already-indexed chunks from one poll call.
+
+    This models sources whose poll advances the cursor across a timepoint
+    boundary before the startup collector has handed TP0 to the consumer.
+    """
+
+    def __init__(self, stack, ranges, *, frames_per_stack):
+        super().__init__(stack, chunk_size=1, frames_per_stack=frames_per_stack)
+        self._ranges = list(ranges)
+        self._polled = False
+
+    def poll(self) -> list[Chunk]:
+        if self._polled:
+            return []
+        self._polled = True
+        self.cursor = self.stack.shape[0]
+        return [
+            Chunk(self.stack[start:end], start, end)
+            for start, end in self._ranges
+        ]
+
+
+def test_stream_worker_startup_preserves_later_chunks_when_tp0_ends_on_boundary():
+    """A poll returning TP0 plus multiple TP1 chunks is lossless."""
+    stack = np.arange(8 * 4 * 5, dtype=np.float32).reshape(8, 4, 5)
+    source = _BatchPollSource(
+        stack,
+        [(0, 4), (4, 6), (6, 8)],
+        frames_per_stack=4,
+    )
+    worker = LiveStreamWorker(
+        source, source_arg="x", do_open=True, poll_interval_ms=1
+    )
+
+    init_data, chunks = [], []
+    worker.sigInitStackReady.connect(lambda d: (init_data.append(d), worker.resume()))
+    worker.sigChunkReady.connect(chunks.append)
+
+    worker.run()
+
+    np.testing.assert_array_equal(init_data[0], stack[:4])
+    assert [(chunk.start, chunk.end) for chunk in chunks] == [(4, 6), (6, 8)]
+    np.testing.assert_array_equal(
+        np.concatenate([chunk.data for chunk in chunks], axis=0), stack[4:]
+    )
+
+
+def test_stream_worker_startup_preserves_overflow_and_following_chunks():
+    """Splitting the boundary chunk also preserves every later poll chunk."""
+    stack = np.arange(8 * 4 * 5, dtype=np.float32).reshape(8, 4, 5)
+    source = _BatchPollSource(
+        stack,
+        [(0, 3), (3, 6), (6, 8)],
+        frames_per_stack=4,
+    )
+    worker = LiveStreamWorker(
+        source, source_arg="x", do_open=True, poll_interval_ms=1
+    )
+
+    init_data, chunks = [], []
+    worker.sigInitStackReady.connect(lambda d: (init_data.append(d), worker.resume()))
+    worker.sigChunkReady.connect(chunks.append)
+
+    worker.run()
+
+    np.testing.assert_array_equal(init_data[0], stack[:4])
+    assert [(chunk.start, chunk.end) for chunk in chunks] == [(4, 6), (6, 8)]
+    np.testing.assert_array_equal(
+        np.concatenate([chunk.data for chunk in chunks], axis=0), stack[4:]
+    )
+
 def test_stream_worker_startup_fails_when_store_never_readable():
     """If the store never becomes readable, startup gives up after bounded
     attempts and emits sigFailed (so a queue driver can advance)."""
@@ -399,7 +471,6 @@ def test_stream_worker_startup_fails_when_store_never_readable():
     assert source.open_attempts == 3
     assert opened == []
     assert len(failed) == 1
-
 
 
 def test_stream_worker_retries_transient_poll_errors():
@@ -747,3 +818,48 @@ def test_barrier_is_released_even_when_publishing_raises():
     worker.process_chunk(9)
 
     assert barrier.position == 9
+
+
+def test_process_worker_pause_waits_at_next_timepoint_boundary():
+    """Pause is cooperative: finish the current TP, block before the next one."""
+    import time
+
+    session = _TestSession()
+    session.begin(_init_obj(init_frames=2, expected_frames=6), {})
+    ring = RawDataBuffer(2, (4, 5), np.float32)
+    barrier = FrameGate()
+    worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=2)
+
+    # Frame 2 is the first frame of the next TP, therefore a safe pause point.
+    ring.write(2, np.ones((4, 5), np.float32))
+    worker.request_pause()
+    thread = threading.Thread(target=worker.process_chunk, args=(2,), daemon=True)
+    thread.start()
+    time.sleep(0.05)
+
+    assert thread.is_alive()
+    assert session.pushed_chunks == [(0, 2)]
+    assert barrier.position < 2
+
+    worker.resume_processing()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert session.pushed_chunks[-1] == (2, 3)
+    assert barrier.position == 2
+
+
+def test_process_worker_pause_request_does_not_stop_mid_timepoint():
+    """A request arriving inside a TP only takes effect at the next boundary."""
+    session = _TestSession()
+    session.begin(_init_obj(init_frames=2, expected_frames=6), {})
+    ring = RawDataBuffer(2, (4, 5), np.float32)
+    barrier = FrameGate()
+    worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=2)
+
+    # Index 3 is the second frame of the timepoint that began at index 2.
+    ring.write(3, np.ones((4, 5), np.float32))
+    worker.request_pause()
+    worker.process_chunk(3)
+
+    assert session.pushed_chunks[-1] == (3, 4)
+    assert barrier.position == 3

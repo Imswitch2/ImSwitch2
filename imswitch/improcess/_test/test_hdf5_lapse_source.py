@@ -6,6 +6,14 @@ import h5py
 import numpy as np
 import pytest
 
+from imswitch.imcommon.model.acquisition_layout import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    AcquisitionLoop,
+    AcquisitionPartition,
+    encode_acquisition_layout,
+)
 from imswitch.improcess.live import Hdf5LapseSource, Hdf5MultiFileLapseSource, make_live_source
 
 
@@ -42,6 +50,42 @@ def _write_hdf5_scan_group(file, scan_idx, detector_name, frames_per_stack, fram
     return dataset
 
 
+
+def test_hdf5_lapse_source_uses_time_partition_as_logical_extent(tmp_hdf5_path):
+    """Partition-local layout geometry must still expose the enclosing lapse T."""
+    frames_per_stack = 4
+    planned_timepoints = 7
+    frame_shape = (3, 5)
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("scan_x", "scan_x", frames_per_stack),),
+        partitions=(
+            AcquisitionPartition("time", index=0, planned_count=planned_timepoints),
+        ),
+        provenance="recorded",
+    )
+
+    with h5py.File(tmp_hdf5_path, "w", libver="latest") as f:
+        dataset = _write_hdf5_scan_group(
+            f, 0, "CAM", frames_per_stack, frame_shape,
+            num_timepoints=None, is_writing=False,
+        )
+        dataset.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+        dataset.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(detector_name="CAM", chunk_size=2)
+    info = source.open(tmp_hdf5_path)
+
+    assert "recording:num_timepoints" not in info.attrs
+    assert info.planned_timepoints == planned_timepoints
+    assert info.expected_frames == planned_timepoints * frames_per_stack
+    source.close()
+
 def test_hdf5_lapse_source_three_timepoints(tmp_hdf5_path):
     """Test Hdf5LapseSource with 3 scan{N} groups, verifying global frame indices."""
     frames_per_stack = 4
@@ -70,6 +114,7 @@ def test_hdf5_lapse_source_three_timepoints(tmp_hdf5_path):
     assert info.dtype == np.uint16
     assert info.detector_name == 'CAM'
     assert info.frames_per_stack == frames_per_stack
+    assert info.planned_timepoints == num_timepoints
     assert info.expected_frames == num_timepoints * frames_per_stack  # 12 total frames
     assert info.source_format == 'HDF5'
     assert info.attrs['recording:num_timepoints'] == num_timepoints
@@ -399,3 +444,139 @@ def test_hdf5_lapse_poll_stops_at_the_byte_budget_and_resumes(tmp_hdf5_path, mon
     chunks = [chunk for poll in polls for chunk in poll]
     assert [(c.start, c.end) for c in chunks] == [(i, i + 2) for i in range(0, 12, 2)]
     assert int(chunks[2].data[0, 0, 0]) == 1000  # the second timepoint, read on the second poll
+
+
+def test_hdf5_lapse_source_streams_only_requested_timepoint_range(tmp_hdf5_path):
+    frames_per_stack = 4
+    frame_shape = (3, 5)
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        for scan_idx in range(3):
+            _write_hdf5_scan_group(
+                f, scan_idx, 'CAM', frames_per_stack, frame_shape,
+                num_timepoints=3, is_writing=False,
+            )
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(
+        detector_name='CAM', chunk_size=2, timepoint_start=1, timepoint_stop=3
+    )
+    info = source.open(tmp_hdf5_path)
+    assert info.planned_timepoints == 2
+    assert info.expected_frames == 2 * frames_per_stack
+
+    chunks = []
+    while not source.is_complete():
+        chunks.extend(source.poll())
+    assert chunks[0].start == 0
+    assert chunks[-1].end == 2 * frames_per_stack
+    assert int(chunks[0].data.flat[0]) >= 1000
+    source.close()
+
+
+def test_hdf5_lapse_scope_can_start_at_nonzero_physical_scan_group(tmp_hdf5_path):
+    frames_per_stack = 2
+    frame_shape = (2, 3)
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        # Simulate a second logical lapse stored after an earlier 5-point lapse.
+        for scan_idx in range(8):
+            planned = 3 if scan_idx >= 5 else 5
+            _write_hdf5_scan_group(
+                f, scan_idx, 'CAM', frames_per_stack, frame_shape,
+                num_timepoints=planned, is_writing=False,
+            )
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(
+        detector_name='CAM', chunk_size=2, timepoint_start=5, timepoint_stop=8
+    )
+    info = source.open(tmp_hdf5_path)
+    assert info.planned_timepoints == 3
+
+    chunks = []
+    while not source.is_complete():
+        chunks.extend(source.poll())
+    assert chunks[0].start == 0
+    assert chunks[-1].end == 3 * frames_per_stack
+    assert int(chunks[0].data.flat[0]) >= 5000
+    source.close()
+
+
+def test_hdf5_lapse_source_rejects_second_reader_but_allows_first(tmp_hdf5_path):
+    """The safety check belongs at new-reader creation, not DataObj processing."""
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        _write_hdf5_scan_group(
+            f, 0, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+            num_timepoints=1, is_writing=False,
+        )
+        f.flush()
+        f.swmr_mode = True
+
+    # Simulate the handle retained by a loaded timepoint DataObj.
+    loaded_handle = h5py.File(tmp_hdf5_path, 'r', libver='latest', swmr=True)
+    try:
+        source = Hdf5LapseSource(detector_name='CAM')
+        with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+            source.open(tmp_hdf5_path)
+    finally:
+        loaded_handle.close()
+
+    source = Hdf5LapseSource(detector_name='CAM')
+    info = source.open(tmp_hdf5_path)
+    assert info.frames_per_stack == 4
+    source.close()
+
+
+def test_hdf5_lapse_source_detects_handle_appearing_after_stream_start(tmp_hdf5_path):
+    """A retained DataObj handle appearing mid-stream must fail on source refresh."""
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        _write_hdf5_scan_group(
+            f, 0, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+            num_timepoints=1, is_writing=False,
+        )
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(detector_name='CAM', chunk_size=2)
+    source.open(tmp_hdf5_path)
+
+    # Simulate Current Data loading a timepoint while the stream exists.  The
+    # next poll closes the stream's own handle to refresh, then must see this
+    # independent owner instead of silently reopening beside it.
+    loaded_handle = h5py.File(tmp_hdf5_path, 'r', libver='latest', swmr=True)
+    try:
+        with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+            source.poll()
+    finally:
+        loaded_handle.close()
+        source.close()
+
+
+def test_materialized_timepoint_does_not_block_lapse_reader(tmp_hdf5_path):
+    """Loading one timepoint fully must detach before whole-lapse streaming starts."""
+    from imswitch.improcess.model import DataObj
+    from imswitch.improcess.model.hdf5_access import raw_hdf5_open_handle_count
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        for scan_idx in range(2):
+            _write_hdf5_scan_group(
+                f, scan_idx, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+                num_timepoints=2, is_writing=False,
+            )
+        f.flush()
+        f.swmr_mode = True
+
+    data_obj = DataObj(tmp_hdf5_path.name, 'scan1/CAM', path=str(tmp_hdf5_path))
+    data_obj.checkAndLoadData()
+    assert data_obj.dataLoaded
+    assert raw_hdf5_open_handle_count(tmp_hdf5_path) == 0
+
+    source = Hdf5LapseSource(detector_name='CAM')
+    info = source.open(tmp_hdf5_path)
+    assert info.frames_per_stack == 4
+    source.close()

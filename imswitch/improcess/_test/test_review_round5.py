@@ -67,21 +67,31 @@ def _image(name="img", shape=(4, 4)):
 # 1. a failed publish never leaves a published target ---------------------------------
 
 def test_a_failure_after_the_primary_link_is_rolled_back(tmp_path, monkeypatch):
-    """The reviewer's reproduction: the link succeeds, the step after it fails."""
+    """A failed post-publication cleanup is reported, without undoing the save.
+
+    Simulate a failure at the directory-removal boundary rather than at
+    os.unlink: on POSIX, shutil.rmtree can unlink using dir_fd, bypassing
+    a pathname-only os.unlink monkeypatch.
+    """
     import imswitch.improcess.model.save_protocol as protocol
 
-    real_unlink = os.unlink
+    real_rmtree = protocol.shutil.rmtree
 
-    def unlink_fails_for_staged_primary(path, *args, **kwargs):
-        if not args and not kwargs and Path(path).name == "x.ome.tif" and ".staging-" in str(path):
-            raise OSError("cannot unlink the staged file")
-        real_unlink(path, *args, **kwargs)
+    def rmtree_fails_for_stage(path, *args, **kwargs):
+        if Path(path).name.startswith(".x.ome.tif.staging-"):
+            raise OSError("simulated staging cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(protocol.os, "unlink", unlink_fails_for_staged_primary)
+    monkeypatch.setattr(protocol.shutil, "rmtree", rmtree_fails_for_stage)
     target = tmp_path / "x.ome.tif"
-    _image().save(target)                     # an unlinkable staged copy is not a failed save
-    assert target.exists()
-    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".x.ome.tif.")]
+    receipt = _image().save(target)
+
+    assert target.exists()  # A cleanup failure must not undo a published result.
+    assert receipt.primary == target
+    staged = [p for p in tmp_path.iterdir() if p.name.startswith(".x.ome.tif.staging-")]
+    assert len(staged) == 1
+    assert receipt.leftovers and str(staged[0]) in receipt.leftovers[0]
+    assert "simulated staging cleanup failure" in receipt.leftovers[0]
 
 
 def test_a_publish_that_raises_after_creating_the_target_rolls_it_back(tmp_path, monkeypatch):

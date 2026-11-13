@@ -16,13 +16,17 @@ inside a folder is the ``LiveSource``'s job.
 
 import collections
 import os
+from pathlib import Path
 
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live.source_factory import make_live_source
 from imswitch.improcess.live.discovery import DirectoryWatcher, JobQueue
-from imswitch.improcess.live.source_type import probe_source_type
+from imswitch.improcess.live.job import (
+    LiveJobState,
+    prepare_discovered_job,
+    start_prepared_live_job,
+)
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
 
@@ -33,12 +37,15 @@ class LiveModeController(ImProcessWidgetController):
     def __init__(self, *args, main_controller=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main_controller = main_controller
+        self._session_controller = None
         self._logger = initLogger(self, tryInheritParent=False)
 
         # All four collaborators live only while live mode is running; they are
         # built in _start_live and are None until then.
         self._live_rec_ctr = None
         self._directory_watcher = None
+        self._owns_directory_watcher = True
+        self._watcher_signal_connected = False
         self._job_queue = None
         self._tick_timer = None
 
@@ -53,12 +60,21 @@ class LiveModeController(ImProcessWidgetController):
         # data object on its name, so a name reused after a reset would write
         # into the earlier run's object instead of starting its own.
         self._job_name_counts: collections.Counter[str] = collections.Counter()
+        # Live processing needs its own notion of which root entries have been
+        # queued.  A Session-owned DirectoryWatcher may already have seen every
+        # entry before the legacy Live UI is enabled, so watcher discovery state
+        # can no longer double as live-processing state.
+        self._live_seen_entries: set[str] = set()
 
         # The widget corresponds to the DirectoryWatcherFrame (view), where
         # the LiveModeController controls this view.
         self._widget.sigLiveChanged.connect(self._on_live_toggled)
         self._widget.sigResetClicked.connect(self._on_reset_clicked)
         self._widget.sigSkipClicked.connect(self._on_skip_clicked)
+
+    def setSessionController(self, controller) -> None:
+        """Attach the Session controller used to share its DirectoryWatcher."""
+        self._session_controller = controller
 
     def isLiveReconstructionRunning(self) -> bool:
         """Whether the live reconstruction controller is mid-stack.
@@ -90,15 +106,32 @@ class LiveModeController(ImProcessWidgetController):
             self._widget.liveCheck.setChecked(False)
             return
 
-        # A new root folder gets fresh discovery state; the same folder keeps its
-        # seen-set, so toggling live off/on does not reprocess everything.
-        if folder_path != self._watched_folder:
+        # A new root folder gets fresh live-processing state.  The watcher itself
+        # may also need to change while the path stays the same (for example a
+        # Session is opened/closed between Live toggles), so compare the desired
+        # Session-owned watcher as well as the path.
+        shared = self._session_watcher_for(folder_path)
+        watcher_changed = (
+            folder_path != self._watched_folder
+            or (shared is not None and self._directory_watcher is not shared)
+            or (shared is None and not getattr(self, "_owns_directory_watcher", True))
+        )
+        if watcher_changed:
             self._teardown_watcher()
+            path_changed = folder_path != self._watched_folder
             self._watched_folder = folder_path
             self._job_queue = JobQueue()
-            self._directory_watcher = DirectoryWatcher(folder_path, parent=self)
-            self._directory_watcher.sigEntryFound.connect(self._on_entry_found)
+            if path_changed:
+                self._live_seen_entries.clear()
+            if shared is not None:
+                self._directory_watcher = shared
+                self._owns_directory_watcher = False
+            else:
+                self._directory_watcher = DirectoryWatcher(folder_path, parent=self)
+                self._owns_directory_watcher = True
         self._currently_processing = False
+
+        self._connect_watcher()
 
         if self._live_rec_ctr is None:
             self._live_rec_ctr = LiveReconstructionController(self._commChannel)
@@ -114,13 +147,22 @@ class LiveModeController(ImProcessWidgetController):
         self._tick_timer.timeout.connect(self._process_next_job)
         self._tick_timer.start()
 
-        self._directory_watcher.start()
+        if self._owns_directory_watcher:
+            self._directory_watcher.start()
+        else:
+            # Session may have been watching for minutes before Live is enabled.
+            # Seed only entries this Live controller has not processed/queued;
+            # do not reset the Session watcher's discovery state.
+            for entry in self._directory_watcher.snapshot_entries():
+                self._on_entry_found(entry)
         self._logger.info(f"Live mode started: watching {folder_path}")
 
     def _stop_live(self) -> None:
         """Stop watching and the current run; keep the seen-set for a re-toggle."""
-        if self._directory_watcher is not None:
+        if self._directory_watcher is not None and getattr(self, "_owns_directory_watcher", True):
             self._directory_watcher.stop()
+        if not getattr(self, "_owns_directory_watcher", True):
+            self._disconnect_watcher()
 
         if self._tick_timer is not None:
             self._tick_timer.stop()
@@ -174,8 +216,10 @@ class LiveModeController(ImProcessWidgetController):
         # re-entrant _stop_live via sigLiveChanged is harmless (it is idempotent).
         self._widget.liveCheck.setChecked(False)
 
-        if self._directory_watcher is not None:
+        if self._directory_watcher is not None and getattr(self, "_owns_directory_watcher", True):
             self._directory_watcher.reset()
+        else:
+            getattr(self, "_live_seen_entries", set()).clear()
         if self._job_queue is not None:
             self._job_queue.reset()
         self._logger.info(
@@ -205,10 +249,47 @@ class LiveModeController(ImProcessWidgetController):
         return name, stem
 
     def _teardown_watcher(self) -> None:
-        if self._directory_watcher is not None:
+        self._disconnect_watcher()
+        if self._directory_watcher is not None and getattr(self, "_owns_directory_watcher", True):
             self._directory_watcher.stop()
             self._directory_watcher.deleteLater()
-            self._directory_watcher = None
+        self._directory_watcher = None
+        self._owns_directory_watcher = True
+
+    def _root_has_processing_session(self, folder_path: str) -> bool:
+        """Session owns saving for its raw root, regardless of Review/Follow."""
+        controller = getattr(self, "_session_controller", None)
+        session = getattr(controller, "session", None) if controller is not None else None
+        if session is None:
+            return False
+        try:
+            return Path(folder_path).resolve() == Path(session.raw_root).resolve()
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _session_watcher_for(self, folder_path: str):
+        """Legacy Live must own its watcher independently of Session modes.
+
+        Review deliberately tears the Session watcher down. Borrowing that
+        QObject would leave legacy Live with a deleted/stopped observer when
+        switching Follow -> Review. This legacy path is retired in M4.
+        """
+        return None
+
+    def _connect_watcher(self) -> None:
+        if self._directory_watcher is None or getattr(self, "_watcher_signal_connected", False):
+            return
+        self._directory_watcher.sigEntryFound.connect(self._on_entry_found)
+        self._watcher_signal_connected = True
+
+    def _disconnect_watcher(self) -> None:
+        if self._directory_watcher is None or not getattr(self, "_watcher_signal_connected", False):
+            return
+        try:
+            self._directory_watcher.sigEntryFound.disconnect(self._on_entry_found)
+        except TypeError:
+            pass
+        self._watcher_signal_connected = False
 
     # -------------------------------------------------------------- queueing
 
@@ -220,6 +301,25 @@ class LiveModeController(ImProcessWidgetController):
         recordings sitting in the root, and what each one turns out to be is
         settled later, by probing it.
         """
+        entry = os.path.abspath(entry)
+        # Session results may live below the watched raw root. Session ignores
+        # that output subtree; legacy Live must do the same when it borrows the
+        # Session watcher, otherwise the results folder can remain pending as a
+        # non-recording job forever.
+        controller = getattr(self, "_session_controller", None)
+        session = getattr(controller, "session", None) if controller is not None else None
+        if session is not None:
+            try:
+                Path(entry).resolve().relative_to(Path(session.results_root).resolve())
+                return
+            except (ValueError, OSError):
+                pass
+        seen = getattr(self, "_live_seen_entries", None)
+        if seen is None:
+            seen = self._live_seen_entries = set()
+        if entry in seen:
+            return
+        seen.add(entry)
         self._job_queue.add(entry)
         self._logger.info(f"Discovered entry: {entry}")
         self._process_next_job()
@@ -234,17 +334,18 @@ class LiveModeController(ImProcessWidgetController):
             return
 
         # Pick the first job this reconstructor can actually work on. Each
-        # candidate is probed for what its raw data *is*, and there are three
-        # outcomes, only one of which means "not for us":
+        # candidate is probed for what its raw data *is*, with four outcomes:
         #   * unreadable yet -- a store still being written, a file the
         #     recorder still holds. Put back, because that is the normal
         #     state of a recording that has only just started;
+        #   * persistent in-process HDF5 access conflict -- logged and dropped;
         #   * readable but not something this plugin can reconstruct --
         #     skipped with a warning naming the shape it turned out to be;
         #   * startable -- taken.
         # Iterative rather than re-entering: a root of many entries would
         # otherwise recurse once per entry.
         job = None
+        prepared = None
         source_type = None
         deferred = []
         while True:
@@ -252,27 +353,26 @@ class LiveModeController(ImProcessWidgetController):
             if candidate is None:
                 break
 
-            candidate_type = probe_source_type(candidate.seed_path)
-            if candidate_type is None:
+            resolution = prepare_discovered_job(candidate, reconstructor)
+            if resolution.state == LiveJobState.PENDING:
                 # Defer only what is still there: an entry since deleted
                 # would otherwise be re-queued and re-probed forever.
                 if os.path.exists(candidate.seed_path):
                     deferred.append(candidate)
                 break
 
-            # Read like every other plugin capability, so an out-of-tree
-            # reconstructor predating this one accepts whatever it is given
-            # rather than failing to start at all.
-            accepts = getattr(reconstructor, "accepts_raw_source", None)
-            if callable(accepts) and not accepts(candidate_type):
+            if resolution.state == LiveJobState.FAILED:
+                self._logger.error(
+                    f"Cannot open {candidate.seed_path}: {resolution.reason}"
+                )
+            elif resolution.state == LiveJobState.UNSUPPORTED:
                 self._logger.warning(
-                    f"Skipping {candidate.seed_path}: {reconstructor.name} "
-                    f"cannot reconstruct a {candidate_type.format_id} "
-                    f"{candidate_type.layout} recording of "
-                    f"{candidate_type.frames_per_stack} frame(s) per timepoint"
+                    f"Skipping {candidate.seed_path}: {resolution.reason}"
                 )
             else:
-                job, source_type = candidate, candidate_type
+                job = candidate
+                prepared = resolution.prepared
+                source_type = prepared.source_type
                 break
 
         # Hand back the not-yet-readable ones whatever the outcome: dequeuing
@@ -297,14 +397,12 @@ class LiveModeController(ImProcessWidgetController):
         )
         # Built from what the probe already established, so the store is not
         # reopened to answer a question that has been answered.
-        source = make_live_source(job.seed_path, source_type, detector_name=None)
         params = self._get_reconstructor_params()
         try:
             self._current_job_name = job_name
             self._current_save_stem = save_stem
-            started = self._live_rec_ctr.start(
-                reconstructor, source, params,
-                source_arg=job.seed_path, name=job_name,
+            started = start_prepared_live_job(
+                self._live_rec_ctr, prepared, reconstructor, params, name=job_name
             )
         except Exception as e:
             self._logger.error(f"Failed to start reconstruction for {job.seed_path}: {e}")
@@ -342,6 +440,13 @@ class LiveModeController(ImProcessWidgetController):
         skipped there, by name, rather than guessed at here.
         """
         if not job_name or not save_stem or not self._watched_folder:
+            return
+        # A matching Processing Session now owns result persistence through the
+        # shared sigResultFinalized -> SessionResultStore lifecycle. Keeping the
+        # old <root>_recon save as well would duplicate the same live result and
+        # ignore the Session's own auto-save policy. Outside Session, preserve
+        # the legacy watcher save behavior during migration.
+        if self._root_has_processing_session(self._watched_folder):
             return
         if not getattr(self._widget, "saveCheck", None) or not self._widget.saveCheck.isChecked():
             return

@@ -147,6 +147,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._recordingFailureAwaitingScanEnd = False
         self._recordingFailedCurrent = False
         self._recordingCycleTerminalHandled = False
+        self._hdf5LapseStopAnchor = None
+        self._hdf5LapseCompleted = 0
+        self._hdf5LapseSealedIndices = set()
         self._shutdownRequested = False
         # See recordScanSeries: set only while a panel-requested recording runs.
         self._seriesRequest = None
@@ -521,6 +524,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._recordingFailureAwaitingScanEnd = False
             self._recordingFailedCurrent = False
             self._recordingCycleTerminalHandled = False
+            self._hdf5LapseStopAnchor = None
+            self._hdf5LapseCompleted = 0
+            self._hdf5LapseSealedIndices = set()
             self._recordingBaseSavename = None
             self._recordingFilenameSuffix = None
             self._recordingFilenameSuffixFrozen = False
@@ -2588,6 +2594,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     def _recordingEndedDetailed(self, generation):
         if self._recordingSignalMatches(generation):
+            # This signal is emitted only after the writer successfully
+            # finalized. A graceful scan-series STOP can occur *before* the
+            # active point finishes; an abort emits no successful terminal.
+            if self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse):
+                getattr(self, '_hdf5LapseSealedIndices', set()).add(
+                    int(self.lapseCurrent)
+                )
             self.recordingEnded()
 
     def _recordingFailedDetailed(self, message, generation):
@@ -2600,6 +2613,37 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         ):
             return
         self._recordingCycleTerminalHandled = True
+
+        # Count only sealed generations; an aborted current timepoint is never
+        # considered complete. The first public path identifies the operation
+        # for an optional terminal marker without rewriting scientific data.
+        arguments = getattr(self, 'recordingArgs', {}) or {}
+        disk_lapse = (
+            self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+            and arguments.get('saveFormat') in (SaveFormat.HDF5, SaveFormat.ZARR)
+            and (arguments.get('saveMode') == SaveMode.Disk
+                 or (arguments.get('saveFormat') == SaveFormat.ZARR
+                     and arguments.get('saveMode') == SaveMode.DiskAndRAM))
+        )
+        sealed = int(self.lapseCurrent) in getattr(
+            self, '_hdf5LapseSealedIndices', set()
+        )
+        if (disk_lapse and (sealed or not self.stopRequested)
+                and not self.__dict__.get('_recordingFailedCurrent', False)
+                and int(self.lapseCurrent) >= 0):
+            self._hdf5LapseCompleted = max(
+                int(getattr(self, '_hdf5LapseCompleted', 0)), self.lapseCurrent + 1
+            )
+            if getattr(self, '_hdf5LapseStopAnchor', None) is None:
+                manager = self._master.recordingManager
+                generation = self.__dict__.get('_recordingManagerGeneration')
+                try:
+                    locators = manager.payloadLocators(generation) if generation is not None else {}
+                    self._hdf5LapseStopAnchor = next(
+                        (locator.path for locator in locators.values()), None
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    self.__logger.warning('Could not capture lapse anchor', exc_info=True)
 
         # The point is finished here and not before: this terminal is reached
         # only once the writer has drained *and* the scan has completed. A
@@ -2760,6 +2804,42 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 )
             return
 
+        # A shared disk-HDF5 timelapse is physically staged across every
+        # timepoint. The writer finalized each completed scanN group, but
+        # only the *operation* terminal (normal completion or early STOP)
+        # may make the shared file visible under its final name.
+        recordingArgs = getattr(self, 'recordingArgs', {}) or {}
+        if (
+            self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+            and recordingArgs.get('singleLapseFile')
+            and recordingArgs.get('saveFormat') == SaveFormat.HDF5
+            and recordingArgs.get('saveMode') == SaveMode.Disk
+        ):
+            manager = self._master.recordingManager
+            publish = getattr(manager, 'publishPendingHdf5Lapse', None)
+            if callable(publish):
+                try:
+                    publish(generation=self.__dict__.get('_recordingManagerGeneration'))
+                except Exception as error:
+                    # The staged file is already finalized and must remain
+                    # recoverable. Publication failure is a terminal error,
+                    # not a reason to invoke writer-abort cleanup.
+                    self._recordingFailedCurrent = True
+                    self._lastRecordingFailure = str(error)
+                    self.__logger.error(
+                        'Could not publish finalized HDF5 lapse; staged data '
+                        'retained for recovery: %s', error, exc_info=True,
+                    )
+                    report = getattr(manager, 'reportRecordingFailure', None)
+                    if callable(report):
+                        try:
+                            report(error, self.__dict__.get('_recordingManagerGeneration'))
+                        except Exception:
+                            self.__logger.error(
+                                'Could not publish HDF5 publication failure',
+                                exc_info=True,
+                            )
+
         # A scan recording's public recordingEnded is published here, once,
         # when the writer has drained and the scan has ended. The worker
         # publishes only the detailed terminal in the scan modes: it has held
@@ -2774,6 +2854,25 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 '_recordingFailedCurrent', False
             )
         )
+
+        # HDF5 and Zarr both publish an operation-level terminal only after
+        # the writer has finalized/aborted its current physical partition.
+        # Each earlier scan remains independently sealed; this marker never
+        # grants readiness to absent or partially written frames.
+        if disk_lapse and self.stopRequested:
+            completed = int(getattr(self, '_hdf5LapseCompleted', 0))
+            anchor = getattr(self, '_hdf5LapseStopAnchor', None)
+            failed = bool(self.__dict__.get('_recordingFailedCurrent', False))
+            if anchor is not None and 0 <= completed < int(self.lapseTotal):
+                try:
+                    from imswitch.imcommon.model.hdf5_lapse_terminal import write_lapse_terminal
+                    write_lapse_terminal(
+                        anchor, completed=completed, planned=self.lapseTotal,
+                        outcome='aborted' if failed else 'stopped_early',
+                    )
+                except (OSError, ValueError) as error:
+                    self.__logger.error('Could not record lapse terminal: %s',
+                                        error, exc_info=True)
 
         # Clear authoritative operation/ownership state before best-effort UI
         # work. A deleted widget or plugin signal must never make this terminal

@@ -4,6 +4,7 @@ import tifffile as tiff
 import zarr
 
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.live.sources import Hdf5LiveSource
 from imswitch.improcess.reconstructors.view_only.reconstructor import ViewOnlyReconstructor
 # Reuse the production zarr helpers so these tests work on both zarr v2
 # (DirectoryStore / create_dataset) and zarr v3 (LocalStore / create_array).
@@ -29,6 +30,43 @@ def test_data_obj_reads_legacy_hdf5_dataset(tmp_path) -> None:
     assert data_obj.attrs["writing"] is False or data_obj.attrs["writing"] == np.bool_(False)
 
     data_obj.checkAndUnloadData()
+
+
+def test_materialized_data_obj_does_not_hold_raw_file_against_live_source(tmp_path) -> None:
+    """Current Data may coexist with streaming once its pixels are detached."""
+    from imswitch.improcess.model.hdf5_access import raw_hdf5_open_handle_count
+
+    path = tmp_path / "shared-raw.hdf5"
+    data = np.arange(6 * 3 * 4, dtype=np.uint16).reshape(6, 3, 4)
+
+    with h5py.File(path, "w", libver="latest") as file:
+        dataset = file.create_dataset("CAM", data=data, chunks=(2, 3, 4))
+        dataset.attrs["recording:frames_per_stack"] = 3
+        dataset.attrs["writing"] = False
+
+    data_obj = DataObj(path.name, "CAM", path=str(path))
+    data_obj.checkAndLoadData()
+    assert data_obj.dataLoaded
+    assert not data_obj.sourceLoaded
+    assert raw_hdf5_open_handle_count(path) == 0
+
+    live = Hdf5LiveSource(detector_name="CAM")
+    info = live.open(str(path))
+    assert info.frames_per_stack == 3
+    np.testing.assert_array_equal(data_obj.data_handle[0], data[0])
+    live.close()
+
+    # The reverse order is also bounded: loading while a stream exists may
+    # briefly borrow another SWMR reader, but materialization releases it and
+    # leaves only the live source's handle.
+    live = Hdf5LiveSource(detector_name="CAM")
+    live.open(str(path))
+    other = DataObj(path.name, "CAM", path=str(path))
+    other.checkAndLoadData()
+    assert other.dataLoaded
+    assert not other.sourceLoaded
+    assert raw_hdf5_open_handle_count(path) == 1
+    live.close()
 
 
 def test_data_obj_hdf5_lazy_handle_does_not_materialize(tmp_path) -> None:
@@ -688,3 +726,68 @@ def test_a_plane_from_a_non_lazy_source_does_not_keep_the_series_alive(tmp_path,
     assert plane.base is None or plane.base.nbytes <= plane.nbytes
     whole = data_obj.data_handle[...]                  # a full read is not copied twice
     assert whole.shape == (20, 64, 64)
+
+
+def test_unload_keeps_borrowed_container_without_close_method(caplog) -> None:
+    """Externally supplied containers are borrowed and never closed or discarded."""
+    class ContainerWithoutClose:
+        pass
+
+    container = ContainerWithoutClose()
+    data_obj = DataObj("synthetic.zarr", "0", file=container)
+    data_obj.checkAndUnloadData()
+
+    assert data_obj._file is container
+    assert not any("Error closing file" in record.getMessage() for record in caplog.records)
+
+
+def test_materialized_hdf5_detaches_owned_source_and_keeps_metadata(tmp_path) -> None:
+    """Fully loaded path-backed data must not keep its raw HDF5 file open."""
+    from imswitch.improcess.model.hdf5_access import raw_hdf5_open_handle_count
+
+    path = tmp_path / "detached.h5"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    with h5py.File(path, "w", libver="latest") as file:
+        file.attrs["rec_mode"] = "recording"
+        dataset = file.create_dataset("CAM", data=data, chunks=(1, 4, 5))
+        dataset.attrs["detector_name"] = "CAM"
+        dataset.attrs["writing"] = False
+        dataset.attrs["axes"] = "TYX"
+
+    data_obj = DataObj(path.name, "CAM", path=str(path))
+    data_obj.checkAndLoadData()
+
+    assert data_obj.dataLoaded
+    assert not data_obj.sourceLoaded
+    assert data_obj._file is None
+    assert raw_hdf5_open_handle_count(path) == 0
+    np.testing.assert_array_equal(data_obj.data_handle, data)
+
+    # Metadata required by reconstruction remains available from the snapshot
+    # and must not reopen the backing file.
+    assert data_obj.attrs["detector_name"] == "CAM"
+    assert data_obj.axis_labels == ["T", "Y", "X"]
+    assert data_obj.recording_lifecycle is not None
+    assert data_obj.acquisition_layout is not None
+    assert raw_hdf5_open_handle_count(path) == 0
+
+
+def test_materializing_external_hdf5_handle_does_not_close_shared_owner(tmp_path) -> None:
+    """DataObj(file=...) borrows memory-recording handles; it must not own them."""
+    path = tmp_path / "external.h5"
+    data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data)
+
+    external = h5py.File(path, "r", libver="latest", swmr=True)
+    try:
+        data_obj = DataObj(path.name, "CAM", path=str(path), file=external)
+        data_obj.checkAndLoadData()
+        assert external.id.valid
+        assert data_obj._file is external
+
+        data_obj.checkAndUnloadData()
+        assert external.id.valid
+        assert data_obj._file is external
+    finally:
+        external.close()

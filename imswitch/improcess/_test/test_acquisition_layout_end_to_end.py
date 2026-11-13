@@ -417,9 +417,9 @@ def test_live_session_geometry_comes_from_an_inferred_layout_too():
         ),
     )
 
-    # (nx_s, ny_s, timepoints, linesteps): a plain raster has one condition.
+    # Local geometry is (nx_s, ny_s, linesteps); time is tracked separately.
     assert MonalisaLiveSession._geometry_from_recorded_layout(stack_info) == (
-        10, 10, 1, 1,
+        10, 10, 1,
     )
 
 

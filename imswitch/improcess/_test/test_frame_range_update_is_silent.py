@@ -63,3 +63,27 @@ def test_the_edit_window_clamps_its_slider_without_navigating(qapp):
 
     dialog.slider.setValue(10)
     assert seen and seen[-1] == 10
+
+
+def test_current_data_names_do_not_set_left_panel_minimum_width(qapp):
+    from imswitch.improcess.view.DataFrame import DataFrame
+
+    widget = DataFrame()
+    widget.resize(280, 500)
+    widget.show()
+    qapp.processEvents()
+    before = widget.minimumSizeHint().width()
+
+    filename = '2026-10-28_' + ('very_long_recording_name_' * 12) + '.hdf5'
+    dataset = 'deep/group/' + ('very_long_dataset_name_' * 10) + '/CAM'
+    widget.setDataName(filename)
+    widget.setDatasetName(dataset)
+    qapp.processEvents()
+
+    assert widget.dataName.fullText() == f'File: {filename}'
+    assert widget.datasetName.fullText() == f'Dataset: {dataset}'
+    assert widget.dataName.toolTip() == f'File: {filename}'
+    assert widget.datasetName.toolTip() == f'Dataset: {dataset}'
+    assert widget.dataName.minimumSizeHint().width() == 0
+    assert widget.datasetName.minimumSizeHint().width() == 0
+    assert widget.minimumSizeHint().width() <= before

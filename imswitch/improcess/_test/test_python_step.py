@@ -804,15 +804,15 @@ def test_a_snippet_without_a_header_gets_the_default_ports(snippet_folder):
     from imswitch.improcess.model import snippets
 
     snippet_folder.mkdir()
-    (snippet_folder / "plain.py").write_text("out = data * 2\n", encoding="utf-8")
+    (snippet_folder / "plain.py").write_text("out = data * 2\n", encoding="utf-8", newline="")
     assert snippets.load_snippet("plain") == ("out = data * 2\n", "out")
-    (snippet_folder / "hand.py").write_text("#Ports:a,b\nout = 1\n", encoding="utf-8")
+    (snippet_folder / "hand.py").write_text("#Ports:a,b\nout = 1\n", encoding="utf-8", newline="")
     assert snippets.load_snippet("hand") == ("out = 1\n", "a,b")          # a hand-written header counts
-    (snippet_folder / "later.py").write_text("x = 1\n# ports: a, b\n", encoding="utf-8")
+    (snippet_folder / "later.py").write_text("x = 1\n# ports: a, b\n", encoding="utf-8", newline="")
     assert snippets.load_snippet("later") == ("x = 1\n# ports: a, b\n", "out")   # only the first line
-    (snippet_folder / "empty.py").write_text("", encoding="utf-8")
+    (snippet_folder / "empty.py").write_text("", encoding="utf-8", newline="")
     assert snippets.load_snippet("empty") == ("", "out")
-    (snippet_folder / "bare.py").write_text("# ports:\nx = 1\n", encoding="utf-8")
+    (snippet_folder / "bare.py").write_text("# ports:\nx = 1\n", encoding="utf-8", newline="")
     assert snippets.load_snippet("bare") == ("x = 1\n", "out")
 
 

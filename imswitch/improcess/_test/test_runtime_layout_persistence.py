@@ -132,10 +132,9 @@ def test_set_widget_state_swallows_restore_exceptions():
 
 
 def test_schema_version_bumped():
-    """Bump signals to the persistence service that older saved states may
-    be missing the runtime_analysis_tool_ids key."""
+    """The shared DATA footer removes the former standalone Actions dock."""
     adapter = _GuiLayoutStateAdapter(_make_view_stub())
-    assert adapter.getStateSchemaVersion() == 2
+    assert adapter.getStateSchemaVersion() == 5
 
 
 def test_startup_hidden_docks_are_rehidden_after_layout_restore():

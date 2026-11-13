@@ -4,6 +4,7 @@ from .guitools import BetterPushButton
 
 
 class MultiDataFrame(QtWidgets.QFrame):
+    sigCountChanged = QtCore.Signal(int)
     # Signals
     sigAddDataClicked = QtCore.Signal()
     sigLoadCurrentDataClicked = QtCore.Signal()
@@ -16,6 +17,8 @@ class MultiDataFrame(QtWidgets.QFrame):
     sigSaveAllDataClicked = QtCore.Signal()
     sigSetAsCurrentDataClicked = QtCore.Signal()
     sigSelectedItemChanged = QtCore.Signal()
+    sigProcessIndividualRequested = QtCore.Signal()
+    sigProcessConsolidatedRequested = QtCore.Signal()
 
     # Methods
     def __init__(self, *args, **kwargs):
@@ -29,11 +32,33 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.dataLoadedStatus.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
         self.dataLoadedStatus.setStyleSheet('color: palette(mid); font-size: 9pt;')
 
+        self.relocalizeEachDataItemCheck = QtWidgets.QCheckBox('Relocalize each data item')
+        self.relocalizeEachDataItemCheck.setChecked(True)
+        self.relocalizeEachDataItemCheck.setToolTip(
+            'Localize each independent MoNaLISA acquisition (recommended). '
+            'Uncheck to explicitly reuse the first Auto localization per detector.'
+        )
+        self.relocalizeEachDataItemCheck.setVisible(False)
+
         # Standalone actions (no Selected/All twin)
         self.addDataBtn = BetterPushButton('Add data')
         self.addDataBtn.clicked.connect(self.sigAddDataClicked)
         self.setDataBtn = BetterPushButton('Set as current data')
         self.setDataBtn.clicked.connect(self.sigSetAsCurrentDataClicked)
+
+        self.processBtn = QtWidgets.QToolButton()
+        self.processBtn.setText('Process set ▾')
+        self.processBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.processBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.processBtn.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self.processMenu = QtWidgets.QMenu(self.processBtn)
+        self.processIndividualAction = self.processMenu.addAction('Process data items individually')
+        self.processIndividualAction.triggered.connect(self.sigProcessIndividualRequested)
+        self.processConsolidatedAction = self.processMenu.addAction('Consolidate into a single result')
+        self.processConsolidatedAction.triggered.connect(self.sigProcessConsolidatedRequested)
+        self.processBtn.setMenu(self.processMenu)
 
         # Paired actions collapse into one QToolButton each, with a popup
         # menu offering 'Selected' and 'All' variants. Keep the original
@@ -72,13 +97,15 @@ class MultiDataFrame(QtWidgets.QFrame):
         layout.addWidget(self.dataList, 0, 0, -1, 1)
 
         layout.addWidget(self.dataLoadedStatus, 0, 1)
-        layout.addWidget(self.addDataBtn, 1, 1)
-        layout.addWidget(self.setDataBtn, 2, 1)
-        layout.addWidget(loadBtn, 3, 1)
-        layout.addWidget(saveBtn, 4, 1)
-        layout.addWidget(unloadBtn, 5, 1)
-        layout.addWidget(removeBtn, 6, 1)
-        layout.setRowStretch(7, 1)
+        layout.addWidget(self.relocalizeEachDataItemCheck, 1, 1)
+        layout.addWidget(self.processBtn, 2, 1)
+        layout.addWidget(self.addDataBtn, 3, 1)
+        layout.addWidget(self.setDataBtn, 4, 1)
+        layout.addWidget(loadBtn, 5, 1)
+        layout.addWidget(saveBtn, 6, 1)
+        layout.addWidget(unloadBtn, 7, 1)
+        layout.addWidget(removeBtn, 8, 1)
+        layout.setRowStretch(9, 1)
         layout.setColumnStretch(0, 1)
 
     def _makeMenuButton(self, title, label_a, signal_a, label_b, signal_b):
@@ -106,6 +133,37 @@ class MultiDataFrame(QtWidgets.QFrame):
         button.addAction(action_b)
 
         return button, action_a, action_b
+
+
+    def setProcessActionsVisible(
+        self,
+        visible: bool,
+        *,
+        consolidate: str = 'enabled',
+        labels: tuple[str, str] | None = None,
+    ) -> None:
+        self.processBtn.setVisible(bool(visible))
+        button_text, individual_text = (
+            labels if labels is not None
+            else ('Process set ▾', 'Process data items individually')
+        )
+        self.processBtn.setText(button_text)
+        self.processIndividualAction.setText(individual_text)
+        self.processConsolidatedAction.setVisible(consolidate != 'hidden')
+        self.processConsolidatedAction.setEnabled(consolidate == 'enabled')
+        self.processConsolidatedAction.setToolTip(
+            '' if consolidate == 'enabled'
+            else 'The active reconstructor does not support consolidated processing.'
+        )
+
+    def setRelocalizeEachDataItemVisible(self, visible):
+        self.relocalizeEachDataItemCheck.setVisible(bool(visible))
+
+    def setRelocalizeEachDataItemEnabled(self, enabled):
+        self.relocalizeEachDataItemCheck.setEnabled(bool(enabled))
+
+    def relocalizeEachDataItem(self):
+        return bool(self.relocalizeEachDataItemCheck.isChecked())
 
     def requestFilePathsFromUser(self, defaultFolder=None):
         return QtWidgets.QFileDialog().getOpenFileNames(directory=defaultFolder)[0]
@@ -139,6 +197,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         listItem.setText(self.getTextForItem(listItem))
         self.dataList.addItem(listItem)
         self.dataList.setCurrentItem(listItem)
+        self.sigCountChanged.emit(self.dataList.count())
 
     def setDataObjMemoryFlag(self, dataObj, inMemory):
         for i in range(self.dataList.count()):
@@ -186,6 +245,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         for i in reversed(range(self.dataList.count())):
             if self.dataList.item(i) is not None and self.dataList.item(i).data(1) is dataObj:
                 self.dataList.takeItem(i)
+        self.sigCountChanged.emit(self.dataList.count())
 
     def setCurrentRowHighlighted(self, highlighted):
         self.dataList.currentItem().setBackground(

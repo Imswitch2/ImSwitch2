@@ -1,0 +1,1850 @@
+# MoNaLISA reconstruction: the mathematical optimum, and a plan to build it
+
+Date: 2026-09-28. Branch: `claude/monalisa-reconstruction-math-af9btj`.
+
+Builds on `feat/monalisa-fastgauss-lattice-sweep` (general `Lattice`
+representation and guess-free detection, exact-pixel sampling, the
+scatter-and-grid path for non-rectangular lattices, the parameter sweep, the
+xrecon ISM port) and on that branch's `docs/monalisa_fastgauss_audit.md`. It answers three
+questions for **arbitrary periodic illumination patterns** (square,
+rectangular, hexagonal, rotated): what the mathematically optimal
+reconstruction is, how to implement it cleanly on top of the branch, and which
+input parameters remain once everything derivable is derived.
+
+Every number quoted here is produced by
+`docs/monalisa_optimal_reconstruction_experiments.py` (NumPy + SciPy only;
+`python docs/monalisa_optimal_reconstruction_experiments.py` reprints all
+tables in about two minutes). Tags E1–E8 refer to its sections. The experiments
+use synthetic data with known ground truth: Gaussian foci on a known lattice,
+known amplitudes and backgrounds, controlled noise. Rig validation is the
+last phase of the plan, not a substitute for it.
+
+---
+
+## Summary
+
+> **Reviewed 2026-09-29.** Section 8 corrects several statements of this
+> summary and of sections 1–5, among them what the joint fit buys (the
+> footprint sets the noise, the joint fit removes the crosstalk), the default
+> reach (2.5 σ) and background (constant, haze only on evidence), and the
+> cost of the extraction. It also records what has been built.
+>
+> **First recordings, 2026-09-29.** Section 9 is what three recordings did to
+> the plan. Their foci are not confined (measured shift factor 0.29–0.42,
+> not 0.05), so pixel reassignment applies to them after all; the mean frame
+> is not the image to calibrate on; and the brightness of the frames and the
+> offsets of the cells have to be taken out. Where section 9 and an earlier
+> one disagree, section 9 holds.
+>
+> **A confined recording, 2026-09-29.** Section 10: a fourth recording with
+> the OFF pattern at work (shift factor 0.11), and the width of the
+> filaments measured on all four. A small footprint gives the narrower
+> image and a wide one the better: sharpened to the same width, the wide
+> footprint's image has a quarter of the noise. The default reach stays at
+> 2.5 σ and sharpening is a step of its own.
+>
+> **In ImSwitch, 2026-09-29.** Section 11: the pipeline is the reconstructor
+> `monalisa-lattice` of ImProcess, to be loaded beside the MoNaLISA
+> reconstructor.
+
+**What a scan measures.** Each camera frame is a lattice of diffraction-limited
+spots. The *amplitude* of the spot at focus `f` in frame `k` is a sample of
+the specimen convolved with the RESOLFT effective PSF `h_e` (50–100 nm FWHM),
+taken at the sample-space position `focus − stage offset`. The resolution of a
+MoNaLISA image is set by `h_e`; the reconstruction cannot sharpen it (short of
+an explicit deconvolution). Its job is to estimate those amplitudes with the
+least noise and bias, and to put each one exactly where it belongs.
+
+**What the optimum is.** The maximum-likelihood estimate of the specimen under
+the full physical model (every pixel of every frame, Poisson noise). It is
+well defined and computable (E5 implements it as a multi-frame
+Richardson–Lucy), but for Gaussian noise it *provably decomposes* into two
+stages, and the decomposition loses little under Poisson noise:
+
+1. **Per frame:** the joint weighted least-squares fit of *all* foci at once —
+   amplitudes plus a background basis — is a sufficient statistic. Its
+   per-focus weights are rows of one pseudo-inverse computed once per
+   geometry; applying them is one gather and one dot product per focus per
+   frame, exactly the cost of today's fast Gauss.
+2. **Per timepoint:** weighted least-squares placement of the amplitudes on
+   the sample-space sample set. That is exact nearest placement when the scan
+   is commensurate with the lattice, and least-squares cubic B-spline gridding
+   otherwise; optionally followed by deconvolution of `h_e`.
+
+**Measured against the current fast Gauss** (synthetic data, standard
+geometry: 11.05 px period, 2 px spot sigma, 77 nm pixels):
+
+- The isolated per-focus fit is **crosstalk-limited**: its bias grows from
+  0.06 to 71 counts as the footprint grows from 1.5 σ to the whole cell
+  (E1). That is the only reason the pinhole radius needed a sweep. The joint
+  fit has zero crosstalk bias at every radius, so the footprint is chosen by
+  noise alone: 2.5× lower amplitude noise (6× lower variance) at 3 σ than the
+  isolated 1.5 σ fit.
+- With one wide Gaussian per focus in the basis, the joint fit removes
+  out-of-focus haze by *shape* instead of rejecting it with a pinhole (E1:
+  bias 1e-12 instead of 3.9–61 counts), and returns the haze as a second
+  image plane.
+- On a full synthetic acquisition the joint extraction has 3.3× lower RMSE
+  than the 1.5 σ isolated fit (E5a: 0.081 vs 0.27), and two-stage plus
+  `h_e` deconvolution lands within 25% of full-model maximum likelihood at
+  1/200 of the compute (E5b: 0.130 vs 0.106 relative RMSE). The isolated-fit
+  image cannot be deconvolved at all — it diverges (0.32 → 0.37).
+- Poisson/read-noise weighting is worth about 20% in variance at best
+  (E2) and nothing measurable in the joint fit on a realistic frame (E5a):
+  keep it optional and off.
+- ISM pixel reassignment gains nothing for RESOLFT-confined foci: the optimal
+  shift is `α = σ_e² / (σ_e² + σ_d²) = 0.03–0.08` and the width gain is ≤ 4%
+  (E3a). The ported xrecon default `α = 0.5` *widens* a 63 nm focus to 74 nm
+  and loses 16% of its peak (E3b), and the port's Gaussian weight is 11× too
+  wide (E3c). The ISM method is not a foundation to build on.
+- The branch's bilinear splat is exact when the lattice is commensurate with
+  the scan raster but blurs otherwise (E4: 0.10 vs 0.019 relative RMSE for a
+  0.3% step mismatch; 0.18 vs 0.089 for a rotated hexagonal lattice; B-spline
+  least-squares gridding in both cases).
+- The spot width must be calibrated from the data (E6 recovers σ to 0.5%):
+  the spot is `h_d ⊗ h_e`, and a matched filter with the nominal detection
+  PSF under-estimates amplitudes by 10% (E5a).
+- Per-focus *geometry* matters, spot *shape* barely (E7): a 0.3 px centre
+  error biases that focus by 1–2.6% and misplaces its whole cell by 23 nm; a
+  10% width error biases it by 2–4%. Both are cell-tiling errors, and both
+  are measurable per focus from the mean frame to 0.01–0.02 px and about 1%,
+  at no runtime cost. A spline PSF instead of a Gaussian changes the noise
+  by ≤ 5% and the scale by a harmless global factor.
+
+**What remains to tweak** after the plan (section 5): pixel size; a rough
+period band; background model (constant / plus haze / none); footprint
+reach; noise weighting on/off; scan-orientation override; stage-to-camera
+rotation; output pitch and raster lock; gridding regularization;
+deconvolution (`h_e` FWHM, iterations); per-focus gain and drift correction
+(need an overscan); bleaching correction; method and device. Everything else
+on today's widget — footprint mode, footprint rectangles, sampling mode, ISM
+shift / oversampling / patch mean / frame batch, pattern-geometry mode,
+hand-typed periods and offsets — is either derived from the data or retired.
+
+**Against the literature** (section 7): the workflow, the full-model reference,
+the vanishing reassignment shift for confined foci, the shape-based
+background separation and the regularized deconvolution are all supported by
+published work; the joint crosstalk-free extraction, the two-stage sufficiency
+argument, the commensurability criterion and the overscan self-calibration are
+new and must be validated on rig data. There is no assumption-free "the"
+solution beyond the calibrated-model optimum this plan targets.
+
+---
+
+## 1. Forward model
+
+### 1.1 Geometry
+
+*Camera.* Pixels `x ∈ Z²`, pitch `p_nm` (77 nm on the MONALISA setups).
+
+*Illumination lattice.* `L = { o + m·a1 + n·a2 : m, n ∈ Z }`, any 2D Bravais
+lattice: square (`a1 ⊥ a2`, `|a1| = |a2|`), rectangular, hexagonal
+(`|a1| = |a2|`, 60°), and rotated versions of each. Only foci inside the
+frame matter: `F = L ∩ frame`, indexed by `f`, at positions `r_f`. The
+branch's `Lattice` (reduced basis, `points_in_frame`, `detect_lattice`) is
+exactly this object.
+
+*Scan.* Frame `k` is recorded with the stage displaced by `s_k` (stage
+coordinates; from the acquisition layout: loop indices × step sizes ×
+directions). In camera coordinates the displacement is `d_k = R s_k / p_nm`,
+where `R` is the stage-to-camera transform: an axis permutation and two signs
+(the eight candidates the total-variation search already covers) plus a
+small rotation and scale that today are assumed to be the identity.
+
+*Sample space.* A specimen point at sample coordinate `u` appears in frame
+`k` at camera position `u + d_k`. Focus `f` therefore probes
+
+    q_{k,f} = r_f − d_k                                                     (1)
+
+The set `P = { q_{k,f} } = F − D` (`D = { d_k }`) is the reconstruction's
+sampling set. It is `L`-periodic, and inside each unit cell it is the
+(mirrored) scan raster `D`. Two properties decide everything downstream.
+
+**Coverage.** The scan covers one unit cell when the scan rectangle is a
+fundamental domain of `L`: its area `n_x Δx · n_y Δy` equals the cell area
+`|det(a1, a2)|` (the branch's `scan_cell_ratio = 1.0`) *and* its
+`L`-translates tile the plane. Whenever a lattice vector lies along the fast
+axis, `a1 = (a, 0)`, any rectangle `a × (cell area / a)` is a fundamental
+domain (brick tiling). This is how the reference "diamond" acquisition
+(10.41 px lattice at 45°, 32 × 16 steps of 35 nm) covers exactly one cell of
+a lattice that has no axis-aligned unit cell: its rectangle is
+`a√2 × a/√2`. The diagnostic that replaces the area ratio is a
+*count-per-raster-pixel histogram* (0 = hole, 1 = exactly once, > 1 =
+overlap).
+
+**Commensurability.** Choose the output raster `R` with pitch `(Δx, Δy)` and
+origin at a lattice point. `P ⊂ R` iff `a1, a2 ∈ ZΔx × ZΔy`. Then every
+sample lands exactly on a raster pixel and, with coverage 1, each raster
+pixel receives exactly one sample: reconstruction is a *placement* — no
+interpolation, no bias (E4: 1e-14). Axis-aligned rectangular scans with
+`n` steps per period are the special case the legacy integer path
+(`scan_geometry.get_1d_indices`) implements. A hexagonal lattice
+`a1 = (a, 0)`, `a2 = (a/2, a√3/2)` is commensurate iff `n_x` is even and
+`Δy = a√3 / (2 n_y)`: a slightly anisotropic raster, isotropic to 0.3% with
+`n_y = round(n_x √3 / 2)` (22 × 19 steps for `a = 11 px`). In practice
+commensurability holds only as well as the pixel size and the stage step are
+known: a 0.3% mismatch already costs the bilinear splat 10% RMSE (E4), so
+stage 2 must handle small residuals gracefully (section 2.4).
+
+### 1.2 Photophysics and the per-frame image
+
+Per focus, the ON / OFF / readout sequence confines emission to an effective
+PSF `h_e` around `r_f` (FWHM 50–100 nm, `σ_e = 21–42 nm`). The emitted light
+is imaged with the detection PSF `h_d` (`σ_d ≈ 93 nm` for a 220 nm FWHM).
+The frame is
+
+    I_k(x) = Σ_f ∫ S(u) · h_e(u − q_{k,f}) · h_d(x − u − d_k) du + B_k(x) + noise     (2)
+           = Σ_f A_{k,f} · g(x − r_f) + B_k(x) + noise
+
+with the amplitude
+
+    A_{k,f} = ε_f · (S ∗ h_e)(q_{k,f})                                       (3)
+
+and the spot shape `g = h_d ⊗ h_e ⊗ pixel`, `σ_spot² = σ_d² + σ_e²`,
+normalized to unit peak. `ε_f` is the focus' excitation / switching
+efficiency (the illumination envelope, a smooth field over the frame). The
+exact spot is centered on the *emitters* inside `h_e`, not on `r_f`: its
+centroid sits at `α · (local specimen offset)` with
+`α = σ_e² / (σ_e² + σ_d²)`. That sub-pixel shift is all the "ISM information"
+there is (section 2.5). `B_k` is background: camera offset, out-of-focus haze
+(a wide blob per focus, since the OFF pattern confines emission only within
+a limited axial range), incompletely switched-off molecules. Noise: Poisson
+on the counts plus Gaussian read noise (sCMOS, about 1.6 e⁻).
+
+Three consequences:
+
+1. The reconstruction estimates `S_eff = S ∗ h_e` on `P` (up to `ε_f`). Its
+   resolution is `h_e`'s. Nothing in the estimator sharpens it except an
+   explicit deconvolution of `h_e` (section 2.4).
+2. The spot is not the detection PSF: `σ_spot = √(σ_d² + σ_e²)`, 4% wider at
+   220 / 63 nm. A matched filter with the nominal `σ_d` under-estimates
+   amplitudes by 10% (E5a), and by a specimen-dependent amount. The spot must
+   be measured from the data (E6).
+3. Foci are 9–11 `σ_spot` apart: their tails overlap at the 1e-4 level at the
+   neighbor's center but at the 1–5% level over the outer half of a cell.
+   That is the crosstalk the isolated fit suffers (E1).
+
+---
+
+## 2. The optimum
+
+### 2.1 Full-model maximum likelihood
+
+Unknowns: `S` on a raster (the output) plus nuisance parameters (`B_k`,
+`ε_f`, drift). Data: all pixels of all frames. Likelihood: `Poisson(H S + B)`
+with `H` the linear operator of (2): shift the specimen by `d_k`, multiply by
+the excitation lattice `Σ_f h_e(· − r_f)`, blur with `h_d`, sample onto
+camera pixels. The maximum-likelihood estimate (or MAP, with positivity / TV /
+Hessian-Schatten priors) is asymptotically efficient — it attains the
+Cramér–Rao bound — uses every photon with its correct weight, exploits the
+sub-pixel centroid information, handles any lattice and any scan, and needs no
+pinhole.
+
+E5 implements it as a multi-frame Richardson–Lucy iteration with the exact
+`H` and its adjoint. On a 60 × 60 px, 576-frame synthetic acquisition it
+reaches a relative RMSE of 0.106 against the true specimen after 40
+iterations, in 18 s on one CPU core. A 512 × 512 px, 1000-frame acquisition
+scales to about two minutes per iteration on a CPU, seconds on a GPU. It also
+needs `h_e`, which is not known a priori. **This is the reference, not the
+workhorse.**
+
+### 2.2 The two-stage decomposition
+
+Write frame `k` as a vector `I_k`, `G` the (pixels × foci) matrix of spot
+shapes `g(x − r_f)`, `N` a background basis (per-focus constants, optionally
+per-focus wide Gaussians), `θ_k = (A_k, β_k)` the per-frame coefficients.
+With Gaussian noise of variance `σ²` the negative log-likelihood is
+`Σ_k ‖I_k − [G N] θ_k‖² / 2σ²`. Decompose orthogonally against the column
+space of `[G N]`:
+
+    ‖I_k − [G N] θ_k‖² = ‖I_k − [G N] θ̂_k‖² + (θ̂_k − θ_k)ᵀ [G N]ᵀ[G N] (θ̂_k − θ_k)
+    θ̂_k = ([G N]ᵀ[G N])⁻¹ [G N]ᵀ I_k                                        (4)
+
+The first term does not depend on `θ_k`, hence not on `S`: **the per-frame
+joint least-squares coefficients are a sufficient statistic.** Profiling out
+the background coefficients, the maximum-likelihood estimate of `S` solves
+
+    min_S  Σ_k (Â_k − M_k S)ᵀ C_k⁻¹ (Â_k − M_k S),      C_k = cov(Â_k)          (5)
+
+where `(M_k S)_f = ε_f (S ∗ h_e)(q_{k,f})`. `GᵀG` has off-diagonal entries
+`π σ² exp(−|r_f − r_f'|² / 4σ²)`, about 5e-4 relative for neighbors 11 px
+apart at `σ = 2`, so `C_k` is diagonal to that accuracy and (5) is an
+ordinary weighted least squares of `S` against the placed amplitudes. That
+is the two-stage pipeline: stage 1 is (4), stage 2 is (5). It is exact for
+Gaussian noise. For Poisson noise, weighted least squares with
+`W = diag(1 / variance)` is the Gauss–Newton approximation, and E2 / E5
+bound what it loses.
+
+What the decomposition discards: the sub-pixel centroid information
+(`α ≈ 0.05`, E3a) and the exact Poisson weighting inside the spot. E5b
+measures the total price: two-stage plus deconvolution 0.130 versus full
+maximum likelihood 0.106 relative RMSE at 40 iterations (within 25%), equal at 20
+iterations, at 1/200 of the compute.
+
+### 2.3 Stage 1: the optimal linear extraction
+
+**Estimator.** `Â_k = W I_k`, with `W` the amplitude rows of the
+pseudo-inverse in (4), computed once per (lattice, spot model, background
+model, footprint reach) and applied per frame as a sparse gather plus dot
+product. The rows are translation-invariant up to sub-pixel phase for
+interior foci, and individually computed for edge foci. Properties (E1;
+period 11.05 px, `σ = 2 px`, amplitudes 100–300, noise sd 5):
+
+| footprint reach | pixels per focus | isolated fit: max crosstalk bias | isolated fit: std | joint fit: bias | joint fit: std |
+|---|---|---|---|---|---|
+| 1.5 σ | 29 | 0.06 | 4.8 | 0 | 4.8 |
+| 2.0 σ | 51 | 0.23 | 2.9 | 0 | 2.9 |
+| 2.5 σ | 78 | 0.9 | 2.2 | 0 | 2.2 |
+| 3.0 σ | 111 | 2.8 | 1.9 | 0 | 1.9 |
+| 4.0 σ | 202 | 17 | 1.6 | 0 | 1.8 |
+| whole cell | 380 | 71 | 1.5 | 0 | 1.8 |
+
+The isolated fit's bias column is the audit's F5 curve. It is a property of
+the estimator, not of the data, and it is the only reason the footprint had
+to stay near 1.5–2 σ. The joint fit removes it at every reach (the weights of
+focus `f` carry small negative lobes under its neighbours' spots), so the
+reach is chosen by noise alone; 3 σ is within 5% of the noise floor. The
+isolated fit's slightly lower std at large reach is the bias–variance
+trade-off of assuming the neighbours' amplitudes are zero.
+
+**Background.** Per-focus constants on the Voronoi cells make the background
+piecewise constant. Adding one wide Gaussian per focus (`σ_h ≈ period / 2`;
+the *Focus-ISM* idea, and the classic path's *Gaussian BG modelling*) models
+out-of-focus haze by its shape instead of rejecting it with a pinhole. E1
+with a haze component of 30–90 counts and `σ_h = 6 px`:
+
+| footprint reach | isolated fit: rms bias | joint, constants only: rms bias | joint + haze: rms bias | joint + haze: std |
+|---|---|---|---|---|
+| 1.5 σ | 3.9 | 3.9 | 0 | 5.2 |
+| 2.5 σ | 6.5 | 6.7 | 0 | 2.5 |
+| 3.0 σ | 8.4 | 8.7 | 0 | 2.2 |
+| whole cell | 61 | 10 | 0 | 2.1 |
+
+The haze amplitude comes out as a second image plane — the classic method's
+"Base 1" — at no extra cost, and doubles as a sectioning diagnostic.
+
+**Noise weighting.** `W_w = (GᵀΩG)⁻¹ GᵀΩ`, `Ω = diag(1 / (μ̂ + σ_r²))`, with
+`μ̂` from an unweighted first pass (two-pass) or from the mean frame. E2
+(single focus, oracle weights) bounds the variance gain: up to 15% for peaks
+≤ 50 counts, 5–23% for peaks of 200–1000 counts over a low background,
+nothing over a high background. E5a (joint fit on a realistic frame): 0.082
+versus 0.081 — nothing. Optional, off by default.
+
+**Spot model.** `σ_spot` (optionally an ellipticity, and the haze `σ_h`) is
+fitted to the mean frame with per-focus amplitude and constant profiled out
+(variable projection: one scalar minimization; E6 recovers 1.99–2.00 px for
+2.00 px true; E5: 1.297 for 1.298). No PSF FWHM input is needed; the fitted
+value is reported as a diagnostic ("spot FWHM 226 nm"). Centre and width are
+fitted per focus, with a smooth spline field over the frame as the prior and
+its residual as the distortion diagnostic (section 2.7).
+
+**Sampling.** Exact integer pixels with per-focus weights evaluated at the
+true offsets (audit F3; the branch's `build_exact_sampling`) are a
+prerequisite: bilinear sampling low-passes the peak by several percent with a
+fixed-pattern phase dependence.
+
+**Edges and uncertainty.** Edge foci have fewer pixels and larger variance,
+and are flagged; foci with fewer than about ten in-frame pixels are dropped.
+Per-focus variance is `σ² ‖w_f‖²` (Gaussian) or `Σ w_f² var` — an
+uncertainty plane for free, and the weight of stage 2.
+
+**Cost.** Identical to today's exact-pixel path at the same reach: one gather
+of about 110 px per focus at 3 σ; 1800 foci in a 464² frame is 2e5
+multiply-adds per frame. Live-compatible.
+
+### 2.4 Stage 2: placement, gridding, deconvolution
+
+**Placement.** Sample positions from (1); output raster from section 1.1.
+Commensurate (residual below about 0.05 px across the frame): nearest
+placement is exact, and it is what both legacy paths do — the integer
+scatter, and the branch's bilinear splat, which degenerates to it (E4, first
+rows). Overlap (coverage > 1): inverse-variance-weighted average; this is
+also where per-focus gains and drift become observable (section 2.6).
+
+**Gridding.** Off-raster samples (a rotated or hexagonal lattice with an
+isotropic step, or any mismatch between the true and the assumed step) need
+an interpolation *model*. The bilinear splat with weight normalization is a
+bilinear smoothing: its high-frequency transfer is `sinc²`, 0.65 at 0.35
+cycles per step, and it leaves holes where the local sample density dips
+(E4: 5.5% for the rotated hexagonal case). The consistent estimator is (5)
+with `M_k` the sampling of a raster interpolant: minimize
+`Σ_i ((B c)_i − v_i)² + λ ‖c‖²` over cubic B-spline coefficients `c`, where
+`B` evaluates the spline (4 × 4 taps) at each sample position, solved by
+conjugate gradients (the adjoint is the splat); the raster image is `c`
+convolved with `[1 4 1] / 6` along each axis. E4 (relative RMSE, noiseless):
+
+| lattice / scan | nearest | bilinear splat (branch) | B-spline LSQ gridding |
+|---|---|---|---|
+| hexagonal, commensurate (22 × 19 steps) | 0 | 0 | 0.002 |
+| hexagonal, step 0.3% off | 0.26 | 0.10 | 0.019 |
+| hexagonal rotated 17°, isotropic step | 0.31 (8.7% holes) | 0.18 (5.5% holes) | 0.089 |
+| square 45° ("diamond"), brick domain | 0 | 0 | 0.002 |
+| rectangular axis-aligned | 0 | 0 | 0.002 |
+
+With 10% sample noise the ordering is the same (0.131 vs 0.119, 0.194 vs
+0.151), and the gridder passes noise through unsmoothed, which is the
+unbiased behaviour; denoising is a separate, explicit decision. Periodic
+non-uniform sampling theory (Yen; Papoulis) guarantees that a band-limited
+specimen is recoverable from an `L`-periodic sample set of average density
+≥ 1 per raster pixel, which the fundamental-domain condition provides; the
+spline is the practical interpolant.
+
+**Deconvolution of `h_e`.** An optional last step: Richardson–Lucy
+(positivity, early stopping) of the placed image with `h_e`, or the
+full-model reference of section 2.1. E5b (relative RMSE against the true
+specimen):
+
+| iterations | isolated-fit image + RL(`h_e`) | joint-fit image + RL(`h_e`) | full-model RL |
+|---|---|---|---|
+| 5 | 0.40 | 0.38 | 0.42 |
+| 10 | 0.32 | 0.25 | 0.27 |
+| 20 | 0.33 | 0.16 | 0.16 |
+| 40 | 0.37 | 0.13 | 0.11 |
+
+The joint-extracted image deconvolves (line pairs at 77 nm go from 0.18 to
+0.83 contrast); the isolated-fit image diverges because its noise is 3.3×
+higher. Deconvolution is only viable on top of the joint extraction, and it
+needs `h_e`'s FWHM (a calibration or a user input; not derivable from a
+single dataset without point-like structures).
+
+### 2.5 ISM pixel reassignment does not apply to confined foci
+
+For Gaussian `h_e` and `h_d`, the sub-image seen through detector offset `d`
+is the specimen filtered with `h_e(u) · h_d(d − u)`: a Gaussian of width
+`σ_c = σ_e σ_d / √(σ_e² + σ_d²)` centred at `α d`,
+`α = σ_e² / (σ_e² + σ_d²)`. Pixel reassignment shifts every sub-image by
+`−α d` and sums; the resolution gain is `σ_c / σ_e`. For confocal
+(`σ_e = σ_d`) this gives `α = 0.5` and a gain of `1/√2` — the textbook result
+(E3a, last row). For RESOLFT foci (E3a):
+
+| effective PSF FWHM | detection PSF FWHM | optimal α | width after reassignment / `σ_e` |
+|---|---|---|---|
+| 49 nm | 219 nm | 0.049 | 0.975 |
+| 64 nm | 219 nm | 0.078 | 0.960 |
+| 99 nm | 219 nm | 0.169 | 0.911 |
+| 64 nm | 363 nm | 0.030 | 0.985 |
+
+There is nothing to gain: the fast-Gauss amplitude (`α = 0`) already yields
+the `h_e`-limited PSF (E3b: 60 nm FWHM for a 63.5 nm `h_e`; optimal α:
+61 nm). The xrecon default `α = 0.5` applied to a 63 nm focus widens the
+reconstruction PSF to 74 nm and lowers its peak by 16% (E3b): it moves each
+detector pixel's signal by `(0.5 − α) · |d|`, up to about 80 nm for a 2 σ_d
+pinhole — more than the resolution. A sweep over `ISM shift` on real data
+will find its optimum near zero. Fourier-domain sub-pixel shifting, patch
+mean subtraction and oversampling are then machinery without a purpose:
+exact placement (section 2.4) already puts every amplitude at its exact
+sample-space position.
+
+### 2.6 Systematics the estimator does not see, and how the geometry exposes them
+
+- **Per-focus gain `ε_f`** (illumination envelope, local OFF power) tiles the
+  reconstruction with cell-sized blocks. It is not identifiable from a
+  one-cell scan without an assumption about the specimen — which is why the
+  branch's flat-field solver (differences of near-coincident boundary
+  samples, high-passed over the lattice) helped one dataset, not the other,
+  and was removed. With an **overscan** of 10–20% beyond the fundamental
+  domain, neighbouring foci sample the *same* specimen points and
+  `ε_f / ε_f'` is measured directly by the overlap ratios: a sparse least
+  squares over the focus adjacency graph, no specimen assumption, exactly
+  like tile-stitching intensity correction. Recommendation to the
+  acquisition side: overscan each axis by one to two `σ_spot` worth of steps.
+- **Stage-to-camera rotation and scale.** A rotation `θ` misplaces the far
+  end of a cell by `w · θ`: for `w = 11 px` (0.85 µm) and `θ = 1°`, 15 nm —
+  tolerable below about 1°, a visible seam at 2–3°. Calibrate once (BeadRec
+  measures exactly this transform) or estimate it from overlaps.
+- **Lattice accuracy.** A period error `δ` accumulates to `N δ` over `N`
+  periods; for 0.4 px (30 nm) at the edge of a 464 px frame, `δ < 0.02 px`
+  (0.2%). Spectral peak refinement alone lands at 0.1–0.25% (bin-limited).
+  The final estimate must be a real-space linear regression of all focus
+  centroids on their `(m, n)` indices — six parameters from hundreds of foci,
+  about 0.01 px — whose residual map also reveals field distortion.
+- **Drift** during the scan shifts `q_{k,f}` by `δ(k)`: seams at cell
+  boundaries, directly measurable from overlaps when overscanning; otherwise
+  only the total-variation seam criterion applies.
+- **Bleaching.** The linear energy normalization (audit F4) is right for a
+  global loss; a per-focus loss is a gain drift and belongs with `ε_f`.
+
+### 2.7 Per-focus geometry and non-parametric spot shapes
+
+Two refinements of the spot model are often proposed: a model *per position*
+(each focus with its own centre and width, or a smooth spline field of them
+over the frame) and a *non-parametric shape* (an empirical spline PSF instead
+of a Gaussian). E7 separates the two.
+
+**Per-focus geometry matters, and it is free.** A spot model centred `δ`
+away from the true focus biases that focus' amplitude (Gaussian + constant
+fit, 3 σ reach):
+
+| centre error | 0.1 px | 0.2 px | 0.3 px | 0.5 px |
+|---|---|---|---|---|
+| bias, `σ_spot` = 1.3 px | −0.3% | −1.2% | −2.6% | −7.0% |
+| bias, `σ_spot` = 2.0 px | −0.1% | −0.5% | −1.0% | −2.9% |
+| cell content misplaced by | 8 nm | 15 nm | 23 nm | 39 nm |
+
+and a width error of 5 / 10 / 20% biases it by 1–2 / 2–4 / 2–9%. Both are
+*per-focus* errors, i.e. cell-sized gain steps, and the misplacement row is
+the larger effect: with an ideal-lattice centre the whole cell's content
+lands `δ` from where it was sampled — a seam of a third of the resolution
+at 0.3 px. Real lattices carry distortion at this level (a few tenths of a
+pixel across the field is ordinary for an SLM or microlens pattern imaged
+through an objective), and off-axis aberrations change the spot width across
+the field by 5–20%. The mean frame determines each focus' centre to
+0.01–0.02 px and its width to about 1% (10⁴–10⁶ photons per focus), so
+fitting them per focus removes both errors at no runtime cost — the weights
+are per focus anyway — and the *measured* centres, not the ideal lattice,
+feed the placement (one more reason to grid rather than to scatter into
+integer cells). A smooth spline field over the frame is the regularized form:
+it pools foci, flags outliers, and its residual is the distortion map. The
+ideal lattice remains for detection and indexing.
+
+**Shape barely matters for the fast path.** An elliptical spot fitted with
+the best circular Gaussian costs 0.5% bias at 10% ellipticity and 1.6% at
+20%, with no noise penalty. Against a pixel-integrated Airy PSF (520 nm,
+NA 1.4, 77 nm pixels) convolved with a 63 nm `h_e`, the best Gaussian
+(σ = 1.08 px) differs from the exact template by a scale factor between −4%
+and +4% depending on the reach — a global constant, harmless — and by ≤ 5%
+in noise, white or Poisson. The Airy rings put 7e-4 of the peak at the
+neighbour distance, three orders more than the Gaussian tail but still
+0.2 counts for a 300-count spot: crosstalk-irrelevant. A spline PSF earns
+its place in two situations only: the full-model reference, where the shape
+enters the deconvolution directly, and strongly aberrated fields, where a
+field-interpolated empirical template captures a shape variation no Gaussian
+can. Whatever the shape model, the haze term stays a separate basis
+function: an empirical template averaged from the data would bake that
+dataset's specimen-dependent skirt into the spot, whereas the haze amplitude
+varies per frame and per focus independently of the in-focus amplitude.
+
+**The excitation pattern itself** — `h_e` per focus: confinement width,
+asymmetry when the OFF-pattern minima do not coincide with the ON-pattern
+maxima — does not enter stage 1 at all (the amplitude is whatever
+`∫ S · h_e` is) and enters stage 2 only through the optional deconvolution.
+Per-focus `h_e` differences appear as cell-dependent resolution; they are
+identifiable only from overlaps or point-like structures, and a smooth field
+of `h_e` widths would feed a spatially variant deconvolution in the reference
+method. Not a fast-path concern.
+
+---
+
+## 3. Findings on the branch to fix before building on it
+
+Numbered B1–B10; each names the code (on `feat/monalisa-fastgauss-lattice-sweep`)
+and the experiment that shows it.
+
+- **B1 — xrecon Gaussian weight is 11× too wide.**
+  `ism_reassign/kernel.py::_least_square_signal_weights` divides the patch
+  coordinates by `floor(p/2)` and then evaluates the Gaussian with a sigma
+  expressed in patch pixels. For period 11.05 px, oversampling 2 and PSF
+  FWHM 220 nm the effective sigma is 13.3 camera px instead of 1.21 (E3c);
+  the Gaussian is 0.93 at the patch edge and the pseudo-inverse turns into a
+  centre-positive / corner-negative curvature filter, not a matched filter.
+  Either the original xrecon defines sigma in half-patch units (then the
+  `PSF FWHM (nm)` parameter is mislabeled by `floor(p/2)`) or the port is
+  wrong. Verify against the original before any A/B with the fast path.
+- **B2 — xrecon output pitch and the "m steps span one period" assumption.**
+  `_compute_geometry` reports `output_pixel_size_nm = pixel · period / p`
+  (the *patch* pixel), but `_center_ulenses_and_reassign` builds the output
+  as `u·m` pixels across `u` periods, i.e. its pitch is `period / m` — the
+  reported size is off by `m / p` — and the reassembly is only right when the
+  scan's `m` steps span exactly one period. The integrated path records
+  `actual_scan_step_px_xy` and `pattern_subdivision_step_px_xy` but neither
+  enforces nor uses them.
+- **B3 — ISM shift default 0.5** blurs RESOLFT data (section 2.5, E3b).
+- **B4 — bilinear splat** (`lattice_recon.assemble_image`) is exact on the
+  raster and a blur off it, with holes (E4). Replace by B-spline
+  least-squares gridding; keep the weight map as the coverage diagnostic.
+- **B5 — isolated per-focus fit** (`gauss_processor.calculate_gaussian_lsq_weights`,
+  `build_exact_sampling`, `extract_lattice_amplitudes`) is crosstalk-limited
+  (E1). The pinhole sweep is optimizing an estimator limitation. Superseded
+  by the joint operator; `Footprint mode` and `Footprint rectangles` retire.
+- **B6 — spot sigma** is the hard-coded 2.0 px default or
+  `PSF FWHM / (2.355 · pixel)`: 10% amplitude bias (E5a). Self-calibrate (E6).
+- **B7 — lattice refinement** stops at sub-bin spectral interpolation plus
+  spectral phases. Good as a detector; add the real-space centroid regression
+  and a distortion residual (section 2.6).
+- **B8 — two reassignment code paths** (`get_1d_indices` integer scatter for
+  axis-aligned grids; scatter-and-grid for everything else). One placement
+  pipeline, with the axis-aligned commensurate case as a bit-for-bit
+  regression test of the placement step.
+- **B9 — general path is offline-only, single line step, single Z.** The
+  layout's physical coordinates (`acquisition_layout.iter_physical_coordinates`)
+  give `d_k` for every frame of any loop structure, and extraction is per
+  frame anyway; live is the same operator plus streaming placement.
+- **B10 — `MonalisaLiveSession._resolve_localization`** still reduces the
+  detection to rectangular grid parameters; the `Lattice` object
+  (`LocalizationResult.lattice` already carries it) should flow through
+  unchanged, and `Sampling: exact pixel` should be the only mode.
+
+---
+
+## 4. Clean implementation plan
+
+### 4.1 Principles
+
+1. **One pipeline** for live and offline, for every lattice; the axis-aligned
+   commensurate rectangular scan is a special case, not a separate path.
+2. **Geometry from the recording.** Scan offsets per frame come from the
+   resolved acquisition layout (attributes as the fallback ladder it already
+   has); the data decide the orientation (total variation over the eight `R`
+   candidates), the layout cross-checks it. Lattice from detection plus
+   real-space refinement; spot model from the mean frame. No hand-typed
+   periods, offsets or PSF widths are *inputs*; they are *outputs* shown as
+   diagnostics, with a rough period band as the only hint.
+3. **Every estimator is linear and precomputed.** Per-frame work is a gather
+   and a dot product; everything expensive happens once per geometry or once
+   per timepoint.
+4. **Diagnostics are part of the result:** lattice, spot model, coverage
+   histogram, commensurability residual, orientation score, per-focus
+   variance, background planes, the spot cloud.
+5. **Parity before deletion.** The legacy integer path stays until the new
+   placement reproduces it bit for bit on synthetic axis-aligned commensurate
+   data, and the new extraction is characterized against it on rig data.
+
+### 4.2 Modules
+
+```
+imswitch/improcess/reconstructors/monalisa/
+  lattice.py        keep; add commensurate_with(pitch), refine_with_centroids(image),
+                    coverage_histogram(positions, raster), fundamental-domain check
+  scan_frame.py     NEW  ScanFrame: d_k for every frame from the layout (attrs fallback),
+                    the 8 R candidates + optional rotation/scale, orientation by TV with
+                    layout cross-check, sample positions q_{k,f} (eq. 1)
+  spot_model.py     NEW  SpotModel: per-focus centre and sigma (+ optional ellipticity,
+                    haze sigma) with a smooth spline-field prior; calibrate(mean_frame,
+                    foci) by variable projection (E6, E7); distortion residual map
+  extraction.py     NEW  ExtractionOperator.build(lattice, spot_model, background,
+                    reach, frame_shape, weighting=None) -> per-focus (rows, cols, weights),
+                    joint pseudo-inverse rows, exact-pixel; apply(frames) -> amplitudes,
+                    background planes, variances; NumPy and CuPy backends (same gather)
+  placement.py      NEW  OutputRaster(origin, pitch, lock); place_exact(); overlap
+                    averaging; grid_bspline_lsq(positions, values, weights, lam)
+  deconvolve.py     NEW (optional)  rl_deconvolve(image, h_e, iterations);
+                    full_model_rl(frames, geometry, h_e, h_d, iterations) reference
+  pipeline.py       NEW  reconstruct_stack(frames, scan_frame, params) -> planes +
+                    diagnostics; the one entry point offline and live share
+  live_session.py   REWRITE on pipeline: begin() = detect + calibrate + build operator;
+                    push() = extract + place; result() = planes (grid at timepoint end)
+  reconstructor.py  thin: params -> pipeline; sweep; classic path unchanged
+  sweep.py, result.py (spot cloud, diagnostics), params_widget.py: updated
+  pattern_finder.py thin wrapper over detection + refinement
+  legacy.py, signal_extractor.py, coeffs_to_image.py: classic path, untouched
+Removed after parity: gauss_processor.py (both sampling modes, shell footprint),
+  scan_geometry.get_1d_indices / get_orientation / _get_bases / _get_shifts,
+  lattice_recon.py, ism_reassign/ (quarantined as a reference until B1/B2 are settled)
+```
+
+### 4.3 Data flow per stack
+
+A *stack* is the set of frames sharing one `(timepoint, condition, z)` per
+the layout placement; the pipeline runs per stack, so line-step conditions,
+Z slices and timepoints need no special code.
+
+Once per geometry (first stack, or the loaded file):
+
+1. Mean frame → `detect_lattice` (spectral, guess-free, within the period
+   band) → `refine_with_centroids` (index every focus, regress centroids on
+   `(m, n)`; residual map = distortion diagnostic) → `Lattice`.
+2. `SpotModel.calibrate` on the mean frame at the refined foci: per-focus
+   centre and `σ_spot` under a smooth spline-field prior (residual map =
+   distortion diagnostic), optional ellipticity, optional `σ_haze` (enabled
+   when the tail residual justifies it). The measured centres are the `r_f`
+   of equation (1) from here on; the ideal lattice only indexes them.
+3. `ScanFrame` from the layout: `d_k` per frame for each `R` candidate.
+4. `ExtractionOperator.build`: for each focus the in-frame pixel set within
+   the reach, the joint design `[G N]` restricted to the footprint union, the
+   pseudo-inverse amplitude / background rows (interior foci share one row
+   per sub-pixel phase class; edge foci get their own), the variance
+   coefficients. Optional weighting from the mean frame.
+5. Orientation: extract the first stack, place under each `R` candidate,
+   keep the minimum total variation; cross-check against the layout's
+   directions; log both.
+6. `OutputRaster`: pitch = the intended lattice subdivision when the
+   metadata step is within tolerance of it (lattice-locked), otherwise the
+   metadata step; origin at a lattice point; coverage histogram and
+   commensurability residual logged.
+
+Per frame: gather footprints, dot with weights → amplitudes, backgrounds,
+(variances). Per stack: `place_exact` if commensurate else
+`grid_bspline_lsq` (weights = inverse variances); overlap averaged; optional
+gain / drift refinement from overlaps; optional `rl_deconvolve`. Result: a
+`MonalisaProcessingResult` whose Base axis holds amplitude, background, haze,
+variance planes; the spot cloud; the diagnostics dict.
+
+### 4.4 Phases, each with its acceptance test
+
+- **Phase 0 — fixtures and characterization (no behaviour change).** A
+  synthetic acquisition generator under `_test/` (E5's `_Synthetic`
+  generalized: any `Lattice`, any scan raster, `h_e`, `h_d`, `ε_f`, haze,
+  Poisson noise). Golden-output tests of the current rectangular path on a
+  synthetic axis-aligned commensurate scan (byte-identical arrays) and of the
+  branch's general path on the diamond case. E1–E6 turned into regression
+  tests with loose tolerances.
+- **Phase 1 — geometry.** `Lattice.refine_with_centroids`,
+  `commensurate_with`, coverage histogram; `ScanFrame` from the layout;
+  orientation search moved onto `ScanFrame`. Tests: synthetic rotated /
+  hexagonal / rectangular scans; the diamond dataset's numbers (10.41 px at
+  45°, 32 × 16 × 35 nm → coverage exactly one everywhere).
+- **Phase 2 — spot model and extraction operator.** `SpotModel.calibrate`;
+  `ExtractionOperator` with background basis, optional haze, optional
+  weighting, reach; CuPy backend. Parity: with the neighbours excluded from
+  the design and the same footprint, the weights equal
+  `build_exact_sampling` to 1e-12. E1 reproduced as a test (joint bias
+  < 1e-6 at every reach; std monotone).
+- **Phase 3 — placement and gridding.** `OutputRaster`, `place_exact`,
+  `grid_bspline_lsq`, variance plane. Parity: axis-aligned commensurate →
+  identical to the legacy integer scatter given identical amplitudes; E4
+  reproduced as a test.
+- **Phase 4 — pipeline, live, deletion.** `reconstruct_stack`; live session
+  rebuilt on it (calibration on the first complete stack, exact placement
+  per push, gridding at timepoint completion); offline fast Gauss switched
+  over; `gauss_processor`, `lattice_recon`, the `get_1d_indices` family
+  deleted once the Phase 0 golden tests pass on the new placement. The
+  extraction change is documented, not hidden: the A/B of Phase 5 is where
+  it is judged.
+- **Phase 5 — deconvolution and the reference method.** `rl_deconvolve`;
+  `full_model_rl` as an offline *MoNaLISA joint deconvolution (reference)*
+  method sharing the geometry and spot model; validation protocol on rig
+  data: legacy vs new on the rectangular and diamond reference recordings,
+  sweep over reach and background model, FRC, the ISM-shift sweep of
+  section 2.5 as the empirical confirmation.
+- **Phase 6 — self-calibration from overscan.** Per-focus gain, drift, `R`
+  refinement from overlaps; the acquisition-side overscan recommendation
+  documented in the scan dialog.
+- **Phase 7 — decide the classic SignalExtractor's fate.** The joint operator
+  with a haze basis reproduces its multi-base model on any OS and GPU without
+  the Windows CUDA DLL; retire it once Phase 5 shows parity.
+
+### 4.5 Performance budget
+
+| step | cost | live? |
+|---|---|---|
+| extraction, 3 σ reach, 1800 foci, 464² frame | 2e5 multiply-adds per frame; about 1 ms NumPy, µs CuPy | yes |
+| exact placement | one scatter per frame | yes |
+| B-spline LSQ gridding, 1.8e6 samples per timepoint | ~30 CG iterations × 16 taps × 2 ≈ 2e9 flops; a few seconds in NumPy with a `bincount`-based splat (`np.add.at` is ~10× slower), < 0.1 s CuPy | at timepoint end |
+| RL deconvolution of `h_e`, 1000² raster, 50 iterations | ~5 s NumPy, < 1 s CuPy | offline |
+| full-model RL, 1000 frames × 512² | ~2 min per iteration NumPy, ~2 s CuPy | offline reference |
+
+### 4.6 Widget and parameter keys
+
+New keys: `background_model` (`constant` / `constant+haze` / `none`),
+`footprint_reach_sigma`, `noise_weighting`, `spot_sigma_px` (auto or
+override), `haze_sigma_px` (auto or override), `output_pitch_mode`
+(`lattice-locked` / `metadata step`), `gridding_lambda`,
+`deconvolution` group (`enabled`, `effective_psf_fwhm_nm`, `iterations`),
+`stage_rotation_deg`, `gain_correction`, `drift_correction`,
+`orientation_override`, `period_band_px`. Retired keys:
+`fast_gauss_footprint_mode`, `fast_gauss_footprint_num_rects`,
+`fast_gauss_pinhole_radius_sigma`, `fast_gauss_sampling_mode`,
+`fast_gauss_pattern_geometry`, `ism_reassign_*`, `psf_fwhm_nm` (kept only
+for the classic method), the pattern group as inputs. `sweep.py`'s registry
+follows: reach, haze sigma, gridding lambda, deconvolution iterations and
+`effective_psf_fwhm_nm` become the sweepable parameters.
+
+---
+
+## 5. Remaining input parameters
+
+| parameter | default | where it comes from | when to touch it | sweep |
+|---|---|---|---|---|
+| Pixel size (nm) | metadata | camera calibration | never; required | no |
+| Period band (px) | 0.35–2.5 × the last known period | widget hint | only if detection locks onto specimen structure | no |
+| Background model | constant + haze (auto-enabled by residual) | data | switch off haze on thin samples; `none` for calibration beads | no |
+| Footprint reach (× σ_spot) | 3 | — | 2–4; below 2.5 costs noise, above 4 costs nothing but memory | yes |
+| Noise weighting | off | camera gain / offset / read noise | high-signal, low-background data (≤ 20% variance) | no |
+| Spot centre and sigma | auto, per focus (smooth-field prior) | mean frame | override sigma for degenerate frames (few foci) | yes |
+| Haze sigma (px) | auto (calibrated) | mean frame | override when the haze is non-Gaussian | yes |
+| Scan orientation | auto (TV) with layout cross-check | data + layout | override when the cross-check disagrees | no |
+| Stage-to-camera rotation (°) | 0 | BeadRec calibration or overlap self-calibration | when cell seams appear on straight structures | no |
+| Output pitch | lattice-locked when within 1% of the metadata step | lattice + layout | `metadata step` for deliberately non-subdividing scans | no |
+| Gridding regularization λ | 1e-3 | — | raise for sparse coverage (rotated lattices) | yes |
+| Deconvolution | off | — | on, with `h_e` FWHM from a bead calibration; iterations 10–40 | yes |
+| Per-focus gain correction | off | overlaps (needs overscan) | on for overscanned acquisitions with tiling artefacts | no |
+| Drift correction | off | overlaps (needs overscan) | on for long scans | no |
+| Bleaching correction | off | frame energies | on for strongly bleaching samples (linear ratio) | no |
+| Method | unified lattice pipeline | — | classic (SignalExtractor) for comparison; full-model reference for validation | — |
+| Device | GPU if available | — | — | — |
+
+Everything that is *not* in this table and is on today's widget is derived
+from the data or retired (section 4.6).
+
+Two decisions belong to the maintainers rather than to the plan: whether to
+keep the ISM reassignment method at all (B1–B3 argue for retiring it after
+the shift sweep of Phase 5 confirms E3 on rig data), and whether to adopt the
+overscan in acquisition (it is the only way per-focus gain, drift and the
+stage-to-camera transform become self-calibrating; it costs 10–20% more
+frames per timepoint).
+
+---
+
+## 6. References
+
+- Masullo LA, Bodén A, Pennacchietti F, Coceano G, Ratz M, Testa I. Enhanced
+  photon collection enables four dimensional fluorescence nanoscopy of living
+  systems. *Nat Commun* 9, 3281 (2018). — MoNaLISA.
+- Chmyrov A, Keller J, Grotjohann T, Ratz M, d'Este E, Jakobs S, Eggeling C,
+  Hell SW. Nanoscopy with more than 100,000 'doughnuts'. *Nat Methods* 10,
+  737–740 (2013). — parallelized RESOLFT.
+- Bodén A, Pennacchietti F, Coceano G, Damenti M, Ratz M, Testa I. Volumetric
+  live cell imaging with three-dimensional parallelized RESOLFT microscopy.
+  *Nat Biotechnol* 39, 609–618 (2021).
+- Sheppard CJR. Super-resolution in confocal imaging. *Optik* 80, 53–54
+  (1988); Müller CB, Enderlein J. Image scanning microscopy. *Phys Rev Lett*
+  104, 198101 (2010); Sheppard CJR, Mehta SB, Heintzmann R. Superresolution
+  by image scanning microscopy using pixel reassignment. *Opt Lett* 38,
+  2889–2892 (2013). — pixel reassignment and the shift factor.
+- York AG et al. Resolution doubling in live, multicellular organisms via
+  multifocal structured illumination microscopy. *Nat Methods* 9, 749–754
+  (2012). — multifocal ISM with diffraction-limited foci (where α = 0.5 holds).
+- Tortarolo G et al. Focus image scanning microscopy for sharp and gentle
+  super-resolved microscopy. *Nat Commun* 13, 7723 (2022). — in-focus /
+  out-of-focus separation by shape (the haze basis).
+- Zunino A, Castello M, Vicidomini G. Reconstructing the image scanning
+  microscopy dataset: an inverse problem. *Inverse Problems* 39, 064004
+  (2023). — multi-image deconvolution as the ISM optimum.
+- Huang F et al. Video-rate nanoscopy using sCMOS camera-specific
+  single-molecule localization algorithms. *Nat Methods* 10, 653–658 (2013).
+  — the `μ + σ_r²` variance model.
+- Yen JL. On nonuniform sampling of bandwidth-limited signals. *IRE Trans
+  Circuit Theory* 3, 251–257 (1956); Papoulis A. Generalized sampling
+  expansion. *IEEE Trans Circuits Syst* 24, 652–654 (1977). — periodic
+  non-uniform sampling.
+- Unser M. Splines: a perfect fit for signal and image processing. *IEEE
+  Signal Process Mag* 16, 22–38 (1999). — B-spline interpolation.
+- Richardson WH. Bayesian-based iterative method of image restoration. *J Opt
+  Soc Am* 62, 55–59 (1972); Lucy LB. An iterative technique for the
+  rectification of observed distributions. *Astron J* 79, 745 (1974).
+- Chmyrov A, Leutenegger M, Grotjohann T, Schönle A, Keller-Findeisen J,
+  Kastrup L, Jakobs S, Donnert G, Sahl SJ, Hell SW. Achromatic light
+  patterning and improved image reconstruction for parallelized RESOLFT
+  nanoscopy. *Sci Rep* 7, 44619 (2017).
+- Casas Moreno X, Pennacchietti F, Minet G, Damenti M, Ollech D, Barabas F,
+  Testa I. Multi-foci parallelised RESOLFT nanoscopy in an extended
+  field-of-view. *J Microsc* (2023), doi:10.1111/jmi.13157.
+- Ströhl F, Kaminski CF. A joint Richardson–Lucy deconvolution algorithm for
+  the reconstruction of multifocal structured illumination microscopy data.
+  *Methods Appl Fluoresc* 3, 014002 (2015).
+- Sheppard CJR, Castello M, Tortarolo G, Deguchi T, Koho SV, Vicidomini G,
+  Diaspro A. Pixel reassignment in image scanning microscopy: a
+  re-evaluation. *J Opt Soc Am A* 37, 154–162 (2020); and, with Slenders E,
+  Bianchini P: Pixel reassignment in image scanning microscopy with a
+  doughnut beam: example of maximum likelihood restoration. *J Opt Soc Am A*
+  38, 1075–1084 (2021).
+- Castello M et al. A robust and versatile platform for image scanning
+  microscopy enabling super-resolution FLIM. *Nat Methods* 16, 175–178
+  (2019); Koho SV et al. Two-photon image-scanning microscopy with SPAD array
+  and blind image reconstruction. *Biomed Opt Express* 11, 2905 (2020). —
+  adaptive pixel reassignment; shift vectors versus STED power.
+- Ancora D, Zunino A, Vicidomini G, Crevenna AH. Image scanning microscopy
+  reconstruction by autocorrelation inversion. *J Phys Photonics* 6 (2024),
+  doi:10.1088/2515-7647/ad68dd.
+- Structured detection for simultaneous super-resolution and optical
+  sectioning in laser scanning microscopy. *Nat Photonics* 19 (2025),
+  doi:10.1038/s41566-025-01695-0. — s²ISM.
+- Agostoni S, Cuneo L, Daniele C, Garré G, Le L, Zunino A, Vicidomini G,
+  Calatroni L. Self-tuning regularization for image scanning microscopy.
+  arXiv:2605.31426 (2026).
+- Liu Y, Panezai S, Wang Y, Stallinga S. Noise amplification and
+  ill-convergence of Richardson–Lucy deconvolution. *Nat Commun* 16, 911
+  (2025).
+- Reconstruction algorithms in multifocal image scanning microscopy. *Laser
+  Photonics Rev* (2025), doi:10.1002/lpor.71408. — review.
+- Arigovindan M, Sühling M, Hunziker P, Unser M. Variational image
+  reconstruction from arbitrarily spaced samples: a fast multiresolution
+  spline solution. *IEEE Trans Image Process* 14, 450–460 (2005).
+- Deep-MSIM: fast image reconstruction with deep learning in multifocal
+  structured illumination microscopy (2023), PMC10520669. — learned prior.
+- ZEISS Elyra 7 Lattice SIM / SIM² product documentation. — lattice-of-spots
+  illumination reconstructed in the Fourier domain.
+
+## 7. Literature check: what is established, what is new, what is missing
+
+Checked on 2026-09-29 against the pRESOLFT / MoNaLISA and image-scanning-
+microscopy literature. Only search abstracts were reachable from this
+environment (publisher and repository sites are blocked by its proxy), so
+one paper is listed as *to read* rather than summarized.
+
+### 7.1 What the literature does today
+
+- **pRESOLFT** (Chmyrov et al. 2013): per-focus integration in small pinholes
+  placed at the minima of the OFF pattern, with the local out-of-focus level
+  taken from pinholes at the pattern maxima and subtracted. Separation of
+  in-focus and out-of-focus light by *position* is the ancestor of the haze
+  basis of section 2.3.
+- **Improved pRESOLFT reconstruction** (Chmyrov et al. 2017): more accurate
+  localization of the pattern nulls, background elimination by spatial
+  bandpass filtering, and "strategies that incorporate complete image
+  formation models". **To read before Phase 5:** it is the closest prior art
+  to the full-model reference of section 2.1, and its findings on the
+  complete model have to be compared with E5.
+- **MoNaLISA** (Masullo et al. 2018): a digital Gaussian pinhole of 250 nm
+  FWHM (about λ/2NA) per focus, photons assigned to the scan pixel,
+  explicitly without a priori conditions. **3D pRESOLFT** (Bodén et al. 2021):
+  emission re-assigned per pixel by least-squares fitting. **Extended-field
+  MoNaLISA** (Casas Moreno et al. 2023): the ImSwitch reconstruction module.
+  These are the isolated-fit estimator this document starts from.
+- **Multifocal SIM**: digital pinholing, pixel reassignment (factor 0.5 for
+  diffraction-limited foci) and deconvolution (York et al. 2012); joint
+  Richardson–Lucy on the widefield image-formation model, "particularly well
+  suited for noise corrupted data" (Ströhl & Kaminski 2015); a 2025 review of
+  multifocal-ISM reconstruction (Laser & Photonics Reviews) describes the
+  standard workflow as background and noise preprocessing → calibration of
+  the multifocal array → pixel reassignment → physics-informed
+  deconvolution, and notes that background suppression is what alleviates
+  crosstalk. Zeiss Lattice SIM reconstructs a lattice-of-spots illumination
+  scanned through its phases in the Fourier domain (generalized Wiener
+  filter, SIM²): the Fourier-domain sibling of the two-stage placement,
+  practical when the pattern has few harmonics, which a RESOLFT-confined
+  pattern does not.
+- **Image scanning microscopy**: the optimum reassignment factor is not 1/2
+  when excitation and detection PSFs differ (Sheppard et al. 2020); each
+  detector element's PSF is a probability density and reassignment is a form
+  of maximum-likelihood restoration (Sheppard et al. 2021); adaptive pixel
+  reassignment measures the shift vectors from the data and finds them
+  shrinking with STED power (Castello et al. 2019; Koho et al. 2020) — the
+  experimental counterpart of E3a's `α → 0` for confined foci. Multi-image
+  deconvolution (Zunino et al. 2023) is the maximum-likelihood formulation
+  (a multi-detector Richardson–Lucy from the Kullback–Leibler divergence); it
+  outperforms reassignment in resolution and SNR but needs the PSFs. s²ISM
+  (Nature Photonics 2025) inverts the physical model including its axial
+  content and obtains optical sectioning from a single plane. Self-tuning
+  regularization (Agostoni et al. 2026) adds ℓ1 / TV penalties to the
+  multi-frame Poisson likelihood and picks the regularization weight by
+  residual whiteness, without ground truth. Autocorrelation inversion (Ancora
+  et al. 2024) reconstructs blind, without any PSF.
+- **Richardson–Lucy without regularization is ill-convergent**: the
+  Cramér–Rao bound diverges for spatial frequencies approaching the cutoff
+  (Liu, Panezai, Wang & Stallinga 2025), so plain RL with a fixed iteration
+  count is not a defensible final step.
+
+### 7.2 What this plan says that the literature supports
+
+| claim (section) | support |
+|---|---|
+| calibrate → extract per focus → place → deconvolve (4.3) | the multifocal-ISM workflow of the 2025 review; the pRESOLFT / MoNaLISA lineage |
+| full-model Poisson ML / MAP is the reference optimum (2.1) | multi-image deconvolution (2023), jRL-MSIM (2015), s²ISM (2025) |
+| reassignment shift ≈ 0 for confined foci, 0.5 is wrong here (2.5) | Sheppard 2020; adaptive-reassignment shift vectors shrinking with STED power |
+| in-focus / out-of-focus separation by shape instead of a pinhole (2.3) | Chmyrov 2013 (by position), Focus-ISM (2022), s²ISM (2025) |
+| regularized deconvolution with a data-chosen strength, not plain RL (2.4) | Stallinga 2025; Agostoni 2026 |
+| spline least-squares reconstruction from scattered samples (2.4) | Arigovindan et al. 2005 |
+| geometry and spot model calibrated from the data, not typed in (4.1) | adaptive pixel reassignment; autocorrelation inversion; the 2017 null localization |
+
+### 7.3 What is new here, and therefore must be validated on rig data
+
+- The joint, crosstalk-free linear extraction over all foci of a frame as a
+  precomputed operator (2.3). Multi-emitter fitting in localization
+  microscopy and joint RL do the same implicitly; no pRESOLFT paper found
+  does it explicitly, and E1 / E5 are synthetic.
+- The sufficiency argument (2.2) that makes the two-stage pipeline
+  equivalent to full ML under Gaussian noise, and its measured price of
+  about 20% under Poisson noise.
+- Commensurability and coverage as the placement criteria for arbitrary
+  lattices, and B-spline least-squares gridding when they fail (1.1, 2.4).
+- Overscan-based self-calibration of per-focus gain, drift and the
+  stage-to-camera transform (2.6).
+
+### 7.4 What the plan should absorb from the literature
+
+1. Read Chmyrov et al. 2017 before Phase 5 and compare its complete-model
+   reconstruction and bandpass background elimination with E5 and the haze
+   basis.
+2. Replace "RL with early stopping" by a regularized multi-frame Poisson MAP
+   whose regularization weight is chosen by residual whiteness (Agostoni
+   et al. 2026); the `iterations` and `λ` knobs of section 5 then disappear.
+3. Treat the haze basis as the 2D proxy of an explicit axial model; s²ISM
+   shows that detector data carry the axial information to do it properly,
+   which is the route to true sectioning in the reference method.
+4. Keep a blind fallback (adaptive shift estimation, autocorrelation
+   inversion) for data whose spot model cannot be calibrated.
+5. Learned priors (Deep-MSIM 2023 and successors) sit outside the
+   assumption-free optimum: faster and cleaner images at the price of a prior
+   the MoNaLISA authors deliberately avoided; a separate decision.
+
+### 7.5 Is this "the" solution?
+
+In the estimation-theoretic sense there is exactly one optimum for a fully
+specified model — the maximum-likelihood (with a prior, MAP) estimate — and
+the literature has converged on it for ISM (multi-image deconvolution) and
+multifocal SIM (joint RL). This plan reaches that optimum's attainable part:
+the extraction sits at the Cramér–Rao bound of the linear model, the
+placement is exact or least-squares, and the full model is available as the
+reference. What no plan can claim: the model is never fully known (`h_e`,
+per-focus gains, drift, the out-of-focus physics), so the practical optimum
+is the best *calibrated* model, which is why most of the effort here goes
+into self-calibration and diagnostics; and beyond unbiased estimation, image
+quality depends on a prior, which is a scientific choice rather than a
+theorem. Within those limits the plan has the right shape, its established
+parts are established, and its new parts are the ones Phase 5 must confirm
+on data.
+
+## 8. Review of the plan, and what has been built
+
+Date: 2026-09-29. The review re-ran E1–E7 (the numbers reproduce to about
+2%; the experiments share one random generator, so a number depends on which
+experiments ran before it) and added the checks of E8, which has its own
+generator. Where this section and an earlier one disagree, this section
+holds.
+
+### 8.1 Corrections to the analysis
+
+**R1 — The noise gain belongs to the footprint, not to the joint fit.** E5a
+compares the joint fit on all pixels with the isolated fit at 1.5 σ, which
+for a 1.3 px spot is 9 pixels. At equal reach the two have the same error
+(E8a, relative RMSE against `S ∗ h_e`):
+
+| reach | pixels per focus | isolated | joint |
+|---|---|---|---|
+| 1.5 σ | 9 | 0.276 | 0.276 |
+| 2.0 σ | 21 | 0.119 | 0.119 |
+| 2.5 σ | 37 | 0.093 | 0.093 |
+| 3.0 σ | 45 | 0.090 | 0.090 |
+| 4.0 σ | 89 | 0.084 | 0.084 |
+| all pixels, one constant | 144 | — | 0.082 |
+
+The "3.3× lower RMSE" is the step from 1.5 σ to the whole cell. What the
+joint fit contributes is the removal of crosstalk, which is what makes the
+wide footprint safe when the foci are close: at the standard geometry
+(5.5 σ between foci) the isolated fit carries a ghost of the image one
+period away of 0.7 counts rms at 2.5 σ, 2.2 at 3 σ and 14 at 4 σ, on
+amplitudes of 100–300 (E8b, first row). At the 9.2 σ spacing of E5 there is
+no crosstalk to remove. The summary's claim should read: *widen the
+footprint to 2.5–3 σ, which lowers the amplitude noise 2.2–2.5×, and fit
+jointly so that the wider footprint brings no ghost.*
+
+**R2 — "Zero bias" is true by construction, and the haze term is fragile.**
+In E1 the frames are generated from the model that is then fitted, so the
+joint fit's bias of 1e-12 says that the algebra is right, not that the
+estimator is robust. With a model that is not the truth (E8b, rms bias in
+counts, isolated / joint):
+
+| scene | 1.5 σ | 2.5 σ | 3.0 σ | 4.0 σ |
+|---|---|---|---|---|
+| spot sigma 3% too wide | 6.5 / 6.6 | 0.4 / 0.6 | 4.0 / 1.1 | 18 / 1.9 |
+| centres off by 0.05 px rms | 1.2 / 1.1 | 0.9 / 0.2 | 2.3 / 0.2 | 14 / 0.15 |
+| background gradient of 0.3 per px | 0.15 / 0.13 | 0.7 / 0.05 | 2.3 / 0.2 | 14 / 0.4 |
+| Gaussian haze, σ_h = 6 px, not modelled | 3.3 / 3.4 | 5.7 / 6.0 | 7.3 / 7.7 | 16 / 9.1 |
+| the same haze, modelled with σ_h = 5 | 3.3 / 7.7 | 5.7 / 10 | 7.3 / 11 | 16 / 11 |
+| the same haze, modelled with σ_h = 8 | 3.3 / 1.8 | 5.7 / 2.6 | 7.3 / 3.1 | 16 / 3.5 |
+| Lorentzian haze, modelled with a Gaussian of 6 | 4.1 / 3.5 | 5.0 / 4.4 | 4.4 / 4.8 | 8.6 / 5.1 |
+
+Three consequences. The joint fit is the more robust estimator at every
+reach of 2.5 σ and above, which supports the plan. With haze in the frame
+the reach is *not* chosen by noise alone: the bias of the constant-only
+model grows with the footprint, as section 2.3's own table shows (3.9 to
+8.7). And a haze term of the wrong width is worse than no haze term and a
+small footprint: a haze model that is 17% too narrow more than doubles
+the bias. So
+the haze term is off by default, its width is fitted to the mean frame and
+never typed in, it is only used when it removes at least a fifth of the
+residual, and the default reach is 2.5 σ, not 3. The fit's residual is
+part of the result: it is what shows a wrong model.
+
+**R3 — The joint estimator is not a gather and a dot product over the
+footprint.** The weights of a focus reach under its neighbours' spots (E8c):
+cut to the focus' own 116 pixels they are biased by 1.3 counts, and they
+need the 990 pixels of the focus and its eight neighbours to get to 0.01.
+"Exactly the cost of today's fast Gauss" holds for the isolated fit only.
+Nor do interior foci share weights per sub-pixel phase: with a period of
+11.05 px and measured centres every focus has its own phase. The
+implementation applies the estimator through the normal equations instead:
+one sparse product `Dᵀ I` and one pre-factorized sparse solve per frame,
+exact, with no truncation. Measured on one CPU core (NumPy and SciPy):
+
+| frame | foci | build | per frame |
+|---|---|---|---|
+| 464² | 1764 | 0.13 s | 1.1 ms |
+| 1024² | 8649 | 0.7 s | 5.6 ms |
+| 2048² | 34225 | 4.3 s | 21 ms |
+
+**R4 — The amplitude covariance is diagonal for spots, not with haze.**
+Neighbouring amplitudes correlate at 0.004 with constants in the model and
+at −0.12 with the haze term (E8c). It does not change stage 2, because
+neighbouring foci of one frame land a period apart, but equation (5)'s
+"diagonal to 5e-4" is a statement about `GᵀG` alone.
+
+**R5 — Commensurability and coverage, for any pair of step vectors.** Section
+1.1 states the criterion for steps along the camera axes. In general, with
+`E` the matrix of the two scan step vectors and `A` the lattice matrix: the
+scan is commensurate iff `N = E⁻¹A` is an integer matrix; the raster pixels
+then fall into `|det N|` classes that the lattice maps onto each other, and
+the scan covers the sample exactly once iff its positions hit every class
+once. That is an integer computation (`placement.coverage`), it replaces the
+area ratio, and it covers the brick domains: for the diamond cell 32 × 16
+and 16 × 32 steps both tile, 64 × 8 steps of the same area do not. It also
+gives the acquisition rule the plan lacks: **a scan along the lattice
+vectors, `d = i·a1/n1 + j·a2/n2`, is commensurate and covers once for every
+lattice.** Its raster is sheared, and is resampled to square pixels once,
+after the reconstruction. E4's rotated hexagonal case fails because of its
+scan, not because of the gridding: 5.5% of the raster receives no sample,
+and no interpolation recovers that (E8d). On the synthetic scans the rotated
+hexagonal lattice scanned along its vectors reconstructs by placement to
+3e-4; scanned along the camera axes it grids to 1e-2 and leaves the holes.
+
+**R6 — The reference diamond recording is not commensurate by its nominal
+numbers.** 32 steps of 35 nm are 1120 nm; the brick domain of a 10.41 px
+diamond at 77 nm per pixel is 1133.6 nm wide (E8e). The mismatch is 1.2%,
+outside the 1% at which section 5 locks the output pitch to the lattice, so
+the plan's default would have gridded this recording on the metadata step
+with a 13.6 nm strip of every cell missing. Either the pixel is 76.1 nm, or
+the step is 35.4 nm, or the strip really is unscanned. The lock tolerance
+is 2% now, which assumes the first two; which of the three it is has to be
+settled on the rig, by comparing the seams of the two reconstructions.
+Phase 1's test "coverage exactly one everywhere" holds for the locked step
+only.
+
+**R7 — The gridding penalty is the roughness, not the coefficient norm.**
+`λ‖c‖²` pulls the surface to zero where samples are thin; `λ‖Δc‖²`
+continues it smoothly (E8d: 0.059–0.062 against 0.089 on the covered
+pixels). At `λ = 1e-3` the roughness penalty attenuates the finest structure
+by a tenth, so the default is `1e-4`, which passes noise through on the
+raster. Pixels without samples are NaN in the result.
+
+**R8 — The spot calibration has to be joint as well.** Fitted one focus at a
+time on the mean frame, the spots come out 0.5–3% narrow, because the
+neighbours' tails pass for background, and 10% narrow with a square window
+on the diamond lattice, whose neighbours sit in the window's corners.
+`calibrate_spot_model` fits all foci jointly, takes every focus' neighbours
+out, and measures it then: 1.9992–1.9998 px for 2.0 px on all four test
+lattices.
+
+**R9 — The variance plane is a white-noise estimate.** `σ² ‖w_f‖²` with `σ`
+from the fit's residual is right for camera noise and 1.6× too low in
+variance for the photon-limited synthetic scans, because photon noise is
+largest under the spots, where the weights are. The plan's
+`Σ w_f² var` needs the camera's gain and offset; they can be read from the
+data instead, by fitting `var = g·μ + s` to the squared residuals against
+the fitted frame (a photon-transfer curve from the residuals) and
+propagating it through the weights. Not built yet.
+
+**R10 — Deconvolution.** The PSF of the two-stage image is not `h_e` but
+`h_e(u) · (w ⋆ h_d)(u)`, slightly narrower (E3b: 60.4 nm for a 63.5 nm
+`h_e`), and that is the kernel to deconvolve with. Section 7.4 replaces
+Richardson–Lucy with a fixed iteration count by a regularized estimate
+whose strength the data choose; sections 4.4 and 5 still describe the
+former and should be read with 7.4.
+
+**R11 — The plan builds on a branch that is not in `main`.**
+`feat/monalisa-fastgauss-lattice-sweep` left `main` at `3dc71e2b` and is 373
+commits behind it. Findings B1–B4 and B8–B10 are about code that `main`
+does not have. The pipeline is therefore built on `main` as modules of its
+own, and takes from the branch only `lattice.py`. Its parity tests are
+against what `main` has: `calculate_gaussian_lsq_weights` and
+`get_1d_indices`. Nothing else of the branch is needed; whether its sweep
+and its ISM port are brought to `main` is a separate decision.
+
+**R12 — Two statements of the summary need their conditions.** The
+decomposition into two stages is exact for Gaussian noise *and* a spot shape
+that does not depend on the specimen. And the extraction reaches the
+Cramér–Rao bound for white noise; under photon noise it is within the 20%
+of E2.
+
+### 8.2 What has been built
+
+All on `main`'s code, NumPy and SciPy only, under
+`imswitch/improcess/reconstructors/monalisa/`:
+
+| module | content | tests (`imswitch/improcess/_test/`) |
+|---|---|---|
+| `lattice.py` | from the branch, plus `indices_of` and `fit_to_points` (the real-space regression of section 2.6) | `test_monalisa_lattice.py` |
+| `spot_model.py` | `calibrate_spot_model`: shared width, per-focus centre and width with the neighbours taken out, smooth polynomial field, residuals | `test_monalisa_spot_model.py` |
+| `extraction.py` | `ExtractionOperator`: joint or isolated, constant and haze background, variance weighting, pixel mask, residual, variance gain; `calibrate_haze_sigma` | `test_monalisa_extraction.py` |
+| `placement.py` | `commensurability`, `coverage`, `lock_step_to_lattice`, `OutputRaster`, `place_nearest`, `grid_bspline`, `place` | `test_monalisa_placement.py` |
+| `pipeline.py` | `prepare_geometry` and `reconstruct_stack` | `test_monalisa_lattice_pipeline.py` |
+
+The smooth field is a polynomial of order 3, not a spline: it holds an
+affine map and the lowest radial distortion term with ten coefficients per
+quantity, and it extrapolates to the foci at the frame edge that cannot be
+measured themselves.
+
+What the tests establish, on synthetic scans with a known specimen:
+
+| claim | result |
+|---|---|
+| joint fit, crosstalk bias at reach 1.5–5.5 σ | < 1e-3 counts |
+| isolated fit, the same | 0.06 / 0.9 / 2.8 / 17 counts at 1.5 / 2.5 / 3 / 4 σ (E1) |
+| predicted amplitude noise | 4.77 / 2.18 / 1.91 / 1.82 at 1.5 / 2.5 / 3 / 4 σ (E1), and equal to the measured noise |
+| isolated mode against `calculate_gaussian_lsq_weights` | equal to 1e-8 |
+| placement against `get_1d_indices`, four orientations | identical arrays |
+| rectangular, hexagonal, diamond, rotated hexagonal along its vectors | lattice detected, spot width to 0.5%, placed exactly, relative RMSE < 2e-3 |
+| nominal step 1% off | locked to the lattice, placed exactly |
+| foci 0.3 px off the ideal lattice | measured centres lower the error more than fivefold (E7) |
+| footprint 2.5 σ against 1.5 σ, photon noise | error more than halved, joint and isolated alike |
+
+### 8.3 What comes next
+
+In the order of section 4.4, with the corrections above:
+
+1. **`ScanFrame`** (Phase 1): step vectors and scan positions of every frame
+   from the resolved acquisition layout. The eight orientation candidates
+   and their score are built (`scan_frame.py`, section 9.1 D5).
+2. **Wiring** (Phase 4): `reconstruct_stack` behind the reconstructor plugin
+   as a method of its own, next to the existing fast Gauss; the live session
+   after that. Nothing of the existing paths is removed before the rig
+   comparison.
+3. **Variance under photon noise** (R9) and the CuPy backend of the
+   extraction (a sparse product and a triangular solve).
+4. **Rig validation** (Phase 5), which now has four questions of its own:
+   the pixel size against the step of the diamond recording (R6); the reach
+   at which real haze starts to bias (R2); whether the fitted haze width is
+   stable between recordings; and the seams with measured against ideal
+   centres (R8, E7).
+
+## 9. The first recordings
+
+Date: 2026-09-29. Three recordings, reconstructed with
+`docs/monalisa_recording_check.py`, which runs the pipeline on a recording
+and prints what follows. The pipeline is not wired into ImSwitch; it stays a
+library and this script until it has seen more data.
+
+| recording | lattice | scan | frame |
+|---|---|---|---|
+| `aa_405a_60_c_rec_Green.hdf5` | square, 9.64 px | 18 × 18 steps of 35 nm | 616 × 624, nominal pixel 65 nm |
+| `normalscan.hdf5` | square, 11.0 px | 24 × 24 steps of 35 nm | 464 × 464, nominal pixel 77 nm |
+| `latticescan.hdf5` | square at 45° (diamond), 10.4 px | 16 × 32 steps of 35 nm | 464 × 464, nominal pixel 77 nm |
+
+All three reconstruct without a parameter typed in beyond the nominal pixel
+size. For `normalscan` a reconstruction by the existing software was at hand
+(`normalscan_rec.tiff`): the pipeline's image is the same image, in the same
+orientation, with a correlation of 0.94.
+
+### 9.1 What the recordings showed
+
+**D1 — The lattice detection locked onto the specimen.** A cell puts 20 times
+more power into the low spatial frequencies than the foci put into their
+lattice peaks, and the detection took the strongest peaks: a "lattice" of
+238 px. The peaks are now those that stand out against the spectrum at their
+own radius (a specimen spreads its power over all directions, a lattice does
+not: 57–63 against 3.8), the satellites that a specimen's modulation puts
+around every lattice peak are left out, and the basis is the pair of peaks
+that generates the others. The camera's fixed pattern also puts peaks on the
+axes of the spectrum; the pair that generates the others is not one of them.
+
+**D2 — The mean frame is not the image to calibrate on.** Its background is
+several times brighter than the foci (mean amplitude 4–40 counts on 110–230)
+and structured on their scale. The temporal variance of the frames shows
+what the scan modulates, which is the foci, and nothing that stands still:
+its spots are the squares of the real ones. Lattice and spot width are
+measured on it. The spot width comes out at 2.0–2.2 px on all three
+recordings (FWHM 310–400 nm), the value the fast Gauss path had as its
+default.
+
+**D3 — The centres of single foci depend on the specimen.** Even the
+brightest foci scatter by 0.4–0.8 px around the fitted lattice, without any
+order over the frame. A focus that is not tightly confined is imaged where
+its emitters are, and a cell that holds one filament at its edge has a spot
+that is off centre. A field fitted to such centres passed the significance
+test and was wrong: it moved foci by up to 2 px and gave widths from 1.0 to
+3.6 px. With the field, no measure improved on any recording and the
+reconstruction took three times as long. The default is the lattice and one
+width (`spot_mode="shared"`); the field is for a recording of a uniform
+specimen, which is the way to measure a distortion. Section 2.7's "the mean
+frame determines each focus' centre to 0.01–0.02 px" holds for the noise, not
+for a specimen.
+
+**D4 — The scan step is the lattice's, not the metadata's.** Locked to the
+lattice, the step implies a pixel of 76.28 nm (`normalscan`) and 76.21 nm
+(`latticescan`), two recordings with different lattices and scans, and
+65.35 nm for the third. The mismatch with the nominal numbers (1.15%, 1.32%,
+0.68%) is a pixel size that is not quite the nominal one; R6's strip of
+unscanned specimen is not there. All three scans cover their cell exactly
+once, the diamond by its 16 × 32 brick.
+
+**D5 — The orientation needs the squared differences.** The total variation
+of section 4.3 separated the right orientation from the next by 1–3%, within
+reach of the noise. The noise adds the same to the *squared* differences of
+neighbouring pixels in every orientation, so with those two orientations
+differ by the specimen alone: the right one is ahead by 0.48–0.52 of the
+whole range. Found: `-x+y` for the two recordings whose metadata say x
+forwards and y backwards, `+y+x` for the third.
+
+**D6 — The foci of these recordings are not confined.** The shift factor of
+section 2.5, measured on the frames by registering the image seen by the
+pixels at offset `d` from their focus against the image of the central
+pixels:
+
+| recording | `α` | along x | along y | `σ_e / σ_d` |
+|---|---|---|---|---|
+| `aa_405a_60_c_rec_Green` | 0.29 | 0.26 | 0.34 | 0.64 |
+| `latticescan` | 0.37 | 0.37 | 0.38 | 0.76 |
+| `normalscan` | 0.42 | 0.48 | 0.35 | 0.85 |
+
+Section 2.5 is right about confined foci (`α ≈ 0.05`) and these are not:
+their foci are nearly as wide as the detection PSF. For such foci the
+footprint is a pinhole and costs resolution: on `normalscan` the signal at a
+period of 233 nm falls to 0.31 of its power when the reach grows from 1.5 σ
+to 2.5 σ. Reassigning every pixel of a footprint to `q + α d` keeps both the
+noise of the wide footprint and the resolution of the small one; with
+`α = 0` it is the amplitude image, exactly. The pipeline measures `α` and
+reassigns when it is above 0.1. **Whether a recording is confined is
+something the recording says, and the pipeline reports.**
+
+**D7 — The brightness of the foci changes over a scan.** Averaged over
+hundreds of foci the amplitude of a frame does not depend on the specimen.
+It changes by 3–6% rms over a scan, smoothly: it falls towards the end of
+the scan, it is highest in the middle of a line, and the first frame of a
+line is up to 12% brighter than the others. A brighter frame is a brighter
+scan position in every cell. The gain is fitted as a smooth function of the
+position in the scan (a polynomial along each axis and a term for the first
+step of a line) and divided out.
+
+**D8 — A structured background tiles the image.** Where the static
+background has structure on the scale of the spot, a part of it has the
+shape of the spot, and the fit takes it for amplitude: the same in every
+frame, so that a focus' cell is too bright or too dark as a whole. On a
+synthetic scan with a background five times as bright as the foci the error
+is 29%. Within a cell nothing tells it from specimen; between cells the
+image is continuous and the offsets are not. They are read from the steps of
+the image at the cell borders, beyond what its slope makes expected, and
+taken off: the synthetic error falls to 2%, and the seams of the recordings
+from 1.35 to 1.24 and from 1.33 to 1.14.
+
+### 9.2 Results
+
+`tiling` is the trace of the lattice in the image's spectrum, `seams` the
+step at the cell borders over the step inside the cells; 1 is none of
+either. The ring correlation is between two reconstructions from disjoint
+halves of the camera pixels; at a period where two estimators both have
+signal, the one with the higher correlation has more of it.
+
+`normalscan`:
+
+| | tiling | seams | 350 nm | 233 nm | 175 nm | 140 nm |
+|---|---|---|---|---|---|---|
+| fast-Gauss-like (isolated, 1.5 σ) | 1.18 | 1.15 | 0.86 | 0.41 | 0.16 | 0.14 |
+| joint fit, 2.5 σ | 1.25 | 1.32 | 0.90 | 0.52 | 0.29 | 0.21 |
+| + frame gain | 1.19 | 1.35 | 0.90 | 0.52 | 0.29 | 0.21 |
+| + cell offsets | 1.18 | 1.24 | 0.89 | 0.50 | 0.28 | 0.21 |
+| + reassignment (default) | 1.19 | 1.08 | 0.95 | 0.73 | 0.34 | 0.13 |
+
+`latticescan` (diamond):
+
+| | tiling | seams | 350 nm | 233 nm | 175 nm | 140 nm |
+|---|---|---|---|---|---|---|
+| fast-Gauss-like (isolated, 1.5 σ) | 1.62 | 1.17 | 0.85 | 0.44 | 0.18 | 0.10 |
+| joint fit, 2.5 σ | 2.55 | 1.41 | 0.89 | 0.53 | 0.30 | 0.23 |
+| + frame gain | 1.48 | 1.33 | 0.89 | 0.52 | 0.28 | 0.21 |
+| + cell offsets | 1.43 | 1.14 | 0.88 | 0.50 | 0.28 | 0.21 |
+| + reassignment (default) | 1.35 | 1.05 | 0.94 | 0.71 | 0.30 | 0.10 |
+
+`aa_405a_60_c_rec_Green`:
+
+| | tiling | seams | 350 nm | 233 nm | 175 nm | 140 nm |
+|---|---|---|---|---|---|---|
+| fast-Gauss-like (isolated, 1.5 σ) | 1.06 | 1.01 | 0.61 | 0.17 | 0.08 | 0.05 |
+| joint fit, 2.5 σ | 1.29 | 1.02 | 0.83 | 0.36 | 0.19 | 0.12 |
+| + frame gain | 1.18 | 1.04 | 0.83 | 0.36 | 0.19 | 0.12 |
+| + cell offsets | 1.16 | 1.04 | 0.80 | 0.35 | 0.18 | 0.12 |
+| + reassignment (default) | 1.11 | 1.02 | 0.86 | 0.47 | 0.21 | 0.12 |
+
+One scan takes 25–32 s on one CPU core, most of it the reassignment.
+
+### 9.3 What the measures do not say
+
+- **The ring correlation does not see what both halves share.** The two
+  halves are of the same frames. Whatever is the same in all pixels of a
+  spot but differs from frame to frame is signal to it: the number of
+  fluorophores that happened to be on, a glitch of a scan line. The
+  amplitude images keep a correlation of 0.1–0.2 down to the shortest
+  periods, which is that and not resolution, and the recordings show single
+  scan lines that are off in every cell. A reassigned image spreads every
+  frame over several pixels and loses this plateau; at the periods below
+  175 nm the two cannot be compared by their correlation.
+- **Neither measure sees a blur.** The reassigned images look smoother than
+  the amplitude images, and are: their noise is correlated over the reach of
+  the reassignment. That they hold more signal at 350–175 nm is measured;
+  that they resolve what the amplitude image of a small pinhole resolves is
+  what the simulation says (section 9.4) and what a recording of beads or of
+  a known structure has to confirm.
+- **The cell offsets rest on the continuity of the image.** Next to the
+  saturated region of `latticescan` the default image has dark patches that
+  the image without the offsets does not have. Where the image is steeper
+  than its slope one pixel away says, the step is taken for an offset. They
+  also took noise for offsets, until section 10 (E3).
+
+### 9.4 What the simulation says
+
+The amplitude model of section 1 puts every spot on its focus, which is
+`α = 0` by construction. `make_physical_scan` (in the tests' synthetic
+helper) images the specimen itself through a scanned lattice of foci of
+width `σ_e` and a detection PSF of width `σ_d`. On it:
+
+| | `σ_e = 1.2`, `σ_d = 1.5` px | `σ_e = 0.35`, `σ_d = 1.5` px |
+|---|---|---|
+| `α`, true | 0.390 | 0.052 |
+| `α`, measured | 0.400 | 0.025 |
+| image of a point, amplitudes at 1.5 / 2.5 / 3 σ (FWHM, raster px) | 4.15 / 4.71 / 4.84 | 1.49 / 1.52 / 1.53 |
+| image of a point, reassigned at 1.5 / 2.5 / 3 σ | 4.39 / 4.57 / 4.58 | 1.57 / 1.60 / 1.61 |
+| theory, `2.355 σ_e σ_d / √(σ_e² + σ_d²)` | 4.41 | 1.61 |
+| error of the image under photon noise, amplitudes at 1.5 / 2.5 σ | 0.377 / 0.166 | 0.339 / 0.173 |
+| the same, reassigned at 2.5 σ | 0.083 | 0.150 |
+
+For wide foci the reassigned image has half the error of the amplitude image
+at the same reach, and its resolution does not depend on the reach. For
+confined foci it is the amplitude image with a little less noise. The
+amplitude image of a small footprint is narrower than the reassigned one
+(4.15 against 4.39), by the negative lobes of its weights and at more than
+four times the error.
+
+### 9.5 What changed in the plan
+
+| section | was | is |
+|---|---|---|
+| 2.3, 4.3 | calibrate on the mean frame | on the temporal variance of the frames (D2) |
+| 2.7, 5 | centre and width per focus, smooth-field prior | the lattice and one width; the field for uniform specimens (D3) |
+| 2.5, 3 (B3) | reassignment does not apply | it applies when the measured `α` says so (D6); B1–B3 stand as findings on the xrecon port |
+| 4.3 | orientation by total variation | by the squared differences (D5) |
+| 5 | bleaching correction, off | frame gain, smooth, on (D7) |
+| 2.6 | per-focus offsets not addressed | from the seams, on (D8) |
+| 5 | output pitch locked within 1% | within 2%; the recordings ask for 0.7–1.3% (D4) |
+
+Modules added to those of section 8.2: `scan_frame.py` (scan positions,
+orientation), `reassignment.py` (shift factor, reassignment), `frame_gain.py`,
+`cell_offsets.py`, `quality.py` (ring correlation, tiling and seam contrast),
+and `reconstruct_scan` in `pipeline.py`, each with its tests.
+
+### 9.6 What is open
+
+1. **Recordings with the OFF pattern at work.** The three are weakly
+   confined. A recording whose `α` measures below 0.1 is the case the plan
+   was written for, and has not been seen. *Seen since: section 10.*
+2. **A recording of beads or of a uniform layer**, for the resolution (9.3),
+   for the distortion field (D3) and for the per-focus gain of section 2.6.
+3. **The scan lines that are off** in the recordings: one line of frames
+   displaced or dimmed. Visible in the reference reconstruction as well; the
+   frame gain is smooth and does not take them out.
+4. **The variance plane** is still the white-noise estimate of R9, and the
+   reassigned image has none.
+5. **Speed.** 25–32 s per scan on one core. The extraction is 1–2 ms per
+   frame; the reassignment accumulates 50 samples per focus and frame and is
+   what a GPU is for.
+6. **`ScanFrame` from the acquisition layout**, then the plugin and the live
+   session (section 8.3), once the above is settled.
+
+## 10. A confined recording, and what sharpness costs
+
+Date: 2026-09-29. A fourth recording, `c02_rec_scan00_CAM.hdf5`: 576 frames
+of 540 × 540, 24 × 24 steps of 30 nm, square lattice of 9.26 px, the OFF
+pattern at work. It is the recording section 9.6 asked for first, and it
+brought a measurement the first three were not put to: the width of the
+filaments in the image.
+
+### 10.1 What the recording showed
+
+**E1 — It is confined, and the pipeline says so.** Shift factor 0.11 (0.14
+along x, 0.08 along y), `σ_e / σ_d = 0.35`, against 0.29–0.42 for the first
+three. The thinnest third of its filaments is 115 nm wide in the image; in
+the three unconfined recordings it is 116–158 nm.
+
+**E2 — The pixel size is not needed.** The metadata of this recording do not
+hold it. A scan that covers the cell of the lattice once has a step of
+`√(cell area / number of scan positions)`, which is then locked to the
+lattice as any nominal step is. It gives 77.74 nm per pixel for this
+recording and, for the first three, the 76.21, 76.28 and 65.35 nm they gave
+with the nominal pixel size typed in. `reconstruct_scan` takes `step=None`.
+
+**E3 — The cell offsets tiled the image they were to clear.** On this
+recording of thin filaments on a dark ground the offsets read from the cell
+borders were mostly the noise of the border pixels. A cell moved as a whole
+by that noise shows far more than the noise of its pixels did, and the
+default image came out in blocks, with a ring correlation at 600 nm of 0.61
+instead of 0.71. The offsets are now measured twice, from two halves of the
+border pixels: what the two measurements share is offset, what they differ
+by is noise, and the offsets are scaled by the share of offset in them. The
+share is 25% and 27% for the two recordings with little background and 78%
+and 87% for the two with much, and the blocks are gone.
+
+**E4 — The footprint sets the width of the image, on every recording.**
+Width of the mean profile across the isolated filaments, all of them and the
+thinnest third:
+
+| recording | isolated 1.5 σ | joint 2.5 σ | default (reassigned) |
+|---|---|---|---|
+| `c02` (confined) | 148 / 115 nm | 168 / 125 nm | 171 / 129 nm |
+| `aa_405a_60_c_rec_Green` | 150 / 116 nm | 174 / 137 nm | 175 / 141 nm |
+| `latticescan` | 184 / 153 nm | 216 / 178 nm | 209 / 172 nm |
+| `normalscan` | 189 / 158 nm | 227 / 194 nm | 221 / 186 nm |
+
+The small footprint gives filaments 12–17% narrower, the confined recording
+included, and the reassignment takes back little of it. This is not what
+the model of section 1 says, where the spot is one Gaussian and a confined
+focus is as sharp through any footprint, nor what the simulation of section
+9.4 says. A real spot has a core and a wider ground that belongs to the same
+specimen, and a small footprint with its constant takes the ground for
+background. A haze term does the same at a wide footprint and buys the same
+width at the same noise (139 nm at a noise of 11.2 with a haze of 3 px,
+against 148 nm at 11.6 for the small footprint): another place on the same
+curve.
+
+### 10.2 Sharpness is a filter's choice
+
+A footprint that gives a narrower image at more noise does what a
+sharpening filter does. So the question is not which footprint gives the
+narrower image, but which estimator has the least noise *at a given width*.
+Every image was passed through a Wiener filter that undoes a Gaussian blur
+(`sharpen.py`; two numbers, the blur and the noise-to-signal ratio), and the
+filter was varied. Noise at the width the unfiltered small footprint has:
+
+| recording | width | isolated 1.5 σ, unfiltered | isolated 1.5 σ, filtered | joint 2.5 σ, filtered | reassigned 2.5 σ, filtered |
+|---|---|---|---|---|---|
+| `c02` | 145–151 nm | 11.6 | 3.6–5.3 | 2.9–4.3 | 2.5 |
+| `normalscan` | 185–190 nm | 19.8 | 6.6–9.3 | not reached (201 nm at 9.3) | 5.8 |
+
+Three things follow.
+
+1. **The unfiltered small footprint is never the best.** At its own width a
+   filtered image has a third to a quarter of its noise. Most of that is the
+   filter's: it does not amplify the frequencies where there is only noise.
+2. **The wide footprint with reassignment is the best or equal.** On the
+   confined recording it has half the noise of the filtered small footprint
+   at the same width; on the unconfined one the two are within 15%.
+3. **The plan's first answer stands, by another argument.** Section 2.4 has
+   the estimator estimate and an explicit step sharpen. What the recordings
+   add is that the estimator's own width is not the resolution of the
+   recording, and that the width the old default had was a filter in
+   disguise.
+
+The default image with the filter `(1.5 px, 0.1)`, against the small
+footprint:
+
+| recording | isolated 1.5 σ: width, noise | default, sharpened: width, noise | noise ratio |
+|---|---|---|---|
+| `c02` | 148 / 115 nm, 11.6 | 148 / 115 nm, 2.8 | 4.1 |
+| `aa_405a_60_c_rec_Green` | 150 / 116 nm, 11.5 | 153 / 127 nm, 2.5 | 4.6 |
+| `latticescan` | 184 / 153 nm, 20.4 | 186 / 152 nm, 4.8 | 4.3 |
+| `normalscan` | 189 / 158 nm, 19.7 | 199 / 166 nm, 4.3 | 4.6 |
+
+`normalscan` reaches 190 / 154 nm with a regularization of 0.03, at a noise
+of 5.8. The sharpened image is a plane of its own in the result
+(`sharpen_sigma_px`); the estimate is not replaced by it.
+
+### 10.3 What this does not settle
+
+- **The noise is that of the pixels.** It is measured between two halves of
+  the camera pixels and does not hold what both halves share (section 9.3).
+  The ratios of 4 are ratios of pixel noise.
+- **A filtered image has filtered noise.** Its noise has a grain of the size
+  of the filter's pass band, which the eye can take for structure, and like
+  every sharpening it undershoots next to bright structures. A small
+  footprint undershoots as well; it does not say so.
+- **The width of a filament is not the resolution.** It holds the width of
+  the filament. The measure says which of two images of one specimen is the
+  sharper. The resolution needs a recording of beads or of a structure of
+  known size.
+- **The threshold of the reassignment.** The confined recording measures
+  0.09–0.11 depending on the detector offsets used, and the threshold is
+  0.1. Reassigning with so small a factor changes little (171 against 168
+  nm), so the decision is not critical, but it is not stable either.
+
+### 10.4 The pinhole stack: a check that needs no model
+
+On request (`pinhole_stack="raw"`) the result holds the raw frames assembled
+into one image per pixel of the footprint: for every pixel offset `d` within
+the reach of a focus, the values of the pixels at `d` from their foci, put
+where their foci were, frame by frame. Nothing is fitted, weighted or
+subtracted. The footprint of 2.5 σ makes 69 images for `c02`, the central
+pinhole first, then by distance.
+
+Every image shows the specimen. If one does not, the lattice, the scan or
+the orientation is wrong, and no estimator has had a hand in it. The images
+of the off-centre pinholes are dimmer, and displaced against the central one
+by the shift factor times their offset, which is how the shift factor is
+measured; with `pinhole_stack="shifted"` they are moved by that and
+coincide. A camera pixel that is stuck shows as one cell of one image that
+is flat: `c02` has one, at two pixels below and one to the right of a focus.
+
+The stack is as large as 69 reconstructions: 541 MB in single precision for
+`c02`. It is an output for looking at a recording, not for every
+reconstruction.
+
+The reconstructor gives the stack with its images moved to where they
+belong (`"shifted"`), so that they lie on each other and their mean
+projection is an image of the specimen: that of a widefield microscope, with
+the background and, in every cell, the scan positions whose frames were
+brighter. The offsets are counted from the camera pixel a focus falls in.
+
+## 11. The reconstructor in ImSwitch
+
+Date: 2026-09-29. The pipeline is a reconstructor of ImProcess,
+`monalisa-lattice`, *MoNaLISA lattice (experimental)*, beside the MoNaLISA
+reconstructor and not in its place
+(`imswitch/improcess/reconstructors/monalisa_lattice/`). It is loaded with
+*Tools → Load reconstructor*, or by naming `monalisa-lattice` among the
+`reconstructors` of a setup. It runs in a worker, with progress and
+cancellation, and through the headless workflows as any other.
+
+**What it takes.** A recording of one or several scans of the unit cell,
+`(frames, rows, cols)`. A recording with an acquisition layout is placed by
+it (section 11.1, added 2026-10-13): X and Y, Y and Z, X, Y and Z, each over
+time. A recording without one is one raster of `num_fast x num_slow` steps
+per stack, read from the acquisition attributes (a recording without them is
+taken for a square scan) unless the steps are set; several scans in one
+recording make a `T` axis. Recordings with line-step conditions are refused.
+
+**Parameters.** A 0 leaves a value to the recording.
+
+| group | parameter | default | |
+|---|---|---|---|
+| Scan | Steps, fast and slow axis | 0 | from the recording |
+| | Step (nm) | 0 | from the recording |
+| | Camera pixel (nm) | 0 | 0: the scan is taken to cover the cell once |
+| | Orientation | from the frames | or one of the eight |
+| Estimator | Background | constant | `none`, or `auto` for a haze term on evidence |
+| Corrections | Frame gain | on | section 9, D7 |
+| | Cell offsets | on | sections 9, D8 and 10, E3 |
+| | Reassignment | auto | `off`, or `fixed` with the shift factor below |
+| | Shift factor | 0 | used when fixed |
+| Outputs | Sharpened image | off | with its blur (1.5 px) and regularization (0.1) |
+| | Pinhole stack (sanity check) | off | section 10.4 |
+
+**What it gives.** The reconstruction is the result. The background of the
+fit, the sharpened image and the pinhole stack, where asked for, are layers
+of their own with their own contrast, hidden at first, and inputs a
+processor can take: the mean projection of the pinhole stack is the
+projection processor on the component `pinholes`. The images of the pinhole
+stack are moved to where they belong, so that they lie on each other; they
+are the raw pixels, with the background and the brightness of the frames
+in them. With the pinhole stack every layer has a `Pinhole` axis, along
+which the reconstruction is the same image, so that the slider sets every
+pinhole against it. What the pipeline read from the frames (lattice, spot,
+pixel size, orientation, gain, shift factor) goes to the results table and
+to the log.
+
+**Its pixel, and the MoNaLISA result beside it** (2026-09-30). The result
+is `(Y, X)`, or `(T, Y, X)` for several scans, with its pixel in µm: on the
+scale bar, in the panel's *Output pixel* row and in the results table. The
+MoNaLISA reconstructor's result is `(Dataset, Base, T, Z, Y, X)`, four of
+the axes of length 1, with its pixel in nm. Neither is wrong, and the two
+did not merge: Stack/Combine, Merge channels and the image calculator asked
+for the same axes and the same unit. They now forgive both, since neither
+is a difference in the pixels: singleton axes one input has and the other
+lacks are dropped from the combined result (the join axis of a
+concatenation is kept), and a length unit is converted before the scales
+are compared, the combined result taking the first input's unit. Shapes,
+labels and pitches that really differ are still refused, with the reason.
+
+**Dim recordings, and the frame the foci are read from** (2026-09-30).
+Three demo recordings of 2021 (`mito_06t`, `act_05t`, `vim_06ct`, 580 px,
+100 nm pixels, 18 × 18 steps) brought the reconstructor down on two of
+them with *No focus has enough footprint pixels inside the frame*. The
+lattice was not the trouble: it was found on all three, 9.65 px, 3600
+foci. The spot width was. The foci were read from the temporal variance
+of the frames (section 9: it shows them without the static background),
+and on the two dim recordings that variance is the noise of the camera,
+flat; the foci fitted one by one on it collapsed onto single pixels, to a
+width of 0.3 px, and a footprint that small has no pixels. Measured by
+the fraction of the image the foci explain (the shared-width fit against
+a constant per window):
+
+| recording | mean frame | variance frame |
+|---|---|---|
+| `mito_06t` | 0.25 | 0.04 |
+| `vim_06ct` | 0.42 | 0.08 |
+| `act_05t` | 0.75 | 0.59 |
+| `aa_405a_60_c` | 0.38 | 0.40 |
+| `c02_rec_scan00` | 0.43 | 0.33 |
+| `normalscan` | 0.43 | 0.68 |
+| `latticescan` | 0.13 | 0.35 |
+
+The pipeline now scores both frames and keeps the variance unless the
+foci explain less than half as much on it as on the mean frame
+(`choose_calibration_image`); the two dim recordings go to the mean
+frame, the other five stay where they were. The shared width is also
+held within its bounds when the foci fitted one by one leave them, so a
+frame of noise cannot collapse it. The results table says which frame
+was used and with what contrast (*calibration*).
+
+One more thing the three showed: their attributes say 35 nm steps, and
+18 steps of 35 nm are 630 nm, not the 965 nm of the cell. Taken at their
+word they leave 460 of 784 positions of the cell unvisited, and the
+orientation is read from a scan with holes in it (three different answers
+for three recordings of one microscope). With 54.4 nm steps the scan
+covers the cell exactly, the orientation is `-x-y` on all three with a
+clear lead, and the shift factors are 0.15 to 0.17, reassigned. The
+results table now says so when a scan leaves holes: *a step 1.56 × the
+one used (54.4 nm) would cover the cell once: check the recorded step*.
+The step to type into the panel is that one. The four earlier recordings
+are unchanged by all this: variance frame, shift factors 0.29 and 0.11 as
+in sections 9 and 10.
+
+**The found foci, on the raw frames.** The panel has *Show found foci*:
+while it is checked, the foci read from the recording are drawn over the
+raw-data viewer, as the localizer's *Preview detection* draws its
+candidates, with a line under the panel saying how many, on what lattice,
+how wide, from which frame and with what contrast. A recording without a
+pattern says why instead. It is the sanity check before a reconstruction:
+if the circles do not sit on the spots, nothing downstream will. The
+overlay is the same one the localizer uses; any reconstructor whose
+widget has the checkbox and that answers `detection_preview` gets it.
+
+**Two things the plugin's tests brought up in the pipeline.**
+
+- *A lattice read from its harmonics.* On a frame of a few periods the
+  fundamental peaks of the lattice fill the ring of the spectrum they are
+  measured against, miss the significance, and the lattice is read from its
+  harmonics: a lattice of half or a third of the period, which reconstructs
+  without a word, half of its "foci" being none. The level a peak is
+  measured against is now taken from the lower quartile of its ring; a
+  basis is divided where the spectrum has a stronger peak at a half or a
+  third of it; and a lattice finer than three widths of its spots is
+  refused. The four recordings and crops of them down to 128 px are read
+  right; of synthetic frames of 88 px one in four still is not, and is
+  refused rather than reconstructed. Frames below some ten periods are not
+  safe ground.
+- *The number of steps of a scan.* A scan of a length has one position more
+  than it has steps: 0.69 µm in steps of 30 nm are 24 frames, not 23. The
+  readings of the attributes are tried against the number of frames.
+
+### 11.1 The scan from the acquisition layout
+
+Date: 2026-10-13. A recording of the ML2 rig scanned Y in 19 steps of
+40 nm and Z in 25 planes of 40 nm, X not at all. The reconstructor read
+its `ScanTTL:Nx/Ny` as a 19 × 25 raster in the camera plane and
+assembled one image with the planes interleaved: 66 holes and 57 overlaps
+per cell, an orientation chosen with a lead of 0.05. The classic
+reconstruction of the same file, which places every frame by its recorded
+coordinate, was right.
+
+The scan now comes from the resolved acquisition layout when the recording
+has one (`monalisa_lattice/scan.py`, `layout_scan`): `scan_x` and `scan_y`
+are the in-plane axes, either of which may have one position; `scan_z` and
+`time` make the stacks, one per plane and timepoint; line-step conditions
+are refused as before, and a loop the reconstructor cannot place refuses a
+declared layout and declines an inferred one. The loop directions are
+applied by the one helper in `imcommon` that interprets them, as for the
+classic path and BeadRec.
+
+What the layout cannot say is how the stage lies against the camera. The
+classic path assumes the identity and happens to be right on the rig; the
+pipeline reads it from the frames, as for a raster, but by another measure.
+The roughness of the whole image does not decide a one-axis scan: along the
+other axis every pixel is another cell, and those differences, the same
+under every mapping, bury the seams (on the recording: 0.553 to 0.567 for
+all eight). The contrast of the cell borders along the scanned axes
+(`quality.seam_contrast`, now with an `axes` argument) does: 1.20 for the
+right sign against 1.75 to 1.91 for the rest, and the placed stack agrees
+with the classic reconstruction plane by plane (correlation 0.77 to 0.95 at
+a constant offset of one cell).
+
+A camera axis the recording does not step is one lattice period in the
+output raster (`pipeline.complete_step`, `axis_period`): one pixel per
+cell, the period as its pixel size (0.76 µm on the rig). Without a pixel
+size the scanned axis's step is the period over the steps; with one, the
+recorded step. The geometry is read once from the mean and variance of
+every frame of the recording — a plane with little in focus would read the
+lattice badly on its own — and the plane with the most modulation measures
+the shift factor for the rest. A one-axis scan cannot measure a shift
+factor, and does not try. The result carries `Z` and `T` axes with the
+plane step as the Z scale.
+
+The fast-Gauss method of the MoNaLISA reconstructor had the mirror-image
+limit: its live session streams contiguous X/Y rasters and refused Z
+planes outright. It now places everything else by the layout with the
+same extraction (`_fast_gauss_by_placement`), through the classic path's
+`coeffs_to_image_from_placement`, and agrees with the classic
+reconstruction on the same raster (correlation 0.62 to 0.82, no offset).
+
+### 11.2 Fewer knobs, and what the shift factor says about resolution
+
+Date: 2026-10-13. The panel lost its *Footprint* and *Fit foci jointly*
+entries. The footprint is 2.5 spot widths, which holds 96 % of a Gaussian
+spot and is where the sweeps stopped gaining; the joint fit is what makes
+a wide footprint safe, and the isolated fit stays in the library
+(`ExtractionOperator.build(joint=False)`) for the tests that compare the
+two, not as a choice.
+
+The fast-Gauss method of the MoNaLISA reconstructor, and its live session,
+now run the same joint fit (`gauss_processor.FastGaussExtractor`): the
+grid from the pattern finder, the spot width from the PSF FWHM and the
+pixel size, a constant background, all foci of a frame in one sparse
+solve, on the CPU or on the GPU (CuPy: the projector and the factorized
+normal matrix live on the device, a chunk of frames is one sparse product
+and one solve). The isolated per-focus fit with its footprint shells,
+circular pinhole and Gaussian-sigma override is gone, with the four panel
+entries that went with it. What separates the two reconstructors is now
+what the lattice one reads from the frames (lattice, spot width, shift
+factor, orientation by seams) and its corrections (gain, cell offsets,
+reassignment, placement checked against the lattice), not the estimator.
+
+The results table gains two rows from the measured shift factor. The spot
+on the camera is the emitting region of a focus imaged through the
+detection PSF, so for a specimen uniform over the focus (the mean frame of
+a scan is that average) `σ_spot² = σ_e² + σ_d²`, and with
+`α = σ_e² / (σ_e² + σ_d²)` (section 2.5) the effective excitation width is
+`σ_e = √α · σ_spot`. *excitation FWHM* is `2.355 σ_e` in nanometres when
+the camera pixel is known: the PSF of the placed amplitudes, and so the
+resolution to expect. *expected resolution* is the same, narrowed by
+`√(1 − α)` when the stack was reassigned. A shift factor within twice its
+own spread cannot tell the foci from confined ones; both rows then give
+the upper bound the noise allows. On the earlier XY recordings with
+shift factors of 0.11 to 0.29 and 220 nm detection this reads 80 to
+130 nm.
+
+**After review** (2026-10-14). Five corrections. (1) The variance frame
+was taken for modulation whenever the foci had contrast on it; on a dim
+recording the temporal variance is the shot noise of the mean, as wide as
+the mean, and widening it by √2 read a 2 px spot as 2.8 px. The widths on
+the two frames are now compared: modulation is narrower (ratio near
+0.71), noise is not (near 1), and past the midpoint 0.85 the mean frame
+is used (`SHOT_NOISE_WIDTH_RATIO`). The ML2 recording reads 0.71. (2) With
+the pixel size left automatic, `complete_step` divided the cell equally
+along both axes; a 22 × 11 scan of 35 and 70 nm steps is not that, and
+left 80 holes and 66 overlaps. The ratio of the recorded steps is known
+without the pixel size and is used (`step_aspect`). (3) The fast-Gauss
+placement path followed the layout's directions where the live session
+reads the orientation off the data, so one recording came out mirrored
+within its cells with two planes and not with one; it now chooses the
+signs by the seam contrast of the cell borders on the plane with the most
+signal, and warns when that mirrors the layout. (4) The panel's *Step* was
+ignored on the layout path. (5) A plane with no signal made the gain fit
+raise and the volume fail; it keeps a gain of one and the table says so.
+
+**From the rig** (2026-10-14). The fast-Gauss method was noisier than the
+lattice one by a third; its width came from the PSF FWHM parameter
+(220 nm, 1.2 px) where the foci measure 1.9 px on the mean frame. It now
+measures the width on the mean frame of the first stack
+(`gauss_processor.measure_spot_sigma`), as the lattice method calibrates,
+and falls back to the parameter when the fit sits on its bounds. Scales of
+the lattice result are nanometres like every MoNaLISA result's: napari
+keeps one world extent for the session, and a result in micrometres next
+to one in nanometres moved the scale bar a thousandfold. The found foci
+are drawn as dots. Line-step conditions make a `C` axis, each condition a
+stack placed by its coordinates (`LayoutScan.num_conditions`); several
+results consolidate along `T`.
+
+**Not in it yet.** Live reconstruction with the lattice pipeline; a GPU
+for it; a serpentine fast axis (the layout
+resolves it, but the gain of the frames is still fitted as if every line
+ran the same way).
+
+---
+
+## Appendix A — notation
+
+| symbol | meaning |
+|---|---|
+| `L`, `a1`, `a2`, `o` | illumination lattice, basis vectors, offset (camera px) |
+| `F`, `r_f` | foci inside the frame, their positions |
+| `s_k`, `d_k`, `R` | stage displacement of frame `k`, its camera-space image, stage-to-camera transform |
+| `q_{k,f} = r_f − d_k` | sample-space position probed by focus `f` in frame `k` |
+| `P = F − D` | the sampling set; `L`-periodic |
+| `h_e`, `σ_e` | RESOLFT effective PSF and its sigma |
+| `h_d`, `σ_d` | detection PSF and its sigma |
+| `g`, `σ_spot` | camera spot shape `h_d ⊗ h_e ⊗ pixel`, `σ_spot² = σ_d² + σ_e²` |
+| `A_{k,f}`, `ε_f` | spot amplitude, per-focus gain |
+| `G`, `N`, `W` | spot-shape design matrix, background basis, extraction weights |
+| `α = σ_e² / (σ_e² + σ_d²)` | ISM shift factor |
+| `Δx, Δy` | scan step = output raster pitch (camera px) |
+
+## Appendix B — experiments to tests
+
+Test files are under `imswitch/improcess/_test/`.
+
+| experiment | claim | regression test |
+|---|---|---|
+| E1 | joint fit: no crosstalk bias at any reach; predicted noise per reach; a haze of the modelled shape is removed | `test_monalisa_extraction.py` |
+| E2 | weighted fit variance ratio 1.08–1.35 for a peak of 200 over a background of 2 | `test_monalisa_extraction.py` (weighting) |
+| E3a | reassignment shift `α = σ_e² / (σ_e² + σ_d²)`; width gain ≤ 4% for `σ_e / σ_d ≤ 0.3` | not written: the ISM method is on the branch (R11) |
+| E3c | xrecon effective sigma = `sigma_px · floor(p/2)` | not written: as E3a |
+| E4 | exact placement when commensurate; B-spline least squares ≤ 0.03 for a 0.3% step mismatch; holes reported | `test_monalisa_placement.py` |
+| E5 | the footprint sets the noise (R1); two-stage + deconvolution against the full model | `test_monalisa_lattice_pipeline.py` (noise); the deconvolution is Phase 5 |
+| E6 | spot sigma recovered within 1% | `test_monalisa_spot_model.py` |
+| E7 | measured centres and widths; distortion field | `test_monalisa_spot_model.py`, `test_monalisa_lattice_pipeline.py` |
+| E8 | a haze of the wrong width is worse than a small footprint; joint weights reach under the neighbours; coverage of brick domains; step lock | `test_monalisa_extraction.py`, `test_monalisa_placement.py` |

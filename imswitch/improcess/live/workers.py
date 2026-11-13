@@ -80,6 +80,9 @@ class LiveStreamWorker(QtCore.QObject):
         self._logger = initLogger(self, tryInheritParent=False)
         self._running = False
         self._resume_event = threading.Event()
+        # Intentional processing pause. The stream keeps only its bounded raw
+        # buffer in flight and must not classify the blocked consumer as a stall.
+        self._consumer_paused = threading.Event()
         self._pending_chunks: list[Chunk] = []
         self._last_progress = None
         # Owned here (like _resume_event); the controller wires the process
@@ -109,6 +112,14 @@ class LiveStreamWorker(QtCore.QObject):
             [None] * raw_buffer.capacity if raw_buffer is not None else []
         )
         self._resume_event.set()
+
+    def set_consumer_paused(self, paused: bool) -> None:
+        """Thread-safe hint that downstream processing is intentionally paused."""
+        if paused:
+            self._consumer_paused.set()
+        else:
+            self._consumer_paused.clear()
+            self._last_progress = time.monotonic()
 
     @property
     def frames_per_stack(self) -> int | None:
@@ -176,15 +187,23 @@ class LiveStreamWorker(QtCore.QObject):
             chunks = self._source.poll()
             if chunks:
                 self._last_progress = time.monotonic()
-                for chunk in chunks:
+                for chunk_index, chunk in enumerate(chunks):
                     remaining = self._frames_per_stack - total
                     if remaining <= 0:
+                        # ``poll()`` may advance the source cursor for several
+                        # chunks at once.  Once TP0 is complete, every chunk
+                        # already returned by that poll belongs to the steady
+                        # stream and must be handed off rather than dropped.
+                        self._pending_chunks.extend(chunks[chunk_index:])
                         break
 
                     frame_count = int(chunk.data.shape[0])
                     if frame_count <= remaining:
                         buffered.append(chunk.data)
                         total += frame_count
+                        if frame_count == remaining:
+                            self._pending_chunks.extend(chunks[chunk_index + 1:])
+                            break
                         continue
 
                     buffered.append(chunk.data[:remaining])
@@ -195,11 +214,17 @@ class LiveStreamWorker(QtCore.QObject):
                         end=chunk.end,
                     )
                     self._pending_chunks.append(overflow)
+                    self._pending_chunks.extend(chunks[chunk_index + 1:])
+                    break
 
             elif self._source.is_complete():
                 break
 
             else:
+                if self._consumer_paused.is_set():
+                    self._last_progress = time.monotonic()
+                    self._sleep()
+                    continue
                 if self._stall_timeout_s is not None:
                     elapsed = time.monotonic() - self._last_progress
                     if elapsed > self._stall_timeout_s:
@@ -378,6 +403,11 @@ class LiveStreamWorker(QtCore.QObject):
             if self._interrupted():
                 return False
 
+            if self._consumer_paused.is_set():
+                # Intentional back-pressure while paused is not a writer stall.
+                start = time.monotonic()
+                continue
+
             if self._stall_timeout_s is not None:
                 elapsed = time.monotonic() - start
                 if elapsed > self._stall_timeout_s:
@@ -454,6 +484,11 @@ class LiveProcessWorker(QtCore.QObject):
         # happens to exceed the configured interval. Seeding here measures the
         # first interval from construction, identically on every machine.
         self._last_result_emit = time.monotonic()
+        # Cross-thread pause gate. ``process_chunk`` may block here, so resume
+        # cannot depend on a queued Qt call to this same worker thread.
+        self._pause_requested = threading.Event()
+        self._resume_processing = threading.Event()
+        self._resume_processing.set()
         # The viewer needs one whole result before incremental planes mean
         # anything -- that first result is the buffer they get written into.
         self._sent_initial_result = False
@@ -506,6 +541,27 @@ class LiveProcessWorker(QtCore.QObject):
             frames_committed=self._frames_committed, expected_frames=expected,
         )
 
+    def request_pause(self) -> None:
+        """Pause before processing the first frame of the next timepoint."""
+        self._pause_requested.set()
+        self._resume_processing.clear()
+
+    def resume_processing(self) -> None:
+        """Release an intentional timepoint-boundary pause."""
+        self._pause_requested.clear()
+        self._resume_processing.set()
+
+    def _wait_if_paused_at_boundary(self, index: int) -> bool:
+        if not self._pause_requested.is_set():
+            return True
+        if index <= 0 or index % self._frames_per_stack != 0:
+            return True
+        while self._pause_requested.is_set():
+            if QtCore.QThread.currentThread().isInterruptionRequested():
+                return False
+            self._resume_processing.wait(0.05)
+        return True
+
     def set_init(self, init_obj, params: dict | None) -> None:
         """Stash the first-stack payload for :meth:`begin_session` (call before
         ``moveToThread``)."""
@@ -550,6 +606,8 @@ class LiveProcessWorker(QtCore.QObject):
         wedges.
         """
         if QtCore.QThread.currentThread().isInterruptionRequested():
+            return
+        if not self._wait_if_paused_at_boundary(index):
             return
 
         # Reads the raw frame out of the shared RawDataBuffer and pushes it to

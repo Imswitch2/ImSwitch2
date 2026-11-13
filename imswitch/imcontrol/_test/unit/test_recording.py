@@ -244,6 +244,10 @@ def test_camera_lapse_single_file_appends_and_releases_between_points(
 
     path = tmp_path / f'camera_lapse_{detectorName}.{extension}'
     if saveFormat == SaveFormat.HDF5:
+        assert not path.exists(), 'single-file lapse is not yet published'
+        assert path.with_name(path.name + '.partial').exists()
+        recordingManager.publishPendingHdf5Lapse()
+        assert path.exists()
         container = h5py.File(path, 'r')
     else:
         container = zarr.open_group(str(path), mode='r')
@@ -4494,6 +4498,92 @@ def test_writerthread_preserves_order_and_count():
         assert (received[i] == i).all(), f"Frame {i} out of order"
 
 
+def test_writerthread_staged_hdf5_publishes_before_payload_locator(tmp_path):
+    """The writer closes before a public filename becomes discoverable."""
+    from imswitch.imcontrol.model.managers.hdf5_publication import (
+        Hdf5PublicationRegistry,
+    )
+
+    public = str(tmp_path / 'rec_scan0_CAM.hdf5')
+    registry = Hdf5PublicationRegistry()
+    working = registry.reserve(public)
+    with h5py.File(working, 'w') as handle:
+        handle.create_dataset('CAM/data', data=np.ones((1, 2, 2), dtype='uint16'))
+
+    storer = _FakeStorer()
+
+    class _Manager:
+        _hdf5Publication = registry
+
+        def registerPayloadLocators(self, generation, locators):
+            assert storer.finalized
+            assert os.path.exists(public)
+            assert not os.path.exists(working)
+            self.locator = locators['CAM']
+
+    manager = _Manager()
+    writer = WriterThread(
+        storer=storer,
+        fileDests={'CAM': working}, detectorNames=['CAM'],
+        shapes={'CAM': (2, 2)}, attrs={'CAM': {}},
+        singleMultiDetectorFile=False, singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={'CAM': working}, publicPaths={'CAM': public},
+        publishHdf5OnFinalize=True,
+        recordingManager=manager, recordingGeneration=3,
+    )
+    writer.start()
+    writer.wait_for_open()
+    writer.finish()
+    assert manager.locator.path == public
+    with h5py.File(public, 'r') as handle:
+        assert handle['CAM/data'].shape == (1, 2, 2)
+
+
+def test_writerthread_publication_failure_does_not_abort_finalized_data(
+        tmp_path, monkeypatch):
+    """A rename denial must not call the destructive abortStream handler."""
+    from imswitch.imcontrol.model.managers.hdf5_publication import (
+        Hdf5PublicationRegistry, Hdf5PublicationError,
+    )
+
+    public = str(tmp_path / 'rec_scan0_CAM.hdf5')
+    registry = Hdf5PublicationRegistry()
+    working = registry.reserve(public)
+    with h5py.File(working, 'w') as handle:
+        handle.create_dataset('CAM/data', data=np.ones((1, 2, 2), dtype='uint16'))
+    storer = _FakeStorer()
+
+    class _Manager:
+        _hdf5Publication = registry
+
+        def registerPayloadLocators(self, _generation, _locators):
+            raise AssertionError('publication failed; locators not complete')
+
+    def fail(*_args):
+        raise PermissionError('simulated concurrent access')
+
+    monkeypatch.setattr(os, 'rename' if os.name == 'nt' else 'link', fail)
+    writer = WriterThread(
+        storer=storer,
+        fileDests={'CAM': working}, detectorNames=['CAM'],
+        shapes={'CAM': (2, 2)}, attrs={'CAM': {}},
+        singleMultiDetectorFile=False, singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={'CAM': working}, publicPaths={'CAM': public},
+        publishHdf5OnFinalize=True,
+        recordingManager=_Manager(), recordingGeneration=4,
+    )
+    writer.start()
+    writer.wait_for_open()
+    with pytest.raises(Hdf5PublicationError, match='retained'):
+        writer.finish()
+    assert storer.finalized
+    assert not storer.aborted
+    assert os.path.isfile(working)
+    assert not os.path.exists(public)
+
+
 def test_writerthread_publishes_exact_locator_after_finalization():
     """The terminal locator describes the saved raw scan, not its preview."""
     storer = _FakeStorer(payloadInfo=StreamPayloadInfo(
@@ -5042,19 +5132,15 @@ def test_hdf5_streaming_swmr_readable(tmp_path):
         assert dataset.attrs['recording:frames_per_stack'] == 10
         assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
     
-    # Test with Hdf5LiveSource while writing=True
+    # Direct SWMR reads above establish the on-disk streaming contract.
+    # ImProcess deliberately disallows a second raw HDF5 handle while the
+    # recorder holds the writer open in this same process. This must not be
+    # mistaken for a file that is merely waiting to become readable.
+    from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+
     source = Hdf5LiveSource(detector_name=detectorName)
-    info = source.open(path)
-    assert info.expected_frames == 10
-    assert info.detector_name == detectorName
-    assert info.source_format == 'HDF5'
-    
-    chunks = source.poll()
-    assert len(chunks) > 0
-    total_frames = sum(c.end - c.start for c in chunks)
-    assert total_frames == 6
-    assert not source.is_complete()  # writing=True and cursor < expected_frames
-    source.close()
+    with pytest.raises(RawHdf5AccessConflict, match="new raw HDF5 reader"):
+        source.open(path)
     
     # Finalize
     storer.finalizeStream(
@@ -5072,7 +5158,10 @@ def test_hdf5_streaming_swmr_readable(tmp_path):
     
     # Test with Hdf5LiveSource after finalize
     source2 = Hdf5LiveSource(detector_name=detectorName)
-    source2.open(path)
+    info = source2.open(path)
+    assert info.expected_frames == 10
+    assert info.detector_name == detectorName
+    assert info.source_format == 'HDF5'
     chunks2 = source2.poll()
     total_frames2 = sum(c.end - c.start for c in chunks2)
     assert total_frames2 == 6

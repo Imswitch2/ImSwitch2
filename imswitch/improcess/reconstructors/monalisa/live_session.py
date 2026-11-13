@@ -6,13 +6,15 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 
 from .gauss_processor import (
-    DEFAULT_FOOTPRINT_NUM_RECTS,
     DEFAULT_GAUSSIAN_SIGMA_PX,
-    make_gauss_processor,
+    make_fast_gauss_extractor,
+    measure_spot_sigma,
 )
 from .localizer import localization_from_pattern, localizer
-from .result import MonalisaProcessingResult
+from .params import PRESET_LEGACY
+from .canonical_result import MonalisaResult
 from .scan_geometry import get_orientation
+from .spot_settings import fwhm_to_sigma_px
 
 try:
     import cupy as cp
@@ -94,10 +96,20 @@ class MonalisaLiveSession(StreamingSession):
         self._frame_inds_gpu = None
         # Timepoint currently being written; see live_plane().
         self._current_timepoint = 0
+        # Set whenever the T axis grows. The existing streaming contract already
+        # lets live_plane() return None to request a fresh whole-result snapshot;
+        # use that once after a shape change, then resume cheap plane updates.
+        self._full_result_required = False
+        self._logical_output_count = 0
 
     @staticmethod
     def _geometry_from_recorded_layout(stack_info):
-        """``(nx_s, ny_s, timepoints, linesteps)`` from the resolved layout.
+        """``(nx_s, ny_s, linesteps)`` for one recorded partition.
+
+        Logical lapse extent deliberately does not come from
+        ``placement.n_time``. A ``scanN`` partition correctly has one local time
+        iteration even when its enclosing recording has many time partitions;
+        that enclosing extent belongs to ``StackInfo.planned_timepoints``.
 
         ``None`` when there is no usable layout, or when an *inferred* one
         describes a frame order this path cannot assemble.
@@ -163,7 +175,6 @@ class MonalisaLiveSession(StreamingSession):
         return (
             placement.cols,
             placement.rows,
-            placement.n_time,
             placement.n_conditions,
         )
 
@@ -208,6 +219,7 @@ class MonalisaLiveSession(StreamingSession):
         data = init_obj.data
         attrs = init_obj.attrs
 
+        self._validate_unified_live_params(params)
         explicit_use_gpu = params.get("use_gpu")
         self.use_gpu = (
             bool(explicit_use_gpu)
@@ -253,14 +265,12 @@ class MonalisaLiveSession(StreamingSession):
                 (
                     self.nx_s,
                     self.ny_s,
-                    recorded_timepoints,
                     recorded_linesteps,
                 ) = resolved_geometry
                 # The layout outranks the ScanTTL attribute it may have been
-                # derived from.
+                # derived from for within-timepoint geometry only.
                 self.num_linesteps = recorded_linesteps
             else:
-                recorded_timepoints = None
                 self.nx_s, self.ny_s = self._resolve_scan_steps(
                     axis_startpos,
                     axis_length,
@@ -276,10 +286,8 @@ class MonalisaLiveSession(StreamingSession):
         self.num_frames_in_stack = (
             self.num_frames_per_condition * self.num_linesteps
         )
-        num_time_points = (
-            recorded_timepoints
-            if recorded_timepoints is not None
-            else self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        num_time_points = self._resolve_num_timepoints(
+            imswitch_meta, init_obj.stack_info
         )
         num_output_conditions = num_time_points * self.num_linesteps
 
@@ -304,14 +312,7 @@ class MonalisaLiveSession(StreamingSession):
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
 
-        num_rects = params.get(
-            "fast_gauss_footprint_num_rects",
-            params.get("num_rects", DEFAULT_FOOTPRINT_NUM_RECTS),
-        )
-        gaussian_sigma_px = self._resolve_gaussian_sigma_px(params)
-        pinhole_radius_px = self._resolve_pinhole_radius_px(params, gaussian_sigma_px)
-        fit_background = self._resolve_fit_background(params)
-        self.processor = make_gauss_processor(
+        self.processor = make_fast_gauss_extractor(
             loc_result.xp,
             loc_result.xo,
             loc_result.yp,
@@ -322,15 +323,23 @@ class MonalisaLiveSession(StreamingSession):
             self.ny_s,
             loc_result.num_rows,
             loc_result.num_cols,
-            num_rects=num_rects,
-            gaussian_sigma_px=gaussian_sigma_px,
-            pinhole_radius_px=pinhole_radius_px,
-            fit_background=fit_background,
+            gaussian_sigma_px=self._resolve_gaussian_sigma_px(params, working_data, loc_result),
+            fit_background=self._resolve_fit_background(params),
             use_gpu=self.use_gpu,
         )
+        # The device solve may have declined (no CuPy, or a factorization
+        # that failed); everything downstream follows the extractor.
+        self.use_gpu = bool(self.processor.use_gpu)
 
         orientation_indices = self._condition_frame_indices(0)
-        if (
+        manual_orientation = (
+            str(params.get("orientation_mode", "Auto")) in ("Manual", "Setup default", "Recorded")
+            and params.get("orientation")
+        )
+        if manual_orientation:
+            orientation = str(manual_orientation)
+            self._logger.info(f"Using manual scan orientation: {orientation}")
+        elif (
             orientation_indices.size < self.num_frames_per_condition
             or working_data.shape[0] <= int(orientation_indices[-1])
         ):
@@ -373,8 +382,9 @@ class MonalisaLiveSession(StreamingSession):
         # count made the napari scale ~ny_c/nx_c too small.)
         self.output_pixel_size_nm = (step_y_nm, step_x_nm)
 
+        self._logical_output_count = int(num_output_conditions)
         self.reconstructed = np.zeros(
-            (1, 1, num_output_conditions, 1, recon_rows, recon_cols),
+            (1, 1, self._logical_output_count, 1, recon_rows, recon_cols),
             dtype=np.float32,
         )
 
@@ -424,6 +434,49 @@ class MonalisaLiveSession(StreamingSession):
             axis_scales=axis_scales,
         )
 
+    def _ensure_output_capacity(self, required: int) -> bool:
+        """Grow logical T extent/capacity instead of dropping valid later data.
+
+        ``planned_timepoints`` is an allocation hint, not permission to reject
+        a timepoint. The internal array grows geometrically, while the logical
+        output extent grows exactly to the newest observed output index. A shape
+        change requests one fresh whole-result snapshot; afterwards the existing
+        single-plane live updates resume.
+        """
+        if self.reconstructed is None:
+            return False
+        required = max(1, int(required))
+        old_capacity = int(self.reconstructed.shape[2])
+        old_logical = int(self._logical_output_count or old_capacity)
+        logical_grew = required > old_logical
+        if logical_grew:
+            self._logical_output_count = required
+            self._full_result_required = True
+            try:
+                time_axis = self.scan_params["dimensions"].index("Timepoints")
+                self.scan_params["steps"][time_axis] = required
+            except (KeyError, ValueError, IndexError, TypeError):
+                pass
+
+        if required <= old_capacity:
+            return logical_grew
+
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._flush_hot_plane()
+
+        new_capacity = max(required, old_capacity * 2)
+        new_shape = list(self.reconstructed.shape)
+        new_shape[2] = new_capacity
+        grown = np.zeros(tuple(new_shape), dtype=self.reconstructed.dtype)
+        grown[:, :, :old_capacity] = self.reconstructed
+        self.reconstructed = grown
+
+        self._logger.info(
+            f"Expanded live output T capacity from {old_capacity} to {new_capacity} "
+            f"(logical extent {self._logical_output_count})"
+        )
+        return True
+
     def push(self, chunk: np.ndarray, start: int, end: int) -> None:
         """
         Process raw frames in the half-open range [start:end].
@@ -469,12 +522,7 @@ class MonalisaLiveSession(StreamingSession):
             # the timepoint from the global start and index frame_inds with
             # the LOCAL position within the stack.
             time_index = start // self.num_frames_in_stack
-            if time_index >= self.reconstructed.shape[2]:
-                self._logger.warning(
-                    f"Time index {time_index} exceeds allocated timepoints; "
-                    "skipping chunk"
-                )
-                return
+            self._ensure_output_capacity(time_index + 1)
 
             # The timepoint currently being filled; live_plane() hands this
             # one to the viewer. Frames arrive in order, so it only ever
@@ -520,20 +568,14 @@ class MonalisaLiveSession(StreamingSession):
         output_indices = acquisition_indices * self.num_linesteps + linestep_indices
 
         # live_plane() reads this; without it the viewer would sit on plane
-        # 0 for the whole run. Clamped so it can never name a plane that was
-        # never allocated, and guarded because an empty chunk has no max.
+        # 0 for the whole run. A valid later acquisition grows the output rather
+        # than being discarded because the initial plan was short.
         if output_indices.size:
-            self._current_timepoint = min(
-                int(output_indices.max()), self.reconstructed.shape[2] - 1
-            )
+            max_output_index = int(output_indices.max())
+            self._ensure_output_capacity(max_output_index + 1)
+            self._current_timepoint = max_output_index
 
         for output_index in np.unique(output_indices):
-            if output_index >= self.reconstructed.shape[2]:
-                self._logger.warning(
-                    f"Time/condition index {output_index} exceeds allocated output; "
-                    "skipping frames"
-                )
-                continue
             mask = output_indices == output_index
             pixel_indices = self.processor.frame_inds[physical_indices[mask]]
             flat_recon = self.reconstructed[0, 0, output_index, 0].reshape(-1)
@@ -589,24 +631,92 @@ class MonalisaLiveSession(StreamingSession):
         dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
         self._hot_plane_dirty = False
 
-    def _resolve_gaussian_sigma_px(self, params: dict) -> float:
-        """Fit-Gaussian sigma in pixels.
+    @staticmethod
+    def _validate_unified_live_params(params: dict) -> None:
+        """Reject unified options the legacy incremental Fast live path cannot honor.
 
-        An explicit ``fast_gauss_gaussian_sigma_px``/``gaussian_sigma_px`` > 0
-        wins; otherwise derive it from the optical PSF using the slow-path
-        convention ``sigma_px = PSF_FWHM_nm / (2.355 * pixel_size_nm)`` so the
-        fast and slow paths share one physical parameterization.
+        Patch 2 keeps the existing low-latency Fast live implementation. The
+        fully general lattice/corrections live path is intentionally deferred;
+        failing explicitly is safer than displaying an image reconstructed with
+        options the user selected but the live path ignored.
         """
-        explicit = params.get(
-            "fast_gauss_gaussian_sigma_px", params.get("gaussian_sigma_px", 0.0)
-        )
-        try:
-            explicit = float(explicit)
-        except (TypeError, ValueError):
-            explicit = 0.0
-        if explicit > 0:
-            return explicit
+        if "preset" not in params:
+            return
+        if str(params.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError(
+                "Legacy DLL mode is offline-only; use the separate classic "
+                "reconstructor for offline processing."
+            )
+        if str(params.get("preset", "")) == "DLL-equivalent":
+            raise ValueError("DLL-equivalent extraction is offline-only")
+        if str(params.get("preset", "")) == "Full":
+            raise ValueError(
+                "Full mode is offline-only. Select Fast for streaming; "
+                "the incremental engine may impose additional estimator limits."
+            )
+        # This older incremental engine uses a distinct rectangular Gauss
+        # extractor. Never pretend it implements the selected new Local or
+        # Joint extraction configuration; offline processing remains valid.
+        if "estimator" in params:
+            raise ValueError(
+                "Selected Gaussian estimator/footprint is offline-only in the "
+                "current streaming engine; use finite MoNaLISA reconstruction."
+            )
+        unsupported = []
+        if params.get("intensity_correction", False):
+            unsupported.append("Intensity correction")
+        if params.get("cell_offsets", False):
+            unsupported.append("Cell offsets")
+        if str(params.get("reassignment", "off")).lower() != "off":
+            unsupported.append("Reassignment")
+        if str(params.get("placement_mode", "Auto")).lower() != "auto":
+            unsupported.append("forced placement mode")
+        if params.get("variance_weighting", False):
+            unsupported.append("Variance weighting")
+        if params.get("sharpen", False):
+            unsupported.append("Sharpening")
+        if (
+            str(params.get("localization_mode", "Auto")) == "Manual"
+            and str(params.get("stagger_axis", "None")).lower() != "none"
+            and abs(float(params.get("stagger", 0.0))) > 1e-12
+        ):
+            unsupported.append("manual stagger")
+        if unsupported:
+            raise ValueError(
+                "The current live MoNaLISA session supports the Fast-compatible "
+                "rectangular path only; " + ", ".join(unsupported) +
+                " require the general live pipeline planned for the live-integration pass."
+            )
 
+    def _resolve_gaussian_sigma_px(self, params: dict, frames=None, localization=None) -> float:
+        """Spot width in pixels: measured on the frames when they are given
+        (:func:`.gauss_processor.measure_spot_sigma`), else from the optical
+        PSF as the classic path has it, ``PSF_FWHM_nm / (2.355 * pixel_size_nm)``."""
+        # Unified manual/default spot width is authoritative. Auto keeps the
+        # existing live measurement behavior until the general live pipeline
+        # is introduced.
+        if str(params.get("spot_width_mode", "")).lower().startswith("manual"):
+            return fwhm_to_sigma_px(
+                params.get("spot_fwhm", 220.0),
+                params.get("spot_fwhm_unit", "nm"),
+                params.get("pixel_size_nm"),
+            )
+        if frames is not None and localization is not None:
+            measured = measure_spot_sigma(
+                frames, localization.xp, localization.xo, localization.yp,
+                localization.yo, localization.nx_c, localization.ny_c,
+            )
+            if measured is not None:
+                nominal = self._resolve_gaussian_sigma_px(params)
+                self._logger.info(
+                    f"Spot width measured on the frames: {measured:.2f} px "
+                    f"(the PSF FWHM parameter would give {nominal:.2f} px)"
+                )
+                return measured
+            self._logger.warning(
+                "The spot width could not be measured on the frames; using the "
+                "PSF FWHM parameter"
+            )
         fwhm_nm = params.get("psf_fwhm_nm")
         pixel_size_nm = params.get("pixel_size_nm")
         try:
@@ -625,6 +735,15 @@ class MonalisaLiveSession(StreamingSession):
         ``_monalisa_pattern_params`` so it follows the parameter widget in the
         same way as the full SignalExtractor path.
         """
+        if str(params.get("localization_mode", "Auto")) == "Manual":
+            return localization_from_pattern(
+                row_offset=float(params["manual_offset_y_px"]),
+                col_offset=float(params["manual_offset_x_px"]),
+                row_period=float(params["manual_period_y_px"]),
+                col_period=float(params["manual_period_x_px"]),
+                num_rows=data.shape[-2],
+                num_cols=data.shape[-1],
+            )
         pattern = params.get("_monalisa_pattern_params")
         if pattern:
             return localization_from_pattern(
@@ -638,23 +757,9 @@ class MonalisaLiveSession(StreamingSession):
         return localizer(data)
 
     @staticmethod
-    def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:
-        """Circular pinhole radius = k * sigma (k from params; None disables)."""
-        mode = params.get("fast_gauss_footprint_mode")
-        if mode is not None and str(mode).strip().lower() != "circular pinhole":
-            return None
-
-        k = params.get("fast_gauss_pinhole_radius_sigma", 0.0)
-        try:
-            k = float(k)
-        except (TypeError, ValueError):
-            k = 0.0
-        return k * gaussian_sigma_px if k > 0 else None
-
-    @staticmethod
     def _resolve_fit_background(params: dict) -> bool:
         """Whether to fit a constant background (False = pure matched filter)."""
-        bg = str(params.get("bg_modelling", "Constant")).strip().lower()
+        bg = str(params.get("background", params.get("bg_modelling", "Constant"))).strip().lower()
         return bg not in ("no background", "none")
 
     def _resolve_num_timepoints(self, metadata: dict, stack_info) -> int:
@@ -664,6 +769,12 @@ class MonalisaLiveSession(StreamingSession):
         ``"null"``. Treat those values as absent instead of letting them reach
         the output-buffer shape.
         """
+        planned = self._coerce_positive_int(
+            getattr(stack_info, "planned_timepoints", None)
+        )
+        if planned is not None:
+            return planned
+
         for key in ("recording:num_timepoints", "Rec:LapseTime"):
             timepoints = self._coerce_positive_int(metadata.get(key))
             if timepoints is not None:
@@ -922,23 +1033,28 @@ class MonalisaLiveSession(StreamingSession):
         """
         if self.reconstructed is None:
             return None
+        if self._full_result_required:
+            # The viewer's existing result buffer cannot be resized by a single
+            # plane assignment. Returning None asks the generic worker to emit a
+            # whole snapshot, which replaces the same live result entry.
+            return None
 
         if self.use_gpu and CUPY_AVAILABLE:
             self._flush_hot_plane()
 
         index = self._current_timepoint
-        if not 0 <= index < self.reconstructed.shape[2]:
+        if not 0 <= index < self._logical_output_count:
             return None
         # Keep every axis (T has length 1) so the viewer can assign this
         # straight into the matching slice of its own buffer.
         return index, self.reconstructed[:, :, index:index + 1].copy()
 
-    def result(self) -> MonalisaProcessingResult:
+    def result(self) -> MonalisaResult:
         """
         Return a snapshot of the current reconstruction.
 
         Returns:
-            MonalisaProcessingResult wrapping the current output buffer.
+            MonalisaResult wrapping the current output buffer.
         """
         if self.reconstructed is None:
             raise RuntimeError("Session not initialized; call begin() first")
@@ -949,21 +1065,20 @@ class MonalisaLiveSession(StreamingSession):
         if self.use_gpu and CUPY_AVAILABLE:
             self._flush_hot_plane()
 
-        return MonalisaProcessingResult(
+        result = MonalisaResult(
             name=self.name,
-            data=self.reconstructed.copy(),
+            data=self.reconstructed[:, :, :self._logical_output_count].copy(),
             scan_params=self.scan_params,
             axis_labels=["Dataset", "Base", "T", "Z", "Y", "X"],
             output_pixel_size_nm=self.output_pixel_size_nm,
         )
+        self._full_result_required = False
+        return result
 
     def close(self) -> None:
         """Free optional GPU resources."""
         if self.use_gpu and CUPY_AVAILABLE:
-            if hasattr(self.processor, "x_interp"):
-                del self.processor.x_interp
-                del self.processor.y_interp
-                del self.processor.lsq_weights
+            self.processor = None
             self._hot_plane = None
             self._frame_inds_gpu = None
             cp.get_default_memory_pool().free_all_blocks()

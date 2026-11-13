@@ -13,6 +13,25 @@ module for that reason.
 """
 
 from typing import Any
+from pathlib import Path
+
+
+def selected_setup_path() -> Path | None:
+    """Return the active ImControl setup file, if selected and safe to resolve.
+
+    This module is the sole lazy ImProcess -> ImControl config adapter; other
+    ImProcess consumers should use it rather than import ImControl directly.
+    """
+    try:
+        from imswitch.imcontrol.model import configfiletools
+
+        options, _ = configfiletools.loadOptions()
+        name = str(getattr(options, "setupFileName", "") or "")
+        if not name or Path(name).name != name:
+            return None
+        return Path(configfiletools.getSetupFilePath(name))
+    except (ImportError, OSError, AttributeError):
+        return None
 
 
 def load_processing_config(logger: Any = None) -> dict[str, Any]:
@@ -60,7 +79,7 @@ def is_reconstruction_panel_enabled(processing_config: dict[str, Any]) -> bool:
 
 
 def is_actions_panel_enabled(processing_config: dict[str, Any]) -> bool:
-    """Return whether the ImProcess Actions dock should be shown at startup."""
+    """Return whether the ImProcess DATA processing footer should be shown at startup."""
     return bool(processing_config.get("actionsPanel", True))
 
 

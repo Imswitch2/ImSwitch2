@@ -15,6 +15,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     persist_layout_override,
     resolve_acquisition_layout,
 )
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     default_axis_labels,
@@ -73,6 +74,10 @@ class DataObj:
         self.darkFrame = None
         self._meanData = None
         self._file = file
+        # Handles supplied by callers (notably memory recordings) are shared
+        # resources.  Path-opened files belong to this DataObj and may be
+        # closed as soon as fully materialized pixels no longer need them.
+        self._ownsFileHandle = file is None
         self._data = None
         self._dataSource = None
         self._datasetName = datasetName
@@ -82,6 +87,8 @@ class DataObj:
         self._axis_scales = None
         self._scale_unit = None
         self._source_info = None
+        self._recordingLifecycle = None
+        self._recordingLifecycleReady = False
         self._acquisitionLayoutResolution = None
         self._acquisitionLayoutOverride = None
         self.sourceKind = "image"
@@ -130,6 +137,7 @@ class DataObj:
         if source is None:
             return None
         self._data = source.array.asarray()
+        self._detachMaterializedSource()
         return self._data
 
     @property
@@ -142,6 +150,8 @@ class DataObj:
 
     @property
     def data_handle(self):
+        if self._data is not None:
+            return self._data
         source = self.data_source
         return source.array if source is not None else None
 
@@ -152,7 +162,7 @@ class DataObj:
         if self._attrs is not None:
             return self._attrs
 
-        if self._file is None and self.dataPath is not None:
+        if self._data is None and self._file is None and self.dataPath is not None:
             try:
                 self.checkAndOpenData()
             except Exception:
@@ -213,7 +223,7 @@ class DataObj:
             )
             return self._acquisitionLayoutResolution
 
-        if self._file is None and self.dataPath is not None:
+        if self._data is None and self._file is None and self.dataPath is not None:
             self.checkAndOpenData()
         image = self._resolveImage() if self._file is not None else None
         if image is not None:
@@ -234,10 +244,18 @@ class DataObj:
         else:
             attrs = self._attrs or {}
             shape = np.shape(self._data)
-            detector = self._datasetName or "unknown"
+            detector = (
+                attrs.get("recording:detector_name")
+                or attrs.get("detector_name")
+                or self._datasetName
+                or "unknown"
+            )
             axis_labels = self._axis_labels
-            dataset_path = None
-            explicit_axes = False
+            dataset_path = (self._source_info or {}).get("dataset_path")
+            explicit_axes = any(
+                key in attrs
+                for key in ("ngff:axes", "tiff:axes", "axes", "_ARRAY_DIMENSIONS")
+            )
 
         # Remember what resolution was keyed on, so a persisted override can
         # be written against the same identity it will be read back with.
@@ -259,9 +277,16 @@ class DataObj:
     def recording_lifecycle(self):
         if self.sourceKind != "image":
             return None
-        if self._file is None and self.dataPath is not None:
+        if self._recordingLifecycleReady:
+            return self._recordingLifecycle
+        if self._data is None and self._file is None and self.dataPath is not None:
             self.checkAndOpenData()
-        return self._resolveImage().recording_lifecycle
+        if self._file is None:
+            return None
+        lifecycle = self._resolveImage().recording_lifecycle
+        self._recordingLifecycle = lifecycle
+        self._recordingLifecycleReady = True
+        return lifecycle
 
     def setAcquisitionLayoutOverride(self, layout, *, persist: bool = False) -> None:
         """Apply a validated user choice, optionally in a fingerprinted sidecar."""
@@ -352,7 +377,14 @@ class DataObj:
                 if self.data is not None:
                     self.__logger.debug('Data loaded')
             except Exception:
-                pass
+                self.__logger.exception(
+                    f"Failed to load data source {self.dataPath or self.name}"
+                )
+                # Error-path cleanup only. Successful loaded objects keep the
+                # existing lifecycle for now so the separate handle-lifetime
+                # issue remains reproducible.
+                self.checkAndUnloadData()
+                raise
 
     # --- what loading and previewing would cost --------------------------
 
@@ -502,23 +534,15 @@ class DataObj:
         pass
 
     def checkAndUnloadData(self):
-        if self._dataSource is not None:
-            try:
-                self._dataSource.close()
-            except Exception:
-                self.__logger.error('Error closing data source')
-
-        if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                self.__logger.error('Error closing file')
-
-        self._file = None
+        self._releaseBackingSource()
         self._data = None
-        self._dataSource = None
         self._attrs = None
-        self._resolvedImage = None
+        self._axis_labels = None
+        self._axis_scales = None
+        self._scale_unit = None
+        self._source_info = None
+        self._recordingLifecycle = None
+        self._recordingLifecycleReady = False
         self._acquisitionLayoutResolution = None
         self._meanData = None
         if self.sourceKind != "image":
@@ -582,9 +606,11 @@ class DataObj:
 
     def _applyResolvedImageMetadata(self, image):
         ndim = len(image.array.shape)
-        fallback_scales, fallback_unit = axis_scales_from_element_size(image.attrs, ndim)
-
         self._axis_labels = image.axis_labels or default_axis_labels(ndim)
+        fallback_scales, fallback_unit = axis_scales_from_element_size(
+            image.attrs, ndim, self._axis_labels
+        )
+
         self._axis_scales = image.axis_scales or fallback_scales or [1.0] * ndim
         self._scale_unit = image.scale_unit or fallback_unit or "px"
         self._source_info = {
@@ -592,6 +618,58 @@ class DataObj:
             "dataset_path": image.array_path,
             "source_format": image.source_format,
         }
+        self._recordingLifecycle = image.recording_lifecycle
+        self._recordingLifecycleReady = True
+
+    def _snapshotOpenSourceMetadata(self):
+        """Cache metadata needed after an owned backing file is detached."""
+        if self._file is None:
+            return
+        image = self._resolveImage()
+        if self._attrs is None:
+            if isinstance(self._file, h5py.File):
+                attrs = dict(self._file.attrs)
+                attrs.update(image.attrs)
+                self._attrs = attrs
+            elif _is_zarr_group(self._file):
+                attrs = dict(self._file.attrs)
+                attrs.update(image.attrs)
+                self._attrs = attrs
+            elif isinstance(self._file, tiff.TiffFile):
+                self._attrs = dict(image.attrs)
+
+    def _releaseBackingSource(self):
+        """Release this object's lazy source/file handles without dropping pixels."""
+        if self._dataSource is not None:
+            closer = getattr(self._dataSource, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    self.__logger.exception("Error closing data source")
+
+        if self._file is not None and self._ownsFileHandle:
+            # HDF5/TIFF handles own an explicit close method. Zarr groups/stores
+            # generally do not, and treating the absence of close() as an error
+            # produced a misleading log message every time Session metadata
+            # probing released a Zarr DataObj.
+            closer = getattr(self._file, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    self.__logger.exception("Error closing file")
+            self._file = None
+
+        self._dataSource = None
+        self._resolvedImage = None
+
+    def _detachMaterializedSource(self):
+        """Detach fully loaded path-backed data from its owned disk source."""
+        if self._data is None or not self._ownsFileHandle:
+            return
+        self._snapshotOpenSourceMetadata()
+        self._releaseBackingSource()
 
     def _ensureMetadata(self):
         if self.sourceKind != "image":
@@ -602,7 +680,7 @@ class DataObj:
         if self._dataSource is not None:
             return
 
-        if self._file is None and self.dataPath is not None:
+        if self._data is None and self._file is None and self.dataPath is not None:
             try:
                 self.checkAndOpenData()
                 return
@@ -648,7 +726,7 @@ class DataObj:
         source = resolve_dataset_source(path)
         path = str(source.path)
         if source.format_id == 'hdf5':
-            file = h5py.File(path, 'r')
+            file = open_raw_hdf5(path)
             datasetNames = dataset_names(file)
             if len(datasetNames) < 1:
                 raise RuntimeError('File does not contain any datasets')

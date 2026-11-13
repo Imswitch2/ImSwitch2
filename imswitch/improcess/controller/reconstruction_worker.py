@@ -43,15 +43,26 @@ class ReconstructionWorker(QtCore.QObject):
     """Run immutable reconstruction jobs away from the GUI thread."""
 
     progress = QtCore.Signal(object)
+    itemProgress = QtCore.Signal(int, int, object)  # 1-based item, total, local progress
+    resultReady = QtCore.Signal(object, object)  # (result, ReconstructionRun)
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(object)
     cancelled = QtCore.Signal(str)
 
-    def __init__(self, reconstructor, jobs, *, consolidate=False, parent=None):
+    def __init__(
+        self, reconstructor, jobs, *, consolidate=False, retain_results=True,
+        release_after_each=False, reuse_timepoint_calibration=False,
+        parent=None
+    ):
         super().__init__(parent)
         self._reconstructor = reconstructor
         self._jobs = tuple(jobs)
         self._consolidate = bool(consolidate)
+        self._retain_results = bool(retain_results) or self._consolidate
+        self._release_after_each = bool(release_after_each)
+        # Only one *logical timelapse* may reuse a first timepoint's resolved
+        # calibration. Independent Multi Data acquisitions are never coupled.
+        self._reuse_timepoint_calibration = bool(reuse_timepoint_calibration)
         self._token = CancellationToken()
 
     def request_cancel(self) -> None:
@@ -60,6 +71,7 @@ class ReconstructionWorker(QtCore.QObject):
 
     def _forward_progress(self, job_index, update):
         count = max(1, len(self._jobs))
+        self.itemProgress.emit(job_index + 1, count, update)
         overall = min(1.0, (job_index + update.fraction) / count)
         message = update.message
         if count > 1:
@@ -72,26 +84,50 @@ class ReconstructionWorker(QtCore.QObject):
     def run(self) -> None:
         results = []
         runs = []
+        reuse_overrides = {}
         try:
             self._token.check()
             for index, job in enumerate(self._jobs):
-                validator = getattr(self._reconstructor, "validate_source", None)
-                if callable(validator):
-                    validator(job.data_obj)
-                context = ReconstructionContext(
-                    progress_callback=lambda update, i=index: self._forward_progress(
-                        i, update
-                    ),
-                    cancellation_token=self._token,
-                    memory_budget_bytes=job.memory_budget_bytes,
-                    confirmed_over_budget=job.confirmed_over_budget,
-                )
-                run = run_reconstruction(
-                    self._reconstructor, job.data_obj, dict(job.params), context=context
-                )
-                context.check_cancelled()
-                results.append(run.result)
-                runs.append(run)
+                try:
+                    validator = getattr(self._reconstructor, "validate_source", None)
+                    if callable(validator):
+                        validator(job.data_obj)
+                    context = ReconstructionContext(
+                        progress_callback=lambda update, i=index: self._forward_progress(
+                            i, update
+                        ),
+                        cancellation_token=self._token,
+                        memory_budget_bytes=job.memory_budget_bytes,
+                        confirmed_over_budget=job.confirmed_over_budget,
+                    )
+                    params = dict(job.params)
+                    if index and reuse_overrides:
+                        params.update(reuse_overrides)
+                    run = run_reconstruction(
+                        self._reconstructor, job.data_obj, params, context=context
+                    )
+                    context.check_cancelled()
+                    if (index == 0 and self._reuse_timepoint_calibration
+                            and len(self._jobs) > 1):
+                        capture = getattr(
+                            self._reconstructor, "finite_timepoint_reuse_overrides", None
+                        )
+                        if callable(capture):
+                            # Keep only calibration parameters, never an entire
+                            # first-timepoint result/array for the whole lapse.
+                            reuse_overrides = dict(capture(run.result, params) or {})
+                    self.resultReady.emit(run.result, run)
+                    if self._retain_results:
+                        results.append(run.result)
+                        runs.append(run)
+                finally:
+                    if self._release_after_each:
+                        releaser = getattr(job.data_obj, "checkAndUnloadData", None)
+                        if callable(releaser):
+                            try:
+                                releaser()
+                            except Exception:
+                                pass
 
             merged = None
             consolidation_error = None

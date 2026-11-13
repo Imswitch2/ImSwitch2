@@ -22,6 +22,9 @@ class LiveReconstructionController(QtCore.QObject):
     """
 
     sigFinished = QtCore.Signal()
+    sigFinalResult = QtCore.Signal(object)
+    sigPausedChanged = QtCore.Signal(bool)
+    sigTimepointProgress = QtCore.Signal(int)  # completed timepoints, 1-based
     # Emitted on the GUI thread, received on the process thread: a queued
     # marker that lands behind every frame already posted (see stop()).
     sigRequestDrain = QtCore.Signal()
@@ -41,6 +44,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._reconstructor = None
         self._source = None
         self._source_arg = None
+        self._source_dataset_name = None
         self._params = {}
         self._run_name = None
 
@@ -58,6 +62,10 @@ class LiveReconstructionController(QtCore.QObject):
         self._finishing = False
         self._stopping = False
         self._notify_on_stop = False
+        self._finish_emit_finished = True
+        self._shutdown_warning_pending = False
+        self._pause_requested = False
+        self._paused = False
 
     @property
     def is_running(self) -> bool:
@@ -71,6 +79,7 @@ class LiveReconstructionController(QtCore.QObject):
         params: dict | None = None,
         source_arg=None,
         name: str | None = None,
+        source_dataset_name: str | None = None,
     ) -> bool:
         """
         Start live reconstruction with the given reconstructor and source.
@@ -87,6 +96,10 @@ class LiveReconstructionController(QtCore.QObject):
                 (e.g. the timelapse folder) so each job lands in its own data
                 object instead of every run sharing one. Falls back to the
                 source's ``name`` attribute, then to ``"live"``.
+            source_dataset_name: Logical dataset identity recorded in provenance.
+                Lapse sources use the synthetic ``"time-lapse"`` identity so
+                Session can associate the persisted result with the whole logical
+                acquisition rather than one detector payload inside ``scan0``.
 
         Returns:
             ``True`` if the worker threads were started. For the streaming path
@@ -100,14 +113,24 @@ class LiveReconstructionController(QtCore.QObject):
         if self._running:
             self._logger.warning("Live reconstruction already running, stopping first")
             self.stop(graceful=False)
+            # Teardown is intentionally asynchronous: never overwrite the only
+            # references to QThreads that have not actually emitted finished yet.
+            if self._running:
+                self._logger.warning(
+                    "Previous live reconstruction is still stopping; start rejected"
+                )
+                return False
 
         self._reconstructor = reconstructor
         self._source = source
         self._source_arg = source_arg
+        self._source_dataset_name = source_dataset_name
         self._params = params or {}
         self._run_name = name
         self._stack_info = None
         self._finishing = False
+        self._pause_requested = False
+        self._paused = False
 
         # Streaming only. The directory watcher offers itself solely to
         # reconstructors declaring supports_streaming, so anything else
@@ -157,6 +180,54 @@ class LiveReconstructionController(QtCore.QObject):
         self._finishing = False
         self._stopping = False
         self._notify_on_stop = False
+        self._finish_emit_finished = True
+        self._shutdown_warning_pending = False
+        self._pause_requested = False
+        if self._paused:
+            self._paused = False
+            self.sigPausedChanged.emit(False)
+
+    @property
+    def is_paused(self) -> bool:
+        return bool(self._paused or self._pause_requested)
+
+    def pause(self) -> bool:
+        """Pause processing at the next timepoint boundary.
+
+        Acquisition may continue writing to disk. Already-prefetched frames stay
+        bounded by the raw buffer; the process worker stops before the next
+        timepoint and the stream worker's stall watchdog is suspended while the
+        pause is intentional.
+        """
+        if not self._running or self._finishing or self._stopping:
+            return False
+        self._pause_requested = True
+        worker = self._process_worker
+        if worker is not None:
+            worker.request_pause()
+        stream = self._stream_worker
+        if stream is not None:
+            stream.set_consumer_paused(True)
+        if not self._paused:
+            self._paused = True
+            self.sigPausedChanged.emit(True)
+        return True
+
+    def resume(self) -> bool:
+        """Resume a live run paused at a timepoint boundary."""
+        if not self._running or not self.is_paused:
+            return False
+        self._pause_requested = False
+        worker = self._process_worker
+        if worker is not None:
+            worker.resume_processing()
+        stream = self._stream_worker
+        if stream is not None:
+            stream.set_consumer_paused(False)
+        if self._paused:
+            self._paused = False
+            self.sigPausedChanged.emit(False)
+        return True
 
     def stop(self, *, graceful: bool = True, notify_finished: bool = False) -> None:
         """Stop live reconstruction and clean up threads.
@@ -184,6 +255,8 @@ class LiveReconstructionController(QtCore.QObject):
             return
 
         self._notify_on_stop = notify_finished
+        if self.is_paused:
+            graceful = False
 
         # Draining only means something while the process thread is alive to
         # run the marker; without this the watchdog would stall the teardown for
@@ -244,27 +317,80 @@ class LiveReconstructionController(QtCore.QObject):
         self._finish_run(emit_finished=self._notify_on_stop)
 
     def _shutdown_workers(self) -> None:
-        """Stop live workers, quit Qt thread event loops, and release the source."""
+        """Request worker shutdown without blocking the GUI thread.
+
+        QThread.quit() is asynchronous. The old implementation waited up to two
+        seconds per thread on the GUI thread and then cleared the references even
+        if a thread was still running. That could both freeze the UI and trigger
+        ``QThread: Destroyed while thread is still running``. References now stay
+        owned until the real ``QThread.finished`` signals arrive.
+        """
         if self._stream_worker:
             self._stream_worker.stop()
 
-        current_thread = QtCore.QThread.currentThread()
-        threads = (
-            ("Stream", self._stream_thread),
-            ("Process", self._process_thread),
-        )
-        for _, thread in threads:
+        for thread in (self._stream_thread, self._process_thread):
             if thread and thread.isRunning():
                 thread.requestInterruption()
                 thread.quit()
 
-        for name, thread in threads:
-            if thread and thread.isRunning() and thread is not current_thread:
-                if not thread.wait(2000):
-                    self._logger.warning(f"{name} thread did not stop in time")
+    def _workers_stopped(self) -> bool:
+        return all(
+            thread is None or not thread.isRunning()
+            for thread in (self._stream_thread, self._process_thread)
+        )
 
-        if self._source:
-            self._source.close()
+    @QtCore.Slot()
+    def _worker_thread_finished(self) -> None:
+        if self._finishing and self._workers_stopped():
+            self._complete_finish_run()
+
+    @QtCore.Slot()
+    def _warn_shutdown_pending(self) -> None:
+        if not self._finishing or self._workers_stopped():
+            return
+        if self._shutdown_warning_pending:
+            return
+        self._shutdown_warning_pending = True
+        running = []
+        if self._stream_thread is not None and self._stream_thread.isRunning():
+            running.append("stream")
+        if self._process_thread is not None and self._process_thread.isRunning():
+            running.append("process")
+        self._logger.warning(
+            "Live reconstruction thread shutdown is still pending: "
+            + ", ".join(running)
+        )
+
+    def _complete_finish_run(self) -> None:
+        """Release live resources only after both QThreads really stopped."""
+        if not self._finishing or not self._workers_stopped():
+            return
+
+        emit_finished = bool(self._finish_emit_finished)
+        stopped_threads = (self._stream_thread, self._process_thread)
+        try:
+            if (
+                self._is_streaming
+                and self._session is not None
+                and hasattr(self._session, 'close')
+            ):
+                self._session.close()
+            if self._source:
+                self._source.close()
+        finally:
+            self._running = False
+            self._stack_info = None
+            self._source = None
+            self._source_arg = None
+            self._source_dataset_name = None
+            self._reset_workers()
+            for thread in stopped_threads:
+                deleter = getattr(thread, "deleteLater", None)
+                if callable(deleter):
+                    deleter()
+
+        if emit_finished:
+            self.sigFinished.emit()
 
     def _finish_run(
         self,
@@ -278,38 +404,38 @@ class LiveReconstructionController(QtCore.QObject):
             return
 
         self._finishing = True
+        self._finish_emit_finished = bool(emit_finished)
+        self._shutdown_warning_pending = False
 
-        try:
-            if emit_result and result is not None:
-                if self._is_streaming:
-                    # The streaming run already owns a viewer entry, created on
-                    # its first result and updated ever since. Publishing on
-                    # sigResultProduced here would append a *second* entry for
-                    # the same job, so deliver the final snapshot down the same
-                    # live path and let it update that entry in place.
-                    self._commChannel.sigLiveResultUpdated.emit(result)
-                else:
-                    self._commChannel.sigResultProduced.emit(
-                        result, self._run_name or "Live Reconstruction"
-                    )
+        if emit_result and result is not None:
+            # Queue completion and Session persistence are separate:
+            # sigFinalResult is the queue-controller callback, while the
+            # communication-channel signal is the semantic result lifecycle.
+            self.sigFinalResult.emit(result)
+            if self._is_streaming:
+                # The streaming run already owns a viewer entry, created on
+                # its first result and updated ever since. Publishing on
+                # sigResultProduced here would append a *second* entry for
+                # the same job, so deliver the final snapshot down the same
+                # live path and let it update that entry in place.
+                self._commChannel.sigLiveResultUpdated.emit(result)
+            else:
+                self._commChannel.sigResultProduced.emit(
+                    result, self._run_name or "Live Reconstruction"
+                )
+            finalized = getattr(self._commChannel, "sigResultFinalized", None)
+            if finalized is not None:
+                finalized.emit(
+                    result,
+                    self._run_name or getattr(result, "name", "Live Reconstruction"),
+                )
 
-            if (
-                self._is_streaming
-                and self._session is not None
-                and hasattr(self._session, 'close')
-            ):
-                self._session.close()
-
-            self._shutdown_workers()
-        finally:
-            self._running = False
-            self._stack_info = None
-            self._source = None
-            self._source_arg = None
-            self._reset_workers()
-
-        if emit_finished:
-            self.sigFinished.emit()
+        self._shutdown_workers()
+        if self._workers_stopped():
+            self._complete_finish_run()
+        else:
+            # Diagnostic only: never time out by dropping live QThread refs.
+            QtCore.QTimer.singleShot(2000, self._warn_shutdown_pending)
 
     def _start_streaming_path(self) -> bool:
         """Start the streaming path.
@@ -323,12 +449,27 @@ class LiveReconstructionController(QtCore.QObject):
         """
         self._logger.debug("Starting streaming reconstruction path")
 
-        self._session = self._reconstructor.make_session()
+        # The historical live controller predates the unified Gaussian Fast
+        # contract and still uses legacy frame-by-frame output conventions.
+        # Preserve that explicit compatibility route for old parameter sets,
+        # but never silently substitute it for a requested unified preset.
+        legacy_factory = getattr(self._reconstructor, "make_legacy_live_session", None)
+        if callable(legacy_factory):
+            if "preset" in self._params and "reconstruction_method" not in self._params:
+                self._logger.error(
+                    "Unified MoNaLISA Fast requires the generalized Session Live "
+                    "executor; the legacy direct-live controller cannot run it"
+                )
+                return False
+            self._session = legacy_factory()
+        else:
+            self._session = self._reconstructor.make_session()
 
         # The process worker is built later, in _on_init_stack_ready, once the
         # stack shape is known (it needs the RawDataBuffer + frames_per_stack, both
         # derived from the StackInfo the stream worker produces on open).
         self._stream_thread = QtCore.QThread()
+        self._stream_thread.finished.connect(self._worker_thread_finished)
         self._stream_worker = LiveStreamWorker(
             self._source,
             source_arg=self._source_arg,
@@ -369,6 +510,11 @@ class LiveReconstructionController(QtCore.QObject):
             return
 
         self._logger.info(
+            f"Live stream metadata: frames_per_stack={self._frames_per_stack}, "
+            f"planned_timepoints={getattr(stack_info, 'planned_timepoints', None)}, "
+            f"expected_frames={getattr(stack_info, 'expected_frames', None)}"
+        )
+        self._logger.info(
             f"Allocated RawDataBuffer: {self._raw_buffer.capacity} x "
             f"{tuple(stack_info.frame_shape)} ({self._raw_buffer.nbytes / 1e6:.1f} MB)"
         )
@@ -386,15 +532,20 @@ class LiveReconstructionController(QtCore.QObject):
         stack_info = self._stack_info
         init_obj = StreamInit(
             name=self._run_name or getattr(self._source, "name", "live"),
-            dataset_name=(stack_info.detector_name if stack_info else None) or "detector",
+            dataset_name=(
+                self._source_dataset_name
+                or ((stack_info.detector_name if stack_info else None) or "detector")
+            ),
             data=init_data,
             attrs=stack_info.attrs if stack_info else {},
+            source_path=(str(self._source_arg) if self._source_arg is not None else None),
             stack_info=stack_info,
         )
         # Build the process worker now that the ring + frames_per_stack exist.
         # session.begin() runs ON the process thread (it can be seconds of
         # localization for real data) -- wired to the thread's `started` signal.
         self._process_thread = QtCore.QThread()
+        self._process_thread.finished.connect(self._worker_thread_finished)
         self._process_worker = LiveProcessWorker(
             self._session,
             self._raw_buffer,
@@ -403,6 +554,9 @@ class LiveReconstructionController(QtCore.QObject):
             viewer_update_interval_s=self._viewer_update_interval_s,
         )
         self._process_worker.set_init(init_obj, self._params)
+        if self._pause_requested:
+            self._process_worker.request_pause()
+            self._stream_worker.set_consumer_paused(True)
         # Provenance for every snapshot and the final result: what was
         # reconstructed, with which settings, from which stream. The first
         # stack is consumed by begin() and never arrives as a frame; it counts
@@ -473,8 +627,9 @@ class LiveReconstructionController(QtCore.QObject):
 
     @QtCore.Slot(int)
     def _on_timepoint_done(self, timepoint: int) -> None:
-        """Relay a completed-timepoint index so the viewer can move its slider."""
+        """Relay completion to the viewer and queue-progress consumers."""
         self._commChannel.sigLiveTimepointDone.emit(timepoint)
+        self.sigTimepointProgress.emit(int(timepoint) + 1)
 
     @QtCore.Slot(object)
     def _on_result_updated(self, result) -> None:

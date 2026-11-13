@@ -305,7 +305,13 @@ def test_default_inline_dispatch_keeps_old_process_call_shape():
     reconstructor.process.assert_called_once_with(data_obj, {"value": 7})
 
 
-def test_memory_confirmation_happens_before_worker_launch():
+def test_memory_confirmation_happens_before_worker_launch(monkeypatch):
+    # This test bypasses QObject.__init__: isolate the memory-decision path
+    # from the unrelated GUI availability refresh.
+    monkeypatch.setattr(
+        ReconstructorManagerController, "refreshUpdateReconstructionAvailability",
+        lambda self: None,
+    )
     estimate = ResourceEstimate((100, 100), 800, 400, "test mosaic")
     reconstructor = SimpleNamespace(
         id="worker",

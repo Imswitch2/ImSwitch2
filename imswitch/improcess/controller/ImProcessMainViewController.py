@@ -8,6 +8,8 @@ from .SmlmRenderController import SmlmRenderController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
+from .ProcessingSessionController import ProcessingSessionController
+from .ProcessingQueueController import ProcessingQueueController
 from .ReconstructorManagerController import ReconstructorManagerController
 from .MoNaLISAController import MoNaLISAController
 from .basecontrollers import ImProcessWidgetController
@@ -18,7 +20,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         super().__init__(*args, **kwargs)
 
         self.dataFrameController = self._factory.createController(
-            DataFrameController, self._widget.dataFrame
+            DataFrameController, self._widget.dataFrame, mainController=self
         )
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
@@ -35,6 +37,16 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.fileIOController = self._factory.createController(
             FileIOController, self._widget, mainController=self
         )
+        self.processingSessionController = self._factory.createController(
+            ProcessingSessionController,
+            self._widget.processingSessionFrame,
+            mainController=self,
+            fileIOController=self.fileIOController,
+            reconstructionController=self.reconstructionController,
+        )
+        set_session_controller = getattr(self.liveModeController, "setSessionController", None)
+        if callable(set_session_controller):
+            set_session_controller(self.processingSessionController)
         self.graphController = None
         if self._widget.graphWidget is not None:
             self.graphController = self._factory.createController(
@@ -64,6 +76,65 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._activeReconstructor = None
         self.reconstructorManager.initActiveReconstructor()
 
+        # Shared processing lane for Session auto/manual work and Loaded batches.
+        # DirectoryWatcher remains a separate legacy entry point.
+        self.processingQueueController = self._factory.createController(
+            ProcessingQueueController,
+            self._widget,
+            mainController=self,
+            sessionController=self.processingSessionController,
+            reconstructorManager=self.reconstructorManager,
+        )
+        self.processingSessionController.setProcessingQueueController(
+            self.processingQueueController
+        )
+        queue_frame = getattr(self._widget, 'processingQueueFrame', None)
+        if queue_frame is not None:
+            queue_frame.sigPauseRequested.connect(self.processingQueueController.pause)
+            queue_frame.sigResumeRequested.connect(self.processingQueueController.resume)
+            queue_frame.sigSkipCurrentRequested.connect(self.processingQueueController.skipCurrent)
+            queue_frame.sigRemoveWaitingRequested.connect(
+                self.processingQueueController.removeWaiting
+            )
+            queue_frame.sigMoveWaitingRequested.connect(
+                self.processingQueueController.moveWaiting
+            )
+            self.processingQueueController.sigQueueChanged.connect(
+                queue_frame.setProcessingQueue
+            )
+            queue_frame.setProcessingQueue(self.processingQueueController.queueSnapshot())
+
+        footer = getattr(self._widget, '_btnFrame', None)
+        if footer is not None:
+            footer.sigProcessSelectedRequested.connect(self._processSelectedFromDataFooter)
+            footer.sigAddSelectedToMultiDataRequested.connect(
+                self._addSelectedToMultiDataFromFooter
+            )
+            footer.sigAutoProcessingChanged.connect(
+                self.processingSessionController.setAutoProcessingEnabled
+            )
+            footer.sigProcessWhileAcquiringChanged.connect(
+                self.processingSessionController.setProcessWhileAcquiring
+            )
+            footer.sigQueuePauseResumeRequested.connect(
+                self._queuePauseResumeFromFooter
+            )
+            footer.sigQueueSkipCurrentRequested.connect(
+                self.processingQueueController.skipCurrent
+            )
+            footer.sigQueueRemoveSelectedRequested.connect(
+                queue_frame.requestRemoveSelected if queue_frame is not None else lambda: None
+            )
+            footer.sigQueueMoveSelectedRequested.connect(
+                queue_frame.requestMoveSelected if queue_frame is not None else lambda _direction: None
+            )
+            self.processingQueueController.sigQueueChanged.connect(footer.setProcessingQueue)
+            self.processingQueueController.sigProgressChanged.connect(footer.setQueueProgress)
+            self.processingQueueController.sigQueueChanged.connect(
+                lambda _snapshot: self.reconstructorManager.refreshUpdateReconstructionAvailability()
+            )
+            footer.setProcessingQueue(self.processingQueueController.queueSnapshot())
+
         self._currentDataObj = None
 
         self._commChannel.sigDataFolderChanged.connect(self.fileIOController.dataFolderChanged)
@@ -92,7 +163,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         )
         self._widget.sigQuickLoadData.connect(self.fileIOController.quickLoadData)
         self._widget.sigQuickLoadVirtualData.connect(self.fileIOController.quickLoadVirtualData)
-        self._widget.sigUpdate.connect(lambda: self.monalisaController.updateScanParams(applyOnCurrentRecon=True))
+        self._widget.sigUpdate.connect(self.reconstructorManager.updateReconstruction)
 
         self._widget.sigShowPatternChanged.connect(self.monalisaController.togglePattern)
         self._widget.sigFindPattern.connect(self.monalisaController.findPattern)
@@ -113,6 +184,44 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.monalisaController.updatePattern()
         self.monalisaController.updateScanParams()
 
+    def _processSelectedFromDataFooter(self, context: str, position: str) -> None:
+        context = str(context or '')
+        position = 'next' if str(position) == 'next' else 'end'
+        footer = getattr(self._widget, '_btnFrame', None)
+        scope_getter = getattr(footer, 'selectedTimepointScope', None) if footer is not None else None
+        timepoint_scope = scope_getter() if callable(scope_getter) else None
+        # ``None`` means Current T was selected while its lazy load is not ready.
+        # The footer normally disables Reconstruct in that state; fail closed if
+        # a programmatic trigger still reaches this method.
+        if timepoint_scope is None:
+            return
+        if context == 'session':
+            self.processingSessionController.processSelectedDatasets(
+                position, timepoint_scope=timepoint_scope
+            )
+            return
+        if context != 'loaded':
+            return
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        data_objs = frame.selectedDataObjs() if frame is not None else []
+        self.processingQueueController.enqueueLoadedDataObjs(
+            data_objs, position=position, timepoint_scope=timepoint_scope
+        )
+
+    def _addSelectedToMultiDataFromFooter(self, context: str) -> None:
+        context = str(context or '')
+        if context == 'session':
+            self.processingSessionController.loadSelectedAsMultiData()
+        elif context == 'loaded':
+            self.fileIOController.addLoadedSelectionToMultiData()
+
+    def _queuePauseResumeFromFooter(self) -> None:
+        snapshot = self.processingQueueController.queueSnapshot()
+        if bool((snapshot or {}).get('paused', False)):
+            self.processingQueueController.resume()
+        else:
+            self.processingQueueController.pause()
+
     def currentDataChanged(self, dataObj):
         """Thin dispatcher: set shared state and delegate to specialized
         controllers for parameter loading (reconstructor manager) and
@@ -120,6 +229,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._currentDataObj = dataObj
 
         self.reconstructorManager.currentDataChanged(dataObj)
+        if dataObj is None:
+            return
 
         # Load reconstructor parameters from dataset metadata (best-effort).
         if (

@@ -78,6 +78,7 @@ _RECONSTRUCTOR_RESULTS = {
     "beadrec": ("imswitch.improcess.model.array_result", "ArrayProcessingResult"),
     "monalisa": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
     "monalisa-legacy": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
+    "monalisa-lattice": ("imswitch.improcess.reconstructors.monalisa_lattice.result", "MonalisaLatticeResult"),
     "polarisation-map": ("imswitch.improcess.reconstructors.polarisation_map.reconstructor", "PolarisationMapResult"),
     "smlm-localizer": ("imswitch.improcess.model.localization_result", "LocalizationResult"),
     "snouty": ("imswitch.improcess.reconstructors.snouty.result", "SnoutyResult"),

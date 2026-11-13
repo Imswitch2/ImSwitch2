@@ -47,6 +47,25 @@ def test_a_2d_mask_can_be_applied_to_a_1_by_n_by_n_image():
     assert ok, reason
 
 
+def test_the_output_takes_the_axes_of_the_input_it_has_the_shape_of():
+    """A (Y, X) image minus a (1, 1, 1, 1, Y, X) one is six-dimensional, so
+    it carries the second input's six labels, not the first's two."""
+    from imswitch.improcess.processors.image_calculator import calculate_results
+
+    plain = _result((4, 5), "YX", scales=[0.03, 0.03], unit="um", name="plain")
+    legacy = _result((1, 1, 1, 1, 4, 5), ["Dataset", "Base", "T", "Z", "Y", "X"],
+                     scales=[1, 1, 1, 1, 30.0, 30.0], unit="nm", name="legacy")
+
+    out = calculate_results(plain, legacy, operation="subtract")
+    assert out.data.shape == (1, 1, 1, 1, 4, 5)
+    assert out.axis_labels == ["Dataset", "Base", "T", "Z", "Y", "X"]
+    assert out.axis_scales == [1, 1, 1, 1, 30.0, 30.0]
+    assert out.scale_unit == "nm"
+
+    out = calculate_results(legacy, plain, operation="subtract")
+    assert out.axis_labels == ["Dataset", "Base", "T", "Z", "Y", "X"]
+
+
 def test_a_mask_broadcasts_across_a_stack():
     """One mask applied to every slice is what a mask on a stack means."""
     ok, _reason = elementwise_compatibility([
@@ -108,11 +127,27 @@ def test_different_planes_are_still_refused():
     assert "axis" in reason
 
 
+def test_units_are_converted_before_the_scales_are_compared():
+    """A nm result and a um one are the same grid when their pitches agree,
+    and not comparable when they do not, whatever the numbers look like."""
+    ok, reason = elementwise_compatibility([
+        _result((233, 233), "YX", scales=[30.0, 30.0], unit="nm"),
+        _result((233, 233), "YX", scales=[0.03, 0.03], unit="um"),
+    ])
+    assert ok, reason
+    ok, reason = elementwise_compatibility([
+        _result((233, 233), "YX", scales=[1.0, 1.0], unit="nm"),
+        _result((233, 233), "YX", scales=[1.0, 1.0], unit="um"),
+    ])
+    assert not ok
+    assert "scale" in reason and "um" in reason and "nm" in reason
+
+
 def test_incompatible_units_are_still_refused():
-    """A nm result and a um one are not comparable however well they line up."""
+    """Pixels against a length cannot be converted, so they are refused."""
     ok, reason = elementwise_compatibility([
         _result((233, 233), "YX", unit="nm"),
-        _result((233, 233), "YX", unit="um"),
+        _result((233, 233), "YX", unit="mK"),
     ])
     assert not ok
     assert "unit" in reason
@@ -128,10 +163,18 @@ def test_mismatched_pixel_scales_are_still_refused():
 
 
 def test_stacking_stays_strict():
-    """Building one array is a different question from arithmetic on two."""
+    """Building one array is a different question from arithmetic on two.
+
+    Arithmetic broadcasts a row over an image; a stack needs the same
+    picture twice. Singleton axes are the one thing both forgive.
+    """
     from imswitch.improcess.processors.combine import combine_compatibility
 
-    inputs = [_result((1, 233, 233), "ZYX"), _result((233, 233), "YX")]
+    inputs = [_result((233, 233), "YX"), _result((1, 233), "YX")]
+    assert elementwise_compatibility(inputs)[0]
     ok, reason = combine_compatibility(inputs, mode="stack")
     assert not ok
     assert "does not match" in reason
+
+    inputs = [_result((1, 233, 233), "ZYX"), _result((233, 233), "YX")]
+    assert combine_compatibility(inputs, mode="stack")[0]

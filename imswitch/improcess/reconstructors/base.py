@@ -18,6 +18,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.execution.contracts import Contract, Incompatible, RawInfo
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,23 @@ def preflight_acquisition_layout(
     return tuple(issues)
 
 
+@dataclass(frozen=True)
+class DetectionPreview:
+    """What :meth:`Reconstructor.detection_preview` draws: points and a line.
+
+    ``x`` and ``y`` are column and row coordinates in the raw frame, so
+    that a spot at pixel ``(row, col)`` lands on that pixel on screen.
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    status: str = ""
+    marker: str = "circle"
+    """How the points are drawn: ``"circle"`` (an open ring around each,
+    for candidates to inspect) or ``"point"`` (a dot on each, as the classic
+    pattern overlay draws its grid)."""
+
+
 class Reconstructor(ABC):
     """
     Turns raw DataObj into a ProcessingResult.
@@ -173,6 +191,32 @@ class Reconstructor(ABC):
     are ceremonial in their case.
     """
 
+    result_role: str = "derived"
+    """Semantic role of results produced by this reconstructor.
+
+    ``"derived"`` is the normal processing result: it is eligible for Session
+    persistence and contributes to the Session's processed/raw state.
+    ``"inspection"`` is a view over the raw source rather than a new derived
+    artifact.  Inspection reconstructors may still use the normal ProcessingResult
+    plumbing for display/export, but Session must not auto-save them or treat them
+    as proof that the raw acquisition has been processed.
+    """
+
+    supports_session_manual: bool = False
+    """Opt an inspection plugin into manual Session/Quick Load queue actions.
+
+    Derived reconstructors already have this capability. Inspection stays
+    inspection: queue execution must never imply a new scientific artifact.
+    """
+
+    supports_session_auto: bool = False
+    """Allow an inspection reconstructor in Session Auto processing.
+
+    Derived reconstruction plugins remain Auto-eligible by default. Inspection
+    plugins must opt in explicitly, without changing their result role: their
+    outputs are views, not auto-saved or counted as processed acquisitions.
+    """
+
     default_save_subdir: str = "rec"
     """Subdirectory name a save path should use for reconstructed outputs.
 
@@ -183,6 +227,12 @@ class Reconstructor(ABC):
     ``{output_dir}/{default_save_subdir}/``. Override per modality to pick a
     plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY). ``"rec"``
     is the historical MoNaLISA default.
+    """
+
+    supports_progressive_finite: bool = False
+    """Opt in when each finite source unit produces one independently
+    meaningful result and its output layers can be assembled semantically.
+    This does not imply support for acquisition-time frame streaming.
     """
 
     supports_consolidation: bool = False
@@ -410,6 +460,20 @@ class Reconstructor(ABC):
         """
         return None
 
+    def detection_preview(
+        self, data_obj: DataObj, displayed_image, params: dict
+    ) -> "DetectionPreview | None":
+        """Spots to draw on the raw-data viewer, for a parameter widget's preview.
+
+        A widget with a ``previewCheckbox`` and a ``sigPreviewToggled`` signal
+        gets the plugin's preview drawn over the raw frames while the box is
+        checked: the localizer's candidate spots on the displayed frame, the
+        MoNaLISA lattice reconstructor's foci. ``displayed_image`` is the 2D
+        frame on screen, ``params`` the widget's values. ``None`` means the
+        plugin has nothing to draw; the widget then shows nothing.
+        """
+        return None
+
     def inspect_source(self, data_obj: DataObj) -> "SourceInspection | None":
         """Describe source-dependent choices without materializing pixels."""
         return self.inspect_acquisition(data_obj)
@@ -603,13 +667,22 @@ class ReconstructionContext:
 
 @dataclass(frozen=True)
 class StackInfo:
-    """Metadata for one logical live stack."""
+    """Metadata for one logical live stack/recording.
+
+    ``frames_per_stack`` describes one reconstruction unit (one timepoint).
+    ``planned_timepoints`` is the source's best known logical-T allocation hint,
+    never a hard cap: a streaming session must still accept later valid points.
+    Keeping them separate is important for partitioned recordings where the
+    acquisition layout attached to ``scan0`` correctly contains one local time
+    iteration while the enclosing lapse contains many time partitions.
+    """
 
     frame_shape: tuple[int, ...]
     dtype: np.dtype
     attrs: dict[str, Any] = field(default_factory=dict)
     frames_per_stack: int | None = None
     expected_frames: int | None = None
+    planned_timepoints: int | None = None
     detector_name: str | None = None
     dataset_path: str | None = None
     source_format: str | None = None
@@ -659,7 +732,14 @@ class StreamingSession(ABC):
 
     @abstractmethod
     def push(self, chunk: np.ndarray, start: int, end: int) -> None:
-        """Process raw frames in the half-open range ``[start:end]``."""
+        """Process raw frames in the half-open range ``[start:end]``.
+
+        Implementations with independent scientific output units (e.g.
+        completed timepoints) finalize those units internally when enough
+        committed frames have arrived. Provisional views must not claim
+        completion. A source-wide :meth:`finish` remains separate; the
+        generic runner does not impose timepoint semantics on other plugins.
+        """
         ...
 
     @abstractmethod
@@ -687,7 +767,12 @@ class StreamingSession(ABC):
         return None
 
     def finish(self) -> ProcessingResult:
-        """Finalize processing and return the final result."""
+        """Finalize the *whole stream* and return its result snapshot.
+
+        This is not a per-timepoint correction hook. A reconstructor may
+        finalize complete independent units during :meth:`push` using its
+        own scientific pipeline and publish them before the source ends.
+        """
         return self.result()
 
     def close(self) -> None:
@@ -699,6 +784,17 @@ class StreamingReconstructor(Reconstructor):
     """Reconstructor that supports sub-stack live updates."""
 
     supports_streaming: bool = True
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        override = cls.__dict__.get("contract")
+        if override is not None and not isinstance(override, classmethod):
+            raise TypeError(f"{cls.__name__}.contract() must be a @classmethod")
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Metadata-only negotiation; legacy plugins can use this default."""
+        return Contract(init_frames=0, chunk_frames=1, params=dict(params or {}))
 
     @abstractmethod
     def make_session(self) -> StreamingSession:

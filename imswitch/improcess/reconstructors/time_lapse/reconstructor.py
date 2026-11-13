@@ -243,6 +243,11 @@ class TimeLapseReconstructor(Reconstructor):
 
     name = "Time lapse"
     id = "time-lapse"
+    result_role = "inspection"
+    supports_session_manual = True
+    supports_session_auto = True
+    # process() discovers and assembles the entire logical acquisition.
+    consumes_logical_lapse = True
     output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff", "tif", "ome.tiff", "zarr"]
     description = "Stack a camera or scan time lapse along T, read as viewed"

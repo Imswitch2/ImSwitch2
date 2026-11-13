@@ -191,16 +191,21 @@ def test_metadata_source_clears_and_disables_image_panel(tmp_path):
             setImage=lambda image, autoLevels: calls.images.append(image),
             setImageControlsEnabled=calls.enabled.append,
             setNumFrames=calls.frames.append,
+            setTimepointControls=lambda *args, **kwargs: None,
             setDataName=lambda _value: None,
             setDatasetName=lambda _value: None,
         ),
         _dataObj=None,
         _displayedImage=None,
+        _invalidateTimepointRequests=lambda **kwargs: None,
+        currentDataReadyForProcessing=lambda: True,
+        _setCurrentDataProcessingEnabled=lambda enabled: None,
         _commChannel=SimpleNamespace(
             sigDisplayedFrameChanged=SimpleNamespace(emit=lambda: None)
         ),
     )
 
+    controller._showImageDataObj = DataFrameController._showImageDataObj.__get__(controller)
     DataFrameController.currentDataChanged(controller, data_obj)
 
     assert calls.enabled == [False]
@@ -280,6 +285,8 @@ def test_manager_selects_only_a_source_compatible_reconstructor(monkeypatch):
         ),
         _logger=SimpleNamespace(warning=lambda *_args: None, debug=lambda *_args: None),
         _install_reconstructor_params=lambda _candidate: None,
+        # Auto-localization is a separate deferred job, not part of source selection.
+        _defer_auto_localization=lambda _data: None,
     )
     for method in (
         "_accepts_current_source",
@@ -288,6 +295,7 @@ def test_manager_selects_only_a_source_compatible_reconstructor(monkeypatch):
         "_publishReconstructorChoices",
         "_inspect_current_source",
         "currentDataChanged",
+        "_invalidate_localization_requests",
     ):
         setattr(
             controller,

@@ -306,7 +306,10 @@ def test_the_recipes_reach_a_users_snippet_list_with_nothing_set_up(tmp_path, mo
     monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(tmp_path))
     assert snippets.list_snippets() == RECIPES                            # what Load snippet... offers
     for name in RECIPES:
-        assert snippets.load_snippet(name) == _recipe(name)
+        actual_code, actual_ports = snippets.load_snippet(name)
+        expected_code, expected_ports = _recipe(name)
+        assert actual_code.replace("\r\n", "\n") == expected_code.replace("\r\n", "\n")
+        assert actual_ports == expected_ports
 
 
 def test_a_recipe_loaded_into_the_panel_runs_there(qapp):

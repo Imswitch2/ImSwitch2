@@ -481,10 +481,16 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
             )
             assert _wait_for(lambda: len(ended) == index + 1, timeout=3.0)
             recording.endRecording(emitSignal=False, wait=True)
+            # Even a successfully finalized individual scanN must not expose
+            # a shared HDF5 lapse before the run-level terminal.
+            assert not (tmp_path / 'lapse_Camera.hdf5').exists()
+            assert (tmp_path / 'lapse_Camera.hdf5.partial').exists()
     finally:
         recording.endRecording(emitSignal=False, wait=True)
         nidaq.finalize()
 
+    # The production RecordingController performs this at recordingCycleEnded.
+    recording.publishPendingHdf5Lapse()
     path = tmp_path / 'lapse_Camera.hdf5'
     assert path.exists()
     assert not (tmp_path / 'lapse_Camera_1.hdf5').exists(), 'lapse items must share one file'
@@ -496,6 +502,7 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
     # looked only at the container root, where a lapse recording has no
     # datasets, and reported every one of these files as empty.
     assert DataObj.getDatasetNames(str(path)) == ['scan0/Camera', 'scan1/Camera']
+    resolved_layouts = []
     with h5py.File(path, 'r') as h5file:
         assert sorted(h5file.keys()) == ['scan0', 'scan1']
         for index in range(total):
@@ -516,12 +523,19 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
                 ),
             )
             assert replace(resolved.layout, partitions=()) == base
+            resolved_layouts.append(resolved.layout)
 
-            opened = DataObj(
-                str(path), f'scan{index}/Camera', path=str(path)
-            ).acquisition_layout
+    # DataObj opens raw HDF5 in SWMR mode. Close the plain h5py inspection
+    # handle before using that reader: h5py cannot mix the two access modes
+    # on one file in the same process.
+    for index, expected_layout in enumerate(resolved_layouts):
+        source = DataObj(str(path), f'scan{index}/Camera', path=str(path))
+        try:
+            opened = source.acquisition_layout
             assert opened.is_authoritative
-            assert opened.layout == resolved.layout
+            assert opened.layout == expected_layout
+        finally:
+            source.checkAndUnloadData()
 
 
 def test_a_disk_and_ram_lapse_keeps_every_timepoint(qt_app, tmp_path):
@@ -676,6 +690,7 @@ def _record_single_file_lapse(recording, nidaq, controller, base, tmp_path, tota
         assert _wait_for(lambda: len(ended) == index + 1, timeout=3.0)
         recording.endRecording(emitSignal=False, wait=True)
     recording.sigRecordingEndedDetailed.disconnect(connection)
+    recording.publishPendingHdf5Lapse()
 
 
 def test_a_second_lapse_run_does_not_append_to_the_first_ones_file(qt_app, tmp_path):
