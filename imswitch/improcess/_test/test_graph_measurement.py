@@ -89,6 +89,7 @@ def test_measurement_region_updates_readout_and_pushes_table_record():
     assert all(key in columns for key in records[0])
 
 
+@pytest.mark.usefixtures("qapp")
 def test_push_reports_the_plot_without_any_measurement():
     """The button used to require Δx markers and silently do nothing without
     them — which is what made pressing it on a fit plot look broken."""
@@ -109,6 +110,7 @@ def test_push_reports_the_plot_without_any_measurement():
     assert records and all(record["kind"] == "graph-series" for record in records)
 
 
+@pytest.mark.usefixtures("qapp")
 def test_push_carries_the_payload_parameters():
     """A fit's coefficients ride in PlotPayload.metadata, which nothing else
     renders; every pushed row has to carry them or they stay invisible."""

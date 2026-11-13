@@ -12,6 +12,8 @@ class CommunicationChannel(SignalInterface):
 
     sigNewFile = Signal()
 
+    sigNewFromCurrentSettings = Signal()
+
     sigOpenFile = Signal()
 
     sigOpenFileFromPath = Signal(str)  # (path)

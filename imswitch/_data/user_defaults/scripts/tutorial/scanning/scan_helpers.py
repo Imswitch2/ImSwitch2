@@ -2,7 +2,7 @@
 
 Imported by: 02_record_a_scan.py
 
-(03_scan_timelapse.py and 04_camera_and_apd.py use it too.) Tutorial 01
+(03_scan_timelapse.py, 04_camera_and_apd.py and 06-08 use it too.) Tutorial 01
 does the same steps inline, with comments on each; these are those steps
 as functions, so the later tutorials can stay short.
 """
