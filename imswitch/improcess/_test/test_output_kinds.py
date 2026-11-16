@@ -79,6 +79,7 @@ _RECONSTRUCTOR_RESULTS = {
     "monalisa": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
     "monalisa-legacy": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
     "monalisa-lattice": ("imswitch.improcess.reconstructors.monalisa_lattice.result", "MonalisaLatticeResult"),
+    "linestep-sum": ("imswitch.improcess.reconstructors.linestep_sum.reconstructor", "LineStepSumResult"),
     "polarisation-map": ("imswitch.improcess.reconstructors.polarisation_map.reconstructor", "PolarisationMapResult"),
     "smlm-localizer": ("imswitch.improcess.model.localization_result", "LocalizationResult"),
     "snouty": ("imswitch.improcess.reconstructors.snouty.result", "SnoutyResult"),

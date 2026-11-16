@@ -5,6 +5,8 @@ Processors operate on ProcessingResults and are stackable. They are registered
 in the global registry alongside reconstructors.
 """
 
+import inspect
+
 from .base import Processor
 from .background import SubtractBackgroundProcessor
 from .channel_merge import ChannelMergeProcessor
@@ -27,6 +29,7 @@ from .projection import ProjectionProcessor
 from .psf_bead_select import PSFBeadSelectProcessor
 from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .bead_fwhm import BeadFwhmProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
 from .transform import TransformProcessor
@@ -61,6 +64,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'psf-bead-select': PSFBeadSelectProcessor,
     'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'bead-fwhm': BeadFwhmProcessor,
     'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
@@ -182,6 +186,25 @@ def available_processor_specs(origin: str = "all") -> list[tuple[str, str, str]]
     )
 
 
+def processor_summary(processor_id: str) -> str:
+    """One line saying what a processor does: its ``description`` attribute if
+    it declares one, else the first line of its class docstring, with the
+    reST/Markdown emphasis and code marks a tooltip would show literally
+    removed. ``""`` for an unknown id or an undocumented class."""
+    plugin_cls = _all_processor_classes().get(processor_id)
+    if plugin_cls is None:
+        return ""
+    text = str(getattr(plugin_cls, "description", "") or "").strip()
+    if not text:
+        doc = inspect.getdoc(plugin_cls) or ""
+        if inspect.getdoc(Processor) == doc:
+            return ""  # inherited from the base class, says nothing
+        text = doc.strip().split("\n\n", 1)[0].replace("\n", " ")
+    for mark in ("**", "``", "`"):
+        text = text.replace(mark, "")
+    return " ".join(text.split())
+
+
 def register_processor_by_id(registry, processor_id: str) -> Processor:
     """Instantiate and register one processor (built-in or user plugin) by id."""
     try:
@@ -279,6 +302,7 @@ __all__ = [
     "available_processor_choices",
     "available_processor_ids",
     "available_processor_specs",
+    "processor_summary",
     "register_processor_by_id",
     "register_default_processors",
     "load_user_plugins",

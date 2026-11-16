@@ -33,6 +33,7 @@ from .ResultProcessorWidget import ResultProcessorWidget
 from .ResultsTableWidget import ResultsTableWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .SegmentationWidget import SegmentationWidget
+from .tool_menu import make_menu_button, populate_category_menu
 from .guitools import BetterPushButton
 from .icons import improcessIcon
 
@@ -242,20 +243,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar = self.addToolBar('Tools')
         self._processorToolbar.setObjectName('ImProcessToolsToolbar')
         self._processorToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        self._loadProcessorCombo = QtWidgets.QComboBox()
-        self._loadProcessorCombo.setMinimumContentsLength(18)
-        self._loadProcessorCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
-        self._loadProcessorCombo.setToolTip('Load an available built-in analysis tool at runtime')
-        self._processorToolbar.addWidget(QtWidgets.QLabel('Load tool: '))
-        self._processorToolbar.addWidget(self._loadProcessorCombo)
-        self._loadProcessorCombo.activated.connect(self._on_load_processor_combo_activated)
-        self._loadedProcessorCombo = QtWidgets.QComboBox()
-        self._loadedProcessorCombo.setMinimumContentsLength(18)
-        self._loadedProcessorCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
-        self._loadedProcessorCombo.setToolTip('Processors currently registered in ImProcess')
-        self._processorToolbar.addSeparator()
-        self._processorToolbar.addWidget(QtWidgets.QLabel('Loaded processors: '))
-        self._processorToolbar.addWidget(self._loadedProcessorCombo)
+        # Analysis tools, one submenu per category (Fiji style). The same menu
+        # hangs off the toolbar button and Tools > Analysis tools.
+        self._toolsMenu = QtWidgets.QMenu('Analysis tools', self)
+        self._toolsMenu.setObjectName('ImProcessAnalysisToolsMenu')
+        self._toolMenuActions: dict[str, QtWidgets.QAction] = {}
+        self._toolsButton = make_menu_button(
+            self._toolsMenu,
+            'Tools',
+            'Built-in analysis tools by category; a ticked tool is open',
+        )
+        self._processorToolbar.addWidget(self._toolsButton)
+        self._analysisMenu.addMenu(self._toolsMenu)
+        self._analysisMenu.addSeparator()
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
@@ -264,14 +264,21 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsToolbar = self.addToolBar('Plugins')
         self._pluginsToolbar.setObjectName('ImProcessPluginsToolbar')
         self._pluginsToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        self._loadPluginCombo = QtWidgets.QComboBox()
-        self._loadPluginCombo.setMinimumContentsLength(18)
-        self._loadPluginCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
-        self._loadPluginCombo.setToolTip('Load an installed drop-in analysis plugin at runtime')
-        self._pluginsToolbar.addWidget(QtWidgets.QLabel('Load plugin: '))
-        self._pluginsToolbar.addWidget(self._loadPluginCombo)
-        self._loadPluginCombo.activated.connect(self._on_load_plugin_combo_activated)
+        self._pluginToolsMenu = QtWidgets.QMenu('Analysis plugins', self)
+        self._pluginToolsMenu.setObjectName('ImProcessAnalysisPluginsMenu')
+        self._pluginToolMenuActions: dict[str, QtWidgets.QAction] = {}
+        self._pluginsButton = make_menu_button(
+            self._pluginToolsMenu,
+            'Plugins',
+            'Installed drop-in analysis plugins by category',
+        )
+        self._pluginsToolbar.addWidget(self._pluginsButton)
+        self._pluginsMenu.addMenu(self._pluginToolsMenu)
+        self._pluginsMenu.addSeparator()
         self._buildPluginsMenu()
+        # Placeholders until the controller's first refresh fills both menus.
+        self.setAvailableRuntimeProcessors([])
+        self.setAvailablePluginTools([])
 
         # Shortcuts menu: the configure entry opens the shared editor; the
         # ShortcutManager fills the rest with the effective bindings.
@@ -661,33 +668,42 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def setAvailableRuntimeProcessors(
         self,
-        choices: list[tuple[str, str]],
-        placeholder: str = 'All tools loaded',
+        entries: list,
+        placeholder: str = 'No analysis tools',
     ) -> None:
-        combo = self._loadProcessorCombo
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(placeholder, userData=None)
-        for processor_id, processor_name in choices:
-            combo.addItem(str(processor_name or processor_id), userData=processor_id)
-        combo.setEnabled(bool(choices))
-        combo.setCurrentIndex(0)
-        combo.blockSignals(False)
+        """Fill the built-in analysis-tool menu.
+
+        ``entries`` are :class:`~imswitch.improcess.view.tool_menu.ToolMenuEntry`
+        or ``(id, title[, category[, description[, open]]])`` tuples; every
+        tool is listed, open ones ticked.
+        """
+        self._toolMenuActions = populate_category_menu(
+            self._toolsMenu, entries, self._onAnalysisToolPicked, placeholder=placeholder,
+        )
 
     def setAvailablePluginTools(
         self,
-        choices: list[tuple[str, str]],
-        placeholder: str = 'All plugins loaded',
+        entries: list,
+        placeholder: str = 'No plugins installed',
     ) -> None:
-        combo = self._loadPluginCombo
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(placeholder, userData=None)
-        for plugin_id, plugin_name in choices:
-            combo.addItem(str(plugin_name or plugin_id), userData=plugin_id)
-        combo.setEnabled(bool(choices))
-        combo.setCurrentIndex(0)
-        combo.blockSignals(False)
+        """Fill the drop-in plugin menu, grouped by the plugins' own categories."""
+        footer = []
+        store_action = getattr(self, '_pluginMenuActions', {}).get('browse-online')
+        if store_action is not None:
+            footer.append(store_action)
+        self._pluginToolMenuActions = populate_category_menu(
+            self._pluginToolsMenu,
+            entries,
+            self._onAnalysisToolPicked,
+            placeholder=placeholder,
+            footer_actions=footer,
+        )
+
+    def _onAnalysisToolPicked(self, tool_id: str) -> None:
+        # Built-in tools and drop-in plugins load through the same runtime
+        # path; picking an open one raises its panel.
+        if tool_id:
+            self.sigLoadProcessorRequested.emit(str(tool_id))
 
     def _buildLoadReconstructorMenu(self) -> None:
         """Add Tools -> Load reconstructor, filled by the controller.
@@ -730,18 +746,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             )
             menu.addAction(action)
             self._loadReconstructorActions[str(plugin_id)] = action
-
-    def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
-        combo = self._loadedProcessorCombo
-        combo.blockSignals(True)
-        combo.clear()
-        if not choices:
-            combo.addItem('No processors loaded', userData=None)
-        else:
-            for processor_id, processor_name in choices:
-                combo.addItem(str(processor_name or processor_id), userData=processor_id)
-        combo.setCurrentIndex(0)
-        combo.blockSignals(False)
 
     def _addFileToolAction(
         self,
@@ -835,7 +839,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         Mirrors Picasso: a folder-opener so users can find where to drop their
         ``.py`` files, and a reload action so newly-added plugins appear without
         restarting ImProcess. The store and reload actions are also placed on
-        the Plugins toolbar next to the plugin-loader combo.
+        the Plugins toolbar next to the plugin menu button, and the store
+        action closes the plugin menu itself.
         """
         self._pluginMenuActions: dict[str, QtWidgets.QAction] = {}
 
@@ -966,22 +971,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self, on_change=self.sigReloadPluginsRequested.emit
         )
         dialog.exec_()
-
-    def _on_load_processor_combo_activated(self, index: int) -> None:
-        combo = self._loadProcessorCombo
-        processor_id = combo.itemData(index) if 0 <= index < combo.count() else None
-        combo.setCurrentIndex(0)
-        if processor_id:
-            self.sigLoadProcessorRequested.emit(str(processor_id))
-
-    def _on_load_plugin_combo_activated(self, index: int) -> None:
-        combo = self._loadPluginCombo
-        plugin_id = combo.itemData(index) if 0 <= index < combo.count() else None
-        combo.setCurrentIndex(0)
-        if plugin_id:
-            # Plugin panels load through the same runtime-tool path as
-            # built-ins; only the combo they are listed in differs.
-            self.sigLoadProcessorRequested.emit(str(plugin_id))
 
     def startupRuntimeAnalysisToolIds(self) -> list[str]:
         """Return registry-backed analysis panels requested at startup."""
