@@ -80,6 +80,7 @@ def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
     from imswitch.improcess.model.save_protocol import FORMAT_ALIASES
     from imswitch.improcess.model.workfloweditor.recipes import installed_recipes
     from imswitch.improcess.processors import available_processor_specs
+    from imswitch.improcess.processors.categories import category_sort_key
     from imswitch.improcess.reconstructors import builtin_reconstructor_ids
     from imswitch.improcess.workflows.runner import PATH_PLACEHOLDERS
 
@@ -93,7 +94,7 @@ def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
     processors = tuple(sorted(
         (_entry(plugin, PROCESSOR, BUILTIN if plugin.id in builtin_processors else USER)
          for plugin in registry.processors()),
-        key=lambda entry: (entry.category, entry.name.lower(), entry.id),
+        key=lambda entry: (category_sort_key(entry.category), entry.name.lower(), entry.id),
     ))
     reconstructors = tuple(sorted(
         (_entry(plugin, RECONSTRUCTOR, BUILTIN if plugin.id in builtin_reconstructors else USER)
