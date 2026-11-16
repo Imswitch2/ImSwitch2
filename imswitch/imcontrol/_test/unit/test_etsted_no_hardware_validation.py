@@ -1,20 +1,16 @@
 from collections import deque
-from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
+from imswitch.imcontrol.controller.controllers.EventTriggeredBaseController import (
+    EventTriggeredControllerBase,
+)
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
 
-
-ROOT = Path(__file__).resolve().parents[4]
-CONTROLLER_PATH = ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'EtSTEDController.py'
-# Cleanup-contract methods now live on the shared base class.
-BASE_CONTROLLER_PATH = (
-    ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers'
-    / 'EventTriggeredBaseController.py'
-)
+from .test_event_triggered_smart_modes import _HarnessController, _make_controller
 
 
 class _ScanManager:
@@ -180,35 +176,146 @@ def test_scan_preparation_failure_does_not_trigger_scan():
     assert nidaq_manager.calls == []
 
 
-def test_controller_stop_and_close_cleanup_contract_disables_fast_laser():
-    source = BASE_CONTROLLER_PATH.read_text()
+# --------------------------------------------------------------------------- #
+# The fast laser through the shared event-triggered lifecycle                  #
+# --------------------------------------------------------------------------- #
 
-    assert 'def stopExperiment' in source
-    assert 'self._disconnectRunSignals()' in source
-    assert 'self._setFastLaserEnabled(False)' in source
-    assert 'self._cleanupBinaryMaskRecording()' in source
-    assert 'def closeEvent' in source
-    assert 'self.stopExperiment(resetParams=True)' in source
+class _FastLaser:
+    def __init__(self):
+        self.enabled = []
+        self.refuse = set()  # the values of ``enabled`` the laser fails on
 
-
-def test_controller_arming_requires_fast_laser_enable_success_and_cleans_binary_mask():
-    source = BASE_CONTROLLER_PATH.read_text()
-
-    assert 'self._setFastLaserEnabled(True, require_success=True)' in source
-    assert 'def _setFastLaserEnabled(self, enabled: bool, *, require_success: bool = False)' in source
-    assert 'if require_success:' in source
-    assert 'raise' in source
-    assert 'def _cleanupBinaryMaskRecording(self) -> None:' in source
-    assert 'self._state.binaryMaskSignalConnected = False' in source
-    assert "self._widget.recordBinaryMaskButton.setText('Record binary mask')" in source
+    def setEnabled(self, enabled):
+        self.enabled.append(enabled)
+        if enabled in self.refuse:
+            raise RuntimeError('laser offline')
 
 
-def test_continue_fast_modality_handles_resume_failures_without_leaking_signals():
-    source = BASE_CONTROLLER_PATH.read_text()
+class _FastLaserHarness(_HarnessController):
+    """The lifecycle harness with the real fast-laser switch and the real
+    mask-capture cleanup put back."""
 
-    assert 'def continueFastModality(self) -> None:' in source
-    assert f"Failed to resume {{self.MODALITY_LABEL}} fast modality" in source
-    assert 'self._disconnectRunSignals()' in source
-    assert 'self._setFastLaserEnabled(False)' in source
-    assert 'self._state.busy = False' in source
-    assert "self._set_status('error', str(e))" in source
+    _setFastLaserEnabled = EventTriggeredControllerBase._setFastLaserEnabled
+    _cleanupBinaryMaskRecording = (
+        EventTriggeredControllerBase._cleanupBinaryMaskRecording
+    )
+
+
+def _etController(*, endless=False):
+    controller = _make_controller(cls=_FastLaserHarness, enabled=False, endless=endless)
+    laser = _FastLaser()
+    released = []
+    controller._state.laserFast = '635'
+    controller._binaryMaskGeneration = 0  # set by __init__, which the shell skips
+
+    def execOn(name, action):
+        assert name == '635'
+        return action(laser)
+
+    controller._master.lasersManager = SimpleNamespace(execOn=execOn)
+    controller._master.detectorsManager = SimpleNamespace(release=released.append)
+    controller._commChannel.sigUpdateImage = SimpleNamespace(
+        connect=lambda slot: controller.calls.append('mask-frames-connected'),
+        disconnect=lambda slot: controller.calls.append('mask-frames-disconnected'),
+    )
+    return controller, laser, released
+
+
+def _capturingMask(controller):
+    controller._state.binaryMaskSignalConnected = True
+    controller._binaryMaskHandle = 'mask-lease'
+
+
+def test_stop_switches_the_fast_laser_off_and_disconnects_the_run():
+    controller, laser, _ = _etController()
+
+    controller.stopExperiment()
+
+    assert laser.enabled == [False]
+    assert 'disconnect' in controller.calls
+
+
+def test_stop_ends_a_mask_capture_and_returns_its_lease():
+    controller, laser, released = _etController()
+    _capturingMask(controller)
+
+    controller.stopExperiment()
+
+    assert 'mask-frames-disconnected' in controller.calls
+    assert released == ['mask-lease']
+    assert controller._state.binaryMaskSignalConnected is False
+    assert set(laser.enabled) == {False}
+
+
+def test_stop_completes_when_the_fast_laser_refuses_to_switch_off():
+    controller, laser, released = _etController()
+    _capturingMask(controller)
+    laser.refuse = {False}
+
+    controller.stopExperiment(resetParams=True)
+
+    assert controller._experimentActive is False
+    assert released == ['mask-lease']
+    assert ('status', 'idle') in controller.calls
+
+
+def test_closing_stops_the_experiment_with_the_fast_laser_off():
+    controller, laser, _ = _etController()
+    controller._experimentActive = True
+    controller._state.running = True
+
+    assert controller.closeEvent() is True
+
+    assert laser.enabled == [False]
+    assert 'disconnect' in controller.calls
+    assert controller._experimentActive is False
+    assert controller._state.running is False
+
+
+def test_arming_is_abandoned_when_the_fast_laser_cannot_be_switched_on():
+    controller, laser, _ = _etController()
+    laser.refuse = {True}
+
+    controller.initiate()
+
+    assert controller._experimentActive is False
+    assert controller._state.running is False
+    assert controller.calls.index('connect') < controller.calls.index('disconnect')
+    assert laser.enabled[0] is True and set(laser.enabled[1:]) == {False}
+    assert controller.calls[-1] == ('status', 'error')
+
+
+def test_a_mask_capture_that_cannot_switch_the_laser_on_returns_its_lease():
+    controller, laser, released = _etController()
+    laser.refuse = {True}
+    pick = SimpleNamespace(currentIndex=lambda: 0)
+    controller._widget.fastImgLasersPar = pick
+    controller._widget.fastImgLasers = ['635']
+    controller._widget.fastImgDetectorsPar = pick
+    controller._widget.fastImgDetectors = ['FastCamera']
+    controller._master.detectorsManager.acquire = lambda names, purpose: 'mask-lease'
+
+    controller.initiateBinaryMask()
+
+    assert released == ['mask-lease']
+    assert controller.__dict__.get('_binaryMaskHandle') is None
+    assert 'mask-frames-connected' not in controller.calls
+    assert laser.enabled[0] is True and set(laser.enabled[1:]) == {False}
+    assert ('status', 'error') in controller.calls
+
+
+def test_a_failed_resume_leaves_the_fast_laser_off_and_the_run_disconnected():
+    controller, laser, _ = _etController(endless=True)
+    controller._experimentActive = True
+    controller._stopRequested = False
+    controller._state.running = False
+    controller._state.busy = True
+    laser.refuse = {True}
+
+    controller.continueFastModality()
+
+    assert laser.enabled == [True, False]
+    assert controller.calls.index('connect') < controller.calls.index('disconnect')
+    assert controller._state.busy is False
+    assert controller._state.running is False
+    assert controller.calls[-1] == ('status', 'error')
