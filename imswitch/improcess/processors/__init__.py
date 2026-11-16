@@ -29,6 +29,7 @@ from .projection import ProjectionProcessor
 from .psf_bead_select import PSFBeadSelectProcessor
 from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .bead_fwhm import BeadFwhmProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
 from .transform import TransformProcessor
@@ -63,6 +64,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'psf-bead-select': PSFBeadSelectProcessor,
     'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'bead-fwhm': BeadFwhmProcessor,
     'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
