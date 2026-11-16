@@ -172,7 +172,7 @@ def _zarr_store_write_complete(path: Any) -> bool:
     timelapse: ZarrStorer resizes the array BEFORE writing the frame data, so
     a reader that opens a mid-write store trusts a shape that is ahead of the
     committed data and permanently bakes zero frames into the stream (root
-    cause 1 in docs/live_reconstruction_audit.md). A store with no dataset yet
+    cause 1 in docs/live_reconstruction_audit.md (retired; see git history)). A store with no dataset yet
     is not complete. Absent ``writing`` attr means complete (legacy/external
     stores never carry it).
     """
@@ -720,7 +720,7 @@ class ZarrLiveSource(LiveSource):
         # frames_committed is the write barrier: ZarrStorer resizes the array
         # BEFORE writing frame data, so shape alone runs ahead of the data on
         # disk and a shape-trusting reader bakes zero frames into the stream
-        # (root cause 1 in docs/live_reconstruction_audit.md). Stores without
+        # (root cause 1 in docs/live_reconstruction_audit.md (retired; see git history)). Stores without
         # the barrier (legacy/external) keep the shape behavior - they are
         # only opened once complete, so no writer is racing them.
         current_length = int(self._array.shape[0])

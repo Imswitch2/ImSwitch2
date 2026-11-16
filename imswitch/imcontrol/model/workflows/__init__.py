@@ -1,5 +1,5 @@
 """Headless workflow primitives — ports of WFS workflows for use from the
-ImSwitch scripting module. See docs/design/plans/wfs-workflows-port.md.
+ImSwitch scripting module. See docs/design/plans/wfs-workflows-port.md (retired; see git history).
 """
 
 from .calibration import CalibrationParams, CalibrationWorkflow

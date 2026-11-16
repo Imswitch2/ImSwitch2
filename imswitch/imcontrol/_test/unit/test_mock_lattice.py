@@ -181,8 +181,8 @@ def _simulated_setup():
         'detectors': {'Camera': _setup_camera()},
         'lasers': {}, 'positioners': {},
         'scan': {
-            'scanWidgetType': 'PointScan', 'scanDesigner': 'GalvoScanDesigner',
-            'scanDesignerParams': {}, 'TTLCycleDesigner': 'PointScanTTLCycleDesigner',
+            'scanWidgetType': 'Advanced', 'scanDesigner': 'GalvoScanDesigner',
+            'scanDesignerParams': {}, 'TTLCycleDesigner': 'AdvancedScanTTLCycleDesigner',
             'TTLCycleDesignerParams': {}, 'sampleRate': 100000,
         },
         'nidaq': {'simulation': True, 'timerCounterChannel': None, 'startTrigger': False},

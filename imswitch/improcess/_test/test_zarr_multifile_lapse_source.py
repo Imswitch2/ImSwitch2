@@ -86,7 +86,7 @@ def test_multifile_lapse_does_not_advance_onto_writing_store(tmp_path):
     ZarrStorer resizes the array BEFORE writing frame data, so a mid-write
     store's shape is ahead of its committed data; opening it early reads
     uninitialised (zero) frames that get permanently baked into the stream
-    (root cause 1 in docs/live_reconstruction_audit.md). Advance must be
+    (root cause 1 in docs/live_reconstruction_audit.md (retired; see git history)). Advance must be
     gated on writing=False, not on file existence.
     """
     fps = 9

@@ -19,7 +19,6 @@ from imswitch.imcontrol.controller.basecontrollers import ScanLifecycleMixin
 
 ROOT = Path(__file__).resolve().parents[4]
 CONTROLLER_DIR = ROOT / 'imswitch' / 'imcontrol' / 'controller'
-CHANNEL_PATH = CONTROLLER_DIR / 'CommunicationChannel.py'
 
 
 class _FakeCommChannel:
@@ -159,9 +158,7 @@ def test_known_scan_controllers_are_covered_by_the_audit():
     expected = {
         'SuperScanController',
         'ScanControllerBase',
-        'ScanControllerPointScan',
         'ScanControllerAdvanced',
-        'ScanControllerMoNaLISA',
         'TriggerScopeRasterController',
         'TriggerScopeScanController',
         'TriggerScopePLSRController',
@@ -181,25 +178,3 @@ def test_known_scan_controllers_are_covered_by_the_audit():
     )
 
 
-def test_communication_channel_resolves_scan_state_via_active_source():
-    source = CHANNEL_PATH.read_text(encoding='utf-8')
-
-    assert 'def setActiveScanSource(self, controller)' in source
-    assert 'def clearActiveScanSource(self, controller)' in source
-    assert 'def getActiveScanSource(self)' in source
-    assert 'if self._activeScanSource is controller:' in source
-
-    isScanRunning = source[
-        source.index('def isScanRunning'):source.index('def getCenterViewbox')
-    ]
-    assert 'return self._activeScanSource is not None' in isScanRunning
-    assert '_get_required_controller' not in isScanRunning
-
-    # Metadata accessors must consult the active source first
-    for accessor in ('def getDimsScan', 'def getScanStepSizes',
-                     'def getNumLineSteps', 'def getFramesPerScanPixel'):
-        body = source[source.index(accessor):]
-        body = body[:body.index('\n    def ')]
-        assert '_activeBeadRecScanSource()' in body, (
-            f'{accessor} does not consult the active scan source first'
-        )

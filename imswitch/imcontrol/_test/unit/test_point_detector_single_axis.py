@@ -1,6 +1,6 @@
 """Single-axis scans through the APD/PMT consumer chain.
 
-Phase C of docs/galvo-designer-single-axis-findings.md. The contract under
+Phase C of docs/galvo-designer-single-axis-findings.md (retired; see git history). The contract under
 test (review-specified): a 1-axis scan normalizes to ONE line of N pixels —
 logical loop dims ``[N, 1]``, spatial buffers ``(1, N)``, chunks
 ``(frames, 1, N)``, a two-dimensional display scale — and the pixels are
@@ -27,8 +27,8 @@ from imswitch.imcontrol.model.managers.detectors.PMTManager import PMTManager
 from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
     GalvoScanDesigner,
 )
-from imswitch.imcontrol.model.signaldesigners.PointScanTTLCycleDesigner import (
-    PointScanTTLCycleDesigner,
+from imswitch.imcontrol.model.signaldesigners.AdvancedScanTTLCycleDesigner import (
+    AdvancedScanTTLCycleDesigner,
 )
 
 from .test_galvo_signal_goldens import _params, _setup_sted_like
@@ -151,14 +151,17 @@ def test_pmt_single_line_buffers_and_pixels():
 
 
 def test_ttl_designer_accepts_single_axis_scan_info():
-    """PointScanTTLCycleDesigner must build its cycle from a 1-axis
+    """AdvancedScanTTLCycleDesigner must build its cycle from a 1-axis
     scanInfo (scan_samples = [per_pixel, per_line], one line)."""
     scanInfo = _z_only_scan_info()
     ttlparams = {'target_device': ['640'],
-                 'TTL_sequence': ['h1'],
-                 'TTL_sequence_axis': ['None'],
-                 'sequence_time': 2e-05}
-    sig = PointScanTTLCycleDesigner().make_signal(
+                 'n_linesteps': 1,
+                 'linestep_enable': {'640': [True]},
+                 'pulse_starts_s': {'640': [[]]},
+                 'pulse_ends_s': {'640': [[]]},
+                 'sequence_time': 2e-05, 'move_time': 0, 'settle_time': 0,
+                 'advanced_mode': False}
+    sig, _info = AdvancedScanTTLCycleDesigner().make_signal(
         ttlparams, _setup_sted_like(), scanInfo)
     assert '640' in sig
     assert len(sig['640']) == scanInfo['scan_samples_total']

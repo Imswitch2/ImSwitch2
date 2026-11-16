@@ -11,7 +11,6 @@ WORKFLOW_SERVICES_PATH = ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'Workf
 spec = importlib.util.spec_from_file_location('WorkflowServices', WORKFLOW_SERVICES_PATH)
 workflow_services = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(workflow_services)
-BeadRecWorkflowService = workflow_services.BeadRecWorkflowService
 ScanWorkflowService = workflow_services.ScanWorkflowService
 ScanRequestResult = workflow_services.ScanRequestResult
 ScanRequestCompletion = workflow_services.ScanRequestCompletion
@@ -41,38 +40,26 @@ class _Signal:
 
 class _CommChannel:
     def __init__(self) -> None:
-        self.sigRequestScanParameters = _Signal()
         self.sigRunScan = _Signal()
-        self.sigRequestScanFreq = _Signal()
         self.sigSetAxisCenters = _Signal()
         self.sigStartRecordingExternal = _Signal()
         self.sigScanStarting = _Signal()
         self.sigScanEnded = _Signal()
         self.sigAbortScan = _Signal()
-        self.sigQueryCenterCoord = _Signal()
-        self.sigCenterCoordPipelineFinished = _Signal()
-        self.sigUpdateBeadRecCenter = _Signal()
-        self.sigShowBeadRecCenterCross = _Signal()
-        self.sigAutoAxialToggled = _Signal()
-        self.sigNewAxialListBuffer = _Signal()
 
 
 def test_scan_workflow_service_wraps_legacy_scan_signals():
     comm_channel = _CommChannel()
     workflow = ScanWorkflowService(comm_channel)
 
-    workflow.request_scan_parameters()
     workflow.run_scan(True, False)
-    workflow.request_scan_frequency()
     workflow.set_axis_centers(['X', 'Y'], [1.0, 2.0])
     workflow.start_external_recording()
     workflow.notify_scan_starting()
     workflow.notify_scan_ended()
     workflow.abort_scan()
 
-    assert comm_channel.sigRequestScanParameters.emitted == [()]
     assert comm_channel.sigRunScan.emitted == [(True, False)]
-    assert comm_channel.sigRequestScanFreq.emitted == [()]
     assert comm_channel.sigSetAxisCenters.emitted == [(['X', 'Y'], [1.0, 2.0])]
     assert comm_channel.sigStartRecordingExternal.emitted == [()]
     # Two starts: dispatching a scan publishes its own, because the receiving
@@ -795,32 +782,6 @@ def _capture_result(results, errors, action):
         errors.append(error)
 
 
-def test_bead_rec_workflow_service_wraps_legacy_signals():
-    comm_channel = _CommChannel()
-    workflow = BeadRecWorkflowService(comm_channel)
-    slot = object()
-
-    workflow.query_center_coord('Maxima')
-    workflow.finish_center_coord_pipeline((1, 2))
-    workflow.update_bead_rec_center(3, 4)
-    workflow.show_bead_rec_center_cross(True)
-    workflow.set_auto_axial(False)
-    workflow.set_axial_list_buffer(['XZ'])
-    workflow.on_query_center_coord(slot)
-    workflow.on_center_coord_pipeline_finished(slot)
-    workflow.on_update_bead_rec_center(slot)
-    workflow.on_show_bead_rec_center_cross(slot)
-    workflow.on_auto_axial_toggled(slot)
-    workflow.on_new_axial_list_buffer(slot)
-
-    assert comm_channel.sigQueryCenterCoord.emitted == [('Maxima',), ('connect', slot)]
-    assert comm_channel.sigCenterCoordPipelineFinished.emitted == [((1, 2),), ('connect', slot)]
-    assert comm_channel.sigUpdateBeadRecCenter.emitted == [(3, 4), ('connect', slot)]
-    assert comm_channel.sigShowBeadRecCenterCross.emitted == [(True,), ('connect', slot)]
-    assert comm_channel.sigAutoAxialToggled.emitted == [(False,), ('connect', slot)]
-    assert comm_channel.sigNewAxialListBuffer.emitted == [(['XZ'],), ('connect', slot)]
-
-
 def test_scan_workflow_service_publishes_and_retains_laser_scan_state():
     comm_channel = _CommChannel()
     workflow = ScanWorkflowService(comm_channel)
@@ -844,3 +805,79 @@ def test_scan_workflow_service_publishes_and_retains_laser_scan_state():
     # Identical semantic publication is deduplicated.
     workflow.publish_laser_scan_state(state)
     assert observed == [state]
+
+
+class _ParamController:
+    def __init__(self, params):
+        self.params = params
+
+    def getScanParametersSnapshot(self):
+        return self.params
+
+
+class _Registry:
+    def __init__(self, controllers, active=None):
+        self._controllers = controllers
+        self._active = active
+
+    def controllerRegistry(self):
+        return self._controllers
+
+    def getActiveScanSource(self):
+        return self._active
+
+
+def test_request_scan_parameters_returns_the_canonical_scan_controller_data():
+    params = ({'a': 1}, {'d': 2}, ['X'])
+    workflow = ScanWorkflowService(_Registry({
+        'Other': _ParamController(('x', 'y', 'z')),
+        'Scan': _ParamController(params),
+    }))
+
+    assert workflow.request_scan_parameters() == params
+
+
+def test_request_scan_parameters_prefers_active_source_and_handles_none():
+    active = _ParamController(('a', 'd', ['A']))
+    workflow = ScanWorkflowService(_Registry(
+        {'Scan': _ParamController(('s', 's', ['S']))}, active=active
+    ))
+    assert workflow.request_scan_parameters() == ('a', 'd', ['A'])
+
+    assert ScanWorkflowService(_Registry({})).request_scan_parameters() is None
+    # Several capable controllers and no canonical one: ambiguous, not a guess.
+    ambiguous = _Registry({
+        'A': _ParamController((1, 2, 3)), 'B': _ParamController((4, 5, 6)),
+    })
+    assert ScanWorkflowService(ambiguous).request_scan_parameters() is None
+
+
+def test_request_scan_frequency_asks_the_recording_controller():
+    class Recording:
+        def getTimelapseFreq(self):
+            return 2.5
+
+    assert ScanWorkflowService(
+        _Registry({'Recording': Recording()})
+    ).request_scan_frequency() == 2.5
+    assert ScanWorkflowService(_Registry({})).request_scan_frequency() is None
+
+
+def test_run_plsr_multicolor_scan_calls_every_capable_controller():
+    calls = []
+
+    class Plsr:
+        def __init__(self, name):
+            self.name = name
+
+        def runScanPLSRMulticolorExternal(self):
+            calls.append(self.name)
+
+    workflow = ScanWorkflowService(_Registry({
+        'TriggerScopeScan': Plsr('a'), 'Scan': object(), 'Plsr': Plsr('b'),
+    }))
+    workflow.run_plsr_multicolor_scan()
+    assert calls == ['a', 'b']
+
+    with pytest.raises(RuntimeError):
+        ScanWorkflowService(_Registry({'Scan': object()})).run_plsr_multicolor_scan()

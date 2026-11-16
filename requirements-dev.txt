@@ -1,4 +1,0 @@
--e .
-
-pytest>=7
-pytest-qt>=4

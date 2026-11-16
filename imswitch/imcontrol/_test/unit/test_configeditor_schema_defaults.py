@@ -692,11 +692,9 @@ class TestBoolAutoTriState:
         """Regression against the real template file: applying the shipped
         NidaqPositionerManager defaults must not add smoothScan."""
         template_path = (
-            Path(__file__).parents[4] / "utility_scripts" / "builtin_templates"
-            / "positioners" / "NidaqPositionerManager.json"
+            Path(__file__).parents[2] / "view" / "configeditor"
+            / "builtin_templates" / "positioners" / "NidaqPositionerManager.json"
         )
-        if not template_path.exists():
-            pytest.skip("NidaqPositionerManager.json template not found")
         with open(template_path, encoding="utf-8") as f:
             template = json.load(f)
 

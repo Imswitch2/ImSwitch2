@@ -2,8 +2,7 @@
 
 Regenerates every schema, fixture and the index in memory exactly as
 ``tools/extract_manager_schemas.py --write`` would, and compares with what is
-checked in -- the pattern ``test_communication_channel_contract.py`` uses for
-its signal inventory. Also: every schema is a valid Draft 2020-12 schema,
+checked in. Also: every schema is a valid Draft 2020-12 schema,
 every fixture satisfies its schema, and the two seed overrides do what the
 plan says they are for.
 

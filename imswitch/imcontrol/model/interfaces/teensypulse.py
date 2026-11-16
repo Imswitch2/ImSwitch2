@@ -12,8 +12,7 @@ consumers (notably :class:`PulseGeneratorManager` subclasses) can query
 ``min_pulse_us`` / ``n_channels`` / ``max_steps`` without knowing which
 firmware version is on the wire.
 
-See the v4 wire protocol section of ``docs/design/plans/ws-integration.md``
-for the authoritative spec.
+The wire protocol is defined by the command builders and parsers below.
 """
 
 from __future__ import annotations

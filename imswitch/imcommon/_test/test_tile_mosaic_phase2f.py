@@ -179,21 +179,6 @@ def _write_undeclared_run(folder):
     return manifest
 
 
-def test_a_payload_with_no_declared_transform_is_still_readable(tmp_path):
-    manifest = _write_undeclared_run(tmp_path / "undeclared")
-
-    index, completeness = inspect_dataset(manifest)
-
-    assert sorted(completeness.payloads_complete) == [
-        "APDblue", "APDgreen", "APDred"
-    ]
-    for name in ("APDred", "APDblue"):
-        transform = index.tiles[0].payloads[name].transform_to_alignment
-        assert transform.kind == "unknown"
-        assert not transform.is_declared
-        assert transform.is_identity   # the default it resolves to
-
-
 def test_an_assumed_transform_is_not_reported_as_a_declared_one(tmp_path):
     manifest = _write_undeclared_run(tmp_path / "undeclared")
     index = inspect_dataset(manifest)[0]

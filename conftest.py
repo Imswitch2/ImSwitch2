@@ -7,7 +7,7 @@ signal designers, and other unit-tested components do not use them at runtime.
 
 It also puts the repository root on ``sys.path`` so tests can import top-level
 modules that ship in the repo but are not part of the installed distribution --
-``utility_scripts`` above all. ``python -m pytest`` adds the working directory
+``scripts/utilities`` (via ``sys.path``) above all. ``python -m pytest`` adds the working directory
 implicitly, which is why this is invisible locally, but the ``pytest`` console
 script used in CI does not. Without it, a test importing one of those modules
 fails to collect at all, taking its whole lane down with it.
@@ -19,6 +19,12 @@ from unittest.mock import MagicMock
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+# Operator scripts under scripts/utilities are not a package; tests import them
+# by module name (aa_aotf_calibration).
+_UTILITIES = os.path.join(_REPO_ROOT, "scripts", "utilities")
+if _UTILITIES not in sys.path:
+    sys.path.insert(0, _UTILITIES)
 
 
 def _stub_if_missing(pkg_root, submodules=()):

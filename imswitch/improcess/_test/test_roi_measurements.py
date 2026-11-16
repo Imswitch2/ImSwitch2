@@ -435,37 +435,6 @@ def test_line_statistics_are_nan_for_an_area_roi():
     assert np.isnan(row["length_px"])
 
 
-def test_the_profile_panel_and_the_measurement_share_one_sampler():
-    """Two samplers would mean a plotted profile and a line mean that disagree."""
-    import ast
-    import importlib
-    import inspect
-
-    def imported_names(module_path):
-        # By module path: the view packages re-export the *class* under the
-        # same name, so a plain attribute lookup gets the class instead.
-        module = importlib.import_module(module_path)
-        tree = ast.parse(inspect.getsource(module))
-        return {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-        }
-
-    # The Profile panel is one widget, shared by ImProcess and imcontrol.
-    shared = imported_names("imswitch.imcommon.view.guitools.ProfileWidget")
-    assert "line_samples" in shared
-    assert "map_coordinates" not in shared
-
-    from imswitch.imcommon.view.guitools.ProfileWidget import (
-        ProfileWidget as SharedProfileWidget,
-    )
-    from imswitch.improcess.view.ProfileWidget import ProfileWidget
-
-    assert issubclass(ProfileWidget, SharedProfileWidget)
-
-
 def test_the_shared_sampler_reads_off_image_pixels_as_zero():
     from imswitch.imcommon.algorithms.line_sampling import line_samples
 

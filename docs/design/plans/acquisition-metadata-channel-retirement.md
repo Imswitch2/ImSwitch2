@@ -1,9 +1,17 @@
 # Acquisition metadata channel retirement
 
-**Status:** Active — P1 and P2 implemented; P3/P4 need a release gate
-**Date:** 2026-08-12
+**Status (2026-10-17):** P1 (every ImProcess reader consults the layout resolver
+first, `improcess/live/sources.py`, MoNaLISA, SNOUTY) and P2 (`AcquisitionLoop.device`,
+`RecordingManager.__reportLayoutDisagreements`, forward-compatible decoder)
+are implemented on main. **Open: P3** (a setup-level `writeLegacyScanMetadata` flag,
+default true, that stops ImControl writing the category-A `ScanStage:*` /
+`ScanTTL:*` / `MS-RESOLFT_Scan:*` attributes; `git grep writeLegacyScanMetadata`
+finds nothing) **and P4** (flip the default, then delete the writers one release
+later). Both are release-gated policy decisions and need a maintainer go-ahead
+before anyone implements them; the legacy adapters stay either way.
+**Date:** 2026-08-12 (status refreshed 2026-10-17)
 **Scope:** The metadata channels crossing the ImControl/ImProcess boundary
-**Depends on:** [acquisition layout contract](acquisition-layout-contract.md) (PR 1–7 implemented)
+**Depends on:** acquisition layout contract (now the *Acquisition layout* section of `docs/Hdf5datafile.rst`) (PR 1–7 implemented)
 
 ---
 
@@ -37,7 +45,7 @@ retire with A.
 
 **Incoming channels (coordination with the single-axis scan fix).** The 1-D
 scan plan on `fix/galvo-designer-single-axis-scan` (Phase C item 6 of
-`docs/galvo-designer-single-axis-findings.md`) adds `scan_axis_device` and
+`docs/galvo-designer-single-axis-findings.md` (retired; see git history)) adds `scan_axis_device` and
 `scan_axis_physical` attributes, written by all three storers, because the
 Galvo contract labels the first logical scan dimension `x` whatever the
 device and OME would otherwise lose that a Z-only scan was physically Z.
@@ -147,51 +155,12 @@ is what stops two readers disagreeing about the same file, which is the failure
 mode P1 exists to remove. Retiring the fallbacks themselves belongs to P3/P4,
 once ImControl stops writing the channels they read.
 
-**Progress.** Group 1 (the parsers that can disagree with the resolver about
-the same file) is done: `live/sources.py` (`209e3364`), and
-`monalisa/live_session.py` + `monalisa/reconstructor.py`. Each now asks the
-resolver first and keeps its own ladder only for sources the resolver cannot
-describe.
-
-Two things this surfaced, both fixed:
-
-- `live/sources.py` counted scan positions with `ceil` where ImControl
-  unified on `round`. A 0.52 um axis at 0.05 um is 10 positions to the
-  producer and was 11 to the reader, so a 100-frame stack was read as needing
-  121 and never completed.
-- Confining interpretation is only safe if the resolver is at least as capable
-  as what it replaces. Every legacy adapter required `ScanTTL` keys, so a
-  stage-geometry-only file resolved to a bare frame stream and routing the
-  live sources through the resolver would have *lost* geometry they could
-  read. `adapt_scan_stage_metadata` closes that, registered last so any
-  modality adapter still wins, and declining rather than raising when the
-  geometry cannot explain the frame count -- nothing in such a file claims to
-  be a scan.
-  A later sanity check tightened it further: stage extents describe what
-  was *configured*, so a timelapse that never moved the stage still
-  carries them and its frame count can coincide with the configured
-  position product. It now declines when the file also says it holds
-  several timepoints, and reports `medium` rather than `high` confidence,
-  being the least specific adapter in the chain.
-
-Group 2, the UI pre-fill pair, is also done. `scan_params_from_layout` maps a
-resolved layout onto MoNaLISA's scan-dialog values, and the SNOUTY parameter
-widget takes its cycle/plane counts from the resolver when it is handed the
-source. The controller now passes the `DataObj` to `load_from_attrs`, falling
-back to the attrs-only signature so the duck-typed hook keeps working.
-
-That surfaced a third instance of the square-raster guess: the MoNaLISA dialog
-was pre-filled with `sqrt(numFrames)` on both axes, which is 25x25 for the
-motivating 648-frame scan -- the same wrong shape BeadRec used to invent,
-reached by a different route. A scan whose geometry nothing records now leaves
-the dialog alone rather than inventing one.
-
-`LiveModeController` is **reclassified**: it reads `recording:num_timepoints`
-to know when a lapse has finished, which is category B (lifecycle), not
-acquisition semantics. §4 says category B stays, so it is out of scope rather
-than outstanding.
-
-P1 is therefore complete: every module consults the resolver first.
+**Done (details in git history).** All six modules now ask the resolver first and
+keep their own ladder only for sources the resolver cannot describe; the
+resolver gained `adapt_scan_stage_metadata` (stage-geometry-only files),
+`scan_params_from_layout` (MoNaLISA dialog pre-fill) and a resolver-fed SNOUTY
+parameter widget. `LiveModeController` was reclassified as category B and is out
+of scope. P1 is complete.
 
 ### P2 — Add device identity, derive-and-verify — **done**
 

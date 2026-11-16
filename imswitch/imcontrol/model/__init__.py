@@ -8,7 +8,7 @@ from .SetupInfo import (
     ScanInfo,
     SetupInfo,
 )
-from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
+from imswitch.imcommon.model.WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
 from .laser_power import (
     LaserAcquisitionState,
     LaserPowerContext,

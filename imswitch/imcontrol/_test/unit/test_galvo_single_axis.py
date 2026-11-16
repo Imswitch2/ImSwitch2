@@ -1,6 +1,6 @@
 """Single-axis (1-active-axis) GalvoScanDesigner behavior.
 
-Characterization tests for docs/galvo-designer-single-axis-findings.md.
+Characterization tests for docs/galvo-designer-single-axis-findings.md (retired; see git history).
 These cases crashed before Phase A ("zero-size array to reduction operation
 minimum", "argmax of an empty sequence"); they now assert the actual signal
 content the designer must produce. Phase B adds the stepped-d1 variants.

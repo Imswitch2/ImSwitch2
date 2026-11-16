@@ -1,12 +1,10 @@
 """
 EtMonalisa controller — thin subclass of :class:`EventTriggeredControllerBase`.
 
-EtMonalisa diverges from EtSTED in three ways:
+EtMonalisa diverges from EtSTED in two ways:
 
   * It physically switches a Leica microscope-stand between fluorescence
     and confocal modes around each event scan.
-  * It emits :attr:`sigInitiateEtMonalisa` so other UI consumers can
-    track the active state.
   * Otherwise the workflow is identical.  In particular, it now uses
     :class:`EtSTEDTransformService` for the third-order polynomial
     coordinate transform — which fixes the previous broken calibration
@@ -54,20 +52,13 @@ class EtMonalisaController(EventTriggeredControllerBase):
     # too would double-actuate. The authored scouting/event modes for EtMonalisa
     # must therefore include ``LeicaStand`` (just as Snouty's must include
     # ``FlipMirror``).
-    #
-    # The ``sigInitiateEtMonalisa`` emissions are UI state, not hardware, and stay
-    # unconditional in both paths.
 
     def _pre_arm_hook(self) -> None:
-        self._commChannel.sigInitiateEtMonalisa.emit(True)
         if (
             self._state.runMode == RunMode.Experiment
             and not self._smartModeSwitchingEnabled()
         ):
             self._switchStandToFastMode()
-
-    def _post_stop_hook(self, *, reset_params: bool) -> None:
-        self._commChannel.sigInitiateEtMonalisa.emit(False)
 
     def _on_pause_modality_hook(self) -> None:
         if (

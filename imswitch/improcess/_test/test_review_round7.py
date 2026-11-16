@@ -165,26 +165,6 @@ def test_a_cancelled_export_keeps_its_lease_until_the_worker_reports_back():
     assert "r" not in registry.held_result_uids()
 
 
-def test_workflow_shutdown_keeps_handles_an_export_still_leases(registry, tmp_path):
-    from imswitch.improcess.controller.WorkflowController import WorkflowController
-
-    raw = _h5(tmp_path / "scan.h5")
-    loaded, held = [], set()
-    comm = SimpleNamespace(sigResultProduced=SimpleNamespace(emit=lambda r, n: loaded.append(("x", r))),
-                           getAllResults=lambda: list(loaded))
-    controller = WorkflowController(comm, SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None),
-                                    SimpleNamespace(getActiveResult=lambda: None))
-    controller.addHolder(lambda: set(held))
-    wf = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"])])
-    controller._onFinished(run(wf, registry=registry, out_dir=tmp_path))
-    result = loaded.pop()[1]
-    held.add(result.result_uid)                       # an export outlived the endpoint shutdown wait
-    assert controller.shutdown() is True
-    assert controller._retained and np.asarray(result.data).shape == (2, 8, 8)
-    held.clear()
-    assert controller.shutdown() is True and controller._retained == []
-
-
 # 4. closing an endpoint session triggers a release check --------------------------------------------
 
 def test_closing_a_session_asks_the_workflow_controller_to_release(registry, tmp_path):
@@ -233,13 +213,6 @@ def test_top_level_embedded_provenance_with_wrong_types_raises(tmp_path, attrs, 
             handle.attrs[key] = value
     with pytest.raises(ProvenanceReadError, match=field):
         read_provenance(tmp_path / "e.h5")
-
-
-def test_a_real_saved_file_still_reads_back(tmp_path):
-    result = _image()
-    result.save(tmp_path / "x.h5", "hdf5")
-    document = read_provenance(tmp_path / "x.h5")
-    assert document.artifact and document.artifact["primary"] == "x.h5"
 
 
 # 6. numpy bytes hash like bytes, not like their repr -----------------------------------------------

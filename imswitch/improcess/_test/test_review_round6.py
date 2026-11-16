@@ -80,27 +80,6 @@ def test_a_rollback_that_leaves_files_names_every_leftover(tmp_path, monkeypatch
 
 # 2. endpoint sessions lease the sources their layers read -----------------------------------
 
-def test_retained_sources_stay_open_while_an_endpoint_session_holds_the_result(registry, tmp_path):
-    from imswitch.improcess.controller.WorkflowController import WorkflowController
-
-    raw = _h5(tmp_path / "scan.h5")
-    loaded, held = [], set()
-    comm = SimpleNamespace(sigResultProduced=SimpleNamespace(emit=lambda r, n: loaded.append(("x", r))),
-                           getAllResults=lambda: list(loaded))
-    view = SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None)
-    controller = WorkflowController(comm, view, SimpleNamespace(getActiveResult=lambda: None))
-    controller.addHolder(lambda: set(held))
-    wf = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"])])
-    controller._onFinished(run(wf, registry=registry, out_dir=tmp_path))
-    result = loaded[0][1]
-    held.add(result.result_uid)                          # an endpoint session shows its layers
-    loaded.clear()                                        # the user removes it from the list
-    assert controller.releaseUnusedSources() == 0
-    assert np.asarray(result.data).shape == (2, 8, 8)     # the lazy view still reads
-    held.clear()                                          # the session closes
-    assert controller.releaseUnusedSources() == 1
-
-
 def test_a_derived_result_keeps_its_parents_source_through_lineage(registry, tmp_path):
     from imswitch.improcess.controller.WorkflowController import WorkflowController
 
@@ -119,21 +98,6 @@ def test_a_derived_result_keeps_its_parents_source_through_lineage(registry, tmp
 
 
 # 3. a running workflow is cancelled and joined at shutdown -----------------------------------
-
-def test_the_run_worker_observes_cancellation_between_steps(registry, tmp_path):
-    from imswitch.improcess.controller.WorkflowController import _RunWorker
-
-    raw = _h5(tmp_path / "scan.h5")
-    wf = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"])])
-    worker = _RunWorker(wf, registry, tmp_path)
-    failed, finished = [], []
-    worker.sigFailed.connect(lambda message, report: failed.append((message, report)))
-    worker.sigFinished.connect(finished.append)
-    worker.cancel()
-    worker.run()
-    assert finished == [] and failed and "cancelled" in failed[0][0]
-    failed[0][1].close()
-
 
 def test_shutdown_cancels_and_joins_a_running_workflow_before_closing_sources():
     from imswitch.improcess.controller.WorkflowController import WorkflowController

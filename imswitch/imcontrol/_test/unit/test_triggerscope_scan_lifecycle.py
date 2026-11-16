@@ -314,6 +314,45 @@ def test_membership_and_detector_lease_precede_firmware_start():
     assert controller._widget.scanButtonChecked is False
 
 
+def _laserVeto(commChannel, refuseOnMembership):
+    """LaserController's veto: it arms the lasers in the membership slot and,
+    as a Qt slot cannot raise into the emitter, reports a failure here."""
+    errors = []
+    commChannel.scanWorkflow.laser_scan_preparation_error = (
+        lambda: errors[-1] if errors else None
+    )
+    if refuseOnMembership:
+        commChannel.sigScanDevicesResolved.connect(
+            lambda devices: errors.append('AOTF offline')
+        )
+    return errors
+
+
+def test_a_laser_that_cannot_be_prepared_stops_the_firmware_before_its_command():
+    controller, master, commChannel, _, events = _setup()
+    _laserVeto(commChannel, refuseOnMembership=True)
+
+    with pytest.raises(RuntimeError, match='AOTF offline'):
+        controller.runScanAdvanced(sigScanStartingEmitted=False)
+
+    names = [event[0] for event in events]
+    assert 'devices-resolved' in names
+    assert master.scanManager.calls == []
+    assert 'detectors-acquired' not in names
+
+
+def test_a_standing_laser_veto_stops_the_scan_before_the_lasers_are_asked():
+    controller, master, commChannel, _, events = _setup()
+    _laserVeto(commChannel, refuseOnMembership=False).append('AOTF offline')
+
+    with pytest.raises(RuntimeError, match='AOTF offline'):
+        controller.runScanAdvanced(sigScanStartingEmitted=False)
+
+    names = [event[0] for event in events]
+    assert 'devices-resolved' not in names
+    assert master.scanManager.calls == []
+
+
 def test_board_done_waits_for_detector_finish_before_terminal_signals():
     controller, master, commChannel, detector, events = _setup(
         autoAcknowledge=False

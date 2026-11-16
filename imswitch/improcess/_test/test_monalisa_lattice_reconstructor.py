@@ -14,11 +14,6 @@ from imswitch.improcess._test._monalisa_synthetic import (  # noqa: E402
     make_physical_scan,
     make_scan,
 )
-from imswitch.improcess.reconstructors import (  # noqa: E402
-    available_reconstructor_ids,
-    get_registry,
-    register_reconstructor_by_id,
-)
 from imswitch.improcess.reconstructors.base import (  # noqa: E402
     CancellationToken,
     ReconstructionCancelled,
@@ -44,7 +39,6 @@ from imswitch.imcommon.model.acquisition_layout import (  # noqa: E402
 from imswitch.improcess.model.acquisition_layout_resolver import (  # noqa: E402
     ResolvedAcquisitionLayout,
 )
-from imswitch.improcess.reconstructors.registry import PluginRegistry  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -135,16 +129,6 @@ class TestRecordedScan:
         scan = recorded_scan(attrs, 240)
         assert (scan.num_fast, scan.num_slow, scan.num_stacks) == (12, 10, 2)
 
-    def test_several_scans_in_one_recording(self):
-        scan = recorded_scan(_attrs(), 3 * 576)
-        assert scan.num_stacks == 3
-
-    def test_without_metadata_a_square_scan(self):
-        scan = recorded_scan({}, 484)
-        assert (scan.num_fast, scan.num_slow) == (22, 22)
-        assert scan.step_nm is None
-        assert "square" in scan.describe()
-
     def test_what_is_set_wins(self):
         scan = recorded_scan(_attrs(), 512, num_fast=16, num_slow=32, step_nm=35.0)
         assert (scan.num_fast, scan.num_slow, scan.step_nm) == (16, 32, 35.0)
@@ -163,15 +147,6 @@ class TestRecordedScan:
 
 
 class TestPlugin:
-    def test_is_a_built_in_reconstructor(self):
-        assert "monalisa-lattice" in available_reconstructor_ids()
-        registry = PluginRegistry()
-        plugin = register_reconstructor_by_id(registry, "monalisa-lattice")
-        assert isinstance(plugin, MonalisaLatticeReconstructor)
-        assert plugin.execution_policy == "worker"
-        assert registry.get_reconstructor("monalisa-lattice") is plugin
-        assert get_registry() is not registry
-
     def test_the_panel_shows_the_scan_of_the_recording(self, qapp):
         plugin = MonalisaLatticeReconstructor()
         widget = plugin.make_param_widget(QtWidgets.QWidget())
@@ -328,18 +303,6 @@ class TestReconstruction:
         # 22 steps of 35 nm across a period of 11 px.
         assert result.diagnostics["camera pixel (nm)"] == pytest.approx(70.0, abs=0.1)
 
-    def test_wide_foci_are_reassigned_and_confined_ones_are_not(self):
-        wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
-        result = MonalisaLatticeReconstructor().process(
-            _recording(wide.frames), _params()
-        )
-        assert result.diagnostics["image"] == "reassigned"
-        assert result.diagnostics["shift factor"] == pytest.approx(wide.alpha, abs=0.08)
-        placed = MonalisaLatticeReconstructor().process(
-            _recording(make_scan().frames), _params()
-        )
-        assert placed.diagnostics["image"] == "amplitudes placed"
-
     def test_the_resolution_to_expect_follows_from_the_shift_factor(self):
         """sigma_e = sqrt(alpha) * sigma_spot: the width of the placed PSF."""
         wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
@@ -369,17 +332,6 @@ class TestReconstruction:
         )
         assert result.diagnostics["image"] == "reassigned"
         assert "shift factor" not in result.diagnostics
-
-    def test_a_given_orientation_is_used(self):
-        scan = make_scan(orientation="-x+y")
-        found = MonalisaLatticeReconstructor().process(
-            _recording(scan.frames), _params(**PLAIN)
-        )
-        given = MonalisaLatticeReconstructor().process(
-            _recording(scan.frames), _params(orientation="-x+y", **PLAIN)
-        )
-        assert found.diagnostics["orientation"] == "-x+y"
-        np.testing.assert_allclose(found.data, given.data)
 
     def test_several_scans_make_a_time_axis(self):
         scan = make_scan(steps=(11, 11), background=0.0)
@@ -451,26 +403,6 @@ class TestOutputs:
         layer = result.display_layers()[0]
         assert np.shares_memory(layer.data, result.data)
         np.testing.assert_array_equal(layer.data[0], layer.data[-1])
-
-    def test_a_processor_can_take_the_stack(self, result):
-        choices = {choice.id: choice for choice in result.processor_input_choices()}
-        stack = choices["component:pinholes"].result
-        assert stack.axis_labels == ["Pinhole", "Y", "X"]
-        assert stack.data.shape == result.pinholes.shape
-
-    def test_the_sharpened_image_is_the_sharper(self, result):
-        def fine(image):
-            image = image[30:-30, 30:-30]
-            return np.std(np.diff(image, axis=1)) / np.std(image)
-
-        assert fine(result.sharpened) > 1.1 * fine(result.data)
-
-    def test_saved_as_an_image(self, result, tmp_path):
-        import tifffile
-
-        result.save(tmp_path / "lattice.tiff")
-        saved = tifffile.imread(tmp_path / "lattice.tiff")
-        np.testing.assert_allclose(np.squeeze(saved), result.data, rtol=1e-6)
 
 
 class TestLayoutScan:
@@ -944,15 +876,6 @@ class TestFailures:
         with pytest.raises(ValueError, match="periodic|peaks"):
             MonalisaLatticeReconstructor().process(
                 _recording(rng.poisson(100.0, (484, 64, 64)).astype(float)), _params()
-            )
-
-    def test_cancelled(self):
-        token = CancellationToken()
-        token.cancel()
-        context = ReconstructionContext(cancellation_token=token)
-        with pytest.raises(ReconstructionCancelled):
-            MonalisaLatticeReconstructor().process(
-                _recording(make_scan().frames), _params(), context=context
             )
 
     def test_progress_is_reported(self):

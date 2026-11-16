@@ -2,19 +2,19 @@
 
 Verifies, OUTSIDE ImSwitch, that the camera can deliver exactly one distinct
 frame per trigger via a push-based QueueSink -- the capability the legacy
-pyicic/poll-based path cannot provide. See
-docs/design/plans/tis-camera-ic4-migration.md.
+pyicic/poll-based path cannot provide. See the retired
+tis-camera-ic4-migration.md plan (retired; see git history).
 
 Usage (from the Imswitch2 conda env):
 
     # 1. Just list what IC4 can see:
-    python utility_scripts/ic4_probe.py --list
+    python scripts/diagnostics/ic4_cam.py --list
 
     # 2. Validate the whole QueueSink path with software triggers (no TTL needed):
-    python utility_scripts/ic4_probe.py --mode software --count 10
+    python scripts/diagnostics/ic4_cam.py --mode software --count 10
 
     # 3. The real test: wait for external TTL pulses from the TriggerScope:
-    python utility_scripts/ic4_probe.py --mode hardware --count 10 --timeout 30
+    python scripts/diagnostics/ic4_cam.py --mode hardware --count 10 --timeout 30
 
 A PASS in hardware mode (N frames, N distinct) means IC4 solves the
 duplicate-frame problem and we can build the real TISManager on it.

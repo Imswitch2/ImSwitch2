@@ -138,19 +138,6 @@ def test_a_change_mid_run_does_not_touch_the_running_mosaic():
     assert ctrl._stitcher is stitcher
 
 
-def test_the_selection_is_read_before_the_worker_starts():
-    """It must not be re-read on the worker: the detector lease is taken
-    against the resolved name and released in the finally, so a change
-    mid-run would leak that lease and read a detector nobody armed."""
-    import inspect
-
-    source = inspect.getsource(TilingController.startTiling)
-    assert 'self._widget.getDetector()' in source
-
-    worker = inspect.getsource(TilingController._runScan)
-    assert 'getDetector()' not in worker
-
-
 def test_config_editor_exposes_the_required_detector_transform_map():
     template = (
         Path(__file__).parents[4]

@@ -185,14 +185,180 @@ that already holds earlier timepoints.
 
 When the recording was started with an acquisition layout (scan
 recordings, when the scan panel supplies one), ``data`` also carries
-``AcquisitionLayout:schema`` (currently
-``"imswitch.acquisition-layout/1"``) and ``AcquisitionLayout:json``, which
-maps each stored frame to its scan coordinates.  To see what a file's
-layout says without loading any pixels, run from a source checkout:
+``AcquisitionLayout:schema`` and ``AcquisitionLayout:json``, which map each
+stored frame to its scan coordinates; see :ref:`acquisition-layout` below.
+To see what a file's layout says without loading any pixels, run from a
+source checkout:
 
 .. code-block:: bash
 
    python tools/inspect_acquisition_layout.py <path> [detector]
+
+.. _acquisition-layout:
+
+Acquisition layout
+==================
+
+The layout is the contract between the scan that produced a recording and
+every reader that has to put its frames back in place.  It describes the
+*chronological event lattice* of the producer, independently of the array axes
+of the container, so HDF5, Zarr and OME-TIFF files carry the same content.  The
+model, serialisation and coordinate arithmetic live in
+``imswitch/imcommon/model/acquisition_layout.py``; reconstructors must use its
+helpers instead of repeating the index or serpentine arithmetic.
+
+**Stored keys.**  Written per detector, with the detector's array metadata
+(HDF5 and Zarr attributes on ``data``; an OME structured annotation in
+OME-TIFF, restored by the TIFF reader to ordinary attributes):
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Key
+     - Content
+   * - ``AcquisitionLayout:schema``
+     - ``imswitch.acquisition-layout/1``.  A different version is refused with
+       ``UNSUPPORTED_SCHEMA_VERSION``.
+   * - ``AcquisitionLayout:json``
+     - The canonical layout as deterministic JSON (sorted keys, no spaces),
+       at most ``MAX_INLINE_LAYOUT_BYTES`` (1 MiB) of UTF-8.  A larger layout
+       fails the recording preflight with ``LAYOUT_METADATA_TOO_LARGE``.
+   * - ``recording:completion_outcome``, ``recording:planned_frames``,
+       ``recording:actual_frames``, ``recording:planned_partitions``,
+       ``recording:actual_partitions``
+     - The outcome of the recording, kept apart from the plan (see
+       `Recording attributes`_).  ``planned_*`` may be absent for an
+       until-stop recording.
+   * - ``recording:frames_committed``, ``writing``, ``stream_complete``
+     - Writer-liveness markers (below).
+
+The pre-layout ``ScanStage:*``, ``ScanTTL:*`` and ``recording:*`` attributes are
+still written for compatibility.
+
+**Layout fields.**  The JSON object has:
+
+.. list-table::
+   :widths: 24 76
+   :header-rows: 1
+
+   * - Field
+     - Meaning
+   * - ``schema``
+     - As above.
+   * - ``payload_kind``
+     - An open string.  Registered: ``detector-frame-stream`` (stored frames
+       are the producer's events), ``assembled-image`` and
+       ``reconstructed-image`` (loops map to array axes).
+   * - ``detector``
+     - The detector the layout belongs to.
+   * - ``storage_axes``
+     - The role of each array dimension, e.g. ``["frame", "detector_y",
+       "detector_x"]``.  Independent of the OME/NGFF axes, which remain an
+       interoperability projection (an OME ``T`` on a frame axis does not make
+       it time).
+   * - ``event_loops``
+     - The producer's loops, outermost first.  Each has ``id``, ``kind``,
+       ``count`` and optionally ``step``, ``unit``, ``direction`` (+1 or -1),
+       ``labels``, ``storage_axis`` and ``device`` (the positioner that drove
+       it).
+   * - ``traversal``
+     - Rules ``{loop_id, order, parity_loops}`` with ``order`` one of
+       ``forward``, ``reverse`` or ``serpentine``.
+   * - ``recorded_event_spans``
+     - ``null`` when the detector recorded every producer event, otherwise
+       the selection described below.
+   * - ``partitions``
+     - Splits across files, groups, timepoints, positions or tiles:
+       ``{kind, index, planned_count, storage}``.
+   * - ``modality``, ``scan_source``
+     - Optional.  ``modality`` is set only when the workflow selected one; the
+       scan does not infer it.
+   * - ``provenance``
+     - How the layout was obtained: ``recorded``, ``user-override``,
+       ``legacy-adapter``, ``ome-ngff``, ``shape-inference`` or
+       ``generic-fallback``.
+
+Registered loop kinds are ``scan_x``, ``scan_y``, ``scan_z`` (producers may
+also generate ``scan_axis_<n>``), ``condition``, ``time``, ``cycle``,
+``plane``, ``repeat``, ``tile``, ``position`` and ``tcspc_bin``; unknown kinds
+round-trip unchanged.  A repeated camera pulse is an explicit ``repeat`` loop.
+
+**Event ordinals and spans.**  A stored frame obtains its coordinates by
+mapping its position to a producer event ordinal and unfolding that ordinal
+through ``event_loops`` (the last loop varies fastest), then applying
+``traversal``.  Ordinals are zero-based and restart in every partition.  One
+``recorded_event_spans`` entry ``{start, count, stride, period, repeats}``
+selects ordinals ``start + repetition * period + item * stride`` for
+``0 <= item < count`` and ``0 <= repetition < repeats``; ``period`` is
+required exactly when ``repeats > 1``.  Spans are listed in stored-frame
+order and are canonicalised on decode (an ordered selection that equals every
+event becomes ``null``; equal consecutive runs merge into one periodic span),
+so equal selections always serialise identically.  This is how a second
+detector gated to one line-step condition, or an Advanced Scan row mask, is
+described per detector.
+
+**Traversal and direction.**  A ``serpentine`` rule reverses its loop when the
+row-major flattened counter of its ``parity_loops`` (an ordered, contiguous
+suffix of the loops immediately outside it, the last varying fastest) is odd.
+Parity is evaluated over all producer events before detector selection, so an
+unrecorded traversal still counts.  ``direction`` is the orientation of the
+loop's logical index axis against the physical axis, not a traversal order; a
+producer that stepped an axis monotonically emits ``forward`` whatever its
+direction, and ``reverse`` is reserved for a genuine retrace.  Only ``scan_*``
+loops carry a direction (``DIRECTION_ON_NON_SPATIAL_LOOP`` otherwise).
+Consumers take physical placement from ``iter_physical_coordinates`` /
+``physical_frame_coordinates`` and chronology from ``iter_recorded_coordinates``,
+and never read ``direction`` themselves.
+
+**Validation.**  ``validate_acquisition_layout(layout, shape=None)`` returns
+``LayoutIssue`` records (``severity``, ``code``, ``message``, ``field``,
+``loop_id``) with stable codes.  It rejects, among others: non-positive loop,
+span or partition counts, duplicate loop or storage-axis names, labels that do
+not match the loop count, traversal rules that target one loop twice or name a
+missing loop, a serpentine rule without a valid parity suffix, spans that
+address an event outside the loop product or the same event twice, a storage
+rank that does not match the array, and (for ``detector-frame-stream``) a frame
+count that differs from the loop product or the sum of the spans' counts.
+``assembled-image`` and ``reconstructed-image`` forbid spans and require each
+loop to map to a distinct storage axis of equal length.  An unknown payload
+kind passes structural validation but a strict reconstructor refuses it until a
+validator is registered; view-only may show it with a warning.  A reader skips
+fields it does not know and reports each as an ``UNKNOWN_LAYOUT_FIELD``
+warning.
+
+**Completeness.**  A completed detector-frame recording whose frame count
+differs from the plan is invalid; a ``stopped_early`` or still-writing source
+returns an incompleteness issue instead.  The writer state is normalised from
+the markers: the HDF5 side dataset ``stream_complete[0] == 1`` means finalised
+even when the ``writing`` attribute could not be rewritten; otherwise
+``writing`` false means finalised; ``writing`` true counts as active only for a
+live source that follows the current writer, and is *unknown completeness* when
+a file is opened later.  ``recording:frames_committed`` (HDF5: the side dataset
+``frames_committed[0]``) is the readable-prefix barrier: frames
+``[0, frames_committed)`` are safe to read while writing.
+``recording:completion_outcome`` is written only at a graceful finalisation; a
+failed recording is removed rather than labelled.
+
+**Resolution in ImProcess.**  A reader resolves a layout in a fixed order
+(``imswitch/improcess/model/acquisition_layout_resolver.py``):
+
+#. a validated user override: passed in, or an adjacent sidecar
+   ``<source>.imswitch-layout.json`` keyed by a fingerprint of the source and
+   the detector or dataset path (a mismatched fingerprint invalidates it);
+#. valid ``AcquisitionLayout:*`` metadata;
+#. a legacy adapter for a known producer (Advanced Scan, SNOUTY, MoNaLISA,
+   TriggerScope raster, or plain ``ScanStage:*`` stage geometry);
+#. OME/NGFF axes, when the container declares them explicitly;
+#. shape arithmetic, or failing that a low-confidence generic frame stream.
+
+An explicit layout that is invalid is an error and never falls through to the
+later steps; only a valid override recovers it, and the rejected layout and its
+issues stay in the result's provenance.  The result carries a confidence
+(``certain`` for recorded and override, ``high`` for legacy adapters, ``medium``
+for OME/NGFF and shape inference, ``low`` for the generic fallback) and is
+exposed as ``DataObj.acquisition_layout``.  The raw source file is never
+modified.
 
 Reading back
 ============

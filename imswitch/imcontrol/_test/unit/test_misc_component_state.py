@@ -32,7 +32,6 @@ def mock_comm_channel():
     channel.sharedAttrs.sigAttributeSet = MagicMock()
     channel.sharedAttrs.getHDF5Attributes = MagicMock(return_value={})
     channel.scanWorkflow = MagicMock()
-    channel.beadRecWorkflow = MagicMock()
     return channel
 
 

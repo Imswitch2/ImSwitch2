@@ -5,7 +5,7 @@ failure, arm exception, normal completion, abort — and the rule that
 ``finishScan`` runs for every participant regardless of refcount while the
 hardware stop happens only at aggregate zero.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import threading

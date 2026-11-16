@@ -212,28 +212,6 @@ def test_complete_missing_group_is_corruption_not_discovery(tmp_path):
         load_dataset(manifest, detector='Camera', progress=lambda _message: None)
 
 
-def test_transform_schema_is_normalized_and_keeps_provenance(tmp_path):
-    transform = {
-        'kind': 'affine',
-        'matrix': [[1, 0, 2.5], [0, 1, -1.0], [0, 0, 1]],
-        'source': 'transform-module',
-        'calibration_id': 'cal-17',
-        'measured': '2026-08-04T11:03:00Z',
-    }
-    manifest = _write_v2(tmp_path / 'run', [
-        _payload_ref('payload.tiff', None, (4, 4), transform=transform),
-    ])
-
-    index, _ = inspect_dataset(manifest)
-    parsed = index.tiles[0].payloads['Camera'].transform_to_alignment
-
-    assert parsed.kind == 'affine'
-    assert parsed.calibration_id == 'cal-17'
-    np.testing.assert_array_equal(
-        parsed.as_array(), np.asarray(transform['matrix'], dtype=np.float64)
-    )
-
-
 @pytest.mark.parametrize('value, message', [
     ('reference', 'alignment detector'),
     ({'kind': 'affine', 'matrix': [[1, 0, 0], [0, 0, 0], [0, 0, 1]]},

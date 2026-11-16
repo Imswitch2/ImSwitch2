@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.layer_selection import PSF_PREVIEW_LAYER_NAME as PREVIEW_LAYER_NAME
+from imswitch.imcommon.algorithms.layer_selection import PSF_PREVIEW_LAYER_NAME as PREVIEW_LAYER_NAME
 from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.processors import PSFBeadSelectProcessor, PSFResolutionProcessor
 from imswitch.improcess.processors.psf_resolution.processor import BeadPreviewProcessor
@@ -631,7 +631,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
             for layer in layers:
                 if (getattr(layer, "metadata", {}) or {}).get("result_uid") == uid and _is_image(layer):
                     return layer
-        from imswitch.improcess.layer_selection import active_image_layer
+        from imswitch.imcommon.algorithms.layer_selection import active_image_layer
 
         return active_image_layer(viewer, exclude_names=(PREVIEW_LAYER_NAME,))
 

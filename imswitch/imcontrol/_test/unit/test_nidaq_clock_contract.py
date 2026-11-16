@@ -26,8 +26,8 @@ def _setup(timerCounterChannel):
     return SetupInfo.from_json(json.dumps({
         'detectors': {}, 'lasers': {}, 'positioners': {},
         'scan': {
-            'scanWidgetType': 'PointScan', 'scanDesigner': 'GalvoScanDesigner',
-            'scanDesignerParams': {}, 'TTLCycleDesigner': 'PointScanTTLCycleDesigner',
+            'scanWidgetType': 'Advanced', 'scanDesigner': 'GalvoScanDesigner',
+            'scanDesignerParams': {}, 'TTLCycleDesigner': 'AdvancedScanTTLCycleDesigner',
             'TTLCycleDesignerParams': {}, 'sampleRate': 100000,
         },
         'nidaq': {'simulation': True, 'timerCounterChannel': timerCounterChannel,

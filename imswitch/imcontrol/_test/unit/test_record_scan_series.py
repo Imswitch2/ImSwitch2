@@ -23,8 +23,6 @@ from imswitch.imcontrol.controller.controllers.RecordingController import (
 )
 from imswitch.imcontrol.model import RecMode, SaveFormat
 
-from .test_scan_once_recording_sources import CONTROLLERS, _method_body
-
 
 class _Widget:
     def __init__(self, *, saveFormat=SaveFormat.HDF5, recChecked=False):
@@ -323,34 +321,6 @@ def test_a_start_that_ends_silently_still_answers():
     assert result == ScanSeriesRecordingResult(False, 'The recording did not start.')
     assert ctrl.recMode == RecMode.SpecFrames
     assert ctrl._seriesRequest is None
-
-
-def test_the_rec_flow_reads_the_request_before_the_widget():
-    """Until the end-to-end series test in P3: the four places the REC flow
-    would otherwise ask the widget or the chooser consult the request first."""
-    source = (CONTROLLERS / 'RecordingController.py').read_text(encoding='utf-8')
-
-    toggle = _method_body(source, 'toggleREC')
-    assert toggle.index('self._recordingScanSource = seriesRequest.source') < (
-        toggle.index('elif self._commChannel.hasScanWidget():')
-    )
-    assert 'seriesRequest.frames if seriesRequest is not None' in toggle
-    assert 'bool(seriesRequest.singleFile) if seriesRequest is not None' in toggle
-
-    nextLapse = _method_body(source, 'nextLapse')
-    assert nextLapse.index('self._recordingScanSource = seriesRequest.source') < (
-        nextLapse.index('self._scanSourceChoiceRequired()')
-    )
-
-    cycle = _method_body(source, 'recordingCycleEnded')
-    assert 'interval_s = seriesRequest.intervalSeconds' in cycle
-    assert 'settings.interval_s' in cycle
-    assert 'RecordingController._endScanSeriesRequest(self)' in cycle
-
-    failure = _method_body(source, '_handleRecordingFailure')
-    assert failure.index('self._lastRecordingFailure = str(message)') < (
-        failure.index("self.__logger.error('Recording failed: %s', message)")
-    )
 
 
 def test_without_a_request_the_widget_decides_as_before():

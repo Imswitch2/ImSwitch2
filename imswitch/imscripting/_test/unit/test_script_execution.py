@@ -225,37 +225,6 @@ def test_multiple_sequential_executions(qtbot, script_executor):
     assert "First script" not in results[1].stdout
 
 
-def test_no_hardcoded_windows_path_in_code():
-    """Verify the hardcoded Windows path was removed from the codebase."""
-    import os
-    import re
-    
-    # Check EditorController.py
-    controller_path = os.path.join(
-        os.path.dirname(__file__),
-        '../../controller/EditorController.py'
-    )
-    
-    with open(controller_path, 'r') as f:
-        content = f.read()
-    
-    # Look for the specific hardcoded path
-    assert r'C:\Users\xavie' not in content, \
-        "Hardcoded Windows path still present in EditorController"
-    
-    # Look for any suspicious Windows-style absolute paths
-    # Pattern: r'C:\ or C:/ followed by path
-    windows_path_pattern = re.compile(r"[rRuU]?['\"]C:\\\\")
-    matches = windows_path_pattern.findall(content)
-    
-    # Filter out any legitimate uses (like in comments about Windows paths)
-    # The execute call should use None or a variable, not a hardcoded path
-    assert 'execute(r\'C:' not in content, \
-        "Hardcoded path in execute() call"
-    assert 'execute("C:' not in content, \
-        "Hardcoded path in execute() call"
-
-
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

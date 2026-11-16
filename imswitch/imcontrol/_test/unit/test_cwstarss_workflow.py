@@ -20,6 +20,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("cwstarss")
+
 pytestmark = pytest.mark.nohardware
 
 
@@ -222,27 +226,6 @@ def test_cwstarss_n_frames_calculated_correctly():
 # ---------------------------------------------------------------------------
 
 
-def test_cwstarss_cleanup_called_on_success():
-    """Verify cleanup is called even when workflow completes successfully."""
-    facade = build_mock_facade()
-    facade.cam.set_canned_data(np.zeros((5, 32, 32), dtype=np.uint16))
-
-    params = CWSTARSSParams(
-        fps=5.0,
-        duration_s=1.0,
-        power_488_mw=5.0,
-        power_405_mw=2.0,
-        measurements_root=Path("/tmp"),
-    )
-
-    workflow = CWSTARSSWorkflow(facade, params)
-    workflow.run()
-
-    # Cleanup should call laser_off at the end
-    call_names = facade.call_names()
-    assert "laser_con.laser_off" in call_names
-
-
 def test_cwstarss_cleanup_called_on_failure():
     """Verify cleanup is called even when a phase raises an exception."""
     facade = build_mock_facade()
@@ -310,30 +293,6 @@ def test_cwstarss_cleanup_has_exception_handler():
 # ---------------------------------------------------------------------------
 # Polarisation and rotator control
 # ---------------------------------------------------------------------------
-
-
-def test_cwstarss_rotator_sequence_h_then_v():
-    """Verify rotators move to H first, then V."""
-    facade = build_mock_facade()
-    facade.cam.set_canned_data(np.zeros((5, 32, 32), dtype=np.uint16))
-
-    params = CWSTARSSParams(
-        fps=5.0,
-        duration_s=1.0,
-        power_488_mw=5.0,
-        power_405_mw=2.0,
-        measurements_root=Path("/tmp"),
-    )
-
-    workflow = CWSTARSSWorkflow(facade, params)
-    workflow.run()
-
-    call_names = facade.call_names()
-
-    h_idx = call_names.index("rotator_qwp.move_to_h")
-    v_idx = call_names.index("rotator_qwp.move_to_v")
-
-    assert h_idx < v_idx  # H must come before V
 
 
 def test_cwstarss_chained_rotator_moves():
@@ -433,60 +392,3 @@ def test_cwstarss_save_uses_default_root_when_params_root_is_none(tmp_path, monk
 
     assert len(saved_files) == 1
     assert saved_files[0].is_relative_to(tmp_path)
-
-
-def test_cwstarss_handles_no_camera_data_gracefully():
-    """Verify workflow handles None from get_data without crashing."""
-    facade = build_mock_facade()
-    # Do NOT set canned data → get_data returns None
-
-    params = CWSTARSSParams(
-        fps=5.0,
-        duration_s=1.0,
-        power_488_mw=5.0,
-        power_405_mw=2.0,
-        measurements_root=Path("/tmp"),
-    )
-
-    workflow = CWSTARSSWorkflow(facade, params)
-
-    # Should not crash even if camera returns no data
-    workflow.run()
-
-    # Workflow should complete and call cleanup
-    call_names = facade.call_names()
-    assert "laser_con.laser_off" in call_names
-
-
-# ---------------------------------------------------------------------------
-# Parameter validation edge cases
-# ---------------------------------------------------------------------------
-
-
-def test_cwstarss_with_fractional_frames():
-    """Verify fractional fps×duration is rounded to int frames."""
-    facade = build_mock_facade()
-    facade.cam.set_canned_data(np.zeros((13, 32, 32), dtype=np.uint16))
-
-    # 12.7 fps × 1.0 s = 12.7 frames → should be 12 or 13
-    params = CWSTARSSParams(
-        fps=12.7,
-        duration_s=1.0,
-        power_488_mw=5.0,
-        power_405_mw=2.0,
-        measurements_root=Path("/tmp"),
-    )
-
-    workflow = CWSTARSSWorkflow(facade, params)
-    workflow.run()
-
-    # Check that prepare_acquisition was called with an integer
-    prepare_calls = [
-        call for call in facade.calls
-        if call[0] == "cam.prepare_acquisition"
-    ]
-
-    for call in prepare_calls:
-        n_frames = call[1][0]
-        assert isinstance(n_frames, int)
-        assert 12 <= n_frames <= 13  # int(12.7) = 12

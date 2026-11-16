@@ -169,9 +169,9 @@ def test_configured_nidaq_names_include_scan_and_point_detector_channels():
             },
             "scan": {
                 "scanWidgetType": "Base",
-                "scanDesigner": "GalvoScanDesigner",
+                "scanDesigner": "BetaScanDesigner",
                 "scanDesignerParams": {},
-                "TTLCycleDesigner": "PointScanTTLCycleDesigner",
+                "TTLCycleDesigner": "BetaTTLCycleDesigner",
                 "TTLCycleDesignerParams": {},
                 "sampleRate": 100000,
                 "lineClockLine": "Dev3/port0/line6",

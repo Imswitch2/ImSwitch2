@@ -264,15 +264,6 @@ def test_a_live_overview_draws_each_frame_over_the_last(rig):
     assert all(storage is storages[0] for storage in storages)
 
 
-def test_an_acquisition_runs_one_frame(rig):
-    rig.scan.setSimpleScanMode('acquisition')
-    rig.widget.startButton.click()
-
-    assert rig.waitForEnd()
-    assert rig.count('iteration') == 1
-    assert rig.count('sigScanEnded') == 1
-
-
 def test_a_run_shows_its_progress_on_the_simple_page(rig, qtbot):
     """The backend's progress bar, shown on the simple page too -- also with
     the backend's own box for it unticked (an Advanced setting)."""

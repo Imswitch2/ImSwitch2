@@ -43,25 +43,49 @@ class HamamatsuSLMdviManager(DeviceManagerStatusMixin, SignalInterface):
         self.SLMQLabel = QLabel()
         self.imgArr = np.random.randint(1, 250, size=(self.width, self.height), dtype=np.uint8)
 
-        self.init_slm_window()
-        self._setConnectionState(
-            DeviceConnectionState.NOT_APPLICABLE,
-            summary="DVI SLM physical connection cannot be verified",
-            details=(
-                f"Display output available at monitor index {self.preferredMonitor}; "
-                f"active geometry {self.width} x {self.height}"
-            ),
-        )
+        if self.init_slm_window():
+            self._setConnectionState(
+                DeviceConnectionState.NOT_APPLICABLE,
+                summary="DVI SLM physical connection cannot be verified",
+                details=(
+                    f"Display output available at monitor index {self.preferredMonitor}; "
+                    f"active geometry {self.width} x {self.height}"
+                ),
+            )
 
-    def init_slm_window(self):
-        """Init SLM QLabel as fullscreen wundow and show a random pattern on specified screen"""
+    def init_slm_window(self) -> bool:
+        """Show the SLM QLabel full screen on the configured monitor.
+
+        Returns False, without a window, when that monitor does not exist (the
+        SLM display is unplugged or switched off, or the setup names the wrong
+        index). The SLM is then reported as not found and ImSwitch starts
+        without it instead of failing to load; patterns are computed and shown
+        in the panel but reach no display.
+        """
 
         app = QApplication.instance()
 
         screens = list(app.screens())
 
-        if self.preferredMonitor >= len(screens):
-            raise RuntimeError(f"Preferred monitor {self.preferredMonitor} is not available")
+        if not 0 <= self.preferredMonitor < len(screens):
+            available = ", ".join(
+                f"{i}: {s.name()} {s.geometry().width()}x{s.geometry().height()}"
+                for i, s in enumerate(screens)
+            ) or "none"
+            message = (
+                f"SLM {self.slmName}: monitorIdx {self.preferredMonitor} does not exist "
+                f"({len(screens)} display(s) connected: {available}). "
+                f"Connect the SLM display, or set monitorIdx in the setup file, "
+                f"and restart ImSwitch."
+            )
+            if self.mockermode:
+                # Mock mode needs no display; keep the mock status.
+                self.__logger.info(message)
+            else:
+                self.__logger.warning(message)
+                self._setDeviceNotFound(message, summary="SLM display not connected")
+            self._windowShown = False
+            return False
 
         screen = screens[self.preferredMonitor]
         geo = screen.geometry()
@@ -81,12 +105,17 @@ class HamamatsuSLMdviManager(DeviceManagerStatusMixin, SignalInterface):
         self.SLMQLabel.setAlignment(QtCore.Qt.AlignCenter)
 
         self.SLMQLabel.showFullScreen()
+        self._windowShown = True
+        return True
 
     def upload_pattern(self, pattern, slot_no=0):
         """ Upload pattern to SLM """
 
         if self.mockermode:
             self.__logger.info("Mocker mode - not uploading pattern to device.")
+            return
+
+        if not self._windowShown:
             return
 
         pix = self._array_to_qpixmap(pattern)

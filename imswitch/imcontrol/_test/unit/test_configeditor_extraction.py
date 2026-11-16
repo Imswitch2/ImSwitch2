@@ -2,7 +2,7 @@
 
 Each test feeds the extractor a small class written the way a real manager
 is, and asserts exactly what it may conclude. The rules are the ones in
-``docs/design/plans/config-editor-schema-extraction.md``; when one of them is
+``docs/design/plans/config-editor-schema-extraction.md`` (retired; see git history); when one of them is
 wrong, the failing test here should say which.
 """
 
