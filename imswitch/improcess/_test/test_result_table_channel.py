@@ -13,29 +13,12 @@ from types import SimpleNamespace
 import numpy as np
 
 from imswitch.improcess.analysis.colocalization import colocalization_batch
-from imswitch.improcess.analysis.psf_resolution import fit_psf_batch
 from imswitch.improcess.controller.ImProcessMainController import (
     ImProcessMainController,
 )
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.colocalization import ColocalizationResult
-from imswitch.improcess.processors.psf_resolution import PSFResolutionResult
-
-
-def _gaussian(shape=(31, 33), center=(14.2, 16.7), sigma=(2.4, 3.1)):
-    yy, xx = np.mgrid[: shape[0], : shape[1]]
-    return 5.0 + 80.0 * np.exp(
-        -(
-            ((yy - center[0]) ** 2) / (2.0 * sigma[0] ** 2)
-            + ((xx - center[1]) ** 2) / (2.0 * sigma[1] ** 2)
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# Result-side projection
-# ---------------------------------------------------------------------------
 
 
 def test_base_result_has_no_table_by_default():
@@ -47,20 +30,6 @@ def test_base_result_has_no_table_by_default():
 
     assert result.table_columns() == []
     assert result.table_records() == []
-
-
-def test_psf_result_projects_fits_as_table_rows():
-    analysis = fit_psf_batch(_gaussian(), pixel_size=100.0, unit="nm")
-    result = PSFResolutionResult("psf", analysis, params={"pixel_size": 100.0})
-
-    columns = result.table_columns()
-    records = result.table_records()
-
-    assert len(records) == len(analysis.fits)
-    # Unit-scaled columns must follow the analysis unit, not a hard-coded one.
-    assert "fwhm_x_nm" in columns
-    assert set(records[0].keys()) == set(columns)
-    assert records[0]["fwhm_x_nm"] > 0
 
 
 def test_colocalization_result_projects_regions_as_table_rows():

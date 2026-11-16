@@ -1,5 +1,8 @@
 from qtpy import QtCore, QtGui, QtWidgets
 
+from imswitch.improcess.model.content_summary import describe_data_obj
+
+from .ContentDelegate import ContentDelegate
 from .guitools import BetterPushButton
 
 
@@ -22,6 +25,10 @@ class MultiDataFrame(QtWidgets.QFrame):
         super().__init__(*args, **kwargs)
 
         self.dataList = QtWidgets.QListWidget()
+        # Name over an icon and a line: what the file holds, and whether it is
+        # open / in memory.
+        self.dataList.setItemDelegate(ContentDelegate(describe_data_obj, self.dataList))
+        self.dataList.setUniformItemSizes(True)
         self.dataList.currentItemChanged.connect(self.sigSelectedItemChanged)
         self.dataList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
