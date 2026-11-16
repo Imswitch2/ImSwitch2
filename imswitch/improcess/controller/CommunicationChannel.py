@@ -100,6 +100,17 @@ class CommunicationChannel(SignalInterface):
     Listeners: DataFrameController
     """
 
+    sigDetectionPreviewStyleChanged = Signal(str)
+    """How the detection-preview points are drawn: ``"circle"`` or ``"point"``.
+
+    ``ReconstructorManagerController`` emits the marker the active plugin's
+    preview asks for, just before the points, so ``DataFrameController`` can
+    draw candidates as rings and found foci as dots.
+
+    Emitters: ReconstructorManagerController
+    Listeners: DataFrameController
+    """
+
     sigDetectionPreviewUpdated = Signal(object, object)
     """New focus-detection scatter points. Payload: ``(x, y)`` arrays.
 
@@ -184,7 +195,7 @@ class CommunicationChannel(SignalInterface):
     step does not leave one entry per step behind. A listener that does not
     find ``old`` treats ``new`` as produced.
 
-    Emitters: ResultProcessorController
+    Emitters: ReconstructorManagerController, ResultProcessorController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 

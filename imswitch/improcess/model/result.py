@@ -160,6 +160,16 @@ class ProcessingResult(ABC):
     #: summary values; leave it False when they are bulk data (a localization
     #: table can run to six figures of rows).
     publishes_table_rows: bool = False
+    #: qtawesome icon name the results list shows for this result instead of
+    #: the one its ``kind`` and shape imply (see
+    #: :mod:`imswitch.improcess.model.content_summary`); ``None`` = derived.
+    list_icon: str | None = None
+
+    def list_summary(self) -> str | None:
+        """One short line under the name in the results list, or ``None``
+        for the derived one (axes and sizes). A measurement says what it
+        measured here; a plain image has nothing to add."""
+        return None
 
     def __init__(
         self,

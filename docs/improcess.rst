@@ -182,7 +182,14 @@ new results:
   *Split stack*, which the dialog says when a single stack is checked.
 * *Stack/Combine...* — stack same-shaped selected results along a new axis, or
   concatenate compatible results along an existing axis. Axis labels, pixel
-  scales and scale units must agree.
+  scales and scale units must agree. Two differences are forgiven because
+  they are not differences in the pixels: singleton axes one input has and
+  another lacks (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a
+  ``(Y, X)`` image; the combined result keeps only the axes they share, the
+  join axis included), and a length unit stated differently (``nm`` against
+  ``um``, converted before the scales are compared; the output takes the
+  first input's unit). The same applies to *Merge channels* and to the
+  compatibility check of the *Image calculator*.
 * *Image calculator...* — combine exactly two loaded results with pixel-wise
   add, subtract, multiply, divide, minimum, maximum, average or absolute
   difference operations.  A label mask published by the ROI manager's
@@ -344,6 +351,19 @@ default and hidden by setting ``"napariLayerControls": false`` in the
   These settings are persisted when you adjust contrast or LUT, and restored
   when you click back to that result.
 
+  Every entry shows, under its name, an icon and a line saying what it holds,
+  so the list can be read without selecting each entry: an image
+  (``image · 2048 × 2048 · uint16``), a Z-stack (``Z-stack · Z 121 · 512 ×
+  512``), a time series (an axis labelled ``T``/``Frame``), channels (``C``),
+  a label image, a curve (``curve · 128 points along frequency``), a table
+  (``table · 42 rows``), localizations (``12,345 localizations``), a single
+  value, an RGB or composite image.  A result can describe itself instead
+  (``list_icon`` and ``list_summary()`` on the result class): a PSF
+  measurement says ``PSF · 12/15 beads · lateral 231 nm``.  Hovering an entry
+  shows the full line.  The Data dock's file list does the same for its
+  files (``file · not opened`` until a file is opened; then its axes and
+  sizes, and whether it is on disk or in memory).
+
 * The **napari layer list** is the *presentation* of the currently selected
   result.  It contains:
   
@@ -446,6 +466,7 @@ ID                      Type           Purpose
 ======================= ============== ====================================================
 monalisa                Reconstructor  MoNaLISA point-scanning SIM (the full method needs Windows + CUDA DLL)
 monalisa-legacy         Reconstructor  Internal adapter behind MoNaLISA's full method; not for direct use
+monalisa-lattice        Reconstructor  Experimental MoNaLISA reconstruction for any lattice, geometry read from the frames
 view-only               Reconstructor  Pass-through; raw frames wrapped as a result
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
@@ -472,7 +493,8 @@ math                    Processor      Constant arithmetic and unary transforms 
 image-calculator        Processor      Pixel-wise arithmetic between two compatible results
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
-psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
+psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
+psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -560,7 +582,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
    * - ``channel-merge``
      - Dimensions and channels
      - Two or more selected rank >= 2 results with identical shape, axis
-       labels and compatible axis scales.
+       labels and compatible axis scales (singleton axes and nm/um
+       differences forgiven, see *Stack/Combine* above).
      - ``ArrayProcessingResult`` with a new leading channel axis, default
        label ``C``.
    * - ``stack-combine``
@@ -663,9 +686,20 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        opening, closing or watershed splitting.
    * - ``psf-resolution``
      - Measurement
-     - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.
-     - ``PSFResolutionResult`` table with axes ``ROI, Metric`` and FWHM plot
-       payload.  Intended as an analysis output, not an image-stack input.
+     - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
+       plane makes it a 3-D analysis; every other extra axis collapses to
+       index ``0``.
+     - Port ``psf``: the measurement (``PSFMeasurementResult``, one entry
+       holding every bead candidate, the statistics and, when requested on
+       calibrated 3-D data, the Zernike aberrations); port ``average_psf``:
+       the averaged bead as an ordinary image, when averaging is on and a
+       bead qualifies.
+   * - ``psf-bead-select``
+     - Measurement
+     - A measurement from ``psf-resolution``.
+     - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
+       (the average and the aberrations are recomputed).  A preset that lists
+       ``psf-resolution`` gets this one with it.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
@@ -1054,13 +1088,124 @@ PSF resolution panel
 ====================
 
 Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
-bead/PSF resolution panel.  It fits a non-rotated 2D Gaussian to the
-currently selected reconstruction result — full-frame or per ROI Manager
-entry — and publishes a ``PSFResolutionResult`` into the reconstruction list.
-Selecting the result shows center, sigma, FWHM, amplitude, background and RMS
-fit error in the results table (with CSV export) and the FWHM plot in the
-graph panel.  The panel's ROI Manager sourcing is forwarded to the
-``psf-resolution`` processor via the ``rois`` parameter.
+bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``.
+The panel shows what it will analyse (``3-D stack 114 × 408 × 776 (Z, Y, X);
+voxel 200 × 200 × 200 nm (from metadata)``); only *Beads*, *Optics* and
+*Outputs* are open, while *Calibration override* and *Advanced* are
+collapsed.  The panel reads top to bottom in the order of the work: setup,
+**Preview beads**, the bead selection, **Fit**.
+
+**Preview beads** runs the detection, the fits and the selection without
+publishing anything.  It runs on the same thread as a fit, so the window
+stays alive and **Cancel** stops it (between beads).  Every candidate is
+marked in the viewer (a points layer
+named *PSF bead preview*, drawn in 3-D so it follows the z slider and the
+XZ / YZ views): green beads are selected, grey ones sit at the image or data
+edge, orange ones are too close to another bead, violet ones are too bright
+or saturated, red ones failed the fit or the selection.  *Bead selection*
+then shows the histogram of the fitted lateral FWHMs with the range in use
+shaded: dragging it, or editing the *Selection bounds*, re-selects at once
+(no refitting) and updates the markers, the count and the list.
+*Automatic range* returns to median ± k MAD.  The list of candidates,
+selected first, gives each bead's state and widths; clicking a row centres
+the viewer on that bead.
+
+**Fit** measures with that selection and publishes two results:
+
+* the **measurement**, ``<image> — PSF``: one entry for everything the
+  analysis found.  Selected, it shows the analysed image with a marker per
+  candidate in the viewer, the FWHM histograms, the lateral FWHM across the
+  field and the Zernike coefficients in the Graph, and adds **one row** to
+  the Results table (source, beads used and found, the half-maximum widths
+  with their MAD, the Gaussian lateral width, the ratio to the diffraction
+  limit and, when fitted, the aberration RMS and Strehl ratio), so repeated
+  measurements line up for comparison.  Saved as HDF5 it holds the beads
+  (every candidate, with its state), the summary, the averaged PSF and the
+  aberrations (Zernike table, wavefront, data and model); as CSV, the bead
+  table with ``_summary`` and ``_zernike`` CSVs beside it;
+* the **averaged PSF**, ``<image> — averaged PSF``: the aligned mean of the
+  selected beads as an ordinary image (XY / XZ / YZ views), for further
+  processing or comparison.
+
+The measurement is selected after a fit, and the panel shows its card: the
+lateral and axial FWHM in large type with the per-axis breakdown and the
+diffraction limit, the aberration total, thumbnails of the averaged PSF (XY,
+XZ), the wavefront and the aberration fit (data | model), the remaining
+details and warnings, and the statistics in *Summary* / *Aberrations* tabs.
+Its bead selection stays editable: changing it enables **Re-select**, which
+runs ``psf-bead-select`` and publishes a new measurement,
+``<image> — PSF (re-selected)``, with the average and the aberrations
+recomputed (the range is recorded in the provenance like any parameter).
+
+* **Beads from** — *Auto-detect beads* (LoG detection in the image or the
+  stack itself), *ROI Manager* (one bead per ROI, forwarded through the
+  ``rois`` parameter) or *Whole image* (one PSF for the frame, the behaviour
+  of the first version).
+* A stack is analysed in 3-D when its axis is labelled ``Z``. A stack over
+  any other axis (frames, time, an unlabelled axis) is never cut to its
+  first plane: the beads are found on its maximum projection and each is
+  fitted in the plane where it is brightest (lateral widths only; the panel
+  suggests labelling the axis ``Z`` for axial widths and aberrations).
+* The detection scale is estimated from the beads unless *Expected lateral
+  FWHM* (Advanced) is set: a first pass (from NA and wavelength, or a 1.5 px
+  guess) is fitted and its median widths start the next.
+* Solid regions of exact zeros — the padding of a deskewed or registered
+  volume — carry no data (*Zero = no data*, Advanced): beads whose core
+  touches them are *edge* beads, and the rest of a crop is fitted without
+  them.
+* Candidates too close to a neighbour (in expected FWHMs, axially by the
+  axial width), saturated or abnormally bright (aggregates: brighter than
+  1.8× the median, or more when the beads' brightness varies anyway, as
+  under a light sheet) are flagged and kept out of the fits; side lobes and
+  defocus rings of brighter beads, and faint peaks, are discarded.
+* Each bead is fitted with an axis-aligned Gaussian (2-D), or separably
+  (lateral fit in the brightest plane, axial profile through its centre) or
+  as a full 3-D Gaussian.  Each width is also measured directly, at half
+  maximum of the profile through the bead: for an aberrated PSF the Gaussian
+  follows the wings and reads wider than the core, so both are reported.
+  Widths are in nm when the data carry a physical scale (or the *Calibration
+  override* is set), otherwise in px.
+* Selection keeps beads whose Gaussian fit is good (R² ≥ 0.8), whose
+  ellipticity is not an outlier (automatic: median + 3 MAD of the beads, at
+  least 1.3, so an astigmatic system keeps its uniformly elliptical beads
+  while doublets still stand out) and whose widths are within median ± 3 MAD
+  of the beads passing those cuts.
+* With a **bead diameter**, widths are corrected for the bead's own extent
+  by subtracting variances: ``sigma_psf² = sigma_meas² − d²/20`` for
+  volume-labelled and ``d²/12`` for shell-labelled beads.  A warning is
+  issued when the correction exceeds 30 % of the measured width.
+* With **NA and wavelength**, the summary compares the result with the
+  widefield diffraction limit (0.51 λ/NA laterally, 0.88 λ/(n − √(n² − NA²))
+  axially).
+* The **summary** reports mean, std, SEM, median and MAD of the selected beads for both
+  width measures, the averaged-bead value, how many candidates were rejected
+  and why, the detection scale, the lateral FWHM trend across the field and,
+  for 3-D stacks whose beads lie on one surface, the focal-plane tilt and
+  field curvature.
+* **Estimate aberrations** (3-D, calibrated, NA and wavelength set) fits
+  Zernike modes 5-11 (astigmatism, coma, trefoil, primary spherical; Noll
+  indexing, nm RMS) to the averaged bead by model-based phase retrieval with
+  a scalar PSF model, plus an extra Gaussian blur (sampling, interpolation)
+  fitted as a nuisance.  It needs a through-focus stack, the pixel size and
+  z step, the **NA** and the **emission wavelength**; while the box is
+  ticked, the panel says which of these is still missing and outlines the
+  empty fields, and a fit that could not be estimated says why in the
+  report.  **Illumination** *Auto* (the default) fits the widefield model
+  and, unless that already fits well, the light-sheet model too, keeping
+  the one that describes the PSF; *Widefield* or *Light sheet* force one.
+  For light-sheet data the PSF is the detection PSF times the excitation
+  sheet, whose thickness and tilt are fitted with the aberrations (an oblique plane microscope's sheet is tilted; its tilt
+  and a coma along the same direction look alike, so the coma's magnitude is
+  the reliable part).  A widefield model fits light-sheet data badly, and the
+  report says so.  The Zernike table, the data and the model side by side
+  and the wavefront over the pupil are part of the measurement (the card's
+  thumbnails and *Aberrations* tab, the saved HDF5).  Signs and
+  angles depend on the z direction (*Flip z*) and image orientation;
+  magnitudes do not.  The SLM pattern designer defines Noll modes 2/3, 7/8
+  and 11 differently, so those coefficients cannot be applied there one to
+  one.
+
+Recorded first-version runs migrate to *Whole image* or *ROI Manager* with their pixel size in nm.
 
 Colocalization panel
 ====================
@@ -1850,7 +1995,11 @@ The SMLM parameter widget exposes:
   fine over a 20 µm field would be 1.5 GiB over a 200 µm one.  The
   ``smlm-render`` processor makes the publication render, with its own pixel
   size and blur.
-* **Preview detection** toggle — when enabled, candidate spots from the
+* **Preview detection** toggle (the MoNaLISA lattice reconstructor's
+  *Show found foci* is the same overlay, drawing the foci it reads from the
+  recording; any reconstructor whose widget has a ``previewCheckbox`` and a
+  ``sigPreviewToggled`` signal and that answers ``detection_preview`` gets
+  it) — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
   parameters change or when the displayed frame changes (via the frame slider
@@ -2317,9 +2466,59 @@ to your ImControl setup file (the same JSON you select via
             "smlmRenderPanel": true,
             "napariStormViewer": true,
             "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
-            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "psf-bead-select", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
+
+MoNaLISA reconstruction defaults
+--------------------------------
+
+MoNaLISA calibration preferences are **ImProcess settings**, not detector
+hardware settings. The existing setup JSON can hold independent defaults for
+named detectors under ``processing.monalisa.detectorDefaults``::
+
+    {
+        "detectors": {
+            "CAM": {"managerName": "HamamatsuManager", "managerProperties": {}}
+        },
+        "processing": {
+            "reconstructors": ["monalisa"],
+            "monalisa": {
+                "detectorDefaults": {
+                    "CAM": {
+                        "spotFwhmNm": 215.0,
+                        "scanOrientation": "-y+x",
+                        "estimator": "local",
+                        "footprint": {
+                            "shape": "circle",
+                            "mode": "from_lattice",
+                            "sizePx": 9.0,
+                            "sigmaFactor": 2.5
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+The MoNaLISA reconstruction panel's explicit *Save default* actions update
+only the corresponding ImProcess preference for the selected detector. The
+ImControl Config Editor also exposes the ``monalisa`` JSON object in the
+ImProcess section. Other processing keys and all detector hardware properties
+are preserved. Preferences are optional; when unavailable, the reconstructor
+uses its existing built-in defaults. Explicit user choices and saved result
+parameters retain precedence for reconstruction and replay.
+
+For older microscope setups, ImProcess **reads** the historical MoNaLISA
+properties in ``detectors.<name>.managerProperties`` as a fallback for values
+not present in the new processing block. On the next explicit Save, valid old
+preferences are copied to the new processing section without deleting or
+modifying the original hardware entries. New saves **never** write MoNaLISA
+preferences into hardware properties. ImControl does not inject these defaults
+into raw recording metadata; older recordings containing
+``monalisa:spot_fwhm_nm`` or ``monalisa:scan_orientation`` remain readable.
+The effective reconstruction calibration is retained with processing results
+for reproducibility.
 
 The block is optional.  When it is absent, names neither ``reconstructors``
 nor ``processors``, or no setup file can be read at all, the registry falls
@@ -2402,7 +2601,7 @@ The MoNaLISA preset's block, as shipped in ``monalisa_processor.json``::
             "roiManagerPanel": true,
             "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
+            "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "psf-bead-select", "colocalization", "frc"]
         }
     }
 
@@ -2719,8 +2918,9 @@ Using a plugin
    ``_example_plugin.py`` template (underscore-prefixed files are ignored by
    discovery).  Ready-to-copy examples live in
    ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``, the
-   photophysics analysis ``photophysics_suite.py``, and the reconstructor
-   ``frame_average.py``).
+   photophysics analysis ``photophysics_suite.py``, the reconstructor
+   ``frame_average.py``, and ``lisai_restore.py``, see
+   `LISAI restoration`_).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
 #. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
@@ -2738,6 +2938,24 @@ active reconstructor hands over to the first registered one.  While a
 reconstruction is running the reconstructors are left untouched and the
 status bar says so — reload again when it has finished — so a running job
 never straddles two versions of one plugin.
+
+LISAI restoration
+-----------------
+
+``examples/improcess_plugins/lisai_restore.py`` runs a trained
+`LISAI <https://github.com/GuillaumeMinet/LISAI-resolft>`_ model (denoising
+and sub-sampled-image restoration for RESOLFT / MoNaLISA) on the selected
+result.  It is also listed in **Plugins → Browse online plugins...**.  It
+needs LISAI installed in the same Python environment as ImSwitch2 (with
+``torch``, ``torchvision`` and, for the HDN denoising models,
+``scikit-learn``), LISAI's one-time setup done from a terminal (any ``lisai`` command
+asks for a data root and writes ``configs/local_config.yml``; the plugin
+refuses to run until that file exists rather than trigger the prompt inside
+ImProcess), and at least one promoted model (``lisai models download <name>
+--install``).  The panel lists the installed promoted models; an
+up-sampling model's output gets correspondingly smaller pixel scales.  A
+multi-frame model predicts each frame from its neighbours, so the first and
+last frames of a time series are dropped unless *Pad edge frames* is ticked.
 
 Installing from the online store
 --------------------------------
