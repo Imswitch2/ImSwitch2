@@ -123,21 +123,64 @@ def _scan_wiring(signal_names) -> tuple[dict[str, set[str]], dict[str, set[str]]
         class_stack: list[str] = []
 
         class Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.channel_aliases = set()
+                self.signal_aliases = {}
+
             def visit_ClassDef(self, node):
                 class_stack.append(node.name)
                 self.generic_visit(node)
                 class_stack.pop()
 
-            def visit_Call(self, node):
-                func = node.func
-                if (isinstance(func, ast.Attribute)
-                        and func.attr in ("emit", "connect")
-                        and isinstance(func.value, ast.Attribute)
-                        and func.value.attr in names
-                        and _CHANNEL_RECEIVER.search(_receiver_name(func.value.value))):
-                    owner = class_stack[-1] if class_stack else path.stem
-                    bucket = emitters if func.attr == "emit" else listeners
-                    bucket[func.value.attr].add(owner)
+            def visit_FunctionDef(self, node):
+                # Local channel/signal aliases must not leak between methods.
+                previous = self.channel_aliases, self.signal_aliases
+                self.channel_aliases, self.signal_aliases = set(), {}
+                self.generic_visit(node)
+                self.channel_aliases, self.signal_aliases = previous
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def is_channel(self, expr):
+                name = _receiver_name(expr)
+                return bool(_CHANNEL_RECEIVER.search(name) or name in self.channel_aliases)
+
+            def visit_Assign(self, node):
+                # Some controllers use ``channel = self._commChannel`` before
+                # passing channel.sigX.emit to ResultPublication callbacks.
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if isinstance(node.value, (ast.Name, ast.Attribute)) and self.is_channel(node.value):
+                        self.channel_aliases.add(target.id)
+                    # Optional semantic signals are obtained through getattr,
+                    # then emitted via a local variable (e.g. finalized.emit()).
+                    value = node.value
+                    if (isinstance(value, ast.Call)
+                            and isinstance(value.func, ast.Name)
+                            and value.func.id == "getattr"
+                            and len(value.args) >= 2
+                            and self.is_channel(value.args[0])
+                            and isinstance(value.args[1], ast.Constant)
+                            and value.args[1].value in names):
+                        self.signal_aliases[target.id] = value.args[1].value
+                self.generic_visit(node)
+
+            def visit_Attribute(self, node):
+                # Count .emit/.connect both when called directly *and* when
+                # passed as a callable (PublicationHooks(finalized=...emit)).
+                if node.attr in ("emit", "connect"):
+                    signal = None
+                    if (isinstance(node.value, ast.Attribute)
+                            and node.value.attr in names
+                            and self.is_channel(node.value.value)):
+                        signal = node.value.attr
+                    elif isinstance(node.value, ast.Name):
+                        signal = self.signal_aliases.get(node.value.id)
+                    if signal is not None:
+                        owner = class_stack[-1] if class_stack else path.stem
+                        bucket = emitters if node.attr == "emit" else listeners
+                        bucket[signal].add(owner)
                 self.generic_visit(node)
 
         Visitor().visit(tree)

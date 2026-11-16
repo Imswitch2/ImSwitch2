@@ -580,7 +580,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self._sessionMode != "follow" or session is not self._session:
             return
         self._stopDirectoryWatcher()
-        watcher = DirectoryWatcher(str(session.raw_root), parent=self)
+        watcher = DirectoryWatcher(
+            str(session.raw_root), include_tiff_files=True, parent=self,
+        )
         # Establish the baseline *before* reconciling: an entry already in
         # Review must never become a new Follow arrival just because it was
         # previously unreadable. A fresh arrival during reconcile will still
@@ -685,7 +687,7 @@ class ProcessingSessionController(ImProcessWidgetController):
     @classmethod
     def _dataset_uses_metadata_probe(cls, dataset) -> bool:
         return any(
-            Path(path).suffix.lower() in {".h5", ".hdf5", ".zarr"}
+            Path(path).suffix.lower() in {".h5", ".hdf5", ".zarr", ".tif", ".tiff"}
             for path in cls._source_paths(dataset)
         )
 
@@ -819,6 +821,10 @@ class ProcessingSessionController(ImProcessWidgetController):
                 metadata = self._zarr_watch_metadata_paths(
                     source, getattr(ref, "dataset", None)
                 )
+                if Path(source).suffix.lower() in {".tif", ".tiff"}:
+                    # Parent directory stat alone does not change when an
+                    # existing nested TIFF gains final OME metadata.
+                    metadata = (*metadata, source)
                 if metadata:
                     details.setdefault(entry, set()).update(metadata)
         setter({key: tuple(value) for key, value in details.items()})
@@ -1064,6 +1070,68 @@ class ProcessingSessionController(ImProcessWidgetController):
                     continue
         return False
 
+    @staticmethod
+    def _tiff_auto_arrival_state(dataset) -> str:
+        """Gate TIFF *admission* on its final physical and logical identity.
+
+        A new BigTIFF is already readable before ImControl writes the closing
+        OME metadata. At that point Session may catalogue it as a ``scan``;
+        after close the same file can become a ``time-lapse`` with a different
+        dataset ID. Queueing the provisional ID would orphan the Auto job.
+
+        Returns ``ready``, ``pending`` or ``discard``. This is deliberately
+        TIFF-only; HDF5/Zarr retain their existing arrival and queue policy.
+        """
+        path = Path(str(getattr(dataset, "primary_path", "") or ""))
+        if path.suffix.lower() not in {".tif", ".tiff"}:
+            return "ready"
+        from imswitch.improcess.execution.readiness import (
+            PhysicalReference, ReadinessState, evaluate_evidence,
+            inspect_physical_reference,
+        )
+
+        refs = getattr(dataset, "source_refs", ()) or ()
+        primary = next((ref for ref in refs
+                        if _same_path(getattr(ref, "path", ""), path)), None)
+        logical_t = int(getattr(primary, "timepoint_index", 0) or 0)
+        try:
+            evidence = inspect_physical_reference(PhysicalReference(
+                str(path), getattr(dataset, "primary_dataset", None), logical_t,
+            ))
+        except Exception:
+            # An actively written TIFF can have transiently unreadable IFDs.
+            # Never admit it based only on a file appearing in the catalog.
+            return "pending"
+        if evidence is None:
+            return "pending"
+        outcome = evidence.attrs.get("recording:completion_outcome")
+        if outcome == "stopped_early":
+            return "discard"  # Explicitly interrupted TIFFs remain manual-only.
+        if outcome != "complete":
+            return "pending"
+        is_lapse = getattr(dataset, "kind", "") == "time-lapse"
+        # A completed T0 may still be catalogued as a scan if the resolver
+        # inspected it before the OME header was finalized. Wait for its
+        # time-lapse identity rather than enqueue an ephemeral scan ID.
+        try:
+            declared_t = int(evidence.attrs.get("recording:num_timepoints", 1))
+        except (ValueError, TypeError):
+            return "pending"
+        if declared_t > 1 and not is_lapse:
+            # Positioned/tiled acquisitions deliberately remain individual
+            # scans even when ImControl records multiple partitions. Only a
+            # *temporal* lapse must wait for Session's logical-lapse ID.
+            from imswitch.improcess.model.lapse_source import _positioned_kind
+            if _positioned_kind(evidence.attrs) is None:
+                return "pending"
+        readiness = evaluate_evidence(
+            evidence, is_lapse=is_lapse,
+            expected_total=(getattr(dataset, "planned_timepoints", None)
+                            if is_lapse else None),
+            logical_index=logical_t,
+        )
+        return "ready" if readiness.state == ReadinessState.READY else "pending"
+
     def _admit_resolved_arrivals(self, paths) -> None:
         session = self._session
         if session is None:
@@ -1087,12 +1155,34 @@ class ProcessingSessionController(ImProcessWidgetController):
                     except (ValueError, OSError, TypeError):
                         continue
             if matched:
-                self._watchAutoArrivals.pop(str(path), None)
                 distinct = tuple(dict.fromkeys(matched))
                 if len(distinct) != 1:
+                    self._watchAutoArrivals.pop(str(path), None)
                     self._widget.setStatus(
                         "Auto unsupported: new recording has ambiguous logical sources"
                     )
+                    continue
+                dataset = next(
+                    (item for item in session.datasets if str(item.id) == distinct[0]),
+                    None,
+                )
+                if dataset is None:
+                    continue  # Catalog changed again; retain the arrival recipe.
+                # Two TIFF timepoints can be discovered before T0 finalizes.
+                # Once they resolve into one logical lapse, only its anchor
+                # owns the Auto arrival; later members are not new jobs.
+                if (getattr(dataset, "kind", "") == "time-lapse"
+                        and Path(path).suffix.lower() in {".tif", ".tiff"}
+                        and not _same_path(path, dataset.primary_path)):
+                    self._watchAutoArrivals.pop(str(path), None)
+                    continue
+                state = ProcessingSessionController._tiff_auto_arrival_state(dataset)
+                if state == "pending":
+                    # Keep the original Auto recipe until a watcher notification
+                    # reconciles the finalized TIFF as a scan or logical lapse.
+                    continue
+                self._watchAutoArrivals.pop(str(path), None)
+                if state == "discard":
                     continue
                 self.sigAutoAcquisitionsAdmitted.emit(distinct, recipe)
 
@@ -1103,7 +1193,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             import os
             with os.scandir(path) as entries:
                 return frozenset(e.name for e in entries
-                    if e.is_dir() or e.name.lower().endswith((".h5", ".hdf5")))
+                    if e.is_dir() or e.name.lower().endswith((".h5", ".hdf5", ".tif", ".tiff")))
         except OSError:
             return frozenset()
 
@@ -1141,6 +1231,10 @@ class ProcessingSessionController(ImProcessWidgetController):
         session = self._session
         if session is None:
             return False
+        if Path(path).suffix.lower() in {".tif", ".tiff"}:
+            from imswitch.improcess.model.processing_session import _tiff_member_of_lapse
+            if any(_tiff_member_of_lapse(path, ds) for ds in session.datasets):
+                return True
         name = Path(path).name
         normalized = re.sub(r"(?i)_scan\d+(?=_)", "_scan", name)
         if normalized == name:  # Not an ImControl multi-file scanN name.
@@ -1261,6 +1355,16 @@ class ProcessingSessionController(ImProcessWidgetController):
                 refresh_stages()
         finder = getattr(self, "_dataset_ids_for_watch_path", None)
         known_ids = finder(path) if callable(finder) else ()
+        if known_ids and any(
+            Path(source).suffix.lower() in {".tif", ".tiff"}
+            for dataset in self._session.datasets
+            if str(dataset.id) in known_ids
+            for source in self._source_paths(dataset)
+        ):
+            # A TIFF's OME series name and final layout may appear only
+            # after close. Refresh both root-level files and nested files
+            # whose stat changes through watcher detail-path tracking.
+            self._watchPendingPaths.add(path)
         if known_ids:
             # Catalog discovery deliberately remains frozen for known growing
             # sources.  The existing watcher event is nevertheless the exact

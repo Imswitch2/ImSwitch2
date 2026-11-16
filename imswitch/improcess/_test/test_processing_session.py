@@ -924,9 +924,16 @@ def test_explicit_queue_claim_resolves_partitioned_lapse_when_detector_provenanc
     session.refresh()
     dataset = session.datasets[0]
 
-    # This mirrors the former live provenance: the file path was right, but
-    # ``CAM`` names the detector rather than the logical scanN/CAM time lapse.
-    result = _recorded_result_for_source(path, "CAM", "lapse")
+    # Build valid reconstruction provenance from an actual dataset first.
+    # Then simulate the former live provenance: the file path was right, but
+    # ``CAM`` named the detector rather than the logical scanN/Camera source.
+    result = _recorded_result_for_source(path, "scan0/Camera", "lapse")
+    source_nodes = [
+        node for node in result.metadata[PROVENANCE_KEY]["nodes"].values()
+        if node.get("op") == "source"
+    ]
+    assert len(source_nodes) == 1
+    source_nodes[0]["source"]["dataset"] = "CAM"
     assert session.dataset_for_result(result) is None
 
     result._session_dataset_id = dataset.id

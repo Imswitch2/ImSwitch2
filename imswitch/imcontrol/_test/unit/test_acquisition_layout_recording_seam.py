@@ -67,7 +67,6 @@ from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
     GalvoScanDesigner,
 )
 from imswitch.improcess.model import DataObj
-from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.acquisition_layout_resolver import (
     resolve_acquisition_layout,
 )
@@ -503,9 +502,8 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
     # looked only at the container root, where a lapse recording has no
     # datasets, and reported every one of these files as empty.
     assert DataObj.getDatasetNames(str(path)) == ['scan0/Camera', 'scan1/Camera']
-    # The DataObj below opens the file through ImProcess's shared SWMR read
-    # policy; a plain read handle held open meanwhile would conflict with it.
-    with open_raw_hdf5(path) as h5file:
+    resolved_layouts = []
+    with h5py.File(path, 'r') as h5file:
         assert sorted(h5file.keys()) == ['scan0', 'scan1']
         for index in range(total):
             dataset = h5file[f'scan{index}']['Camera']['data']
@@ -525,12 +523,19 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
                 ),
             )
             assert replace(resolved.layout, partitions=()) == base
+            resolved_layouts.append(resolved.layout)
 
-            opened = DataObj(
-                str(path), f'scan{index}/Camera', path=str(path)
-            ).acquisition_layout
+    # DataObj opens raw HDF5 in SWMR mode. Close the plain h5py inspection
+    # handle before using that reader: h5py cannot mix the two access modes
+    # on one file in the same process.
+    for index, expected_layout in enumerate(resolved_layouts):
+        source = DataObj(str(path), f'scan{index}/Camera', path=str(path))
+        try:
+            opened = source.acquisition_layout
             assert opened.is_authoritative
-            assert opened.layout == resolved.layout
+            assert opened.layout == expected_layout
+        finally:
+            source.checkAndUnloadData()
 
 
 def test_a_disk_and_ram_lapse_keeps_every_timepoint(qt_app, tmp_path):

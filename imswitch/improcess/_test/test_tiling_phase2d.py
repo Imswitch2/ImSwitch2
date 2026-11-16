@@ -191,16 +191,21 @@ def test_metadata_source_clears_and_disables_image_panel(tmp_path):
             setImage=lambda image, autoLevels: calls.images.append(image),
             setImageControlsEnabled=calls.enabled.append,
             setNumFrames=calls.frames.append,
+            setTimepointControls=lambda *args, **kwargs: None,
             setDataName=lambda _value: None,
             setDatasetName=lambda _value: None,
         ),
         _dataObj=None,
         _displayedImage=None,
+        _invalidateTimepointRequests=lambda **kwargs: None,
+        currentDataReadyForProcessing=lambda: True,
+        _setCurrentDataProcessingEnabled=lambda enabled: None,
         _commChannel=SimpleNamespace(
             sigDisplayedFrameChanged=SimpleNamespace(emit=lambda: None)
         ),
     )
 
+    controller._showImageDataObj = DataFrameController._showImageDataObj.__get__(controller)
     DataFrameController.currentDataChanged(controller, data_obj)
 
     assert calls.enabled == [False]

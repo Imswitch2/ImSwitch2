@@ -197,7 +197,10 @@ def probe_completed_prefix(source, job, next_t: int, *, inspected=None,
             return CompletedTimepointBatch(
                 tuple(ready), "Waiting for safe HDF5 file closure / complete acquisition",
                 tuple(ready_refs))
-        if evidence.format_id not in ("zarr", "hdf5"):
+        # TIFF has no frame-following reader, but the final OME annotation
+        # is written after the file is closed. A READY TIFF timepoint is
+        # therefore safe for the existing finite-per-timepoint executor.
+        if evidence.format_id not in ("zarr", "hdf5", "tiff"):
             return CompletedTimepointBatch(tuple(ready), "Source has no safe early reader",
                                            tuple(ready_refs))
         cache[key] = True

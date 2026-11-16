@@ -7,7 +7,7 @@ when the user explicitly asks the normal FileIO path to load raw data or asks
 the Session controller to add a saved reconstruction to the existing
 Reconstruction list.
 
-The first implementation scans HDF5 and Zarr acquisitions (plus TIFF/HDF5/Zarr
+Discovery scans HDF5, Zarr, and TIFF acquisitions (plus TIFF/HDF5/Zarr
 saved reconstruction artifacts) and understands the existing ImProcess
 single-file and multi-file time-lapse metadata through ``discover_time_lapse``.
 """
@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 from typing import Iterable
@@ -28,7 +29,7 @@ from imswitch.improcess.model.provenance_io import ProvenanceReadError, read_pro
 
 
 SESSION_FILENAME = "session.improcess.json"
-_RAW_SUFFIXES = (".h5", ".hdf5", ".hdf", ".zarr")
+_RAW_SUFFIXES = (".h5", ".hdf5", ".hdf", ".zarr", ".tif", ".tiff")
 _RESULT_SUFFIXES = (
     ".h5", ".hdf5", ".hdf", ".zarr", ".ome.zarr",
     ".tif", ".tiff", ".ome.tif", ".ome.tiff",
@@ -76,6 +77,36 @@ def _dimension_filter_label(tag: str | None) -> str:
 def _is_supported_raw(path: Path) -> bool:
     name = path.name.lower()
     return any(name.endswith(suffix) for suffix in _RAW_SUFFIXES)
+
+
+def _tiff_member_of_lapse(path: str | Path, lapse: "SessionDataset") -> bool:
+    """Match a TIFF time/scan file to an already identified logical lapse.
+
+    The known lapse must have valid ImControl metadata; the candidate itself
+    may still be a plain, unfinished BigTIFF without its final OME annotations.
+    Never treat filename similarity *alone* as proof of a new time lapse.
+    """
+    if getattr(lapse, "kind", None) != "time-lapse":
+        return False
+    candidate = Path(path)
+    if candidate.suffix.lower() not in {".tif", ".tiff"}:
+        return False
+
+    def family(name: str) -> str | None:
+        match = re.search(r"(?i)_(time|scan)\d+(?=_)", name)
+        if match is None:
+            return None
+        return (name[:match.start()] + "_" + match.group(1).lower()
+                + name[match.end():]).lower()
+
+    candidate_family = family(candidate.name)
+    if not candidate_family:
+        return False
+    return any(
+        Path(ref.path).parent == candidate.parent
+        and family(Path(ref.path).name) == candidate_family
+        for ref in getattr(lapse, "source_refs", ())
+    )
 
 
 def _is_supported_result(path: Path) -> bool:
@@ -466,8 +497,16 @@ class ProcessingSession:
                     continue
 
                 relative_path = self._relative_source_path(path)
-                source_key = f"scan|{relative_path}|{dataset_name}"
-                logical = f"scan|{_norm_path(path)}|{dataset_name}"
+                # An ImControl streamed TIFF starts with generic series names
+                # and receives its detector/OME name only on finalization.
+                # A single-series TIFF is identified by its *file*, so its
+                # Session ID (and an already-waiting Auto job) stays stable.
+                identity = (
+                    "single-tiff" if path.suffix.lower() in {".tif", ".tiff"}
+                    and len(names) == 1 else str(dataset_name)
+                )
+                source_key = f"scan|{relative_path}|{identity}"
+                logical = f"scan|{_norm_path(path)}|{identity}"
                 if logical in seen_logical:
                     continue
                 seen_logical.add(logical)
@@ -485,7 +524,16 @@ class ProcessingSession:
                     decoded_bytes=decoded_bytes,
                 ))
 
-        return datasets
+        # An ImControl multi-file TIFF can appear as an otherwise readable
+        # generic single-series scan before its final OME lapse annotations.
+        # If a completed sibling already identifies the logical lapse, do
+        # not display the provisional member as a second Session dataset.
+        lapses = [item for item in datasets if item.kind == "time-lapse"]
+        return [
+            item for item in datasets
+            if item.kind != "scan"
+            or not any(_tiff_member_of_lapse(item.primary_path, lapse) for lapse in lapses)
+        ]
 
     @staticmethod
     def _path_contains(parent: Path, child: str | Path) -> bool:
@@ -528,6 +576,17 @@ class ProcessingSession:
 
         candidates = self._candidate_raw_sources_for_entry(entry)
         discovered = self._discover_raw_datasets(candidates)
+        # A file finalized later as T1 may initially look like an ordinary
+        # single-series TIFF. Keep its already-known T0 logical lapse intact
+        # rather than replacing that lapse with a premature scan entry.
+        previous_lapses = [ds for ds in self.datasets if ds.kind == "time-lapse"]
+        discovered = [
+            ds for ds in discovered
+            if ds.kind != "scan" or not any(
+                _tiff_member_of_lapse(ds.primary_path, lapse)
+                for lapse in previous_lapses
+            )
+        ]
         if not discovered:
             return False
 

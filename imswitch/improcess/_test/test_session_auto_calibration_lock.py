@@ -13,6 +13,12 @@ from imswitch.improcess.reconstructors.monalisa.session_registry import Monalisa
 
 
 def test_session_auto_result_enables_lock_without_loading_source(qtbot, monkeypatch, tmp_path):
+    # Hardware setup detection is machine-dependent; this test starts with
+    # an explicitly unknown detector to exercise adoption from the result.
+    monkeypatch.setattr(
+        "imswitch.improcess.reconstructors.monalisa.params_widget.startup_detector_id",
+        lambda: "unknown",
+    )
     registry = MonalisaSessionRegistry(tmp_path)
     widget = MonalisaParamsWidget(session_registry=registry)
     qtbot.addWidget(widget)
@@ -42,6 +48,19 @@ def test_session_auto_result_enables_lock_without_loading_source(qtbot, monkeypa
     widget._lock_current_localization()
     assert registry.localization_profiles("CAM")[0].name == "first good"
     assert widget.get_values()["localization_mode"] == "Locked"
+    registry.complete_session()
+
+
+def test_single_startup_detector_is_used_before_loading_data(qtbot, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "imswitch.improcess.reconstructors.monalisa.params_widget.startup_detector_id",
+        lambda: "CAM",
+    )
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    qtbot.addWidget(widget)
+    assert widget._current_data_obj is None
+    assert widget._detector_id == "CAM"
     registry.complete_session()
 
 
