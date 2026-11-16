@@ -33,6 +33,7 @@ startup, so only add files you trust.
 | `gaussian_blur.py` | A real parameter widget (`get_values`), the matching `default_params` declaration, and a lazily-imported optional dependency (`scipy`). |
 | `photophysics_suite.py` | A multi-mode analysis with a custom `curve` result: every effective parameter declared (hidden fallbacks included), and the result saved through the staged protocol (`supported_formats`, `plan_save`, `write_files`) as CSV plus a provenance companion. |
 | `frame_average.py` | A **reconstructor**: raw `DataObj` in, one averaged image out, with a spin-box parameter and the pixel size carried through from the file. |
+| `lisai_restore.py` | A bridge to an optional external package, [LISAI](https://github.com/GuillaumeMinet/LISAI-resolft) (deep-learning denoising / sub-sampled restoration for RESOLFT). Always registers; checks at run time that LISAI is installed and set up, and lists its installed promoted models. Needs LISAI in the same environment, its `configs/local_config.yml` written (run any `lisai` command once), and a model from `lisai models download <name> --install`. |
 
 ## Writing your own
 

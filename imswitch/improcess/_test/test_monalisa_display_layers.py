@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from imswitch.improcess.reconstructors.monalisa.coeffs_to_image import LayoutPlacement
 from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
 
 
@@ -271,3 +272,99 @@ def test_result_save_unchanged_after_display_layers():
     assert result.data.shape == (1, 2, 1, 1, 4, 4)
     assert result.axis_labels == ["Dataset", "Base", "T", "Z", "Y", "X"]
     np.testing.assert_array_equal(result.data, data)
+
+
+def _scan_params_for_counts(x, y, z, t=1):
+    return {
+        'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+        'directions': ['pos', 'pos', 'pos'],
+        'steps': [str(x), str(y), str(z), str(t)],
+        'step_sizes': ['35', '35', '100', '1'],
+    }
+
+
+@pytest.mark.parametrize(
+    "counts, expected",
+    [
+        ((8, 9, 1), "Standard"),   # XY
+        ((8, 9, 4), "Standard"),   # XYZ
+        ((1, 9, 4), "Left"),       # YZ
+        ((8, 1, 4), "Bottom"),     # XZ
+    ],
+)
+def test_initial_view_mode_follows_scanned_plane_not_output_shape(counts, expected):
+    # Keep all reconstructed spatial axes non-singleton: the default decision
+    # must come from scan metadata, because uLens sampling can populate an axis
+    # that was not stage-scanned.
+    result = MonalisaProcessingResult(
+        name="auto-view",
+        data=np.zeros((1, 1, 1, 4, 6, 8), dtype=np.float32),
+        scan_params=_scan_params_for_counts(*counts),
+    )
+    assert result.initial_view_mode_name() == expected
+
+
+def test_controller_applies_monalisa_view_mode_to_display_layers():
+    """MoNaLISA's Base-split display layers must not bypass orthogonal views."""
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ReconstructionViewController import (
+        ReconstructionViewController,
+    )
+
+    captured = {}
+
+    class _View:
+        napariStormDisplay = None
+
+        def getViewName(self):
+            return "Left"
+
+        def setDisplayLayers(self, specs, identity=None):
+            captured["specs"] = list(specs)
+            captured["identity"] = identity
+
+    result = MonalisaProcessingResult(
+        name="yz-view",
+        data=np.zeros((1, 2, 1, 3, 4, 5), dtype=np.float32),
+        scan_params=_scan_params_for_counts(1, 4, 3),
+    )
+    controller = ReconstructionViewController.__new__(ReconstructionViewController)
+    controller._widget = _View()
+    controller._logger = SimpleNamespace(
+        debug=lambda *a, **k: None, warning=lambda *a, **k: None
+    )
+    controller._liveResultUids = set()
+
+    controller._setProcessingResultSlice(result)
+
+    signal = captured["specs"][0]
+    assert signal.axis_labels == ["Dataset", "T", "X", "Z", "Y"]
+    assert signal.data.shape == (1, 1, 5, 3, 4)
+    assert controller._displayedAxisLabels[-2:] == ["Z", "Y"]
+    assert controller._transposeOrder == [0, 1, 4, 2, 3]
+    assert captured["identity"]["view_mode"] == "Left"
+    assert captured["identity"]["plane_axes"] == ("Z", "Y")
+
+
+def test_initial_view_prefers_layout_placement_for_yz_scan():
+    # The reconstructed X extent may contain multiple uLens columns even when X
+    # was not scanned. Placement keeps the actual stage scan counts.
+    placement = LayoutPlacement(
+        slots=((0, 0, 0, 0),),
+        timepoints=1,
+        slices=5,
+        rows=7,
+        cols=1,
+        condition_labels=(),
+        n_conditions=1,
+        n_time=1,
+    )
+    misleading = _scan_params_for_counts(8, 7, 5)
+    result = MonalisaProcessingResult(
+        name="yz-placement",
+        data=np.zeros((1, 1, 1, 5, 7, 8), dtype=np.float32),
+        scan_params=misleading,
+        placement=placement,
+    )
+    assert result.initial_view_mode_name() == "Left"
