@@ -90,7 +90,7 @@ class BeadFwhmProcessor(Processor):
 
     name = "Bead FWHM"
     id = "bead-fwhm"
-    category = "Measurement"
+    category = "Resolution and PSF"
     output_kind = "table"
 
     @classmethod

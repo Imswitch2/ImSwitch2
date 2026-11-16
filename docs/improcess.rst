@@ -873,7 +873,7 @@ its second input), and ``pick`` accepts only ``points``.
        (the average and the aberrations are recomputed).  A preset that lists
        ``psf-resolution`` gets this one with it.
    * - ``bead-fwhm``
-     - Measurement
+     - Resolution and PSF
      - Any rank >= 2 image-like result.  Every leading axis is analysed plane
        by plane.
      - ``BeadFwhmResult`` points table, one row per kept bead (FWHM x/y/mean,
