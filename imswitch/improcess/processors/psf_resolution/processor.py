@@ -127,7 +127,7 @@ class PSFResolutionProcessor(Processor):
     #: image); a declared kind is per step, not per port, so it is "any"
     #: unless the averaged PSF is off (see :func:`psf_output_spec`).
     output_kind = ANY_KIND
-    category = "Measurement"
+    category = "Resolution and PSF"
     params_version = 2
     #: The ROI Manager panel passes its ROIs under this key.
     extra_param_keys = ("rois",)

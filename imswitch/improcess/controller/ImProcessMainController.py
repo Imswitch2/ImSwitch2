@@ -404,22 +404,16 @@ class ImProcessMainController(MainController):
         )
 
     def _refresh_runtime_processor_choices(self):
-        from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.model.runtime_tools import (
             runtime_analysis_tool_specs,
+            sorted_tool_specs,
         )
+        from imswitch.improcess.view.tool_menu import ToolMenuEntry
 
-        registry = get_registry()
-        loaded_processors = registry.processors()
-        loaded = {processor.id for processor in loaded_processors}
-
-        def loadable_choices(tool_specs):
-            choices = []
+        def menu_entries(tool_specs):
+            entries = []
             seen_widgets = set()
-            for tool_id, spec in sorted(
-                tool_specs.items(),
-                key=lambda item: (item[1].category, item[1].title, item[0]),
-            ):
+            for spec in sorted_tool_specs(tool_specs.values()):
                 # Collapse tools that share one widget into a single entry: the
                 # multicolor registration + apply processors both open the
                 # Multicolor panel, so without this they show up twice. First
@@ -427,46 +421,30 @@ class ImProcessMainController(MainController):
                 if spec.attribute in seen_widgets:
                     continue
                 seen_widgets.add(spec.attribute)
-                processor_loaded = (
-                    spec.processor_id is None
-                    or spec.processor_id in loaded
-                )
-                widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
-                if processor_loaded and widget_loaded:
-                    continue
-                choices.append((tool_id, _runtime_tool_display_title(spec)))
-            return choices
+                # Every tool is listed; an open one is ticked, and picking it
+                # raises its panel (ensureRuntimeAnalysisWidget shows an
+                # existing dock instead of building another).
+                entries.append(ToolMenuEntry(
+                    id=spec.id,
+                    title=spec.title,
+                    category=spec.category,
+                    description=spec.description,
+                    open=bool(self.__mainView.isRuntimeAnalysisToolLoaded(spec.id)),
+                ))
+            return entries
 
-        # Origin-split combos: built-in tools stay in the Tools toolbar, drop-in
-        # plugins get the Plugins toolbar. This method is the single refresh
-        # path for both (startup wiring and the plugin-reload handler call it).
+        # Origin-split menus: built-in tools behind the Tools toolbar button,
+        # drop-in plugins behind the Plugins one. This method is the single
+        # refresh path for both (startup wiring and the plugin-reload handler
+        # call it).
         self.__mainView.setAvailableRuntimeProcessors(
-            loadable_choices(runtime_analysis_tool_specs(origin="builtin"))
+            menu_entries(runtime_analysis_tool_specs(origin="builtin"))
         )
         if hasattr(self.__mainView, 'setAvailablePluginTools'):
-            user_specs = runtime_analysis_tool_specs(origin="user")
             self.__mainView.setAvailablePluginTools(
-                loadable_choices(user_specs),
-                placeholder=(
-                    'All plugins loaded' if user_specs else 'No plugins installed'
-                ),
+                menu_entries(runtime_analysis_tool_specs(origin="user")),
+                placeholder='No plugins installed',
             )
-        self.__mainView.setLoadedRuntimeProcessors(
-            [
-                (
-                    processor.id,
-                    f"{getattr(processor, 'category', 'Other')}: {processor.name}",
-                )
-                for processor in sorted(
-                    loaded_processors,
-                    key=lambda item: (
-                        getattr(item, 'category', 'Other'),
-                        item.name,
-                        item.id,
-                    ),
-                )
-            ]
-        )
 
     def _restore_runtime_processor(self, processor_id: str) -> None:
         """Re-register a processor that was runtime-loaded last session.
@@ -1235,12 +1213,6 @@ class ImProcessMainController(MainController):
                     f'Failed to save ImProcess dock layout: {e}'
                 )
         self.__factory.closeAllCreatedControllers(waitTimeoutS=5)
-
-
-def _runtime_tool_display_title(spec) -> str:
-    category = str(getattr(spec, "category", "") or "").strip()
-    title = str(getattr(spec, "title", "") or getattr(spec, "id", ""))
-    return f"{category}: {title}" if category else title
 
 
 class _ROIManagerStateAdapter:

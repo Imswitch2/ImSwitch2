@@ -36,3 +36,7 @@ feat/linestep-condition-sum        # ImProcess line-step sum reconstructor (two-
 feat/bead-fwhm                     # ImProcess bead-fwhm processor: FWHM and SNR per stack slice; PR to open
                                    #   (improcess.rst: dev's psf-resolution rows kept, bead-fwhm rows added; processors list and
                                    #    changelog: both sides kept; uses analysis.psf_resolution.fit_psf, unchanged by PR #79)
+feat/improcess-tool-menu           # ImProcess analysis tools by category (Fiji-style Tools/Plugins menus), category cleanup; PR to open
+                                   #   (workflow catalog lives in imcommon here: imcommon Catalog.categories() follows the processor order,
+                                   #    the improcess builder sorts by category_sort_key; pick moved to 'Spots and points' -- smart-pipeline
+                                   #    needs that when it merges main, or test_tool_categories fails; preset table: dev text kept)

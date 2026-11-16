@@ -30,7 +30,7 @@ class SubtractBackgroundProcessor(Processor):
     name = "Subtract background"
     id = "subtract-background"
     output_kind = "image"
-    category = "Restoration"
+    category = "Filters"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
     preserves_grid = True

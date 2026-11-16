@@ -220,8 +220,10 @@ class Catalog:
         return self.get(RECONSTRUCTOR, plugin_id)
 
     def categories(self) -> tuple[str, ...]:
-        """Processor categories, alphabetical, ``Other`` last."""
-        names = sorted({entry.category for entry in self.processors})
+        """Processor categories in the order the processors are listed,
+        ``Other`` last. The builder decides that order: ImProcess sorts its
+        processors in its tool menus' category order."""
+        names = list(dict.fromkeys(entry.category for entry in self.processors))
         if "Other" in names:
             names.remove("Other")
             names.append("Other")
