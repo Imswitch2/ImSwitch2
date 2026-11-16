@@ -669,7 +669,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``PSFResolutionResult`` table with axes ``ROI, Metric`` and FWHM plot
        payload.  Intended as an analysis output, not an image-stack input.
    * - ``bead-fwhm``
-     - Measurement
+     - Resolution and PSF
      - Any rank >= 2 image-like result.  Every leading axis is analysed plane
        by plane.
      - ``BeadFwhmResult`` points table, one row per kept bead (FWHM x/y/mean,
