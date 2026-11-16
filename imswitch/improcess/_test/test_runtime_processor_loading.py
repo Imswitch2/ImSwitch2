@@ -65,8 +65,8 @@ def test_runtime_processor_specs_include_categories():
     }
 
     assert specs["projection"] == ("Projection", "Dimensions and channels")
-    assert specs["drift-correct"] == ("Drift Correction", "Restoration")
-    assert specs["frc"] == ("FRC Resolution", "Measurement")
+    assert specs["drift-correct"] == ("Drift Correction", "Registration")
+    assert specs["frc"] == ("FRC Resolution", "Resolution and PSF")
     assert specs["smlm-render"] == ("SMLM render", "SMLM")
 
 

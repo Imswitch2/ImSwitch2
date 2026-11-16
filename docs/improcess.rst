@@ -211,17 +211,29 @@ make the final split result current.
 
 The *Tools* toolbar and **Tools** menu hold Fiji-like panel buttons for
 Graph, Profile, ROI manager, ROI stats, Projection, Segmentation, Metadata
-and Results.  The toolbar's *Load tool* list offers every built-in analysis
-tool that is not open yet — FRC, PSF resolution, Colocalization,
-Multicolor, Drift correction, Denoise and a generic parameter panel for each
-remaining processor — and *Loaded processors* shows what is registered.
-Opening a panel registers its processor when needed, raises the dock when it
-already exists and keeps the panel in the saved dock layout.  **Every
-analysis panel described on this page can be opened this way at any time**
-(the SMLM render controls excepted); the ``…Panel`` keys of the setup file
-(see `Config schema`_) only decide which ones are open at startup.
+and Results.  The toolbar's **Tools ▾** button (also **Tools → Analysis
+tools**) lists every built-in analysis tool the way Fiji's menus do: clicking
+it shows the categories, hovering a category shows its tools — FRC, PSF
+resolution, Colocalization, Multicolor, Drift correction, Denoise and a
+generic parameter panel for each remaining processor.  A tool whose panel is
+open is ticked.  Picking a tool registers its processor when needed, opens its
+panel — or raises it when it is already open — and keeps the panel in the
+saved dock layout; hovering one shows what it does.  **Every analysis panel
+described on this page can be opened this way at any time** (the SMLM render
+controls excepted); the ``…Panel`` keys of the setup file (see `Config
+schema`_) only decide which ones are open at startup.
 
-Each *Load tool* entry runs one processor at a time and publishes its output
+The categories, in menu order, are *Dimensions and channels*, *Transform*,
+*Filters*, *Math*, *Restoration*, *Registration*, *Segmentation*,
+*Measurement*, *Resolution and PSF*, *Spots and points*, *SMLM*,
+*Visualization*, *ROI*, *Exploration* and *Scripting*
+(``imswitch/improcess/processors/categories.py``); the workflow editor's
+palette uses the same order.  A built-in processor must name one of them in
+its ``category`` attribute (a test checks it).  A drop-in plugin may name its
+own category: it is shown after the listed ones, and *Other* always comes
+last.
+
+Each analysis tool runs one processor at a time and publishes its output
 back to the reconstruction list.  To keep a sequence of steps and run it
 again — on the same data or on other files — export it with *File → Export
 workflow of current result…* and run it from the File menu or with
@@ -239,8 +251,10 @@ the picker and makes it active.  Nothing is written to the setup file: to
 keep a reconstructor across sessions, add it to ``processing.reconstructors``
 (the config editor offers every known id, drop-ins included).
 
-The *Plugins* toolbar's *Load plugin* list does for drop-in processors what
-*Load tool* does for built-ins (see `Drop-in analysis plugins`_).  The
+The *Plugins* toolbar's **Plugins ▾** button (also **Plugins → Analysis
+plugins**) does for drop-in processors what **Tools ▾** does for built-ins,
+grouped by the categories the plugins declare, with *Browse online
+plugins...* at the bottom (see `Drop-in analysis plugins`_).  The
 **Plugins** menu has *Browse online plugins...*, *Open plugins folder...*,
 *Add plugin file...*, *Reload plugins* and a *napari plugins* submenu, which
 sends the current result to installed napari plugins and takes their layers
@@ -518,7 +532,8 @@ instead.
 Processor categories and compatibility
 ======================================
 
-Built-in processors carry a category label used by the runtime tool loader,
+Built-in processors carry a category label that places them in the **Tools ▾**
+menu (see above for the list and its order),
 and compatibility is decided by ``Processor.accepts(result)``, which checks
 two things in order:
 
@@ -629,7 +644,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``ArrayProcessingResult`` after Gaussian, median, mean or unsharp
        filtering in each Y/X plane; leading stack axes are not blurred.
    * - ``subtract-background``
-     - Restoration
+     - Filters
      - Any rank >= 2 image-like result.
      - One background-subtracted ``ArrayProcessingResult`` and, optionally, a
        second result containing the rolling-ball background estimate.
@@ -653,7 +668,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - One result per output port the step declares (``out`` by default),
        named in ``ports``; see :ref:`improcess-python-step`.
    * - ``drift-correct``
-     - Restoration
+     - Registration
      - Any result whose ``axis_labels`` contain ``T``.
      - ``DriftCorrectedResult`` with the same shape and axes plus drift trace
        plots.  Shift estimation uses a 2D ``Y, X`` plane and first index of
@@ -686,7 +701,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Relabelled ``LabelsResult`` after fill holes, erosion, dilation,
        opening, closing or watershed splitting.
    * - ``psf-resolution``
-     - Measurement
+     - Resolution and PSF
      - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
        plane makes it a 3-D analysis; every other extra axis collapses to
        index ``0``.
@@ -696,7 +711,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        the averaged bead as an ordinary image, when averaging is on and a
        bead qualifies.
    * - ``psf-bead-select``
-     - Measurement
+     - Resolution and PSF
      - A measurement from ``psf-resolution``.
      - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
        (the average and the aberrations are recomputed).  A preset that lists
@@ -708,7 +723,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``ColocalizationResult`` table with axes ``ROI, Metric`` and intensity
        scatter plot payload.
    * - ``frc``
-     - Measurement
+     - Resolution and PSF
      - Rank >= 2 image-like result for single-image FRC; two-image mode also
        needs a compare axis with at least two planes.
      - ``FRCResult`` curve data with axes ``C, Frequency`` and graph payload.
@@ -2582,7 +2597,7 @@ Ready-to-use minimal configs ship under
    * - ``widefieldstarss_processor.json``
      - WidefieldSTARSS H/V-pair analysis
    * - ``general_image_processing.json``
-     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from *Load tool*)
+     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from **Tools ▾ → Registration**)
 
 The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
 registered processors, then lets the *Image operations* and *Tools* toolbars register
@@ -2924,8 +2939,9 @@ Using a plugin
    `LISAI restoration`_).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
-#. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
-   load it, select a compatible result and run it.  A reconstructor appears in
+#. A processor appears under the Plugins toolbar's **Plugins ▾** button, in
+   the submenu of its ``category``; open it, select a compatible result and
+   run it.  A reconstructor appears in
    the reconstructor picker at the top of the Parameters dock; pick it and use
    *Reconstruct current* (or the multidata actions) as with any built-in.
 
