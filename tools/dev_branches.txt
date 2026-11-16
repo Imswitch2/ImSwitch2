@@ -39,4 +39,4 @@ feat/bead-fwhm                     # ImProcess bead-fwhm processor: FWHM and SNR
 feat/improcess-tool-menu           # ImProcess analysis tools by category (Fiji-style Tools/Plugins menus), category cleanup; PR to open
                                    #   (workflow catalog lives in imcommon here: imcommon Catalog.categories() follows the processor order,
                                    #    the improcess builder sorts by category_sort_key; pick moved to 'Spots and points' -- smart-pipeline
-                                   #    needs that when it merges main, or test_tool_categories fails; preset table: dev text kept)
+                                   #    needs that (and test_points_processors' expected category) when it merges main; preset table: dev text kept)
