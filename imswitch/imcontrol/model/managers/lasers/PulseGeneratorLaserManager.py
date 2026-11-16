@@ -3,20 +3,19 @@
 This is the v4-era replacement for
 :class:`PulseStreamerLaserManager`.  Where the old class talked
 exclusively to PulseStreamer-shaped APIs, this one consumes whatever
-:class:`PulseGeneratorManager` backend is wired into
-``lowLevelManagers['pulseGeneratorManager']`` — Teensy today,
-PulseStreamer once its manager is also migrated, an NI digital-out card
-someday.
+:class:`PulseGeneratorManager` backend the setup builds -- the Teensy of
+its ``teensyPulse`` section, or any ``pulseGenerators`` entry (a
+PulseStreamer, a plugin's generator).
 
-Set ``managerName: 'PulseGeneratorLaserManager'`` in the setup JSON.
+Set ``managerName: 'PulseGeneratorLaserManager'`` in the setup JSON. The
+laser's ``digitalLine`` is the generator's channel index (HIGH = laser on)
+and its ``analogChannel`` the analog output that sets its power, when the
+generator has one.
 
 managerProperties
 -----------------
-- ``digitalChannel`` *(int, required)* — the pulse-generator channel
-  index this laser is wired to.  HIGH = laser on.
-- ``analogChannel`` *(int, optional)* — analog output channel used to
-  set laser power, if the backend supports it.  Leave unset (or
-  ``None``) for binary on/off lasers.
+- ``pulseGenerator`` *(str, optional)* — the ``pulseGenerators`` entry it
+  is wired to.  Omitted: the ``teensyPulse`` section's generator.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from __future__ import annotations
 from typing import Optional
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.managers.pulsegen.loader import pulse_generator_named
 
 from .LaserManager import LaserManager
 
@@ -38,18 +38,27 @@ class PulseGeneratorLaserManager(LaserManager):
     * :meth:`setValue` sets ``analogChannel`` voltage via the backend's
       ``setAnalog``.  No-op if no analog channel is configured.
 
-    Graceful degradation: if no pulse generator is wired at startup
-    (``lowLevelManagers['pulseGeneratorManager'] is None``) — e.g.
-    ``setupInfo.teensyPulse`` was left unset — the manager enters mock
-    mode and logs warnings on every operation.  This matches the
-    behaviour of :class:`PulseStreamerLaserManager`.
+    Graceful degradation: if it names no generator and the setup has no
+    ``teensyPulse`` section, the manager enters mock mode and logs warnings
+    on every operation.  This matches the behaviour of
+    :class:`PulseStreamerLaserManager`.  A generator it names and the setup
+    does not have is a setup error.
     """
 
     def __init__(self, laserInfo, name: str, **lowLevelManagers):
         self._logger = initLogger(self, instanceName=name)
 
-        self._pulseGen = lowLevelManagers.get('pulseGeneratorManager')
+        props = getattr(laserInfo, 'managerProperties', None) or {}
+        named = props.get('pulseGenerator')
+        self._pulseGen, available = pulse_generator_named(lowLevelManagers, named)
+        if named is not None and self._pulseGen is None:
+            # A generator named and absent is a wrong setup, not a missing
+            # Teensy: no mock stands in for it.
+            raise ValueError(f'{name}: the setup has no pulse generator {named!r}; it has '
+                             f'{", ".join(available) or "none"}.')
         self._isMock = self._pulseGen is None
+        self._level = (laserInfo.ttlLevel if getattr(laserInfo, 'ttlActiveLevel', None)
+                       else (lambda on: on))
 
         # Read laser-info fields with defaults so a partial setup still
         # boots (matches the PulseStreamerLaserManager fall-through).
@@ -104,7 +113,8 @@ class PulseGeneratorLaserManager(LaserManager):
                 'setEnabled called but no digitalChannel configured'
             )
             return
-        self._pulseGen.setDigital(int(self._digitalChannel), bool(enabled))
+        # On and off follow ttlActiveLevel, as a scan drives the line.
+        self._pulseGen.setDigital(int(self._digitalChannel), self._level(bool(enabled)))
 
     def setValue(self, voltage: float) -> None:
         if self._isMock:

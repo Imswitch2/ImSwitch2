@@ -84,6 +84,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             overviewAxes=state['limits'].overview_axes,
             detectorNote=self._detectorNote(),
             detectors=self._pointDetectorNames(),
+            laserNote='' if state['limits'].gates else self.ANALOG_ONLY_NOTE,
         )
         if state['reference'] is not None:
             self._view.setReferenceDetector(state['reference'])
@@ -126,7 +127,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         """
         state = self.__dict__.get('_simpleState')
         if state is None:
-            limits = ScanLimits.from_setup(self._setupInfo)
+            limits = ScanLimits.from_setup(self._setupInfo,
+                                           drivable=self._engineForScans().owns)
             state = self.__dict__['_simpleState'] = {
                 'limits': limits,
                 'mode': OVERVIEW,
@@ -176,7 +178,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             dwell_s=limits.min_dwell_s(dims[0], step),
             channels=((limits.gates[0].name,),) if limits.gates else (),
             phase_delay_us=float(self._designerParam('phase_delay', 0.0)),
-            d3step_delay_us=float(self._designerParam('d3step_delay', 0.0)),
         ))
 
     def _designerParam(self, key, default):
@@ -242,7 +243,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             channel_power=power,
             channel_power_enabled=dict(acquisition.channel_power_enabled),
             phase_delay_us=acquisition.phase_delay_us,
-            d3step_delay_us=acquisition.d3step_delay_us,
         )
 
     def currentPlan(self) -> SimpleScanPlan:
@@ -292,9 +292,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     def cloakWantsLive(self) -> bool:
         return self._simple()['mode'] == OVERVIEW or self._view.liveEnabled()
 
-    def cloakFrameEstimateS(self):
-        return self._simple().get('frameEstimateS')
-
     def cloakStateExtras(self) -> dict:
         simple = self._simple()
         return {
@@ -342,9 +339,13 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         cannot even express power for a laser without an analog channel."""
         if self._onSimplePage():
             plan = self.currentPlan()
-            if not plan.channels:
+            limits = self._scanLimits()
+            if not plan.channels and limits.gates:
+                # Only where a laser can be chosen: on a scanner whose lasers
+                # the scan engine cannot switch (analog only), the panel shows
+                # none, and its scan runs with them as the Laser panel set them.
                 raise ScanDesignRefusedError('Choose at least one laser.')
-            refusal = power_refusal(plan, self._scanLimits())
+            refusal = power_refusal(plan, limits)
             if refusal:
                 raise ScanDesignRefusedError(refusal)
         return super()._buildScanSignals()
@@ -659,7 +660,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         limits = state['limits']
         refusal = power_refusal(plan, limits)
         estimate = None
-        if not refusal and not plan.channels:
+        if not refusal and not plan.channels and limits.gates:
             refusal = 'Choose at least one laser.'
         analog, digital = plan_to_dicts(plan, limits)
         if not refusal:

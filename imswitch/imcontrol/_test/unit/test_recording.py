@@ -1351,6 +1351,98 @@ def test_late_recording_failure_does_not_abort_unowned_scan():
     assert events == ['cycle-ended']
 
 
+def _preSessionFailureController(manager):
+    import types
+
+    from imswitch.imcontrol.model import RecMode
+
+    published = []
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=None,
+        _recordingGenerationBeforeOperation=4,
+        _recordingFailureHandled=False,
+        _recordingFailedCurrent=False,
+        _scanStartPublished=False,
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        stopRequested=False,
+        recording=True,
+        endedRecording=False,
+        doneScan=False,
+        _commChannel=types.SimpleNamespace(
+            sigRecordingFailed=types.SimpleNamespace(emit=published.append),
+        ),
+        _master=types.SimpleNamespace(recordingManager=manager),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: published.append('cycle-ended'),
+    )
+    return ctrl, published
+
+
+def test_a_recording_refused_before_its_session_starts_still_fails_publicly():
+    """A scan-once recording whose scan the designer refuses fails while
+    reading the scan geometry, before the manager opens a session. With no
+    session there was nothing to report the failure into, so no
+    recordingEnded/recordingFailed reached scripts and a caller waiting for
+    one hung until its timeout."""
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    reported = []
+    manager = types.SimpleNamespace(
+        recordingGeneration=4,
+        reportRecordingFailure=lambda *args: reported.append(args),
+    )
+    ctrl, published = _preSessionFailureController(manager)
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'Pixel dwell time too short', abortManager=False
+    )
+    # The re-entry a legacy comm-channel connection makes is a no-op.
+    RecordingController._handleRecordingFailure(
+        ctrl, 'Pixel dwell time too short', abortManager=False
+    )
+
+    assert published == ['Pixel dwell time too short', 'cycle-ended']
+    assert reported == []
+    assert ctrl.recording is False
+
+
+def test_a_session_opened_and_failed_while_starting_reports_into_the_manager():
+    """When the manager did open a session before startRecording raised, it
+    owns the terminal (and publishes it at most once); the controller must not
+    publish a second one of its own."""
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
+
+    reported = []
+    manager = types.SimpleNamespace(
+        recordingGeneration=5,
+        reportRecordingFailure=lambda *args: reported.append(args),
+    )
+    ctrl, published = _preSessionFailureController(manager)
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'worker thread did not start', abortManager=False
+    )
+
+    assert reported == [
+        ('worker thread did not start', 5, FailureKind.UNKNOWN)
+    ]
+    assert published == ['cycle-ended']
+
+
 def test_rejected_scan_request_aborts_recorder_without_broadcasting_scan_abort():
     import types
 
@@ -5587,6 +5679,71 @@ def test_a_slow_camera_that_declares_nothing_keeps_the_floor(qtbot, tmp_path):
     # And a non-scan mode is told about exposure, not about scan wiring.
     assert 'numCamTTL' not in failures[0]
     assert 'exposure' in failures[0]
+
+
+class _WaitingCamera(_PacedCamera):
+    """A scan-triggered camera whose first frame comes only after the scan's
+    own wait (a time-lapse interval before the first timepoint)."""
+
+    def __init__(self, wait, period):
+        super().__init__(period, declare=False)
+        self._wait = wait
+
+    def readChunk(self, _key):
+        if self._t0 is None or time.time() - self._t0 < self._wait:
+            return []
+        due = 1 + int((time.time() - self._t0 - self._wait) // self._period)
+        if due > self._delivered:
+            self._delivered += 1
+            return [np.zeros(self.shape, dtype=self.dtype)]
+        return []
+
+
+def _record_scan_with_a_wait(qtbot, tmp_path, idle_s):
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        RecMode, RecordingManager, SaveFormat, SaveMode,
+    )
+
+    manager = RecordingManager(_OneCamera(_WaitingCamera(wait=0.8, period=0.05)))
+    failures, ended = [], []
+    manager.sigRecordingFailed.connect(failures.append)
+    manager.sigRecordingEndedDetailed.connect(ended.append)
+    manager.startRecording(
+        detectorNames=['Cam'], recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'waiting'), saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5, attrs={'Cam': {}},
+        recFrames=3, numCamTTL={'Cam': 1}, stallTimeout=0.3,
+    )
+    try:
+        assert manager.waitForAcquisitionStarted(2.0)
+        info = {'scan_samples_total': 100, 'scan_time_step': 0.01}
+        if idle_s is not None:
+            info['scan_longest_idle_s'] = idle_s
+        assert manager.markScanStarted(info, manager.recordingGeneration)
+        try:
+            qtbot.waitUntil(lambda: bool(failures or ended), timeout=6000)
+        except Exception:
+            pass
+    finally:
+        manager.endRecording(emitSignal=False, wait=True)
+    return failures, ended
+
+
+def test_a_scan_wait_before_the_first_frame_is_not_a_camera_stall(qtbot, tmp_path):
+    """A scan that waits (here 0.8 s, on the rig a 27 s time-lapse interval)
+    before its first frame says so in its scan info; the watchdog allows the
+    camera that long on top of its floor instead of failing the recording at
+    frame zero with a message about camera triggering."""
+    failures, ended = _record_scan_with_a_wait(qtbot, tmp_path, idle_s=0.8)
+    assert not failures, failures
+    assert ended
+
+
+def test_a_scan_that_declares_no_wait_keeps_the_camera_floor(qtbot, tmp_path):
+    """The control: the same camera, the scan declaring no idle stretch, is
+    a stall after the floor, as before."""
+    failures, _ended = _record_scan_with_a_wait(qtbot, tmp_path, idle_s=None)
+    assert failures and 'stalled' in failures[0]
 
 
 # ----------------------------------------------------------------------

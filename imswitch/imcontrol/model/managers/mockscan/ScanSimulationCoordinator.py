@@ -107,6 +107,13 @@ class ScanSimulationCoordinator(SignalInterface):
     def isActive(self):
         return self._worker is not None
 
+    @property
+    def progress(self):
+        """How far through its run the simulated scan is, 0 to 1: where a
+        stop finds the simulated outputs (NidaqManager.stopScan)."""
+        worker = self._worker
+        return 0.0 if worker is None else worker.progress
+
     def start(self, signalDict, scanInfoDict):
         self.stop(wait=True)
         self._activePlan = SimulatedScanPlan.fromScan(
@@ -153,6 +160,11 @@ class SimulatedScanWorker(Thread):
         super().__init__()
         self._plan = plan
         self._running = True
+        self._progress = 0.0
+
+    @property
+    def progress(self):
+        return self._progress
 
     def stop(self):
         self._running = False
@@ -169,6 +181,7 @@ class SimulatedScanWorker(Thread):
             if not self._running:
                 return
             time.sleep(self._TICK)
+            self._progress = tick / nTicks
             for detectorName, total in self._plan.frameCounts.items():
                 want = (int(total) * tick) // nTicks
                 n = want - delivered[detectorName]

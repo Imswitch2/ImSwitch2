@@ -30,14 +30,14 @@ MULTIMANAGER_BACKED_KINDS = {
 # dedicated loader that still resolves through DevicePluginRegistry.
 STANDALONE_REGISTRY_BACKED_KINDS = {
     "stand",
+    "scan_engine",
+    "pulse_generator",
 }
 
 # Kinds that use bespoke loaders in the current implementation. Plugin support
 # for these kinds is NOT yet implemented in runtime loading. Manifests declaring
 # these kinds will be rejected with a clear error.
-BESPOKE_LOADER_KINDS = {
-    "pulse_generator",
-}
+BESPOKE_LOADER_KINDS: set = set()
 
 # These are derived from the setup metadata contract.  The two named subsets
 # above remain as implementation documentation and are asserted in tests.
@@ -55,6 +55,7 @@ DeviceKind = Literal[
     "instrument",
     "slm",
     "stand",
+    "scan_engine",
     "pulse_generator",
 ]
 

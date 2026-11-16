@@ -14,6 +14,7 @@ class SuperScanWidget(Widget):
     sigSaveScanClicked = QtCore.Signal()
     sigLoadScanClicked = QtCore.Signal()
     sigRunScanClicked = QtCore.Signal()
+    sigStopClicked = QtCore.Signal()
     sigSeqTimeParChanged = QtCore.Signal()
     sigStageParChanged = QtCore.Signal()
     sigSignalParChanged = QtCore.Signal()
@@ -40,6 +41,13 @@ class SuperScanWidget(Widget):
         self.scanDims = []
 
         self.scanButton = guitools.BetterPushButton('Run Scan')
+        # Stop ends the scan now (plan scan-stop-now, Lenny 2026-10-18); the
+        # panel had nothing that stopped a running scan, Run is disabled.
+        self.stopButton = guitools.BetterPushButton('Stop')
+        self.stopButton.setToolTip(
+            'Stop the scan now: its unfinished frame is dropped and the scanners return '
+            'to where it started.')
+        self.stopButton.setEnabled(False)
 
         self.repeatBox = QtWidgets.QCheckBox('Repeat')
 
@@ -65,6 +73,7 @@ class SuperScanWidget(Widget):
         self.saveScanBtn.clicked.connect(self.sigSaveScanClicked)
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
         self.scanButton.clicked.connect(self.sigRunScanClicked)
+        self.stopButton.clicked.connect(self.sigStopClicked)
 
     def confirmUnreferencedScan(self, unreferenced):
         lines = [
@@ -148,6 +157,7 @@ class SuperScanWidget(Widget):
         self.scanButton.setEnabled(not checked)
         self.scanButton.setCheckable(checked)
         self.scanButton.setChecked(checked)
+        self.stopButton.setEnabled(bool(checked))
 
     def setScanDim(self, index, positionerName):
         scanDimPar = self.scanPar['scanDim' + str(index)]
@@ -229,6 +239,7 @@ class ScanWidgetBase(SuperScanWidget):
         )
         self.grid.addWidget(self.repeatBox, currentRow, 5)
         self.grid.addWidget(self.scanButton, currentRow, 6)
+        self.grid.addWidget(self.stopButton, currentRow, 7)
         currentRow += 1
 
         # Add space item to make the grid look nicer

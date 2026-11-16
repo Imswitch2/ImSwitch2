@@ -78,6 +78,14 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``ttlActiveLevel`` (``"high"`` or ``"low"``, default ``"high"``): the
+  level of the ``digitalLine`` that means *on*. ``"low"`` is for an inverted
+  input; a scan, the Laser panel's on/off and cleanup all drive it low for on.
+* ``preparation`` (optional): the time, from the request of the device's state
+  until it is ready (a shutter fully open, a laser at its set level), that a
+  scan program waits for after a trigger wait: ``"notRequired"``,
+  ``{"durationS": <seconds>}`` or ``"unknown"`` (a program that needs it is
+  refused). Absent is not zero; see :doc:`devices/scan_engines`.
 * ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
@@ -122,6 +130,14 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``ttlActiveLevel`` (``"high"`` or ``"low"``, default ``"high"``): the
+  level of the ``digitalLine`` that means *on*. ``"low"`` is for an inverted
+  input; a scan, the Laser panel's on/off and cleanup all drive it low for on.
+* ``preparation`` (optional): the time, from the request of the device's state
+  until it is ready (a shutter fully open, a laser at its set level), that a
+  scan program waits for after a trigger wait: ``"notRequired"``,
+  ``{"durationS": <seconds>}`` or ``"unknown"`` (a program that needs it is
+  refused). Absent is not zero; see :doc:`devices/scan_engines`.
 * ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
@@ -333,7 +349,10 @@ Required if you want to use the ``Scan`` widget.
 Key fields:
 
 * ``scanWidgetType``: Real scan backend/widget — one of ``"Base"``,
-  ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.
+  ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"``, ``"Expert"`` or
+  ``"TriggerScope"``. ``"Expert"`` edits scan programs and compiles them on
+  the scan engine (:doc:`expert-scanning`); it uses no signal designers, so
+  ``scanDesigner`` and ``TTLCycleDesigner`` can be ``null``.
   ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
@@ -348,18 +367,41 @@ Key fields:
   ``move_time`` / ``settle_time`` (the fast-axis ramp and rest inside each
   pixel dwell, 2 ms each by default); a dwell not longer than
   ``move_time + settle_time`` is refused. The scan panels also read
-  ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
+  ``phase_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
   opens at 0.02 ms, made for galvos; a stepped stage needs more).
+  ``d3step_delay`` (µs) still counts: the pause before every slice of a 3-D
+  galvo scan is the longest of it, a per-scan ``d3step_delay`` and the slice
+  positioners' ``settleTimeS`` (in their ``managerProperties``, seconds) --
+  declare it there -- and a 2-D scan starts after a ``d3step_delay``, as it
+  did before the panel's D3 field went. A stepped fast axis plays no such
+  pause; the timing note says so.
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
-* ``sampleRate``: DAQ sample rate in Hz
+* ``sampleRate``: The waveform sample rate in Hz: the analog and digital
+  waveforms are built and played at it, and it is the Expert panel's timing
+  grid. Every dwell is a whole number of its samples; the pixel rate is
+  ``sampleRate`` divided by the samples per pixel. ``100000`` is what every
+  setup ran at. The analog output is clocked from the board's 100 MHz
+  timebase divided down at every rate, 100 kHz included, so its first sample
+  comes a fixed time after the scan's start, which the detectors' timer
+  starts on too; the digital output follows its clock. Each task is checked as the driver configured it: the rate
+  must be within what the driver reports for that task and its channels
+  (four analog outputs update slower than one), the rate the driver
+  configured is read back and a mismatch refuses the scan, and a check the
+  driver does not answer refuses it too. It must divide
+  ``nidaq.detectionRateHz`` exactly. A 1 µs pixel on a PCIe-6363 is
+  ``1000000``.
 * ``maxScanTimeMin``: Optional scan-duration guard in minutes; ``null``,
   ``0`` or omission disables it.  ``GalvoScanDesigner`` also refuses scans
   above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
+* ``engine``: the scan engine the ``Scan`` panel runs on, a name from
+  `scanEngines`_; omitted, the NI-DAQ. The Advanced and SimplePointScan panels
+  build sampled waveforms and need a streaming engine; a name the setup does
+  not have stops the setup from loading.
 * ``simplePointScan``: Optional options for the ``SimplePointScan`` panel; every key is optional:
 
   * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
@@ -525,8 +567,10 @@ Controls NI-DAQ card behavior.
 
 Key fields:
 
-* ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
-* ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
+* ``timerCounterChannel``: Counter that generates the pulse train the point detectors (APD, PMT) sample on (``nidaq.detectionRateHz``, 1 MHz by default) (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
+* ``startTrigger``: Start the digital output on the analog output's start
+  trigger (``true`` / ``false``). The point detectors and their timer start
+  on it whenever the scan has analog output, whatever this says.
 * ``simulation``: Select software NI-DAQ/scan simulation (``true`` / ``false``).
   With ``true``, ImSwitch deliberately runs the software scan simulator instead
   of opening NI-DAQmx tasks. With ``false``, ImSwitch expects real NI-DAQ
@@ -534,6 +578,15 @@ Key fields:
   starts in a degraded state, but NI-DAQ writes and scans are refused; it does
   **not** silently switch to simulated acquisition. Install the hardware extra
   (``pip install "imswitch2[hardware]"``) to restore real NI-DAQ operation.
+* ``detectionRateHz``: Rate of the timer's pulse train the point detectors
+  sample on, in Hz; absent, ``1000000`` as it always was. Must be a whole
+  multiple of ``scan.sampleRate`` (the detectors bin a whole number of timer
+  samples per scan sample); a setup that is not is refused at start, naming
+  both numbers. When a scan is armed the timer is read back from the
+  driver: its timebase must divide the rate, its frequency must be the rate
+  and its first pulse must come within one period of the scan's start. What
+  it realized is logged (*Detector timer: … Hz from a … Hz timebase, first
+  pulse … s after the scan starts*).
 
 **Example** (simulation mode, no physical DAQ):
 
@@ -615,7 +668,8 @@ Available widget names (case-sensitive):
 * Event-triggered and smart microscopy: ``EtSTED``, ``EtMonalisa``,
   ``EtSnouty``, ``SetupModes``, ``SetupStatus``
 * Analysis tools: ``BeadRec``, ``AlignAverage``, ``AlignXY``,
-  ``AlignmentLine``, ``ULenses``, ``FFT``, ``FLIMHist``
+  ``AlignmentLine``, ``ULenses``, ``FFT``, ``Lifetime`` (``FLIMHist``, its
+  old key, is renamed to it at load)
 * Scripting: ``Console``, ``Watcher``
 
 ``SLM`` and ``BFTimelapse`` have no default dock position: they appear only
@@ -684,6 +738,9 @@ documented below with full field lists and examples:
 * `flipMirrors`_
 * `triggerScope`_
 * `teensyPulse`_
+* `pulseGenerators`_
+* `scanEngines`_
+* `timeTagger`_
 * `pyroServerInfo`_
 * `smartMicroscopyModes`_ (and its two companion sections)
 * `processing`_ (ImProcess)
@@ -693,7 +750,7 @@ documented below with full field lists and examples:
 **Legacy / deprecated sections**:
 
 * `slm (singular)`_ — superseded by ``slms``; only used by old ``SLMController``
-* `pulseStreamer`_ — dormant; ``PulseStreamerManager`` no longer constructed at runtime
+* `pulseStreamer`_ — no effect; a Pulse Streamer is a `pulseGenerators`_ entry
 
 
 focusLock
@@ -1074,11 +1131,39 @@ The board drives every laser, detector and positioner whose
 ``analogChannel`` is ``"Triggerscope/DAC<n>"`` or whose ``digitalLine`` is
 ``"Triggerscope/TTL<n>"``.  Each analog device's ``minVolt`` / ``maxVolt``
 in ``managerProperties`` (default ±10 V) bounds the voltages it is sent.
+Switching a device on or off by hand honours its ``ttlActiveLevel``; the
+board's built-in scan routines drive their lines active-high regardless.
 
 .. code-block:: json
 
    "triggerScope": {
        "rs232device": "triggerscope"
+   }
+
+
+scanEngines
+-----------
+
+Optional map from an engine name to ``ScanEngineInfo``: ``managerName`` (a
+registered ``scan_engine``) and ``managerProperties``. Every setup also has
+the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the Advanced
+and SimplePointScan panels run on and the one that leads; the Expert panel
+runs a program on the engine its devices are on. A channel two engines claim
+stops the setup from loading.
+The engines, their properties and channel ownership are documented in
+:doc:`devices/scan_engines`; a board joins without Python by speaking the
+step-engine protocol (:doc:`devices/step-engine-protocol`). An engine's
+optional ``triggerInput`` -- the line of ``scan.engine`` its trigger input is
+wired to -- has it follow that engine step by step in a program that uses
+both engines' devices.
+
+.. code-block:: json
+
+   "scanEngines": {
+       "board": {
+           "managerName": "SimulatedStepEngine",
+           "managerProperties": {"timingGridS": 1e-05, "digitalLines": ["Sim/TTL0"]}
+       }
    }
 
 
@@ -1117,6 +1202,77 @@ Key fields:
 
 **See also**: :class:`TeensyPulseInfo`,
 :doc:`how-to/wire-teensy`
+
+
+pulseGenerators
+---------------
+
+Optional map from a generator name to ``PulseGeneratorInfo``:
+``managerName`` (a registered ``pulse_generator``: ``TeensyPulseManager``,
+``PulseStreamerManager`` or a plugin's) and ``managerProperties``. A setup
+may have several. A ``PulseGeneratorScanEngine`` or
+``PulseGeneratorLaserManager`` names the one it drives in its
+``managerProperties.pulseGenerator``; one that names none drives the
+``teensyPulse`` section's generator, ``pulseGeneratorManager`` -- a name
+``pulseGenerators`` cannot reuse. See :doc:`devices/pulse_generators`.
+
+.. code-block:: json
+
+   "pulseGenerators": {
+       "widefield": {
+           "managerName": "TeensyPulseManager",
+           "managerProperties": {"port": "COM7"}
+       }
+   }
+
+timeTagger
+----------
+
+Optional :class:`TimeTaggerInfo` object. **Required to use a Swabian Time
+Tagger** (the ``SwabianTimeTaggerManager`` FLIM detector, and the Time
+Tagger diagnostics from scripts). One block describes the one card; its
+inputs are named by *role* and every consumer refers to the roles, so
+re-cabling the card is one edit here. A negative channel number selects the
+falling edge of that input (a SPAD's NIM pulse: ``-1``). Inputs are 50 Ω,
+trigger range ±2.5 V; an NI DO line drives about 1–1.5 V into 50 Ω, so keep
+the clock thresholds well below that.
+
+Key fields:
+
+* ``serial`` (str or null): the card to open; ``null`` = the first card found
+* ``simulation`` (bool): use the in-process mock instead of a card (default ``false``)
+* ``useMockOnFailure`` (bool): fall back to the mock when the library is missing or the card cannot be opened — honoured **only while** ``nidaq.simulation`` **is also true**; on a rig a missing card stays a hard error that rolls the scan back (default ``false``, unlike ``teensyPulse``)
+* ``photonsChannel`` / ``photonsTriggerV`` / ``photonsDeadtimePs``: the single-photon detector input (defaults ``1`` / ``0.5`` / ``0``)
+* ``laserSyncChannel`` / ``laserSyncTriggerV``: the laser sync, the TCSPC reference (defaults ``2`` / ``0.5``)
+* ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``). The NI-DAQ already plays the line and frame clocks the scan's phase delay (D2) later, so they follow the beam as the APD readout does; this delay is for what remains: positive when the clock still fires *early* (the detector delays its marker pattern by it), negative when it arrives *late* (a long cable; the card moves the line timestamps earlier). The frame clock takes the same delay on the card. Tutorial 09 measures it; a value measured before the clocks followed the beam holds the galvo's lag and must be measured again.
+* ``lineClockDeadtimePs`` (int): dead time on the line clock (and frame clock) inputs, in picoseconds (default ``0`` = the card's minimum). A DAQ line's falling edge bounces back through the threshold and each bounce counts as another line start, which re-triggers the FLIM pixel pattern mid-line; a dead time longer than the clock pulse (10 DAQ samples, 100 µs at 100 kS/s) and far below the line period swallows the bounces. Tutorial 07 shows the bounce and suggests the value.
+* ``pixelPatternOffsetPs`` (int): where the FLIM detector's first pixel marker sits after a line edge, so the frame edge leads pixel 0 whatever the cable skew (default ``10000``; raise it above a measured frame-to-line skew, tutorial 08)
+* ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
+* ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
+* ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)
+* ``mockSample`` (str): what the mock card images with ``simulation`` on — ``"beads_two_lifetimes"`` (default), ``"uniform"`` or ``"gradient"``
+* ``mockFaults`` (dict): faults the mock reproduces for the debugging tutorials, e.g. ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``, ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``, ``{"laser_rep_rate_mhz": 40}``, ``{"model": "Time Tagger 20"}``
+
+**Example**:
+
+.. code-block:: json
+
+   "timeTagger": {
+       "photonsChannel": -1,
+       "photonsTriggerV": -0.25,
+       "photonsDeadtimePs": 50000,
+       "laserSyncChannel": 2,
+       "lineClockChannel": 3,
+       "lineClockTriggerV": 0.5
+   }
+
+**Required devices**: a ``SwabianTimeTaggerManager`` detector that names the
+roles (``click_role``, ``start_role``, ``line_role``), see
+:doc:`devices/detectors`. A detector *without* this block keeps working from
+its legacy ``click_channel`` / ``start_channel`` / ``line_channel``
+properties and logs the equivalent block to move them into.
+
+**See also**: :class:`TimeTaggerInfo`
 
 
 pyroServerInfo
@@ -1304,12 +1460,11 @@ pulseStreamer
 -------------
 
 .. deprecated:: ImSwitch2
-   **Legacy / not constructed at runtime.**  ``MasterController`` no longer
-   constructs ``PulseStreamerManager`` (its instantiation is commented out
-   in ``imswitch/imcontrol/controller/MasterController.py``).  The active
-   pulse-generator path is ``teensyPulse`` → ``TeensyPulseManager``.  This
-   field remains for backward compatibility with old configs but has no
-   runtime effect.
+   **No runtime effect.**  ``MasterController`` does not build a
+   ``PulseStreamerManager`` from this section; a Pulse Streamer is a
+   `pulseGenerators`_ entry (``"managerName": "PulseStreamerManager"``,
+   ``"managerProperties": {"ipAddress": ...}``).  This field remains so that
+   old configs still load.
 
 Optional :class:`PulseStreamerInfo` object.
 
@@ -1365,6 +1520,10 @@ references, and what fails silently if references are missing or incorrect.
      - None (standalone serial device)
      - None
      - Falls back to mock if ``useMockOnFailure: true``; hard failure otherwise
+   * - ``timeTagger``
+     - A ``SwabianTimeTaggerManager`` detector (names the roles)
+     - None by name: the detector's ``click_role`` / ``start_role`` / ``line_role`` must be roles the block configures
+     - A missing card logs an error at startup and rolls every FLIM scan back; the mock only with ``simulation: true`` or (``useMockOnFailure`` and ``nidaq.simulation``)
    * - ``slms``
      - None (manager constructs per device)
      - None (each SLM is independent)
@@ -1403,6 +1562,8 @@ Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 * ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
+* ``galvo_flim_mock_scan_setup.json`` — the same plus a simulated Swabian
+  Time Tagger and a FLIM detector (see `timeTagger`_)
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a
   Base scan
 * ``mixed_hamamatsu_apd_mock_scan_setup.json`` — mock Hamamatsu camera and

@@ -78,6 +78,35 @@ Detectors
        ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
        published documentation) audits this manager's mock/real
        triggered-recording paths.
+   * - ``SwabianTimeTaggerManager``
+     - ``MockTimeTaggerApi`` / ``MockTimeTagger``
+       (``imswitch.imcontrol.model.interfaces.timetagger_mock``) — a stand-in
+       for the vendor ``TimeTagger`` module and the card it opens, held by
+       the shared ``TimeTaggerManager`` (the setup's ``timeTagger`` block).
+     - ``"simulation": true`` in the ``timeTagger`` block; or
+       ``"useMockOnFailure": true`` there when the library or card is
+       missing, honoured only while ``nidaq.simulation`` is also true.
+     - Yes. A ``SignalModel`` behind the card has two regimes: a *parked
+       beam* (a photon rate with one lifetime, an IRF, dark counts and
+       afterpulsing, the sync at its rep rate) for the device-level
+       tutorials, and *scanning*, where the shared ``TimeTaggerManager``
+       feeds the card the scan designer's own ``line_clock`` and
+       ``frame_start_clock`` waveforms as edge timestamps at
+       ``sigScanBuilt`` and ``Flim`` draws a Poisson TCSPC cube from the
+       sample's rate and lifetime maps (``timeTagger.mockSample``: beads
+       with two lifetimes, uniform, or a gradient). Trigger levels and
+       polarity, dead time, the card's USB tag budget (overflows) and the
+       conditional filter (which reverses the TCSPC direction) are
+       modelled; ``timeTagger.mockFaults`` breaks the line clock, delays
+       it (``line_delay_ps``: how late the clock reaches the card, negative
+       = early), flips the sync polarity, kills the photons or changes the
+       rep rate or the card model on purpose. While a scan runs the scan
+       inputs count, period and skew from the loaded edges as the card
+       would (``Counter``, ``TimeDifferences``, ``Histogram`` between two
+       clocks, ``Scope``), timed from ``sigScanStarted`` so a measurement
+       sees the edges that fall into its window; ``sample_truth`` and
+       ``set_fault`` are the hooks tutorial 09 uses. Analytic or seeded: no thread,
+       no wall clock.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.
@@ -283,6 +312,10 @@ Ready-to-use hardware-free setup files, all under
   galvo/piezo axes and ``NidaqLaserManager`` lasers on a simulated NI-DAQ,
   for designing, running and recording Advanced (galvo-designer) scans,
   including single-axis scans.
+* ``galvo_flim_mock_scan_setup.json`` — the same, plus a simulated Swabian
+  Time Tagger (``timeTagger.simulation``) and a ``SwabianTimeTaggerManager``
+  FLIM detector on it: a lifetime scan runs, fits and records end to end
+  with no hardware, imaging two bead populations of 1.5 ns and 4.0 ns.
 
 Treat "null AO/DO channels" (no physical scan output built) and "fake
 ``Dev1/...`` detector input names" (manager configuration placeholders only,

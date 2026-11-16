@@ -38,6 +38,7 @@ For per-device JSON config reference (what fields each existing manager accepts)
 * :doc:`devices/positioners` — every ``PositionerManager``.
 * :doc:`devices/rotators` — every ``RotatorManager``.
 * :doc:`devices/stands` — microscope stand integrations configured through ``microscopeStand``.
+* :doc:`devices/pulse_generators` — pulse generators configured through ``pulseGenerators``.
 
 
 How device managers are implemented

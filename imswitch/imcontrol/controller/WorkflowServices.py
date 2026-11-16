@@ -50,6 +50,7 @@ class ScanRequestCompletion:
         self._runToken = None
         self._successful = None
         self._message = ''
+        self._stopped = False
         self._callbacks = []
         self._event = threading.Event()
         self._lock = threading.Lock()
@@ -65,7 +66,11 @@ class ScanRequestCompletion:
                     'A scan request completion cannot change run identity'
                 )
 
-    def resolve(self, runToken, successful: bool, message: str = '') -> bool:
+    def resolve(self, runToken, successful: bool, message: str = '',
+                stopped: bool = False) -> bool:
+        """``stopped``: the run was stopped on request (Stop, a recording's
+        stop, an API abort) -- not successful, but not failed either: what it
+        completed is good (plan scan-stop-now)."""
         callbacks = ()
         with self._lock:
             if (
@@ -76,6 +81,7 @@ class ScanRequestCompletion:
                 return False
             self._successful = bool(successful)
             self._message = str(message or '')
+            self._stopped = bool(stopped)
             self._event.set()
             callbacks = tuple(self._callbacks)
             self._callbacks.clear()
@@ -117,6 +123,12 @@ class ScanRequestCompletion:
     def successful(self):
         with self._lock:
             return self._successful
+
+    @property
+    def stopped(self) -> bool:
+        """The run was stopped on request; ``successful`` is False."""
+        with self._lock:
+            return self._stopped
 
     @property
     def message(self) -> str:

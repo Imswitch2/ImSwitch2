@@ -63,6 +63,23 @@
         "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
       ]
     },
+    "preparation": {
+      "default": null,
+      "description": "Time from the request of the device's state (the line's edge, or the command) until it is ready (a shutter fully open, a laser emitting at its set level): ``\"notRequired\"``, ``{\"durationS\": seconds}`` or ``\"unknown\"``. Absent is not zero: see the scan-program plan, §2.4.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.preparation: Optional[Union[str, Dict[str, float]]]"
+      ]
+    },
     "transient": {
       "default": false,
       "description": "Declared but not required at startup: left absent (not an error, no mock) until connected from the Hardware status window or a script. For devices that are plugged in only when needed.",
@@ -70,6 +87,15 @@
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "dataclass:DeviceInfo.transient: bool"
+      ]
+    },
+    "ttlActiveLevel": {
+      "default": "high",
+      "description": "The electrical level of the ``digitalLine`` that means *on*: ``\"high\"`` (default) or ``\"low\"`` for an inverted input. Every path that drives the line -- a scan, manual control, stopping, failure cleanup -- maps the device's logical on/off through it.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.ttlActiveLevel: str"
       ]
     }
   },

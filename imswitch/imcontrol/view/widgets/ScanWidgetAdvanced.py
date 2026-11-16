@@ -10,6 +10,17 @@ from imswitch.imcontrol.view import guitools as guitools
 from .ScanWidgetBase import SuperScanWidget
 
 
+AXIS_ORDER_TOOLTIP = (
+    'The order the axis visits its positions. Forward: 1, 2, 3, ... '
+    'Serpentine: every other pass runs back. Interleave k: k cycles of '
+    'every k-th position (k = 3: 1, 4, 7, ..., 2, 5, 8, ..., 3, 6, 9, ...), '
+    'the planes and cycles of MS-RESOLFT. Each pixel is still placed at its '
+    'own position. An order other than forward runs the scan under strict '
+    'timing: a dwell, move or window off the sample clock is refused instead '
+    'of rounded.'
+)
+
+
 class ScanWidgetAdvanced(SuperScanWidget):
     """
     PointScan-like widget with:
@@ -31,13 +42,13 @@ class ScanWidgetAdvanced(SuperScanWidget):
         # --- Scan timing params ---
         self.seqTimePar = QtWidgets.QLineEdit("0.02")  # ms
         self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs (see ScanWidgetPointScan)
-        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # µs
+        # No D3 field: the pause before a slice is the slice positioner's
+        # declared settleTimeS (GalvoScanDesigner.slice_pause_us).
 
 
         self.scanPar = {
             "seqTime": self.seqTimePar,
             "phaseDelay": self.phaseDelayPar,
-            "frameDelay": self.d3StepDelayPar,
         }
 
         # --- TTL params containers ---
@@ -196,7 +207,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.seqTimePar.textChanged.connect(lambda: self.sigSeqTimeParChanged.emit())
         self.seqTimePar.textChanged.connect(lambda: self._refreshDwellDeadTimeLabel())
         self.phaseDelayPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
-        self.d3StepDelayPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
 
         # Connect TTL signals
         self.lineProgramDevicesBox.stateChanged.connect(self._onLineProgramDevicesChanged)
@@ -248,7 +258,13 @@ class ScanWidgetAdvanced(SuperScanWidget):
         # --- Top row: buttons ---
         # Run first (with its Repeat modifier), then the file actions, and the
         # plotting controls pushed to the far right.
-        self.grid.addWidget(self.scanButton, currentRow, 0)
+        # Run and its Stop share the first cell, so nothing after them moves.
+        runHost = QtWidgets.QWidget()
+        runLayout = QtWidgets.QHBoxLayout(runHost)
+        runLayout.setContentsMargins(0, 0, 0, 0)
+        runLayout.addWidget(self.scanButton)
+        runLayout.addWidget(self.stopButton)
+        self.grid.addWidget(runHost, currentRow, 0)
         self.grid.addWidget(self.repeatBox, currentRow, 1)
         self.grid.addWidget(self.loadScanBtn, currentRow, 2)
         self.grid.addWidget(self.saveScanBtn, currentRow, 3)
@@ -277,7 +293,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
         pixelsLabel = QtWidgets.QLabel("Pixels (#)")
         centerLabel = QtWidgets.QLabel("Center (µm)")
         scandimLabel = QtWidgets.QLabel("Scan dim")
-        for lab in (sizeLabel, stepLabel, pixelsLabel, centerLabel, scandimLabel):
+        orderLabel = QtWidgets.QLabel("Order")
+        orderLabel.setToolTip(AXIS_ORDER_TOOLTIP)
+        for lab in (sizeLabel, stepLabel, pixelsLabel, centerLabel, scandimLabel, orderLabel):
             lab.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom)
 
         self.grid.addWidget(sizeLabel, currentRow, 1)
@@ -285,6 +303,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(pixelsLabel, currentRow, 3)
         self.grid.addWidget(centerLabel, currentRow, 4, 1, 2)
         self.grid.addWidget(scandimLabel, currentRow, 7)
+        self.grid.addWidget(orderLabel, currentRow, 8)
         currentRow += 1
 
         for index, positionerName in enumerate(positionerNames):
@@ -334,27 +353,44 @@ class ScanWidgetAdvanced(SuperScanWidget):
             self.scanPar["scanDim" + str(index)] = scanDimPar
             self.grid.addWidget(scanDimPar, currentRow, 7)
 
+            orderPar = QtWidgets.QComboBox()
+            orderPar.setToolTip(AXIS_ORDER_TOOLTIP)
+            self.scanPar["order" + positionerName] = orderPar
+            self._fillAxisOrders(orderPar, None, 'forward')
+            self.grid.addWidget(orderPar, currentRow, 8)
+
             # Connect
             sizePar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             stepSizePar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             centerPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             scanDimPar.currentIndexChanged.connect(lambda: self.sigStageParChanged.emit())
+            orderPar.currentIndexChanged.connect(lambda: self.sigStageParChanged.emit())
 
             currentRow += 1
 
         currentRow += 1
 
         # --- Timing params ---
-        self.grid.addWidget(QtWidgets.QLabel("Dwell time (ms):"), currentRow, 0)
+        self._dwellLabel = QtWidgets.QLabel("Dwell time (ms):")
+        self._applyScanClock()
+        self.grid.addWidget(self._dwellLabel, currentRow, 0)
         self.grid.addWidget(self.seqTimePar, currentRow, 1)
 
-
-        self.grid.addWidget(QtWidgets.QLabel("Delay [sampl.] D2:"), currentRow, 2)
+        # The phase delay is a time in µs (the contract's phase_delay); the
+        # D2 label said samples, which it only was at a 1 MHz detector timer.
+        phaseDelayLabel = QtWidgets.QLabel("Phase delay D2 (µs):")
+        phaseDelayLabel.setToolTip(
+            "The galvo's response lag: the detectors read, and the laser and camera lines "
+            "play, this much after the command. It changes with the scan speed.")
+        self.grid.addWidget(phaseDelayLabel, currentRow, 2)
         self.grid.addWidget(self.phaseDelayPar, currentRow, 3)
 
-
-        self.grid.addWidget(QtWidgets.QLabel("D3:"), currentRow, 4)
-        self.grid.addWidget(self.d3StepDelayPar, currentRow, 5)
+        currentRow += 1
+        # Realized dwell, or strict timing, when it matters (plan §2.6).
+        self.timingNoteLabel = QtWidgets.QLabel('')
+        self.timingNoteLabel.setWordWrap(True)
+        self.timingNoteLabel.setVisible(False)
+        self.grid.addWidget(self.timingNoteLabel, currentRow, 0, 1, 9)
         currentRow += 1
 
         # Spacer
@@ -503,6 +539,14 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         self.grid.addWidget(self._advGroup, currentRow, 0, 1, 8)
 
+        currentRow += 1
+
+        # Why TTL parts are greyed, when the scan engine cannot drive them
+        # (setTTLAvailability).
+        self.ttlNoteLabel = QtWidgets.QLabel('')
+        self.ttlNoteLabel.setWordWrap(True)
+        self.ttlNoteLabel.setVisible(False)
+        self.grid.addWidget(self.ttlNoteLabel, currentRow, 0, 1, 8)
         currentRow += 1
 
         # Initial sync pulse edit panel
@@ -745,6 +789,38 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def setAdvancedTTLMode(self, enabled: bool) -> None:
         return self.setadvancedOptionsMode(enabled)
 
+    def setTTLAvailability(self, unavailable, note=''):
+        """Grey out the TTL devices the scan engine cannot drive, each with
+        its reason as the tooltip. With no TTL device left (an analog-only
+        scanner), the TTL parts -- line steps, the Advanced Line Program, the
+        pulse editors, the plot's TTL option -- are greyed and ``note`` says
+        why. The run refuses the same devices; this is the courtesy."""
+        unavailable = dict(unavailable or {})
+        for name, (label, row) in self._line_step_device_widgets.items():
+            if name not in self._ttl_device_names:
+                continue
+            reason = unavailable.get(name, '')
+            for widget in (label, row):
+                widget.setEnabled(not reason)
+                widget.setToolTip(reason)
+        available = [n for n in self._ttl_device_names if n not in unavailable]
+        self._ttlUnavailable = unavailable
+        noTTL = not available
+        for widget in (self.advancedOptionsBox, self.advancedProgramModeCombo, self._advGroup,
+                       self.plotIncludeTTLBox, self.lineProgramDevicesBox,
+                       self._lineRepeatsLabel, self.linestep_counter):
+            widget.setEnabled(not noTTL)
+            widget.setToolTip(note if noTTL else '')
+        if noTTL:
+            self.plotIncludeTTLBox.setChecked(False)
+            self.advancedOptionsBox.setChecked(False)
+        text = note if noTTL else '; '.join(f'{n}: {r}' for n, r in unavailable.items())
+        self.ttlNoteLabel.setText(text)
+        self.ttlNoteLabel.setVisible(bool(text))
+
+    def ttlUnavailable(self):
+        return dict(getattr(self, '_ttlUnavailable', {}))
+
     def setLinestepPowerCapableDevices(self, deviceNames):
         self._linestep_power_capable_devices = set(deviceNames or [])
         for deviceName in self._linestep_power_capable_devices:
@@ -782,8 +858,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def getPhaseDelayPar(self):
         return float(self.phaseDelayPar.text())
 
-    def getd3StepDelayPar(self):
-        return float(self.d3StepDelayPar.text())
 
     # Setters used by controller
     def setScanStepSize(self, positionerName, stepSize):
@@ -812,6 +886,62 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def setScanPixels(self, positionerName, pixels):
         txt = str(pixels) if pixels > 1 else "-"
         self.scanPar["pixels" + positionerName].setText(txt)
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is not None:
+            self._fillAxisOrders(orderPar, int(pixels), self.getScanAxisOrder(positionerName))
+
+    @staticmethod
+    def _fillAxisOrders(orderPar, pixels, current):
+        """Forward, serpentine, and every interleave the axis's pixel count
+        allows (the divisors k, 1 < k < pixels: k cycles of pixels/k planes).
+        A saved choice the count no longer allows stays listed, so the scan
+        says why it cannot be built instead of dropping it."""
+        options = [('Forward', 'forward'), ('Serpentine', 'serpentine')]
+        if pixels:
+            options += [(f'Interleave {k}', f'interleave:{k}')
+                        for k in range(2, pixels) if pixels % k == 0]
+        if current not in [value for _, value in options]:
+            options.append((str(current).replace('interleave:', 'Interleave '), current))
+        if [orderPar.itemData(i) for i in range(orderPar.count())] == \
+                [value for _, value in options]:
+            return
+        blocked = orderPar.blockSignals(True)
+        orderPar.clear()
+        for text, value in options:
+            orderPar.addItem(text, value)
+        orderPar.setCurrentIndex(orderPar.findData(current))
+        orderPar.blockSignals(blocked)
+
+    def setTimingNote(self, text):
+        label = getattr(self, 'timingNoteLabel', None)
+        if label is not None:
+            label.setText(text)
+            label.setVisible(bool(text))
+
+    def getScanAxisOrder(self, positionerName):
+        """``'forward'``, ``'serpentine'`` or ``'interleave:<k>'``."""
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is None or not orderPar.isEnabled():
+            return 'forward'
+        return orderPar.currentData() or 'forward'
+
+    def setScanAxisOrder(self, positionerName, order):
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is None:
+            return
+        order = str(order or 'forward')
+        if orderPar.findData(order) < 0:
+            orderPar.addItem(order.replace('interleave:', 'Interleave '), order)
+        orderPar.setCurrentIndex(orderPar.findData(order))
+
+    def setAxisOrderAvailability(self, available, note=''):
+        """Whether this setup can scan an axis out of order; ``note`` says
+        why not (a swept scan designer)."""
+        for name in self._positioner_device_names:
+            orderPar = self.scanPar.get("order" + name)
+            if orderPar is not None:
+                orderPar.setEnabled(bool(available))
+                orderPar.setToolTip(AXIS_ORDER_TOOLTIP if available else note)
 
     def setSeqTimePar(self, seqTimePar):
         self.seqTimePar.setText(str(round(float(1000 * seqTimePar), 3)))
@@ -819,8 +949,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def setPhaseDelayPar(self, phaseDelayPar):
         self.phaseDelayPar.setText(str(round(int(phaseDelayPar))))
 
-    def setd3StepDelayPar(self, d3StepDelayPar):
-        self.d3StepDelayPar.setText(str(round(int(d3StepDelayPar))))
 
     def plotSignalGraph(self, signals, colors, sampleRate, labels=None):
         # labels are optional; if not provided, make something sane
@@ -1129,6 +1257,31 @@ class ScanWidgetAdvanced(SuperScanWidget):
         if sequence_mode:
             self._refreshSequenceTableFromModel()
         self._refreshDwellDeadTimeLabel()
+
+    def setScanClock(self, rate_hz):
+        """Say the scan clock beside the dwell: a dwell is a whole number of
+        its samples, and one between two runs as the next one up (the timing
+        note says so). Kept, and shown once the timing row exists (the
+        controller seeds the widget before its controls are built)."""
+        self.__dict__['_scanClockHz'] = rate_hz
+        self._applyScanClock()
+
+    def _applyScanClock(self):
+        label = self.__dict__.get('_dwellLabel')
+        rate_hz = self.__dict__.get('_scanClockHz')
+        if label is None or rate_hz is None:
+            return
+        try:
+            step_s = 1.0 / float(rate_hz)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
+        clock = (f'{step_s * 1e6:g} µs' if step_s >= 1e-6 else f'{step_s * 1e9:g} ns')
+        self._dwellLabel.setText(f"Dwell time (ms, {clock} clock):")
+        tip = (f'The pixel dwell in ms: a whole number of {clock} samples of the scan clock '
+               f'(scan.sampleRate, {float(rate_hz):g} Hz). A dwell between two runs as the '
+               'next one up, and the note under the timing fields says so.')
+        self._dwellLabel.setToolTip(tip)
+        self.seqTimePar.setToolTip(tip)
 
     def _onIntraPixelPositionersChanged(self):
         self._refreshAdvancedLineProgramDeviceVisibility()

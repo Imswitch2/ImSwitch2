@@ -1,0 +1,7 @@
+{
+  "category": "scanEngines",
+  "device": {
+    "managerName": "NidaqScanEngine",
+    "managerProperties": {}
+  }
+}

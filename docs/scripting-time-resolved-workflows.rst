@@ -224,17 +224,21 @@ Output files
 ============
 
 Workflow output is written under ``measurements_root/YYYY_MM_DD`` unless
-``save_folder`` is provided. HDF5 output uses this schema:
+``save_folder`` is provided (the tutorials pass the Recording widget's
+folder, ``api.imcontrol.getRecFolder()``). The writers live in
+``imswitch.imcontrol.model.timeresolved.io`` and are the ones the Lifetime
+widget's Save uses, so a script and the panel write identical files. HDF5
+output uses this schema (format version 2):
 
 .. code-block:: text
 
    <measurement>.h5
      attrs/
-       created_unix_s
-       workflow_name
-       backend
-       detector_name
+       created_unix_s, workflow_name, backend, detector_name
+       format_version          2
        metadata_json
+       tcspc_direction, frames_accumulated, overflows, pileup_max,
+       background_rate_hz
      scan/
        attrs/metadata_json
      time_resolved/
@@ -242,22 +246,37 @@ Workflow output is written under ``measurements_root/YYYY_MM_DD`` unless
        decay_counts
        intensity
        lifetime_ns        optional
-       cube_counts        optional
+       cube_counts        optional; the card's integer counts, gzip
      gates/
        <gate_name>
-         attrs/start_ns
-         attrs/stop_ns
+         attrs/start_ns, stop_ns, reference        as configured
+         attrs/resolved_start_ns, resolved_stop_ns  on the histogram axis
      fit/
-       attrs/method
-       attrs/min_counts_per_pixel
-       attrs/laser_rep_rate_mhz
-       attrs/peak_bin
-       attrs/peak_time_ns
-       attrs/global_tau_ns
+       attrs/method, min_counts_per_pixel, laser_rep_rate_mhz,
+             peak_bin, peak_time_ns, global_tau_ns
+     time_tagger/
+       attrs/metadata_json (model, serial, roles, conditioning, direction)
+       attrs/model, serial, is_mock, tcspc_direction, conditioned
+     background/
+       attrs/rate_hz, per_bin
+     irf/                 optional
+       t_axis_ns, counts; attrs/peak_ns, fwhm_ns
 
 ``save_tiff=True`` additionally writes preview TIFFs for intensity,
 lifetime, and each gate image. ``save_npz=True`` writes a compressed
 NumPy archive useful for quick script-side inspection.
+``load_products(path)`` reads an HDF5 or NPZ file (version 1 or 2) back
+into a ``TimeResolvedScanProducts``; the gates' saved bounds land in
+``metadata["gates"]``. Gate presets (``load_gate_preset`` /
+``save_gate_preset``) are the JSON files under
+``tutorial/timetagger/gate_presets`` that tutorial 12 and the Lifetime
+widget share: a top-level ``reference`` (``"peak"`` for gates measured
+from the IRF peak), the gates, and an optional ``ratio`` pair.
+
+``TimeResolvedScanProducts`` version 2 adds ``tcspc_direction``,
+``background_rate_hz``, ``pileup_max``, ``overflows``,
+``frames_accumulated``, an optional ``irf`` and ``format_version``, all
+with defaults so older producers still construct it.
 
 Adding a new backend
 ====================
@@ -293,12 +312,16 @@ raises a clear error instead of silently mislabeling dimensions.
 Example scripts
 ===============
 
-Default scripts are installed under
-``imswitch/_data/user_defaults/scripts/workflows/timeresolved/``:
+The three workflows are tutorials, run on the simulated card and kept
+working by the shipped-tutorial test, under
+``imswitch/_data/user_defaults/scripts/tutorial/timetagger/``:
 
-* ``01_binned_photon_arrivals.py``
-* ``02_gated_sted.py``
-* ``03_tau_sted.py``
+* ``11_binned_photon_arrivals.py`` -- the cube and gates saved, read back
+  with ``load_products``
+* ``12_gated_sted.py`` -- gates from a peak-relative preset, the
+  late/early ratio, the STED pulse marker
+* ``13_tau_sted.py`` -- the per-pixel lifetime image and the version-2
+  product fields
 
 Related documentation
 =====================

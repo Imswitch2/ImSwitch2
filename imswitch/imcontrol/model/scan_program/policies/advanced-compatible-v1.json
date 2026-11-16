@@ -1,0 +1,22 @@
+{
+  "schema": "imswitch.scan-timing-policy/1",
+  "id": "advanced-compatible-v1",
+  "title": "What the Advanced scan designers play today",
+  "rationale": "Keeps Advanced scans as they are (docs/design/plans/scan-engines-and-expert-scan.md §2.6): it documents the roundings the designers already make, so a legacy Advanced scan runs byte-identically and every rounding is reported instead of refused. BetaScanDesigner rounds the dwell, the line return, the move and the settle UP to whole samples (np.ceil, BetaScanDesigner.py). AdvancedScanTTLCycleDesigner rounds each pulse-window edge to the NEAREST sample with Python's round (ties to even), relative to its pixel, clips it to the pixel, and drops a window that rounds to nothing. Used only for recognized legacy Advanced scans and for Advanced-shaped programs compiled through today's designers. One deviation: a step whose rounded move and settle leave it no stationary sample is refused, as BetaScanDesigner intends for the unrounded values (its own check runs before rounding).",
+  "rounding": {
+    "step": "ceil",
+    "return": "ceil",
+    "move": "ceil",
+    "settle": "ceil",
+    "wait": "ceil",
+    "preparation": "ceil",
+    "event_edges": "nearest-even"
+  },
+  "events": {
+    "clip_to_step": true,
+    "vanished": "drop",
+    "relations": "as-designers"
+  },
+  "scheduling": "sequential",
+  "tolerances": {}
+}

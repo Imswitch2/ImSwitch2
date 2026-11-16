@@ -1,3 +1,4 @@
+import json
 import os
 from types import SimpleNamespace
 
@@ -281,6 +282,100 @@ def test_run_slow_scan_applies_event_once_before_triggering_scan():
     assert controller._smartModeService.applyCalls == [('EtSnouty', 'event')]
     assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == [()]
     assert controller._master.lasersManager.laser.enabled == [False, True]
+
+
+class _ScanPanel:
+    """A scan panel that records what the event left on the channel when it
+    was asked to run."""
+
+    def __init__(self, channel, error=None):
+        self.channel = channel
+        self.error = error
+        self.runs = []
+
+    def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
+        if self.error:
+            raise self.error
+        self.runs.append((recalculateSignals, isNonFinalPartOfSequence,
+                          self.channel.sharedAttrs[etsnouty_module.SCAN_EVENT_KEY]))
+
+
+class _SharedAttrs(dict):
+    pass
+
+
+def _with_scan_panel(controller, error=None):
+    """The controller with a Scan panel chosen as its slow scan (M6)."""
+    channel = controller._commChannel
+    channel.sharedAttrs = _SharedAttrs()
+    panel = _ScanPanel(channel, error)
+    channel.asked = []
+    channel.getScanSource = lambda key: channel.asked.append(key) or panel
+    channel.getScanSourceNames = lambda: ['Scan']
+    sources = []
+    controller._widget.setSlowScanSources = sources.extend
+    controller._widget.getSlowScanSource = lambda: 'Scan'
+    controller._EtSnoutyController__detLog.update(
+        fastscan_x_center=12.5, fastscan_y_center=40.0, coord_transf_start='03s000001us')
+    controller._EtSnoutyController__pipelinename = 'cd_vesicle_prox'
+    return panel, sources
+
+
+def test_the_slow_scan_can_be_a_scan_panels_program():
+    """An event runs the chosen panel's program once, and the run carries the
+    event; the TriggerScope routine is not started."""
+    controller = _make_controller(enabled=True)
+    panel, _ = _with_scan_panel(controller)
+
+    assert controller.runSlowScan() is True
+
+    assert controller._commChannel.asked == ['Scan']
+    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == []
+    [(recalculate, nonFinal, event)] = panel.runs
+    assert (recalculate, nonFinal) == (True, False)
+    event = json.loads(event)
+    assert event['workflow'] == 'EtSnouty' and event['scan_source'] == 'Scan'
+    assert event['position_px'] == [12.5, 40.0] and event['detector'] == 'FastCamera'
+    assert event['pipeline'] == 'cd_vesicle_prox' and event['detected'] == '03s000001us'
+    # The run ends: later runs are not this event's.
+    controller._acceptTriggeredScanEnded()
+    assert controller._commChannel.sharedAttrs[etsnouty_module.SCAN_EVENT_KEY] == ''
+
+
+
+def test_an_event_at_numpy_coordinates_still_runs_its_scan():
+    """A pipeline's coordinates are numpy scalars (``peak_local_max`` gives
+    int64, an image float32): json refused them, so the event's program
+    never ran (review 2026-10-16)."""
+    import numpy as np
+    controller = _make_controller(enabled=True)
+    panel, _ = _with_scan_panel(controller)
+    controller._EtSnoutyController__detLog.update(
+        fastscan_x_center=np.int64(12), fastscan_y_center=np.float32(40.5))
+    assert controller.runSlowScan() is True
+    [(_recalculate, _nonFinal, event)] = panel.runs
+    assert json.loads(event)['position_px'] == [12, 40.5]
+
+
+def test_a_scan_panel_that_cannot_run_fails_the_event_and_leaves_no_event_behind():
+    controller = _make_controller(enabled=True)
+    _with_scan_panel(controller, error=RuntimeError('No controller exposes runScanExternal'))
+
+    assert controller.runSlowScan() is False
+
+    assert controller._triggeredScanInFlight is False
+    assert controller._commChannel.sharedAttrs[etsnouty_module.SCAN_EVENT_KEY] == ''
+
+
+def test_the_routine_stays_the_default_and_the_panels_are_offered():
+    controller = _make_controller(enabled=True)
+    _, sources = _with_scan_panel(controller)
+    controller._refreshSlowScanSources()
+    assert sources == [etsnouty_module.SLOW_SCAN_ROUTINE, 'Scan']
+    controller._widget.getSlowScanSource = lambda: etsnouty_module.SLOW_SCAN_ROUTINE
+    assert controller._slowScanSourceKey() is None
+    assert controller.runSlowScan() is True
+    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == [()]
 
 
 def test_run_slow_scan_does_not_trigger_scan_when_event_mode_fails():

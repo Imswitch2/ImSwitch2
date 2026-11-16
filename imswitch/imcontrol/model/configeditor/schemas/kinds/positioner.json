@@ -142,6 +142,23 @@
         "dataclass:PositionerInfo.physicalActuator: Optional[str]"
       ]
     },
+    "preparation": {
+      "default": null,
+      "description": "Time from the request of the device's state (the line's edge, or the command) until it is ready (a shutter fully open, a laser emitting at its set level): ``\"notRequired\"``, ``{\"durationS\": seconds}`` or ``\"unknown\"``. Absent is not zero: see the scan-program plan, §2.4.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.preparation: Optional[Union[str, Dict[str, float]]]"
+      ]
+    },
     "resetOnClose": {
       "default": false,
       "description": "Whether the positioner should be moved to position 0 when ImSwitch closes. Off unless the setup asks for it: a stage that drives itself somewhere on exit can hit an objective, a sample or a stage limit nobody expected.",
@@ -171,6 +188,15 @@
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "dataclass:DeviceInfo.transient: bool"
+      ]
+    },
+    "ttlActiveLevel": {
+      "default": "high",
+      "description": "The electrical level of the ``digitalLine`` that means *on*: ``\"high\"`` (default) or ``\"low\"`` for an inverted input. Every path that drives the line -- a scan, manual control, stopping, failure cleanup -- maps the device's logical on/off through it.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.ttlActiveLevel: str"
       ]
     }
   },

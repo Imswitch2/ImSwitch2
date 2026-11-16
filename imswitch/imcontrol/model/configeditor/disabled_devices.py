@@ -20,12 +20,17 @@ DISABLED_DEVICES_KEY = "disabledDevices"
 # Only repeated, registry-backed device sections are safe to move between the
 # active setup and disabledDevices.  Singleton/special sections such as
 # microscopeStand and the bespoke pulse-generator loader deliberately do not
-# participate.
+# participate.  Nor do sections whose entries other sections name: a scan
+# engine (``scan.engine``, another engine's ``triggerInput``) or a pulse
+# generator (a laser's or an engine's ``pulseGenerator``) moved out of the
+# active setup would leave those names dangling, and the setup refused at load.
+_NAMED_ELSEWHERE = frozenset({"scanEngines", "pulseGenerators"})
 DISABLEABLE_CATEGORIES = tuple(
     metadata.editor_category
     for metadata in setup_kinds()
     if metadata.supports_external_plugins
     and metadata.editor_category == metadata.setup_section
+    and metadata.editor_category not in _NAMED_ELSEWHERE
 )
 
 

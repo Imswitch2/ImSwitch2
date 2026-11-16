@@ -1,7 +1,65 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
-  "properties": {},
+  "properties": {
+    "baud": {
+      "description": "Baud rate.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "mockMaxSteps": {
+      "description": "Steps the mock holds when the device is unavailable.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "mockMinPulseUs": {
+      "description": "Shortest pulse (µs) the mock declares when the device is unavailable.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "mockNChannels": {
+      "description": "Channels the mock declares when the device is unavailable.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "pinMap": {
+      "description": "Name-to-channel mapping, a convenience for scripts.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:object"
+      ]
+    },
+    "port": {
+      "description": "Serial port, e.g. ``COM7`` or ``/dev/ttyACM0``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "Fall back to an in-process mock when the port cannot be opened.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:boolean"
+      ]
+    }
+  },
   "title": "TeensyPulseManager managerProperties",
   "type": "object",
   "x-imswitch-classes": [

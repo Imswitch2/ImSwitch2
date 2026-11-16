@@ -122,6 +122,37 @@ def test_the_galvo_designer_says_why_a_scan_is_too_long():
     assert GalvoScanDesigner().checkSignalLength(analog, _cappedSetup()) is False
 
 
+def test_the_galvo_designer_refuses_a_dwell_of_no_samples():
+    """A zero-sample pixel, which the ScanInfoContract rejected as
+    "scan_samples values must be positive" -- true, and no help to whoever
+    typed the dwell -- is refused with the reason. Since the scan timing
+    plan's S0 a dwell under one sample is rounded up to one, as every dwell
+    is (the advanced-compatible-v1 rule; the timing note says it), so only a
+    dwell of no length is left to refuse."""
+    analog, _ = _defaultWidgetScan()
+    analog['sequence_time'] = 0.0
+
+    refusal = GalvoScanDesigner().signalLengthRefusal(analog, _cappedSetup(30))
+
+    assert 'Pixel dwell time 0 µs is shorter than one sample' in refusal
+    for dwell in (5e-6, 1e-5):          # sampleRate 100 kHz: one sample = 10 us
+        analog['sequence_time'] = dwell
+        assert GalvoScanDesigner().signalLengthRefusal(analog, _cappedSetup(30)) == ''
+
+
+def test_reading_the_scan_geometry_refuses_like_running_the_scan():
+    """A scan-mode recording reads the geometry (getNumScanPositions) through
+    getScanSignalsDict before the scan runs. That skipped the refusal, so the
+    recording failed on whatever the designer tripped over instead of the
+    reason the run itself would have given."""
+    analog, _ = _defaultWidgetScan()
+
+    with pytest.raises(ScanDesignRefusedError) as refused:
+        ScanManagerBase(_cappedSetup()).getScanSignalsDict(analog)
+
+    assert str(refused.value) == REASON
+
+
 def test_a_designer_that_only_answers_yes_or_no_still_gives_a_reason():
     class YesNoDesigner(ScanDesigner):
         def __init__(self):

@@ -6,6 +6,15 @@
       "x-imswitch-source": [
         "code:optional(in)"
       ]
+    },
+    "pulseGenerator": {
+      "description": "The ``pulseGenerators`` entry it is wired to; omitted, the ``teensyPulse`` section's.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
     }
   },
   "title": "PulseGeneratorLaserManager managerProperties",

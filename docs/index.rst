@@ -156,7 +156,14 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     devices/instruments
+    devices/pulse_generators
+    devices/scan_engines
+    devices/step-engine-protocol
+    devices/triggerscope-firmware
     Hdf5datafile
+    timetagger/index
+    timetagger/debugging
+    timetagger/validation
 
 .. toctree::
     :hidden:

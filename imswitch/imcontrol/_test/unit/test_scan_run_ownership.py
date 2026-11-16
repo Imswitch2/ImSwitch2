@@ -549,7 +549,9 @@ def test_aborted_scan_resolves_exact_request_as_failure():
 
     assert completion.wait(timeout=0) is True
     assert completion.successful is False
-    assert completion.message == 'Scan was aborted.'
+    # stopped on request, not failed (plan scan-stop-now)
+    assert completion.stopped is True
+    assert completion.message == 'Scan was stopped.'
 
 
 def test_done_signal_reentrant_failure_cannot_resolve_detached_success():

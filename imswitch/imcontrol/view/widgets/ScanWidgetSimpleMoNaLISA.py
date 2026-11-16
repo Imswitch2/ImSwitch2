@@ -332,7 +332,9 @@ class MoNaLISAView(ScanCloakView):
         self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
         self.stopButton.setText('STOP')
         self.stopButton.setToolTip(
-            'Stop Live screening and prepare the acquisition camera for a scan.'
+            'During Live screening: switch off its lasers and prepare the acquisition '
+            'camera for external frame trigger (camera live view keeps running). '
+            'During Acquire: stop the acquisition now; its unfinished frame is dropped.'
         )
 
         self.liveSourcesButton = QtWidgets.QToolButton()
@@ -1315,9 +1317,11 @@ class MoNaLISAView(ScanCloakView):
         self.seriesSingleFileCheck.setEnabled(
             seriesEditable and seriesEnabled and timepoints > 1
         )
-        # LIVE Stop belongs only to screening. A recorded multi-timepoint
-        # acquisition gets its own graceful STOP in the RUN SCAN row.
-        self.stopButton.setEnabled(screening)
+        # Stop means now, also for Acquire (plan scan-stop-now): the top-row
+        # Stop ends screening, or the acquisition that is running. A recorded
+        # multi-timepoint acquisition also has its graceful STOP in the RUN
+        # SCAN row, which ends it after the current timepoint.
+        self.stopButton.setEnabled(screening or running)
         scanStoppable = seriesActive and self._seriesStopAvailable
         self.scanStopButton.setVisible(scanStoppable)
         self.scanStopButton.setEnabled(scanStoppable)

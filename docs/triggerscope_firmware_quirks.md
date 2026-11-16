@@ -1,5 +1,9 @@
 # TriggerScope firmware quirks
 
+> These notes are about the lab's `TriggerSwitch_0.1` firmware. The step
+> firmware in `firmware/triggerscope_step/` (docs/devices/triggerscope-firmware.rst)
+> has none of these routines; it runs uploaded scan programs instead.
+
 Notes accumulated while integrating ImSwitch2 with the Snouty TriggerScope
 firmware (`C:\Users\Snouty\GitHub\Triggerscope\TriggerSwitch_0.1\TriggerSwitch_0.1.ino`,
 `parameters.cpp/.h`). Each entry says whether it's fixed (and where) or just

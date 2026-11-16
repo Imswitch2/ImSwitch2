@@ -1,6 +1,6 @@
 import numpy as np
-from scipy.interpolate import interp1d
 
+from ._power_volts import calibration_lut
 from .LaserManager import LaserManager, RawDriveError
 from imswitch.imcommon.model import initLogger
 
@@ -125,10 +125,8 @@ class NidaqLaserManager(LaserManager):
             self.setValue(0)
 
     def create_lut_from_calib(self, calib_csv_path):
-        data = np.loadtxt(calib_csv_path)
-        data[:, 1] -= data[:, 1].min()
-        data[:, 1] /= data[:, 1].max() * 0.01 # convert to %
-        self._lut = interp1d(data[:, 1], data[:, 0], bounds_error=False)
+        # The scan engines convert a power level with the same table.
+        self._lut = calibration_lut(calib_csv_path)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

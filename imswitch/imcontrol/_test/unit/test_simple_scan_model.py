@@ -210,8 +210,7 @@ def test_advanced_mode_with_empty_windows_is_channel_power(limits):
 def test_the_plan_survives_json():
     import json
     plan = _plan(channel_power_on=True, channel_power={'488 (EXC)': (80.0, 20.0)},
-                 channel_power_enabled={'488 (EXC)': True}, phase_delay_us=12.5,
-                 d3step_delay_us=500.0)
+                 channel_power_enabled={'488 (EXC)': True}, phase_delay_us=12.5)
     assert SimpleScanPlan.from_dict(json.loads(json.dumps(plan.to_dict()))) == plan
 
 
@@ -358,6 +357,25 @@ def test_nothing_fitting_is_reported(limits):
                              fits=lambda *args: False, budget_s=1.0)
     assert overview.met is False
     assert "voltage range" in overview.note
+
+
+def test_a_plan_without_channels_is_one_line_pass_that_fires_nothing(limits):
+    """A scanner without digital lines, or every laser taken out: the scan
+    still runs, as one line pass with nothing fired (zero line passes is not
+    a scan the designers can build). It reads back as the same plan."""
+    plan = normalize_plan(_plan(channels=()))
+    analog, digital = plan_to_dicts(plan, limits)
+    assert digital['n_linesteps'] == 1 and digital['target_device'] == []
+    assert all(enable == [False] for enable in digital['linestep_enable'].values())
+    assert dicts_to_plan(analog, digital, limits) == plan
+
+
+def test_an_empty_line_pass_beside_others_is_still_refused(limits):
+    analog, digital = plan_to_dicts(_plan(), limits)
+    digital['linestep_enable'] = {name: [value[0], False] for name, value in
+                                  digital['linestep_enable'].items()}
+    with pytest.raises(PlanNotRepresentable, match='Line pass 2'):
+        dicts_to_plan(analog, digital, limits)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

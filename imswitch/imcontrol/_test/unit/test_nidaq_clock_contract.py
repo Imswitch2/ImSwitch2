@@ -117,10 +117,18 @@ def test_reads_pass_the_derived_timeout_to_the_driver():
     assert calls == [(30_000_000, pytest.approx(70.0))]
 
 
-def test_a_scan_rate_the_timebase_cannot_run_is_refused_on_hardware():
+def test_a_scan_rate_the_timer_cannot_divide_is_refused():
+    """The scan clock is configurable (scan timing plan, S1): any rate the
+    detectors' timer is a whole multiple of; 1 MHz included."""
     NidaqManager._checkScanClockRate(SCAN_CLOCK_RATE_HZ)
     NidaqManager._checkScanClockRate(None)
-    with pytest.raises(NidaqManagerError, match='scan.sampleRate is 1000000'):
-        NidaqManager._checkScanClockRate(1_000_000)
-    # simulation honours any rate; only hardware is clocked from the timebase
+    NidaqManager._checkScanClockRate(1_000_000)                       # k = 1
+    NidaqManager._checkScanClockRate(250_000)                         # k = 4
+    NidaqManager._checkScanClockRate(1_000_000, timerRate=2_000_000)  # k = 2
+    with pytest.raises(NidaqManagerError, match='whole multiple'):
+        NidaqManager._checkScanClockRate(300_000)                     # 3.33 timer samples
+    with pytest.raises(NidaqManagerError, match='whole multiple'):
+        NidaqManager._checkScanClockRate(2_000_000)                   # the timer is slower
+    with pytest.raises(NidaqManagerError, match='positive'):
+        NidaqManager._checkScanClockRate(0)
     NidaqManager(_setup('Dev1/ctr2'))

@@ -8,10 +8,13 @@ try:
     import nidaqmx
     import nidaqmx._lib
     import nidaqmx.constants
+    import nidaqmx.system
     _NIDAQMX_AVAILABLE = True
+    _TASK_COMMIT = nidaqmx.constants.TaskMode.TASK_COMMIT
     _NIDAQMX_IMPORT_ERROR = None
 except ImportError as error:
     _NIDAQMX_AVAILABLE = False
+    _TASK_COMMIT = None
     _NIDAQMX_IMPORT_ERROR = error
 
     class _UnavailableNidaqError(Exception):
@@ -56,7 +59,17 @@ except ImportError as error:
 
     nidaqmx = _UnavailableNidaqmx()
 
+import contextlib
+import copy
+import math
+
 import numpy as np
+
+from imswitch.imcontrol.model.scan_parameters import (
+    GRID_RELATIVE_ERROR, lag_report, lag_samples_for,
+)
+from imswitch.imcontrol.model.scan_program.engine import is_pulse_generator_device
+from imswitch.imcontrol.model.scan_stop import axis_limits_volts, rest_to_rest_ramp
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
@@ -66,19 +79,27 @@ from .mockscan import ScanSimulationCoordinator
 _TASK_WAITER_JOIN_TIMEOUT_MS = 2000
 _TASK_DRIVER_TEARDOWN_TIMEOUT_MS = 2000
 _ONE_SHOT_WAIT_TIMEOUT_S = 2.0
+#: The samples a one-shot level write plays: what setDigital and setAnalog
+#: have always written, one level held for that many clock periods.
+_ONE_SHOT_DIGITAL_SAMPLES = 100
+_ONE_SHOT_ANALOG_SAMPLES = 10
 
 
-#: The board timebase every NI-DAQ scan is clocked from, and its rate. The
-#: rate was a literal at eight sites while ``scan.sampleRate`` was a required
-#: config field every designer, the simulator and the detectors honoured: a
-#: setup declaring another rate got waveforms built at that rate and played
-#: out at this one, so the scan ran slower by the ratio with the metadata
-#: claiming the requested timing. The constructor now refuses a mismatch on
-#: hardware instead. Declared here once so nothing can restate it.
+#: The board's free-running 100 kHz timebase, and the rate every setup ran
+#: at until the scan clock became configurable (scan timing plan, S1).
+#: ``scan.sampleRate`` is now the waveform sample rate: the analog output is
+#: clocked from the board's 100 MHz timebase divided down at every rate,
+#: 100 kHz included, and the digital output from the analog output's clock
+#: (the driver divides; the rate it configured is read back and a mismatch
+#: refused). The detectors' timer runs at ``nidaq.detectionRateHz``, a
+#: whole multiple of it. The terminal still clocks a digital-only scan at
+#: 100 kHz (M-series boards have no onboard digital-output clock) and the
+#: one-shot line and level writes. These numbers are the defaults a setup
+#: gets when it says nothing, declared once so nothing can restate them.
 SCAN_CLOCK_TERMINAL = r'100kHzTimebase'
 SCAN_CLOCK_RATE_HZ = 100_000
-#: Rate of the pulse train the timer counter generates; the point detectors
-#: sample on it.
+#: Rate of the pulse train the timer counter generates when the setup does
+#: not declare ``nidaq.detectionRateHz``; the point detectors sample on it.
 TIMER_COUNTER_RATE_HZ = 1_000_000
 #: nidaqmx's own default read timeout, kept as the floor. A read used to
 #: inherit it silently, so a fast-axis line longer than ten seconds -- an
@@ -86,6 +107,148 @@ TIMER_COUNTER_RATE_HZ = 1_000_000
 #: neither the dwell nor the line.
 READ_TIMEOUT_FLOOR_S = 10.0
 READ_TIMEOUT_MARGIN = 2.0
+
+
+
+#: An NI-DAQmx digital line or PFI terminal, on any device name: a PXI
+#: chassis slot (``PXI1Slot2/port0/line1``) as much as ``Dev1``.
+_NI_DIGITAL_LINE = re.compile(r'[^/]+/(port\d+/line\d+|PFI\d+)')
+
+
+def nidaq_drives_line(line) -> bool:
+    """Whether a digital line is the NI-DAQ's: a ``Dev...`` line, as before,
+    or any NI-DAQmx line or PFI terminal -- a PXI line used to be dropped
+    from every scan without a word (Lenny, 2026-10-09: drive it). A
+    TriggerScope or step-board line is not."""
+    line = str(line)
+    return 'Dev' in line or bool(_NI_DIGITAL_LINE.fullmatch(line))
+
+
+def nidaq_raw_line(name) -> bool:
+    """Whether a scan signal's key is itself an NI-DAQmx line -- a marker a
+    program puts on a line no device owns -- rather than a device's name."""
+    return bool(_NI_DIGITAL_LINE.fullmatch(str(name)))
+
+
+def scan_digital_outputs(ttlDic, targetPairs, getDevice):
+    """``(devices, signals, lines)`` the scan's DO task writes: every device
+    in ``ttlDic`` on a line this board drives (:func:`nidaq_drives_line`),
+    each signal mapped from the designers' logical on/off to the line's level
+    -- an inverted input (``ttlActiveLevel: "low"``) is driven low for on --
+    and every marker on a line of its own (:func:`nidaq_raw_line`), active
+    high: it is no device's, so nothing inverts it."""
+    devices, signals, lines = [], [], []
+    for device, line in targetPairs:
+        if device not in ttlDic or not nidaq_drives_line(line):
+            continue
+        signal = np.asarray(ttlDic[device], dtype=bool)
+        if not _ttl_level(getDevice(device), True):
+            signal = ~signal
+        devices.append(device)
+        signals.append(signal)
+        lines.append(line)
+    named = {device for device, _ in targetPairs}
+    for key, signal in ttlDic.items():
+        if key in named or key in lines or not nidaq_raw_line(key):
+            continue
+        devices.append(key)
+        signals.append(np.asarray(signal, dtype=bool))
+        lines.append(key)
+    return devices, signals, lines
+
+
+@contextlib.contextmanager
+def _closed_on_failure(task):
+    """A task being configured: closed when configuring it raises, so a
+    refused channel, rate, trigger or clock check leaves no named task
+    behind -- nidaqmx's ``Task.__del__`` only warns, and the leaked name
+    refused the next scan's task of the same name until a restart (review
+    2026-10-16)."""
+    try:
+        yield task
+    except BaseException:
+        try:
+            task.close()
+        except Exception:
+            pass
+        raise
+
+
+def lag_samples(scanInfoDict, rate_hz=SCAN_CLOCK_RATE_HZ) -> int:
+    """The scan's phase delay -- the galvo's response lag, in µs in the
+    contract -- as whole samples of the scan clock, nearest: the shift the
+    digital lines are played with so gating follows the beam, not the
+    command (scan timing plan, S5)."""
+    return lag_samples_for((scanInfoDict or {}).get('phase_delay', 0), rate_hz)
+
+
+def idle_levels(devices, getDevice):
+    """Each named line's level for logical off: an active-low device's
+    line idles high; a clock, a marker or a device the setup does not know
+    idles low."""
+    levels = []
+    for device in devices:
+        try:
+            info = getDevice(device)
+        except Exception:
+            info = None
+        levels.append(bool(_ttl_level(info, False)) if info is not None else False)
+    return levels
+
+
+def delayed_lines(signals, shift: int, idle=None, names=None):
+    """Every digital signal played ``shift`` samples later: the first
+    ``shift`` samples hold the line's idle level (``idle``, one per signal:
+    the level for off -- an active-low line idles high; without it, low),
+    the tail that would run past the stream is dropped. The stream keeps
+    its length, so the AO, the timer and the detectors' plans are
+    untouched. ``shift`` 0 returns the signals as they are.
+
+    Why: the detector's readout is shifted by the lag (the beam trails the
+    command), the laser gate was not, so the last pixel of every line
+    integrated past the gate and came out dark by lag / dwell -- the dark
+    edge pixel of fast scans.
+
+    The end of the stream (review 2026-10-16): the samples pushed past the
+    end are dropped, so they must be idle -- a gate still open there would
+    lose its falling edge and stay open after the scan. A line whose last
+    ``shift`` samples are not all at its idle level, or a shift as long as
+    the stream, raises NidaqManagerError naming the line; the designers end
+    every stream with at least the lag of idle samples (GalvoScanDesigner's
+    end padding)."""
+    shift = int(shift)
+    if shift <= 0:
+        return list(signals)
+    out = []
+    levels = list(idle) if idle is not None else [False] * len(signals)
+    labels = list(names) if names is not None else [f'line {i}' for i in range(len(signals))]
+    for signal, level, label in zip(signals, levels, labels):
+        signal = np.asarray(signal)
+        if signal.size == 0:
+            out.append(signal)
+            continue
+        if shift >= signal.size:
+            raise NidaqManagerError(
+                f'{label}: a {shift}-sample phase delay is as long as the whole '
+                f'{signal.size}-sample stream; the lines cannot be delayed by it.')
+        if not np.all(signal[-shift:] == level):
+            raise NidaqManagerError(
+                f'{label} is active in the last {shift} samples of the stream, which the '
+                f'{shift}-sample phase delay pushes past its end: the line would lose its '
+                'last edge and stay in that state after the scan. The scan needs at least '
+                'the phase delay of idle samples at its end.')
+        head = np.full(shift, level, dtype=signal.dtype)
+        out.append(np.concatenate([head, signal[:-shift]]))
+    return out
+
+
+def _ttl_level(device, on):
+    """The electrical level for logical ``on`` on a device's digital line:
+    its ``ttlActiveLevel`` mapping, or ``on`` itself for a device that
+    declares none (an active-high line)."""
+    if isinstance(getattr(device, 'ttlActiveLevel', None), str):
+        return device.ttlLevel(on)
+    return bool(on)
 
 
 class NidaqManager(SignalInterface):
@@ -101,6 +264,10 @@ class NidaqManager(SignalInterface):
 
     sigScanBuildFailed = Signal()
 
+    # A run ended by stopScan: sent before its sigScanDone (the run-end
+    # contract every engine follows for a stopped run, ScanEngine).
+    sigScanStopped = Signal()
+
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
@@ -113,8 +280,16 @@ class NidaqManager(SignalInterface):
         self._detectedDeviceNames = ()
         self._deviceEnumerationError = None
         scanInfo = getattr(setupInfo, 'scan', None)
-        if not self.__simulating and scanInfo is not None:
-            self._checkScanClockRate(getattr(scanInfo, 'sampleRate', None))
+        # The scan clock and the detectors' timer, from the setup (S1): the
+        # waveforms are built at the one and played at the same one.
+        self._scanRateHz = float(getattr(scanInfo, 'sampleRate', None) or SCAN_CLOCK_RATE_HZ)
+        self._timerRateHz = float(getattr(getattr(setupInfo, 'nidaq', None), 'detectionRateHz',
+                                          None) or TIMER_COUNTER_RATE_HZ)
+        # The ratio rule binds the point detectors' timer; a setup without
+        # one (camera rigs) is checked for a positive rate only.
+        self._checkScanClockRate(
+            self._scanRateHz, self._timerRateHz,
+            hasTimer=setupInfo.nidaq.getTimerCounterChannel() is not None)
 
         if not self.__backendAvailable:
             if self.__simulating:
@@ -161,6 +336,10 @@ class NidaqManager(SignalInterface):
         self._finalizeResult = None
         self.busy = False
         self.signalSent = False
+        # The last run was ended by stopScan (until the next run arms), and
+        # what that stop did (lastStop).
+        self._runStopped = False
+        self._lastStop = None
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
         self.__scanSimulator = None
@@ -459,6 +638,11 @@ class NidaqManager(SignalInterface):
     def __makeSortedTargets(self, sortingKey):
         targetPairs = []
         for targetId, targetInfo in self.__setupInfo.getAllDevices().items():
+            # A pulse generator's laser: its integer channels are the
+            # generator's, which getDigitalLine/getAnalogChannel would turn
+            # into Dev1/port0/line<N> and Dev1/ao<N> (review 2026-10-16).
+            if is_pulse_generator_device(targetInfo):
+                continue
             value = getattr(targetInfo, sortingKey)
             if callable(value):
                 value = value()
@@ -475,19 +659,20 @@ class NidaqManager(SignalInterface):
         if self.__simulating:
             return None
         aotask = nidaqmx.Task(name)
-        channels = np.atleast_1d(channels)
+        with _closed_on_failure(aotask):
+            channels = np.atleast_1d(channels)
 
-        for channel in channels:
-            aotask.ao_channels.add_ao_voltage_chan(channel,
-                                                   min_val=min_val,
-                                                   max_val=max_val)
-        aotask.timing.cfg_samp_clk_timing(source=source,
-                                          rate=rate,
-                                          sample_mode=acquisitionType,
-                                          samps_per_chan=sampsInScan)
-        if starttrig:
-            aotask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
-        #self.__logger.debug(f'Created AO task: {name}')
+            for channel in channels:
+                aotask.ao_channels.add_ao_voltage_chan(channel,
+                                                       min_val=min_val,
+                                                       max_val=max_val)
+            aotask.timing.cfg_samp_clk_timing(source=source,
+                                              rate=rate,
+                                              sample_mode=acquisitionType,
+                                              samps_per_chan=sampsInScan)
+            if starttrig:
+                aotask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
+            #self.__logger.debug(f'Created AO task: {name}')
         return aotask
 
     def __createLineDOTask(self, name, lines, acquisitionType, source, rate, sampsInScan=1000,
@@ -496,15 +681,16 @@ class NidaqManager(SignalInterface):
         if self.__simulating:
             return None
         dotask = nidaqmx.Task(name)
-        lines = np.atleast_1d(lines)
-        for line in lines:
-            dotask.do_channels.add_do_chan(line)
-        dotask.timing.cfg_samp_clk_timing(source=source, rate=rate,
-                                          sample_mode=acquisitionType,
-                                          samps_per_chan=sampsInScan)
-        if starttrig:
-            dotask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
-        #self.__logger.debug(f'Created DO task: {name}')
+        with _closed_on_failure(dotask):
+            lines = np.atleast_1d(lines)
+            for line in lines:
+                dotask.do_channels.add_do_chan(line)
+            dotask.timing.cfg_samp_clk_timing(source=source, rate=rate,
+                                              sample_mode=acquisitionType,
+                                              samps_per_chan=sampsInScan)
+            if starttrig:
+                dotask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
+            #self.__logger.debug(f'Created DO task: {name}')
         return dotask
 
     def __createChanCITask(self, name, channel, acquisitionType, source, rate, sampsInScan=1000,
@@ -513,27 +699,33 @@ class NidaqManager(SignalInterface):
         if self.__simulating:
             return None
         citask = nidaqmx.Task(name)
-        citaskchannel = citask.ci_channels.add_ci_count_edges_chan(
-            channel,
-            initial_count=0,
-            edge=nidaqmx.constants.Edge.RISING,
-            count_direction=nidaqmx.constants.CountDirection.COUNT_UP
-        )
-        citaskchannel.ci_count_edges_term = terminal
-        # not sure if below is needed/what is standard/if I should use DMA (seems to be preferred)
-        # or INTERRUPT (as in Imspector, more load on CPU)
-        citaskchannel.ci_data_xfer_mech = nidaqmx.constants.DataTransferActiveTransferMode.DMA
+        with _closed_on_failure(citask):
+            citaskchannel = citask.ci_channels.add_ci_count_edges_chan(
+                channel,
+                initial_count=0,
+                edge=nidaqmx.constants.Edge.RISING,
+                count_direction=nidaqmx.constants.CountDirection.COUNT_UP
+            )
+            citaskchannel.ci_count_edges_term = terminal
+            # not sure if below is needed/what is standard/if I should use DMA (seems to be preferred)
+            # or INTERRUPT (as in Imspector, more load on CPU)
+            citaskchannel.ci_data_xfer_mech = nidaqmx.constants.DataTransferActiveTransferMode.DMA
 
-        if acquisitionType == 'finite':
-            acqType = nidaqmx.constants.AcquisitionType.FINITE
-        citask.timing.cfg_samp_clk_timing(source=source,
-                                          rate=rate,
-                                          sample_mode=acqType,
-                                          samps_per_chan=sampsInScan)
-        if starttrig:
-            citask.triggers.arm_start_trigger.dig_edge_src = reference_trigger
-            citask.triggers.arm_start_trigger.trig_type = nidaqmx.constants.TriggerType.DIGITAL_EDGE
-        #self.__logger.debug(f'Created CI task: {name}')
+            if acquisitionType == 'finite':
+                acqType = nidaqmx.constants.AcquisitionType.FINITE
+            citask.timing.cfg_samp_clk_timing(source=source,
+                                              rate=rate,
+                                              sample_mode=acqType,
+                                              samps_per_chan=sampsInScan)
+            if starttrig:
+                citask.triggers.arm_start_trigger.dig_edge_src = reference_trigger
+                citask.triggers.arm_start_trigger.trig_type = nidaqmx.constants.TriggerType.DIGITAL_EDGE
+            # Its sample clock is the detectors' timer, verified where it is
+            # made; the counter input's own maximum, where the driver reports
+            # one, is checked too.
+            self._verifyTaskClock(citask, f'counter input {channel}', rate, generated=False,
+                                  mandatory=False)
+            #self.__logger.debug(f'Created CI task: {name}')
         return citask
 
     def __createChanCOTask(self, name, channel, rate, sampsInScan=1000, starttrig=False,
@@ -541,15 +733,16 @@ class NidaqManager(SignalInterface):
         if self.__simulating:
             return None
         cotask = nidaqmx.Task(name)
-        self.cotaskchannel = cotask.co_channels.add_co_pulse_chan_freq(
-            channel, freq=rate, units=nidaqmx.constants.FrequencyUnits.HZ
-        )
-        cotask.timing.cfg_implicit_timing(sample_mode=nidaqmx.constants.AcquisitionType.FINITE,
-                                          samps_per_chan=sampsInScan)
-        if starttrig:
-            cotask.triggers.arm_start_trigger.dig_edge_src = reference_trigger
-            cotask.triggers.arm_start_trigger.trig_type = nidaqmx.constants.TriggerType.DIGITAL_EDGE
-        #self.__logger.debug(f'Created CO task: {name}')
+        with _closed_on_failure(cotask):
+            self.cotaskchannel = cotask.co_channels.add_co_pulse_chan_freq(
+                channel, freq=rate, units=nidaqmx.constants.FrequencyUnits.HZ
+            )
+            cotask.timing.cfg_implicit_timing(sample_mode=nidaqmx.constants.AcquisitionType.FINITE,
+                                              samps_per_chan=sampsInScan)
+            if starttrig:
+                cotask.triggers.arm_start_trigger.dig_edge_src = reference_trigger
+                cotask.triggers.arm_start_trigger.trig_type = nidaqmx.constants.TriggerType.DIGITAL_EDGE
+            #self.__logger.debug(f'Created CO task: {name}')
         return cotask
 
     def __createChanAITask(self, name, channel, acquisitionType, source, rate,
@@ -570,18 +763,22 @@ class NidaqManager(SignalInterface):
         if self.__simulating:
             return None
         aitask = nidaqmx.Task(name)
-        aitask.ai_channels.add_ai_voltage_chan(
-            channel, min_val=float(min_val), max_val=float(max_val)
-        )
-        if acquisitionType == 'finite':
-            acqType = nidaqmx.constants.AcquisitionType.FINITE
-        aitask.timing.cfg_samp_clk_timing(source=source,
-                                          rate=rate,
-                                          sample_mode=acqType,
-                                          samps_per_chan=sampsInScan)
-        if starttrig:
-            aitask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
-        #self.__logger.debug(f'Created AI task: {name}')
+        with _closed_on_failure(aitask):
+            aitask.ai_channels.add_ai_voltage_chan(
+                channel, min_val=float(min_val), max_val=float(max_val)
+            )
+            if acquisitionType == 'finite':
+                acqType = nidaqmx.constants.AcquisitionType.FINITE
+            aitask.timing.cfg_samp_clk_timing(source=source,
+                                              rate=rate,
+                                              sample_mode=acqType,
+                                              samps_per_chan=sampsInScan)
+            if starttrig:
+                aitask.triggers.start_trigger.cfg_dig_edge_start_trig(reference_trigger)
+            # a PMT samples at the detectors' timer rate; the task's own maximum
+            # (channel-dependent) must allow it
+            self._verifyTaskClock(aitask, f'analog input {channel}', rate, generated=False)
+            #self.__logger.debug(f'Created AI task: {name}')
         return aitask
 
     def startInputTask(self, taskName, taskType, *args):
@@ -643,19 +840,154 @@ class NidaqManager(SignalInterface):
         return max(READ_TIMEOUT_FLOOR_S, READ_TIMEOUT_MARGIN * expected + READ_TIMEOUT_FLOOR_S)
 
     @staticmethod
-    def _checkScanClockRate(sampleRate):
-        """Refuse a ``scan.sampleRate`` the board timebase cannot run."""
+    def _checkScanClockRate(sampleRate, timerRate=TIMER_COUNTER_RATE_HZ, *, hasTimer=True):
+        """Refuse a ``scan.sampleRate`` and ``nidaq.detectionRateHz`` the
+        scan cannot run on: a rate that is not positive, or -- on a setup
+        with the detectors' timer (``nidaq.timerCounterChannel``) -- a timer
+        that is not a whole multiple of the scan clock (the point detectors
+        bin a whole number of timer samples per scan sample). The device's
+        own limits are checked against the driver when a scan is armed."""
         if sampleRate is None:
             return
-        if int(round(float(sampleRate))) != SCAN_CLOCK_RATE_HZ:
+        rate = float(sampleRate)
+        timer = float(timerRate)
+        if not rate > 0 or (hasTimer and not timer > 0):
             raise NidaqManagerError(
-                f'NI-DAQ scans are clocked from the board\'s {SCAN_CLOCK_TERMINAL} '
-                f'({SCAN_CLOCK_RATE_HZ} Hz), but scan.sampleRate is {sampleRate}. '
-                f'The waveforms would be built at one rate and played at the '
-                f'other, so the scan would run {float(sampleRate) / SCAN_CLOCK_RATE_HZ:g}x '
-                f'slower than its metadata claims. Set scan.sampleRate to '
-                f'{SCAN_CLOCK_RATE_HZ}.'
-            )
+                f'scan.sampleRate ({sampleRate}) and nidaq.detectionRateHz ({timerRate}) '
+                'must be positive.')
+        if not hasTimer:
+            return
+        ratio = timer / rate
+        if abs(ratio - round(ratio)) > GRID_RELATIVE_ERROR * max(1.0, ratio) or ratio < 1:
+            if ratio < 1:
+                remedy = (f'Raise nidaq.detectionRateHz to a whole multiple of {rate:g} Hz, '
+                          f'such as {rate:g} Hz.')
+            else:
+                # the two scan rates nearest the one asked for that the
+                # timer divides exactly
+                above, below = timer / math.floor(ratio), timer / math.ceil(ratio)
+                remedy = (f'The nearest scan rates the {timer:g} Hz timer divides are '
+                          f'{below:g} and {above:g} Hz.')
+            raise NidaqManagerError(
+                f'nidaq.detectionRateHz ({timer:g} Hz) must be a whole multiple of '
+                f'scan.sampleRate ({rate:g} Hz): the point detectors bin a whole number of '
+                f'timer samples per scan sample, and got {ratio:g}. {remedy}')
+
+    @property
+    def scanRateHz(self):
+        """The scan clock, in hertz: ``scan.sampleRate``, the rate every
+        waveform is built at and played at."""
+        return float(self._scanRateHz)
+
+    def _scanClockSource(self, *, analogOutput=True):
+        """The sample clock source of a scan's analog output -- and of its
+        digital output when there is no analog output to follow.
+
+        The analog output always takes the onboard clock, which the driver
+        divides down from the 100 MHz timebase: its first sample then comes a
+        fixed time after the scan's start trigger, the trigger the detectors'
+        timer starts on, so the detectors' bins keep one phase to the
+        waveform from scan to scan. On the free-running 100 kHz timebase,
+        which a 100 kHz scan used until the review of 2026-10-16, the first
+        sample came anywhere within one sample (10 µs) of the trigger, and
+        the bins moved with it.
+
+        A digital-only scan at 100 kHz keeps that timebase: M-series boards
+        have no onboard digital-output clock, and without analog output there
+        is no phase to keep."""
+        if not analogOutput and self._scanRateHz == SCAN_CLOCK_RATE_HZ:
+            return SCAN_CLOCK_TERMINAL
+        return ''
+
+    def _verifyTaskClock(self, task, what, rate_hz, *, generated, mandatory=True):
+        """Verify a configured task against the rate it is to run at (review
+        2026-10-16): the driver's maximum for this task and its channels
+        (``timing.samp_clk_max_rate``, channel-dependent: four AO channels
+        update slower than one) must allow it, and a task that makes its own
+        sample clock (``generated``) must run at it exactly
+        (``timing.samp_clk_rate``, read back after the driver coerced it).
+
+        A check the driver does not answer is a failure, never a pass: a
+        ``mandatory`` one refuses the scan; a non-mandatory one (a counter
+        input, whose clock -- the detectors' timer -- is verified where it is
+        made) is logged as not verified."""
+        rate = float(rate_hz)
+        try:
+            limit = float(task.timing.samp_clk_max_rate)
+        except Exception as error:
+            if mandatory:
+                raise NidaqManagerError(
+                    f'Cannot verify the {what} task: the driver did not report its maximum '
+                    f'sample clock rate ({error}).') from error
+            # Said once per task kind, in one line: an X-series board never
+            # reports it for a counter input (status -200452), and the driver's
+            # multi-line text, every scan, read like a failure at the rig
+            # (2026-10-19).
+            noted = self.__dict__.setdefault('_unreportedClockLimits', set())
+            if what not in noted:
+                noted.add(what)
+                code = getattr(error, 'error_code', None)
+                self.__logger.info(
+                    f'The {what} task has no maximum sample rate from the driver '
+                    f'({"status " + str(code) if code is not None else type(error).__name__}, '
+                    'normal for a counter input on an X-series board); its clock, the '
+                    'detectors\' timer, is verified instead.')
+            limit = None
+        if limit is not None and rate > limit * (1 + GRID_RELATIVE_ERROR):
+            raise NidaqManagerError(
+                f'The {what} task cannot run at {rate:g} Hz: the driver reports {limit:g} Hz '
+                'as its maximum for these channels. Lower scan.sampleRate or '
+                'nidaq.detectionRateHz.')
+        if not generated:
+            return
+        try:
+            configured = float(task.timing.samp_clk_rate)
+        except Exception as error:
+            raise NidaqManagerError(
+                f'Cannot verify the {what} task: the driver did not report the sample clock '
+                f'rate it configured ({error}).') from error
+        if abs(configured - rate) > GRID_RELATIVE_ERROR * max(1.0, rate):
+            raise NidaqManagerError(
+                f'The {what} task runs at {configured:g} Hz, not the {rate:g} Hz '
+                'scan.sampleRate asks for: the board plays rates its 100 MHz timebase divides '
+                'exactly, within its maximum. Choose such a rate.')
+
+    def _verifyTimerClock(self, task, rate_hz):
+        """The detectors' timer as the driver made it (review 2026-10-16):
+        its counter timebase must divide the rate exactly, the pulse
+        frequency read back must be the rate, and its first pulse must come
+        less than one timer period after the scan starts, so timer sample
+        *j* is the *j*-th timer period after the waveform's start. Returns
+        ``{'rate_hz', 'initial_delay_s', 'timebase_hz'}`` for the scan info;
+        a value the driver does not report refuses the scan."""
+        rate = float(rate_hz)
+        try:
+            if _TASK_COMMIT is not None:
+                task.control(_TASK_COMMIT)
+            channel = task.co_channels[0]
+            timebase = float(channel.co_ctr_timebase_rate)
+            realized = float(channel.co_pulse_freq)
+            delay = float(channel.co_pulse_freq_initial_delay)
+        except Exception as error:
+            raise NidaqManagerError(
+                f'Cannot verify the detectors\' timer: the driver did not report its '
+                f'timebase, frequency or first-pulse delay ({error}).') from error
+        ticks = timebase / rate
+        if abs(ticks - round(ticks)) > GRID_RELATIVE_ERROR * max(1.0, ticks) or round(ticks) < 2:
+            low, high = max(2, math.ceil(ticks)), max(2, math.floor(ticks))
+            raise NidaqManagerError(
+                f'nidaq.detectionRateHz {rate:g} Hz is not a whole division of the timer\'s '
+                f'{timebase:g} Hz timebase; the nearest rates it makes are {timebase / low:g} '
+                f'and {timebase / high:g} Hz.')
+        if abs(realized - rate) > GRID_RELATIVE_ERROR * max(1.0, rate):
+            raise NidaqManagerError(
+                f'The detectors\' timer runs at {realized:g} Hz, not the {rate:g} Hz '
+                'nidaq.detectionRateHz asks for.')
+        if not 0 <= delay < 1.0 / rate:
+            raise NidaqManagerError(
+                f'The detectors\' timer starts {delay:g} s after the scan, a whole timer '
+                'period or more: every detector bin would be at least a sample late.')
+        return {'rate_hz': realized, 'initial_delay_s': delay, 'timebase_hz': timebase}
 
     def getTimerClockTerminal(self):
         """Terminal the timer counter's pulse train appears on, or None.
@@ -680,8 +1012,9 @@ class NidaqManager(SignalInterface):
 
     @property
     def timerRateHz(self):
-        """Rate of the timer counter's pulse train, in hertz."""
-        return float(TIMER_COUNTER_RATE_HZ)
+        """Rate of the timer counter's pulse train, in hertz
+        (``nidaq.detectionRateHz``; 1 MHz when not declared)."""
+        return float(self._timerRateHz)
 
     def reportScanBuildFailure(self, source, error=None):
         """Record a detector preparation/start failure in the active scan.
@@ -1163,7 +1496,8 @@ class NidaqManager(SignalInterface):
             ):
                 self.busy = False
 
-    def _runOneShotOutput(self, taskName, createTask, signal):
+    def _runOneShotOutput(self, taskName, createTask, signal,
+                          waitTimeoutS=_ONE_SHOT_WAIT_TIMEOUT_S):
         """Write one finite output and close it through bounded teardown."""
         task, generation = self._reserveOneShotTask(taskName, createTask)
         if task is None:
@@ -1176,7 +1510,7 @@ class NidaqManager(SignalInterface):
         teardownError = None
         try:
             task.write(signal, auto_start=True)
-            task.wait_until_done(timeout=_ONE_SHOT_WAIT_TIMEOUT_S)
+            task.wait_until_done(timeout=waitTimeoutS)
         except BaseException as error:
             operationError = error
         finally:
@@ -1221,9 +1555,12 @@ class NidaqManager(SignalInterface):
         """
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
-            line = self.__setupInfo.getDevice(target).getDigitalLine()
+            device = self.__setupInfo.getDevice(target)
+            line = device.getDigitalLine()
         if line is None:
             raise NidaqManagerError('Target has no digital output assigned to it')
+        # Logical on/off to the line's level (ttlActiveLevel).
+        enable = _ttl_level(device, enable)
 
         if not self.__simulating and not self.__backendAvailable:
             error = NidaqBackendUnavailableError(
@@ -1239,7 +1576,7 @@ class NidaqManager(SignalInterface):
             return False
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-        tasklen = 100
+        tasklen = _ONE_SHOT_DIGITAL_SAMPLES
         try:
             self._runOneShotOutput(
                 'setDigitalTask',
@@ -1299,7 +1636,7 @@ class NidaqManager(SignalInterface):
             return False
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-        tasklen = 10
+        tasklen = _ONE_SHOT_ANALOG_SAMPLES
         try:
             self._runOneShotOutput(
                 'setAnalogTask',
@@ -1377,6 +1714,7 @@ class NidaqManager(SignalInterface):
             scanGeneration = self._scanGeneration
             self.busy = True
             self.signalSent = False
+            self._runStopped = False
             self._scanTransactionActive = True
             self._scanBuildFailure = None
             self._scanBuildFailureEmitted = False
@@ -1407,16 +1745,9 @@ class NidaqManager(SignalInterface):
                 AOchannels.append(channel)
 
             DOTargetChanPairs = self.__makeSortedTargets('getDigitalLine')
-            DOdevices = []
-            DOsignals = []
-            DOlines = []
-
-            for device, line in DOTargetChanPairs:
-                if device not in ttlDic or 'Dev' not in line:
-                    continue
-                DOdevices.append(device)
-                DOsignals.append(ttlDic[device])
-                DOlines.append(line)
+            DOdevices, DOsignals, DOlines = scan_digital_outputs(
+                ttlDic, DOTargetChanPairs, self.__setupInfo.getDevice
+            )
                 
             # check if line and frame clock should be outputted, if so add to DO lists
             if self.__setupInfo.scan.lineClockLine:
@@ -1431,6 +1762,47 @@ class NidaqManager(SignalInterface):
                 DOdevices.append('FrameEndClock')
                 DOsignals.append(ttlDic['frame_end_clock'])
                 DOlines.append(self.__setupInfo.scan.frameEndClockLine)
+
+            # The digital lines follow the beam: delayed by the galvo's lag
+            # (the contract's phase delay), as the detectors' readout is --
+            # in whole scan-clock samples, the detectors in whole timer
+            # samples; what each realizes and the residual between them are
+            # recorded (review 2026-10-16).
+            lagShift = lag_samples(scanInfoDict, self._scanRateHz)
+            scanInfoDict['lag'] = lag_report(scanInfoDict.get('phase_delay', 0),
+                                             self._scanRateHz, self._timerRateHz)
+            if lagShift and DOsignals:
+                DOsignals = delayed_lines(DOsignals, lagShift,
+                                          idle_levels(DOdevices, self.__setupInfo.getDevice),
+                                          names=DOdevices)
+                self.__logger.debug(
+                    f'Digital lines delayed by {lagShift} samples '
+                    f'({scanInfoDict.get("phase_delay")} µs phase delay) so gating follows '
+                    'the beam.')
+            self._lastDigitalWrite = (list(DOdevices), [np.asarray(s) for s in DOsignals],
+                                      lagShift)
+            self._lastDigitalLines = list(DOlines)
+            # A laser's analog power follows the beam as its gate does: the
+            # per-line-step power is built on command time and masked by the
+            # gate, so it is delayed by the same whole samples. Delaying only
+            # the gate left it open for the lag at every line's end with the
+            # power already back at its off level (review 2026-10-16). The
+            # scanners' waveforms are the command and are not delayed.
+            lasers = getattr(self.__setupInfo, 'lasers', None) or {}
+            powered = [i for i, device in enumerate(AOdevices) if device in lasers]
+            if lagShift and powered:
+                AOsignals = list(AOsignals)
+                delayedPower = delayed_lines(
+                    [np.asarray(AOsignals[i], dtype=float) for i in powered], lagShift,
+                    # the level each power waveform starts the scan at -- its off
+                    [float(np.asarray(AOsignals[i]).reshape(-1)[0]) if np.size(AOsignals[i])
+                     else 0.0 for i in powered],
+                    names=[AOdevices[i] for i in powered])
+                for i, signal in zip(powered, delayedPower):
+                    AOsignals[i] = signal
+            self._lastAnalogWrite = (list(AOdevices), [np.asarray(s) for s in AOsignals],
+                                     lagShift)
+            self._lastAnalogChannels = list(AOchannels)
 
             hasOutputSignals = len(AOsignals) > 0 or len(DOsignals) > 0
             if not hasOutputSignals and not self.__simulating:
@@ -1453,12 +1825,12 @@ class NidaqManager(SignalInterface):
                     (DOsignals[0] if DOsignals else [])
                 )
                 outputSamples = int(np.asarray(outputSignal).size)
-                timerSamples = int(outputSamples * (TIMER_COUNTER_RATE_HZ / SCAN_CLOCK_RATE_HZ))
+                timerSamples = int(outputSamples * (self._timerRateHz / self._scanRateHz))
                 scanTimeStep = float(
                     scanInfoDict.get('scan_time_step', 0) or 0
                 )
                 apdSamplesPerScanSample = (
-                    max(1, int(round(TIMER_COUNTER_RATE_HZ * scanTimeStep)))
+                    max(1, int(round(self._timerRateHz * scanTimeStep)))
                     if scanTimeStep > 0 else None
                 )
                 apdFiniteSamples = (
@@ -1506,12 +1878,19 @@ class NidaqManager(SignalInterface):
                     self.timerTaskWaiter = WaitThread()
                     # create timer counter output task, to control the acquisition timing (1 MHz)
                     detSampsInScan = int(
-                        len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (TIMER_COUNTER_RATE_HZ / SCAN_CLOCK_RATE_HZ)
+                        len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (self._timerRateHz / self._scanRateHz)
                     )
                     #self.__logger.debug(f'Total detection samples in scan: {detSampsInScan}')
+                    # Armed on the analog output's start whenever there is
+                    # one, whatever nidaq.startTrigger says: the detectors
+                    # are armed on it, and a free-running timer put their
+                    # bins at a random phase within one timer period of the
+                    # waveform -- a whole pixel at a 1 µs dwell on a 1 MHz
+                    # timer (review 2026-10-16).
                     self.timerTask = self.__createChanCOTask(
-                        'TimerTask', channel=self.__timerCounterChannel, rate=TIMER_COUNTER_RATE_HZ,
-                        sampsInScan=detSampsInScan, starttrig=self.__startTrigger,
+                        'TimerTask', channel=self.__timerCounterChannel, rate=self._timerRateHz,
+                        sampsInScan=detSampsInScan,
+                        starttrig=bool(AOsignals) or self.__startTrigger,
                         reference_trigger='ao/StartTrigger'
                     )
                     self.timerTaskWaiter.connect(self.timerTask)
@@ -1526,22 +1905,31 @@ class NidaqManager(SignalInterface):
                         'timer', self.timerTask, self.timerTaskWaiter,
                         scanGeneration,
                     )
+                    # verified once registered: a refusal's rollback closes it
+                    scanInfoDict['detector_clock'] = clock = self._verifyTimerClock(
+                        self.timerTask, self._timerRateHz)
+                    self.__logger.info(
+                        f"Detector timer: {clock['rate_hz']:g} Hz from a "
+                        f"{clock['timebase_hz']:g} Hz timebase, first pulse "
+                        f"{clock['initial_delay_s']:g} s after the scan starts.")
                 acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-                scanclock = SCAN_CLOCK_TERMINAL
-                clockDO = scanclock
+                scanclock = self._scanClockSource()
+                clockDO = self._scanClockSource(analogOutput=False)
                 if len(AOsignals) > 0:
                     self.aoTaskWaiter = WaitThread()
                     scanSampsInScan = len(AOsignals[0])
                     self.__logger.debug(f'Total scan samples in scan: {scanSampsInScan}')
-                    self.__logger.debug(f'Total scan time: {scanSampsInScan / SCAN_CLOCK_RATE_HZ} s')
+                    self.__logger.debug(f'Total scan time: {scanSampsInScan / self._scanRateHz} s')
                     self.aoTask = self.__createChanAOTask('ScanAOTask', AOchannels,
                                                           acquisitionTypeFinite, scanclock,
-                                                          SCAN_CLOCK_RATE_HZ, min_val=-10, max_val=10,
+                                                          self._scanRateHz, min_val=-10, max_val=10,
                                                           sampsInScan=scanSampsInScan,
                                                           starttrig=False)
                     self._registerScanTask(
                         'ao', self.aoTask, self.aoTaskWaiter, scanGeneration
                     )
+                    self._verifyTaskClock(self.aoTask, 'analog output', self._scanRateHz,
+                                          generated=True)
 
                     # Important to squeeze the array, otherwise we might get
                     # an "invalid number of channels" error
@@ -1558,12 +1946,16 @@ class NidaqManager(SignalInterface):
                     scanSampsInScan = len(DOsignals[0])
                     self.doTask = self.__createLineDOTask('ScanDOTask', DOlines,
                                                           acquisitionTypeFinite, clockDO,
-                                                          SCAN_CLOCK_RATE_HZ, sampsInScan=scanSampsInScan,
+                                                          self._scanRateHz, sampsInScan=scanSampsInScan,
                                                           starttrig=self.__startTrigger,
                                                           reference_trigger='ao/StartTrigger')
                     self._registerScanTask(
                         'do', self.doTask, self.doTaskWaiter, scanGeneration
                     )
+                    # its own clock without analog output, else the analog
+                    # output's: the limit applies either way
+                    self._verifyTaskClock(self.doTask, 'digital output', self._scanRateHz,
+                                          generated=not AOsignals)
 
                     # Important to squeeze the array, otherwise we might get
                     # an "invalid number of channels" error
@@ -1884,6 +2276,179 @@ class NidaqManager(SignalInterface):
         if emitFailure:
             self.sigScanBuildFailed.emit()
         return True
+
+    @property
+    def runStopped(self) -> bool:
+        """Whether the last run was ended by stopScan (until the next one
+        arms): a detector whose read the stop interrupted ended with the
+        scan, it did not fail."""
+        return bool(self.__dict__.get('_runStopped', False))
+
+    def lastStop(self):
+        """What the last stopScan did: ``found`` and ``left`` (each analog
+        output's volts where the stop found it and where it left it),
+        ``held`` (left where it was, and why) and ``errors``; ``None``
+        before any stop."""
+        stop = self.__dict__.get('_lastStop')
+        return None if stop is None else copy.deepcopy(stop)
+
+    def stopScan(self) -> bool:
+        """Stop the run in progress now (plan scan-stop-now, Lenny 2026-10-18).
+
+        Every task of the run stops and closes -- the rollback a failed run
+        takes, the detectors' input tasks with it -- and then, once nothing
+        plays: every digital line of the run goes to its off level (the
+        lasers first), a laser's analog power to the level its waveform
+        started at, and each scanner ramps from where it stopped back to its
+        waveform's first sample -- where the scan started, and where a
+        finished scan ends -- no faster than its positioner's ``vel_max`` and
+        ``acc_max``. A scanner that declares no limits, or whose position the
+        driver does not report, stays where it is, and the log says so. The
+        run then ends stopped: ``sigScanStopped``, then ``sigScanDone``.
+        Returns whether there was a run to stop."""
+        with self._scanStateLock:
+            simulator = self.__scanSimulator
+            simulated = simulator is not None and simulator.isActive
+            if self.signalSent or not (self.tasks or simulated):
+                return False
+            self._runStopped = True
+            analog = self.__dict__.get('_lastAnalogWrite') or ((), (), 0)
+            channels = list(self.__dict__.get('_lastAnalogChannels') or ())
+            digital = self.__dict__.get('_lastDigitalWrite') or ((), (), 0)
+            lines = list(self.__dict__.get('_lastDigitalLines') or ())
+            aoTask = self.tasks.get('ao')
+        found = self._outputPositionsAtStop(aoTask, analog, simulator if simulated else None)
+        cleanupSucceeded = self._cleanupScanResources()
+        with self._scanStateLock:
+            self._scanTransactionActive = False
+            # Free for the safe-state writes below; a run whose tasks did not
+            # all close keeps the manager busy, and nothing more is written.
+            self.busy = not cleanupSucceeded
+        stop = {'found': dict(found), 'left': {}, 'held': {}, 'errors': []}
+        if cleanupSucceeded:
+            self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
+        else:
+            stop['errors'].append('the run\'s tasks did not all close; no output was written')
+        self._lastStop = stop
+        self._logStop(stop)
+        self.sigScanStopped.emit()
+        self.sigScanDone.emit()
+        return True
+
+    def _outputPositionsAtStop(self, aoTask, analog, simulator):
+        """Each analog output's volts where the run is now: the sample its
+        task has generated last (none yet: the first), or ``None`` when the
+        driver does not report the count. In simulation, the simulator's
+        progress through the run."""
+        devices, signals, _shift = analog
+        if not devices:
+            return {}
+        generated = None
+        try:
+            if aoTask is not None:
+                generated = int(aoTask.out_stream.total_samp_per_chan_generated)
+            elif simulator is not None:
+                length = int(np.asarray(signals[0]).size)
+                generated = int(round(float(simulator.progress) * length))
+        except Exception as error:
+            self.__logger.warning(
+                f'Where the stopped scan left its analog outputs is not known: the driver '
+                f'did not report the samples generated ({error}).')
+            generated = None
+        found = {}
+        for device, signal in zip(devices, signals):
+            signal = np.asarray(signal, dtype=float).reshape(-1)
+            if generated is None or not signal.size:
+                found[device] = None
+                continue
+            found[device] = float(signal[min(max(generated, 1), signal.size) - 1])
+        return found
+
+    def _writeStoppedOutputs(self, digital, lines, analog, channels, found, stop):
+        """The stopped run's outputs to rest, as one-shot writes (stopScan)."""
+        devices, _signals, _shift = digital
+        if devices and lines:
+            levels = idle_levels(devices, self.__setupInfo.getDevice)
+            signal = np.array([[bool(level)] * _ONE_SHOT_DIGITAL_SAMPLES for level in levels],
+                              dtype=bool).squeeze()
+            try:
+                self._runOneShotOutput(
+                    'stopLinesTask',
+                    lambda: self.__createLineDOTask(
+                        'stopLinesTask', lines, nidaqmx.constants.AcquisitionType.FINITE,
+                        SCAN_CLOCK_TERMINAL, SCAN_CLOCK_RATE_HZ,
+                        _ONE_SHOT_DIGITAL_SAMPLES, False),
+                    signal)
+            except Exception as error:
+                stop['errors'].append(f'the digital lines did not take their off level: {error}')
+                self.__logger.error(
+                    'The stopped scan\'s digital lines did not take their off level: a laser '
+                    f'may still be on ({error}).', exc_info=True)
+
+        aoDevices, aoSignals, _ = analog
+        lasers = getattr(self.__setupInfo, 'lasers', None) or {}
+        positioners = getattr(self.__setupInfo, 'positioners', None) or {}
+        written, waveforms = [], []
+        for device, channel, signal in zip(aoDevices, channels, aoSignals):
+            signal = np.asarray(signal, dtype=float).reshape(-1)
+            if not signal.size:
+                continue
+            first = float(signal[0])
+            if device in lasers:
+                # the level its power waveform starts the scan at: its off
+                written.append((device, channel))
+                waveforms.append(np.array([first]))
+                continue
+            here = found.get(device)
+            if here is None:
+                stop['held'][device] = 'its position at the stop is not known'
+                continue
+            info = positioners.get(device)
+            limits = axis_limits_volts(getattr(info, 'managerProperties', None))
+            if limits is None:
+                stop['held'][device] = 'it declares no vel_max, acc_max and conversionFactor'
+                stop['left'][device] = here
+                continue
+            ramp = rest_to_rest_ramp(here, first, limits[0], limits[1], SCAN_CLOCK_RATE_HZ)
+            written.append((device, channel))
+            waveforms.append(ramp if ramp.size else np.array([first]))
+        if not written:
+            return
+        length = max(_ONE_SHOT_ANALOG_SAMPLES, max(w.size for w in waveforms))
+        signal = np.array([np.concatenate((w, np.full(length - w.size, w[-1]))) for w in waveforms])
+        try:
+            self._runOneShotOutput(
+                'stopAnalogTask',
+                lambda: self.__createChanAOTask(
+                    'stopAnalogTask', [channel for _, channel in written],
+                    nidaqmx.constants.AcquisitionType.FINITE, SCAN_CLOCK_TERMINAL,
+                    SCAN_CLOCK_RATE_HZ, -10, 10, length, False),
+                signal.squeeze(),
+                # as a read is bounded: by its own clock, with the margin, never
+                # under nidaqmx's own default
+                waitTimeoutS=READ_TIMEOUT_MARGIN * length / SCAN_CLOCK_RATE_HZ
+                + READ_TIMEOUT_FLOOR_S)
+        except Exception as error:
+            stop['errors'].append(f'the analog outputs did not take their rest: {error}')
+            self.__logger.error(
+                f'The stopped scan\'s analog outputs did not return to rest ({error}).',
+                exc_info=True)
+            return
+        for (device, _channel), waveform in zip(written, waveforms):
+            stop['left'][device] = float(waveform[-1])
+
+    def _logStop(self, stop):
+        parts = []
+        if stop['left']:
+            parts.append('left ' + ', '.join(f'{device} at {volts:.4g} V'
+                                             for device, volts in sorted(stop['left'].items())))
+        if stop['held']:
+            parts.append('not ramped: ' + '; '.join(f'{device} ({why})'
+                                                    for device, why in sorted(stop['held'].items())))
+        self.__logger.info('Scan stopped: digital lines at their off level'
+                           + ('; ' + '; '.join(parts) if parts else '') + '.')
+        for error in stop['errors']:
+            self.__logger.error(f'Scan stopped, but {error}.')
 
     def scanDone(self):
         # Idempotent within a scan (signalSent is reset to False in runScan):

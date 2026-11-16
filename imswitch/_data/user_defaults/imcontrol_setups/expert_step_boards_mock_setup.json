@@ -1,0 +1,141 @@
+{
+    "__comment__": "Hardware-free setup for the Expert scan panel on STEP BOARDS (docs/devices/scan_engines.rst): two simulated boards that speak the step-engine protocol IMSWITCH_STEP/1, as a TriggerScope with its protocol firmware will (docs/devices/step-engine-protocol.rst). 'triggerscope' leads -- the Expert panel runs on it (scan.engine) -- and drives the piezo Z on dac0, the 405 and 488 lasers and the camera trigger; 'aux' follows it step by step (its triggerInput is wired to triggerscope/ttl15) and switches the 561 laser. A program on the leader's devices alone runs on the leader; one that also uses the 561 runs on both, the follower stepped by the leader's pulses. Z and the lasers are set by hand through the boards (StepBoardPositionerManager, StepBoardLaserManager). Each board declares a 1 us grid and a 20 ppm clock: the drift between two pulses must stay under half a tick, so steps of up to 12.5 ms. To use real boards, replace port \"simulated\" and simulatedBoard with the serial port, baudrate and replyTimeoutS. The NI-DAQ is simulated (every setup has its engine); no device is on it.",
+    "detectors": {
+        "Camera": {
+            "analogChannel": null,
+            "digitalLine": "triggerscope/ttl2",
+            "managerName": "HamamatsuManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "hamamatsu": {
+                    "trigger_source": 2,
+                    "subarray_hpos": 0,
+                    "subarray_vpos": 0,
+                    "subarray_hsize": 512,
+                    "subarray_vsize": 512,
+                    "image_width": 512,
+                    "image_height": 512
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {
+        "405 (ON)": {
+            "analogChannel": null,
+            "digitalLine": "triggerscope/ttl0",
+            "managerName": "StepBoardLaserManager",
+            "managerProperties": {},
+            "wavelength": 405,
+            "valueRangeMin": 0,
+            "valueRangeMax": 1
+        },
+        "488 (OFF)": {
+            "analogChannel": null,
+            "digitalLine": "triggerscope/ttl1",
+            "managerName": "StepBoardLaserManager",
+            "managerProperties": {},
+            "wavelength": 488,
+            "valueRangeMin": 0,
+            "valueRangeMax": 1
+        },
+        "561 (EXC)": {
+            "analogChannel": null,
+            "digitalLine": "aux/ttl0",
+            "managerName": "StepBoardLaserManager",
+            "managerProperties": {},
+            "wavelength": 561,
+            "valueRangeMin": 0,
+            "valueRangeMax": 1
+        }
+    },
+    "positioners": {
+        "Z": {
+            "analogChannel": "triggerscope/dac0",
+            "digitalLine": null,
+            "managerName": "StepBoardPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 10.0,
+                "minVolt": 0.0,
+                "maxVolt": 10.0
+            },
+            "axes": [
+                "Z"
+            ],
+            "forScanning": true,
+            "forPositioning": true
+        }
+    },
+    "scanEngines": {
+        "triggerscope": {
+            "managerName": "StepProtocolScanEngine",
+            "managerProperties": {
+                "port": "simulated",
+                "simulatedBoard": {
+                    "board": "TriggerScope (simulated)",
+                    "gridNs": 1000,
+                    "dacs": {
+                        "0": [
+                            0,
+                            10
+                        ],
+                        "1": [
+                            0,
+                            10
+                        ]
+                    },
+                    "ttlLines": 16,
+                    "maxSteps": 65536,
+                    "triggerIn": true,
+                    "triggerLatencyTicks": 2,
+                    "triggerMinTicks": 1,
+                    "clockPpm": 20
+                }
+            }
+        },
+        "aux": {
+            "managerName": "StepProtocolScanEngine",
+            "triggerInput": "triggerscope/ttl15",
+            "managerProperties": {
+                "port": "simulated",
+                "simulatedBoard": {
+                    "board": "Auxiliary board (simulated)",
+                    "gridNs": 1000,
+                    "ttlLines": 8,
+                    "triggerIn": true,
+                    "triggerLatencyTicks": 2,
+                    "triggerMinTicks": 1,
+                    "clockPpm": 20
+                }
+            }
+        }
+    },
+    "scan": {
+        "scanWidgetType": "Expert",
+        "engine": "triggerscope",
+        "scanDesigner": null,
+        "scanDesignerParams": {},
+        "TTLCycleDesigner": null,
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 0,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Laser",
+        "Positioner",
+        "Scan"
+    ]
+}
