@@ -169,7 +169,25 @@ class LegacyMonalisaReconstructor(Reconstructor):
             float(params.get("bg_gaussian_size_nm", 1000.0)),
             float(params.get("pixel_size_nm", 35.0)),
         )
-        return self._extractor().extractSignal(data, sigmas, pattern, device.lower())
+        coeffs = np.asarray(
+            self._extractor().extractSignal(data, sigmas, pattern, device.lower())
+        )
+        # The DLL always yields (numBases, numFrames, gridRows, gridCols).
+        # A 3D legacy/incorrect result would otherwise be interpreted as a
+        # single base, silently scrambling the reconstructed image.
+        if coeffs.ndim != 4:
+            raise ValueError(
+                "MoNaLISA SignalExtractor must return 4D coefficients "
+                "(numBases, numFrames, gridRows, gridCols); "
+                f"got shape {coeffs.shape}"
+            )
+        if coeffs.shape[0] != len(sigmas) or coeffs.shape[1] != data.shape[0]:
+            raise ValueError(
+                "MoNaLISA SignalExtractor coefficients do not match "
+                f"numBases={len(sigmas)} and numFrames={data.shape[0]}; "
+                f"got shape {coeffs.shape}"
+            )
+        return coeffs
 
     def process(self, data_obj, params: dict, context=None) -> MonalisaProcessingResult:
         scan_params = params.get("scan_params")

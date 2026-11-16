@@ -72,7 +72,7 @@ def test_live_param_lookup_falls_back_to_empty_dict_without_widget():
     assert controller._get_reconstructor_params() == {}
 
 
-def test_monalisa_reconstruct_uses_legacy_path_by_default():
+def test_monalisa_legacy_plugin_uses_legacy_controller_path():
     controller = ReconstructorManagerController.__new__(ReconstructorManagerController)
     controller._logger = MagicMock()
     controller._widget = MagicMock()
@@ -80,7 +80,7 @@ def test_monalisa_reconstruct_uses_legacy_path_by_default():
         "reconstruction_method": "MoNaLISA",
     }
     controller._main = SimpleNamespace(
-        _activeReconstructor=SimpleNamespace(id="monalisa"),
+        _activeReconstructor=SimpleNamespace(id="monalisa-legacy"),
         monalisaController=MagicMock(),
     )
     controller._reconstruct_with_plugin = MagicMock()
