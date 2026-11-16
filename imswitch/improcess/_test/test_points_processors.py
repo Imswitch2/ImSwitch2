@@ -92,7 +92,9 @@ def test_each_appears_in_the_editor_catalogue(pid):
 
     entries = {entry.id: entry for entry in build_catalog(user_plugins=False).processors}
     assert pid in entries
-    assert entries[pid].category in ("Segmentation", "Measurement")
+    # Where the tool menus put each (improcess/processors/categories.py).
+    expected = {"threshold": "Segmentation", "regionprops": "Measurement", "pick": "Spots and points"}
+    assert entries[pid].category == expected[pid]
 
 
 def test_a_pipeline_of_the_three_validates_and_declares_points():
