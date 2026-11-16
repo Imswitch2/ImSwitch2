@@ -31,7 +31,7 @@ class PSFBeadSelectProcessor(Processor):
 
     name = "PSF Bead Selection"
     id = "psf-bead-select"
-    category = "Measurement"
+    category = "Resolution and PSF"
     kinds = ("table",)
     output_kind = PSFResolutionProcessor.output_kind
 

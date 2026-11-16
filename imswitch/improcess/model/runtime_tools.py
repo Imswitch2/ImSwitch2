@@ -13,6 +13,8 @@ class RuntimeAnalysisToolSpec:
     widget_kind: str
     processor_id: str | None = None
     category: str = "Other"
+    #: One line on what the tool does, shown as its tooltip in the tool menus.
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="graph",
         processor_id=None,
         category="Exploration",
+        description="Plot the current result's curves: FRC, drift traces, profiles, per-plane values.",
     ),
     "console": RuntimeAnalysisToolSpec(
         id="console",
@@ -56,6 +59,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="console",
         processor_id=None,
         category="Scripting",
+        description="An interactive Python console with the current result at hand.",
     ),
     "profile": RuntimeAnalysisToolSpec(
         id="profile",
@@ -64,6 +68,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="profile",
         processor_id=None,
         category="Exploration",
+        description="Draw a line on the image and plot the intensity along it, with fits.",
     ),
     "roi-manager": RuntimeAnalysisToolSpec(
         id="roi-manager",
@@ -72,6 +77,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="roi-manager",
         processor_id=None,
         category="ROI",
+        description="Draw, name, save and reuse regions of interest.",
     ),
     "roi-stats": RuntimeAnalysisToolSpec(
         id="roi-stats",
@@ -80,6 +86,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="roi-stats",
         processor_id=None,
         category="ROI",
+        description="Intensity statistics of the image inside each region of interest.",
     ),
     "metadata": RuntimeAnalysisToolSpec(
         id="metadata",
@@ -88,6 +95,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="metadata",
         processor_id=None,
         category="Exploration",
+        description="The acquisition metadata stored with the current file.",
     ),
 }
 
@@ -138,7 +146,7 @@ def runtime_analysis_tool_specs(origin: str = "all") -> dict[str, RuntimeAnalysi
     non-processor panels (Graph/Profile/ROI) are built-in, so they are absent
     from the ``"user"`` view.
     """
-    from imswitch.improcess.processors import available_processor_specs
+    from imswitch.improcess.processors import available_processor_specs, processor_summary
 
     specs: dict[str, RuntimeAnalysisToolSpec] = {}
     for processor_id, processor_name, processor_category in available_processor_specs(
@@ -159,6 +167,7 @@ def runtime_analysis_tool_specs(origin: str = "all") -> dict[str, RuntimeAnalysi
             widget_kind=widget_kind,
             processor_id=processor_id,
             category=str(processor_category or "Other"),
+            description=processor_summary(processor_id),
         )
     if origin in ("all", "builtin"):
         specs.update(_NON_PROCESSOR_TOOL_SPECS)
@@ -173,10 +182,7 @@ def runtime_analysis_tool_choices(origin: str = "all") -> list[tuple[str, str]]:
     """
     choices: list[tuple[str, str]] = []
     seen_widgets: set[str] = set()
-    for spec in sorted(
-        runtime_analysis_tool_specs(origin=origin).values(),
-        key=lambda item: (item.category, item.title, item.id),
-    ):
+    for spec in sorted_tool_specs(runtime_analysis_tool_specs(origin=origin).values()):
         if spec.attribute in seen_widgets:
             continue
         seen_widgets.add(spec.attribute)
@@ -194,12 +200,20 @@ def runtime_result_processor_ids() -> list[str]:
     """Return runtime tool ids backed by the generic ResultProcessorWidget."""
     return [
         spec.id
-        for spec in sorted(
-            runtime_analysis_tool_specs().values(),
-            key=lambda item: (item.category, item.title, item.id),
-        )
+        for spec in sorted_tool_specs(runtime_analysis_tool_specs().values())
         if spec.widget_kind == "result-processor" and spec.processor_id is not None
     ]
+
+
+def sorted_tool_specs(specs) -> list[RuntimeAnalysisToolSpec]:
+    """``specs`` in menu order: by category (:mod:`..processors.categories`
+    order), then title, then id."""
+    from imswitch.improcess.processors.categories import category_sort_key
+
+    return sorted(
+        specs,
+        key=lambda item: (category_sort_key(item.category), item.title.casefold(), item.id),
+    )
 
 
 def _generic_processor_attribute(processor_id: str) -> str:
@@ -217,6 +231,7 @@ __all__ = [
     "runtime_analysis_tool_choices",
     "runtime_analysis_tool_specs",
     "runtime_result_processor_ids",
+    "sorted_tool_specs",
 ]
 
 

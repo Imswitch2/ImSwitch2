@@ -26,7 +26,7 @@ class DriftCorrectProcessor(Processor):
     
     name = "Drift Correction"
     id = "drift-correct"
-    category = "Restoration"
+    category = "Registration"
     kinds = ("image", "composite")
     output_kind = "image"
     

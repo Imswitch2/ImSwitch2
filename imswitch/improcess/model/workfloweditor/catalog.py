@@ -117,12 +117,11 @@ class Catalog:
         return self.get(RECONSTRUCTOR, plugin_id)
 
     def categories(self) -> tuple[str, ...]:
-        """Processor categories, alphabetical, ``Other`` last."""
-        names = sorted({entry.category for entry in self.processors})
-        if "Other" in names:
-            names.remove("Other")
-            names.append("Other")
-        return tuple(names)
+        """Processor categories in the analysis-tool menus' order
+        (:mod:`imswitch.improcess.processors.categories`), ``Other`` last."""
+        from imswitch.improcess.processors.categories import category_sort_key
+
+        return tuple(sorted({entry.category for entry in self.processors}, key=category_sort_key))
 
     def processors_in(self, category: str) -> tuple[PluginEntry, ...]:
         return tuple(entry for entry in self.processors if entry.category == category)
@@ -179,6 +178,7 @@ def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
     """
     from imswitch.improcess.model.save_protocol import FORMAT_ALIASES
     from imswitch.improcess.processors import available_processor_specs
+    from imswitch.improcess.processors.categories import category_sort_key
     from imswitch.improcess.reconstructors import builtin_reconstructor_ids
     from imswitch.improcess.workflows.runner import PATH_PLACEHOLDERS
 
@@ -192,7 +192,7 @@ def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
     processors = tuple(sorted(
         (_entry(plugin, PROCESSOR, BUILTIN if plugin.id in builtin_processors else USER)
          for plugin in registry.processors()),
-        key=lambda entry: (entry.category, entry.name.lower(), entry.id),
+        key=lambda entry: (category_sort_key(entry.category), entry.name.lower(), entry.id),
     ))
     reconstructors = tuple(sorted(
         (_entry(plugin, RECONSTRUCTOR, BUILTIN if plugin.id in builtin_reconstructors else USER)
