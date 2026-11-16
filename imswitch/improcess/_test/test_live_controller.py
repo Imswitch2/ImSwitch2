@@ -129,7 +129,7 @@ class _FakeThread:
         self.running = True
         self.request_interruption_called = False
         self.quit_called = False
-        self.wait_called_with = None
+        self.wait_calls = 0
 
     def isRunning(self):
         return self.running
@@ -140,9 +140,11 @@ class _FakeThread:
     def quit(self):
         self.quit_called = True
 
-    def wait(self, timeout_ms):
-        self.wait_called_with = timeout_ms
-        self.running = False
+    def wait(self, timeout_ms=None):
+        # Waiting out the exit of a stopped thread is instant; waiting on a
+        # running one would block the GUI thread.
+        assert not self.running, "waited on a running QThread"
+        self.wait_calls += 1
         return True
 
 
@@ -264,10 +266,10 @@ def test_controller_stop_quits_threads_without_dropping_live_qthread_refs():
     assert stream_worker.stopped is True
     assert stream_thread.request_interruption_called is True
     assert stream_thread.quit_called is True
-    assert stream_thread.wait_called_with is None
+    assert stream_thread.wait_calls == 0
     assert process_thread.request_interruption_called is True
     assert process_thread.quit_called is True
-    assert process_thread.wait_called_with is None
+    assert process_thread.wait_calls == 0
 
     # The GUI call returns while the QThreads are still stopping. Their strong
     # references and source/session resources remain owned until finished.
@@ -280,6 +282,8 @@ def test_controller_stop_quits_threads_without_dropping_live_qthread_refs():
     process_thread.running = False
     controller._worker_thread_finished()
 
+    # Once both report stopped, their exit is waited out before release.
+    assert stream_thread.wait_calls == process_thread.wait_calls == 1
     assert source.closed is True
     assert controller._running is False
     assert controller._stream_thread is None
@@ -357,6 +361,35 @@ def test_controller_processes_two_streaming_sources_sequentially():
         assert controller._running is False
         assert controller._stream_thread is None
         assert controller._process_thread is None
+
+
+def test_live_threads_have_exited_when_the_controller_reports_finished():
+    """``isRunning()`` is already False while a thread still runs its exit
+    code. Destroying its QThread then waits for that code with the GIL held,
+    which can deadlock the GUI thread, so the controller lets go of a thread
+    only once it has really exited."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    controller = LiveReconstructionController(CommunicationChannel())
+    threads = []
+    complete = controller._complete_finish_run
+
+    def capture_then_complete():
+        threads[:] = [thread for thread in
+                      (controller._stream_thread, controller._process_thread)
+                      if thread is not None]
+        complete()
+
+    controller._complete_finish_run = capture_then_complete
+    exited = []
+    controller.sigFinished.connect(
+        lambda: exited.extend(thread.wait(0) for thread in threads))
+
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    assert controller.start(_StreamingRecon(), _TestSource(stack, chunk_size=2), {},
+                            source_arg="synthetic")
+    assert _wait_for_finished(controller)
+    assert exited == [True, True]
 
 
 def test_run_name_names_the_result_so_each_job_gets_its_own_entry():

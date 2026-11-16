@@ -1,7 +1,8 @@
 """Qt lifecycle wrapper for a single independently testable incremental job.
 
 Session/Queue owns publication and result lifecycle; this runner only emits
-preview/terminal events. Never waits on a QThread on the GUI thread.
+preview/terminal events. Never waits on a running QThread on the GUI thread;
+it only waits out the exit of threads that have already emitted ``finished``.
 """
 
 from __future__ import annotations
@@ -147,10 +148,20 @@ class QtIncrementalRunner(QtCore.QObject):
         self._finished_threads.add(self.sender())
         if len(self._finished_threads) != 2:
             return
+        # Qt emits ``finished`` before a thread has really exited: it is still
+        # in QThread's finish code, deleting this run's deleteLater'd workers,
+        # whose (Python) destructors need the GIL. Destroying a QThread in that
+        # window makes ~QThread wait for it, and PyQt5 runs that destructor
+        # holding the GIL: the GUI thread deadlocks, beyond any Python timeout.
+        # wait() releases the GIL and returns as soon as the finish code ends,
+        # so the last references (the sender set's too) are dropped only after.
+        for thread in self._threads:
+            thread.wait()
         # A worker can stop on its own before any process finalization if the
         # source fails; report a failure rather than a false successful finish.
         success = bool(self._final_result and not self._cancelled)
         self._reader_worker = self._process_worker = None
         self._threads.clear()
+        self._finished_threads.clear()
         self.sigFinished.emit(success)
         _active_runners.discard(self)

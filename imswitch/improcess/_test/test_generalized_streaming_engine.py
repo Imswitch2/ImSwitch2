@@ -290,3 +290,60 @@ def test_two_thread_cancel_discards_partial_and_releases_resources(qtbot):
         runner.cancel()  # MUST NOT call QThread.wait() on the GUI thread
     assert done.args == [False]
     assert not results and recon.session.closed and src.closed
+
+
+def _runner_until_first_preview(qtbot, name):
+    from imswitch.improcess.execution.runner import QtIncrementalRunner
+    from imswitch.improcess.reconstructors.base import StackInfo
+
+    frames = np.ones((3, 2, 2), dtype=np.uint16)
+    src = _Source(frames, available=3, fps=3)
+    src.info = StackInfo(**vars(src.info))
+    src.complete = False  # a growing source: the run ends by cancel
+
+    class _Session:
+        def begin(self, _init, _params):
+            return None
+        def live_plane(self):
+            return None
+        def result(self):
+            return np.ones((1, 2, 2), dtype=np.uint16)
+        def close(self):
+            pass
+
+    class _Recon(_ScanReconstructor):
+        def make_session(self):
+            return _Session()
+
+    runner = QtIncrementalRunner(_Recon(), src, {}, name=name, poll_ms=2)
+    with qtbot.waitSignal(runner.sigPreview, timeout=10000):
+        runner.start()
+    return runner
+
+
+def test_both_runner_threads_have_exited_when_it_reports_finished(qtbot):
+    """Qt emits ``finished`` while a thread still runs its exit code, which
+    deletes the deleteLater'd (Python) workers and so needs the GIL. A QThread
+    destroyed in that window waits for it with the GIL held, and the GUI thread
+    deadlocks. So the runner lets go of a thread only once it has exited."""
+    runner = _runner_until_first_preview(qtbot, "exit")
+    threads = list(runner._threads)
+    exited = []
+    runner.sigFinished.connect(
+        lambda _ok: exited.extend(thread.wait(0) for thread in threads))
+    with qtbot.waitSignal(runner.sigFinished, timeout=10000):
+        runner.cancel()
+    assert exited == [True, True]
+
+
+def test_a_finished_runner_keeps_no_thread_alive(qtbot):
+    """A QThread wrapper kept by the runner would be destroyed whenever the
+    runner is collected, at an arbitrary moment with the GIL held."""
+    import weakref
+
+    runner = _runner_until_first_preview(qtbot, "release")
+    threads = [weakref.ref(thread) for thread in runner._threads]
+    with qtbot.waitSignal(runner.sigFinished, timeout=10000):
+        runner.cancel()
+    assert len(threads) == 2
+    assert all(ref() is None for ref in threads)

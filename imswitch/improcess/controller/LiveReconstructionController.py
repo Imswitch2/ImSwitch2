@@ -368,6 +368,15 @@ class LiveReconstructionController(QtCore.QObject):
 
         emit_finished = bool(self._finish_emit_finished)
         stopped_threads = (self._stream_thread, self._process_thread)
+        # isRunning() is already False while a thread is still in QThread's
+        # finish code. Releasing the last reference to it then runs ~QThread,
+        # which waits for that code while PyQt5 holds the GIL, and the finish
+        # code can need the GIL (deleting Python objects): a GUI deadlock no
+        # Python timeout can break. wait() releases the GIL and returns as soon
+        # as the finish code ends.
+        for thread in stopped_threads:
+            if thread is not None:
+                thread.wait()
         try:
             if (
                 self._is_streaming
