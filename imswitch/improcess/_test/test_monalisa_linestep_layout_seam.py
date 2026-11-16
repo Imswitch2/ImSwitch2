@@ -189,15 +189,20 @@ def test_live_session_takes_its_condition_count_from_the_layout(resolved_factory
     )
 
 
-def test_conditions_laid_out_per_image_are_still_refused():
-    """Accepting interleaved conditions must not accept every condition loop."""
+def test_conditions_laid_out_per_image_are_placed_not_streamed():
+    """Accepting interleaved conditions must not stream every condition loop:
+    one image per condition cannot be de-interleaved by the live session, so
+    the recording is placed frame by frame instead."""
     assert not linestep_conditions_interleave_per_line(
         _recorded_layout('per-image')
     )
-    with pytest.raises(ValueError, match='not interleaved per line'):
-        MonalisaReconstructor()._fast_gauss_geometry_from_layout(
-            _recorded_resolved('per-image'), LEGACY_ATTRS, FRAMES
-        )
+    geometry = MonalisaReconstructor()._fast_gauss_geometry_from_layout(
+        _recorded_resolved('per-image'), LEGACY_ATTRS, FRAMES
+    )
+    assert 'placement' in geometry
+    assert geometry['reasons'] == [
+        f'{CONDITIONS} line-step conditions that are not interleaved per line'
+    ]
 
 
 def test_scan_dialog_carries_conditions_on_the_timepoints_slot():

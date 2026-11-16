@@ -109,6 +109,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure on Kinesis stage / rotator, Standa, ThorCam TSI,
     # Photometrics, Allied Vision and PiCam (reconnect 2.0 R-3), and the
     # Hamamatsu's mockSample (the APD's was here already).
+    # MoNaLISA reconstruction defaults belong to processing, not detector
+    # hardware schemas (main's PR #69 adds none here).
     assert report.keys == 276
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.

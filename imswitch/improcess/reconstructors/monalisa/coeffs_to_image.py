@@ -91,11 +91,14 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
             'condition': 'condition',
             'time': 'time',
         },
-        required=('fast', 'slow'),
     )
     if selected is None:
         return None
     fast, slow = selected['fast'], selected['slow']
+    # A scan of one in-plane axis (Y and Z, say) records no loop for the
+    # other; it is one position wide. Neither scanned is not a scan at all.
+    if fast is None and slow is None:
+        return None
     depth = selected['depth']
     condition = selected['condition']
     time = selected['time']
@@ -133,12 +136,71 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
         slots=tuple(slots),
         timepoints=n_time * n_conditions,
         slices=depth.count if depth is not None else 1,
-        rows=slow.count,
-        cols=fast.count,
+        rows=slow.count if slow is not None else 1,
+        cols=fast.count if fast is not None else 1,
         condition_labels=labels,
         n_conditions=n_conditions,
         n_time=n_time,
     )
+
+
+def flip_placement(
+    placement: LayoutPlacement, flip_x: bool = False, flip_y: bool = False
+) -> LayoutPlacement:
+    """The placement with the output running the other way along an axis.
+
+    The layout says how the index runs along the stage axis; whether that is
+    up or down the camera it cannot say, and the frames do. A flip mirrors
+    every slot within the scan's extent, so cell ``n`` stays cell ``n`` and
+    only its interior reverses.
+    """
+    if not (flip_x or flip_y):
+        return placement
+    slots = tuple(
+        (
+            t,
+            z,
+            placement.rows - 1 - y if flip_y else y,
+            placement.cols - 1 - x if flip_x else x,
+        )
+        for t, z, y, x in placement.slots
+    )
+    return LayoutPlacement(
+        slots=slots,
+        timepoints=placement.timepoints,
+        slices=placement.slices,
+        rows=placement.rows,
+        cols=placement.cols,
+        condition_labels=placement.condition_labels,
+        n_conditions=placement.n_conditions,
+        n_time=placement.n_time,
+    )
+
+
+def placement_seam_contrast(image: np.ndarray, rows: int, cols: int) -> float:
+    """How much more neighbouring pixels differ across a cell border than
+    within a cell, on an image assembled by :func:`coeffs_to_image_from_placement`.
+
+    Cells are ``rows`` x ``cols`` pixels (one focus each). Taken along the
+    axes the scan steps only; along an axis of one position every neighbour
+    is another cell. The right orientation is continuous across the
+    borders; a mirrored one has a step at every border.
+    """
+    image = np.asarray(image, dtype=float)
+    ratios = []
+    for axis, size in ((0, int(rows)), (1, int(cols))):
+        if size < 2 or image.shape[axis] < 2 * size:
+            continue
+        difference = np.diff(image, axis=axis) ** 2
+        border = (np.arange(image.shape[axis] - 1) + 1) % size == 0
+        selector = [slice(None), slice(None)]
+        selector[axis] = border
+        across = difference[tuple(selector)]
+        selector[axis] = ~border
+        within = difference[tuple(selector)]
+        if across.size and within.size and within.mean() > 0:
+            ratios.append(float(np.sqrt(across.mean() / within.mean())))
+    return float(np.mean(ratios)) if ratios else float("nan")
 
 
 def coeffs_to_image_from_placement(

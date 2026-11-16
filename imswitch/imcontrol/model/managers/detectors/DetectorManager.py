@@ -76,7 +76,6 @@ PIXEL_SIZE_SOURCE_USER = 'user'
 
 #: Setup-file ``managerProperties`` key that seeds CAMERA_PIXEL_SIZE_PARAM.
 CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
-
 #: Maximum frames retained per readChunk consumer queue. Only relevant for a
 #: consumer that registered but stopped polling while another consumer keeps
 #: draining; bounds the memory that consumer can retain.

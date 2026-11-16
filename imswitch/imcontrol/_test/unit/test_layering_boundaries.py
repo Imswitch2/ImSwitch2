@@ -181,3 +181,29 @@ def test_imcontrol_persistence_shim_preserves_identity():
 
     assert CommonWSP is ShimWSP
     assert common_get() is shim_get()
+
+
+def test_monalisa_setup_selection_uses_the_existing_processing_config_adapter(tmp_path, monkeypatch):
+    """Selected detector defaults use the one allowlisted ImControl config edge."""
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    from imswitch.improcess.model.processing_config import selected_setup_path
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import current_setup_path
+
+    model = types.ModuleType("imswitch.imcontrol.model")
+    choices = SimpleNamespace(setupFileName="instrument.json")
+    model.configfiletools = SimpleNamespace(
+        loadOptions=lambda: (choices, None),
+        getSetupFilePath=lambda name: str(tmp_path / name),
+    )
+    monkeypatch.setitem(sys.modules, "imswitch.imcontrol.model", model)
+
+    assert selected_setup_path() == tmp_path / "instrument.json"
+    assert current_setup_path() == tmp_path / "instrument.json"
+    choices.setupFileName = "../not_a_setup.json"
+    assert selected_setup_path() is None
+    assert current_setup_path() is None
+    choices.setupFileName = ""
+    assert current_setup_path() is None

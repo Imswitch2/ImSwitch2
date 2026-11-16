@@ -11,6 +11,30 @@ __distname__ = 'imswitch2'
 __github_repo__ = 'Imswitch2/Imswitch2'
 
 
+def _preload_system_msvc_runtime():
+    # PyQt5 bundles MSVC runtime 14.26; if Qt loads it first, torch's c10.dll
+    # fails with WinError 1114. The newer system runtime serves both.
+    import importlib.util
+    import os
+    import sys
+
+    if sys.platform != 'win32' or importlib.util.find_spec('torch') is None:
+        return
+    import ctypes
+
+    system32 = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32')
+    for name in ('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'):
+        path = os.path.join(system32, name)
+        if os.path.isfile(path):
+            try:
+                ctypes.WinDLL(path)
+            except OSError:
+                pass
+
+
+_preload_system_msvc_runtime()
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

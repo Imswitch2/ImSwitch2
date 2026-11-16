@@ -185,7 +185,7 @@ class _View:
     def getViewName(self):
         return "standard"
 
-    def setViewModes(self, modes):
+    def setViewModes(self, modes, selectedName=None):
         pass
 
 
