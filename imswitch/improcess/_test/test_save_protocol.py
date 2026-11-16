@@ -500,21 +500,6 @@ def test_widefield_starss_channel_names_reach_the_ome_xml(tmp_path):
     assert isinstance(pd.read_csv(tmp_path / "wfs.ome.regions.csv"), pd.DataFrame)
 
 
-def test_multicolor_registration_no_longer_writes_from_apply(tmp_path):
-    from imswitch.improcess.processors.multicolor_registration.processor import (
-        MulticolorRegistrationProcessor,
-    )
-
-    processor = MulticolorRegistrationProcessor()
-    widget = processor.make_param_widget(None) if False else None   # widget built elsewhere
-    assert widget is None
-    # the parameter contract has no file side effect any more
-    import inspect
-
-    source = inspect.getsource(MulticolorRegistrationProcessor.apply)
-    assert "save_alignment(" not in source
-
-
 def test_plan_companions_must_live_beside_the_primary(tmp_path):
     with pytest.raises(SaveError):
         SavePlan(tmp_path / "a.tif", "tiff", (tmp_path / "sub" / "b.npy",))

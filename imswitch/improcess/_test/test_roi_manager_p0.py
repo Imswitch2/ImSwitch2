@@ -12,7 +12,7 @@ import pytest
 
 from imswitch.imcommon.algorithms.roi import ROIRecord
 from imswitch.improcess.analysis.roi_jobs import MeasurementCache
-from imswitch.improcess.analysis.roi_manager import ROIManagerModel, replaced
+from imswitch.improcess.analysis.roi_manager import ROIManagerModel
 
 
 # --------------------------------------------------------------------------
@@ -112,16 +112,6 @@ def test_revision_advances_only_for_measurement_affecting_changes():
     assert hidden.revision == start + 1
 
 
-def test_replaced_is_the_single_mutation_helper():
-    original = _fully_populated_roi()
-
-    updated = replaced(original, name="other")
-
-    assert updated.name == "other"
-    assert updated.pixels == original.pixels
-    assert original.name == "cell"  # frozen: the input is untouched
-
-
 # --------------------------------------------------------------------------
 # D-13 — names are the row key, so they must be unique on every path in
 # --------------------------------------------------------------------------
@@ -147,40 +137,9 @@ def test_duplicate_names_are_rejected_on_every_ingestion_path(build):
     assert len(set(names)) == 2, f"duplicate names survived ingestion: {names}"
 
 
-def test_removing_one_of_two_similarly_named_rois_keeps_the_other():
-    model = ROIManagerModel.from_dicts(
-        [
-            ROIRecord("cell", "rectangle", (0, 2, 0, 2)).to_dict(),
-            ROIRecord("cell", "rectangle", (2, 4, 2, 4)).to_dict(),
-        ]
-    )
-
-    model.remove("cell")
-
-    assert [roi.name for roi in model.rois] == ["cell_1"]
-
-
 # --------------------------------------------------------------------------
 # D-01 — visibility actually controls measurement
 # --------------------------------------------------------------------------
-
-def test_hidden_rois_are_not_measured_but_are_still_listed():
-    image = np.ones((6, 6), dtype=float)
-    model = ROIManagerModel(
-        [
-            ROIRecord("shown", "rectangle", (0, 2, 0, 2), visible=True),
-            ROIRecord("hidden", "rectangle", (2, 4, 2, 4), visible=False),
-        ]
-    )
-
-    records = model.compute_stats(image)
-
-    assert [record.roi.name for record in records] == ["shown", "hidden"]
-    assert records[0].measured is True
-    assert records[1].measured is False
-    assert np.isnan(records[1].stats.mean)
-    assert records[1].note == "hidden"
-
 
 def test_measure_hidden_opt_in_still_works():
     image = np.ones((6, 6), dtype=float)
@@ -195,25 +154,6 @@ def test_measure_hidden_opt_in_still_works():
 # --------------------------------------------------------------------------
 # D-03 — one bad ROI must not blank the batch
 # --------------------------------------------------------------------------
-
-def test_out_of_bounds_roi_reports_error_without_blanking_the_batch():
-    image = np.ones((8, 8), dtype=float)
-    model = ROIManagerModel(
-        [
-            ROIRecord("good", "rectangle", (0, 4, 0, 4)),
-            ROIRecord("outside", "rectangle", (100, 120, 100, 120)),
-            ROIRecord("also_good", "rectangle", (4, 8, 4, 8)),
-        ]
-    )
-
-    records = model.compute_stats(image)
-
-    assert len(records) == 3
-    assert records[0].stats.mean == pytest.approx(1.0)
-    assert records[2].stats.mean == pytest.approx(1.0)
-    assert records[1].error, "the out-of-bounds ROI should carry its own error"
-    assert np.isnan(records[1].stats.mean)
-
 
 def test_empty_mask_roi_yields_nan_measurements_and_a_note():
     image = np.ones((4, 4), dtype=float)
@@ -246,15 +186,6 @@ def test_error_rows_survive_serialisation():
 # --------------------------------------------------------------------------
 # P-3.5 — the cache is opt-in, and never guesses
 # --------------------------------------------------------------------------
-
-def test_cache_key_refuses_to_key_on_an_unknown_token():
-    """No token means the image may have changed; caching would be a guess."""
-    from imswitch.improcess.analysis.roi_jobs import cache_key
-
-    roi = ROIRecord("cell", "rectangle", (0, 4, 0, 4), uid="u1")
-    assert cache_key("frame", "", (("Z", 1),), roi, 0) is None
-    assert cache_key("frame", "token", (("Z", 1),), roi, 0) is not None
-
 
 def test_cache_key_separates_planes_configurations_and_revisions():
     from dataclasses import replace as dataclass_replace

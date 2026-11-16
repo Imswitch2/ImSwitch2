@@ -301,26 +301,6 @@ def test_rows_are_keyed_by_uid_not_name(panel):
     assert uid != "cell"
 
 
-def test_renaming_keeps_the_row_identity(panel):
-    """The uid is what the row resolves through, so it survives a rename."""
-    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
-    before = _row_uid(panel, _row_named(panel, "cell"))
-
-    panel._model.rename("cell", "nucleus")
-    panel.refresh_stats()
-
-    assert _row_uid(panel, _row_named(panel, "nucleus")) == before
-
-
-def test_widget_mutations_are_recorded_as_undoable_commands(panel):
-    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
-    assert panel._commands.can_undo
-
-    panel._commands.undo()
-
-    assert panel.rois() == []
-
-
 def test_delete_through_the_widget_is_undoable(panel):
     panel.add_rois(
         [

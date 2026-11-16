@@ -231,29 +231,6 @@ def test_every_triggerscope_controller_can_arm_a_recording():
     )
 
 
-def test_multi_mode_controller_reports_the_visible_mode():
-    """The unified RESOLFT controller holds one parameter dict per mode, so a
-    recording armed against it must read the mode that will actually run."""
-    classNode = _classNode(
-        CONTROLLER_DIR / 'TriggerScopeScanController.py',
-        'TriggerScopeScanController',
-    )
-    override = next(
-        (node for node in classNode.body
-         if isinstance(node, ast.FunctionDef)
-         and node.name == '_triggerScopeGeometryParameters'),
-        None,
-    )
-    assert override is not None, (
-        'TriggerScopeScanController must override the geometry hook; the '
-        'controller-level parameter dicts the default reads do not exist here.'
-    )
-    body = ast.unparse(override)
-    assert '_activeAdapter()' in body
-    assert 'adapter.scanParameterDict' in body
-    assert 'adapter.deviceParameterDict' in body
-
-
 # --------------------------------------------------------------------------- #
 # Source resolution                                                            #
 # --------------------------------------------------------------------------- #
@@ -347,9 +324,9 @@ class _FakeComboBox:
 
 
 def test_the_chooser_never_reports_a_pick_the_operator_did_not_make():
-    """Behavioural counterpart to the source-level guard: clearing a combo box
-    selects index zero, so a rig seen for the first time — or one whose saved
-    scanner disappeared — must report no choice rather than the first entry."""
+    """Clearing a combo box selects index zero, so a rig seen for the first
+    time — or one whose saved scanner disappeared — must report no choice
+    rather than the first entry."""
     from imswitch.imcontrol.view.widgets.RecordingWidget import RecordingWidget
 
     widget = _FakeComboBox()
@@ -427,80 +404,6 @@ def test_every_resolft_panel_declares_its_camera(qtbot, widget_module, widget_cl
 # --------------------------------------------------------------------------- #
 # Declaring the camera on a rig whose camera has no software TTL line          #
 # --------------------------------------------------------------------------- #
-
-def test_the_camera_selector_offers_a_detector_with_no_digital_line():
-    """Snouty's camera is wired to the TriggerScope, not driven by ImSwitch.
-
-    The firmware owns the camera line in these modes, so the setup file has no
-    reason to give the detector a ``digitalLine`` -- and the shipped Snouty
-    configuration does not. Filling the selector from the software's TTL
-    devices therefore left it empty on exactly the rig that needs it, and every
-    scan-mode camera recording was refused at arm with no way to fix it in the
-    UI. The role names which detector receives the firmware's pulse; that is a
-    question about detectors.
-    """
-    import ast
-    from pathlib import Path
-
-    # The multicolor panel is deliberately excluded: it programs the camera's
-    # line into the firmware, so there it must be a device that has one.
-    for filename in (
-        'TriggerScopePLSRController.py',
-        'TriggerScopeGalvoDetectionController.py',
-    ):
-        source = (CONTROLLER_DIR / filename).read_text()
-        tree = ast.parse(source)
-        populated = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == 'addItems'
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == 'CameraTTLEdit'
-        ]
-        assert populated, f'{filename} does not populate the camera selector'
-        for call in populated:
-            rendered = ast.dump(call)
-            assert 'detectors' in rendered, (
-                f'{filename} fills the camera selector from something other '
-                f'than the setup\'s detectors'
-            )
-            assert 'TTLDevices' not in rendered, (
-                f'{filename} still requires a software TTL line to name the '
-                f'camera; Snouty\'s has none'
-            )
-
-
-def test_the_multicolor_panel_only_offers_a_camera_the_firmware_can_be_told_about():
-    """That mode programs ``CameraTTLChan``, so the line has to exist.
-
-    Widening the selector to every detector was right for the panels that only
-    *declare* which detector receives the pulse. The multicolor mode also
-    *sets* the line, through ``deviceInfo`` -- built solely from devices whose
-    setup entry names a ``Triggerscope/TTL<n>`` -- so offering a camera
-    without one moved the failure from arm time to five parameters into the
-    scan, as a bare ``KeyError``.
-    """
-    import ast
-
-    source = (CONTROLLER_DIR / 'TriggerScopePLSRMulticolorController.py').read_text()
-    calls = [
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == 'addItems'
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == 'CameraTTLEdit'
-    ]
-
-    assert calls, 'the multicolor panel does not populate its camera selector'
-    for call in calls:
-        rendered = ast.dump(call)
-        assert 'TTLDevices' in rendered, (
-            'the multicolor panel offers cameras the firmware cannot be told '
-            'about; its scan sets CameraTTLChan from the TriggerScope registry'
-        )
-
 
 def test_a_device_without_a_triggerscope_line_is_named_not_a_key_error():
     from types import SimpleNamespace

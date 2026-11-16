@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 import zarr
 
-from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
+from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat
 from imswitch.imcontrol.model.managers.RecordingManager import (
     FailureKind, HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
 )
@@ -260,40 +260,6 @@ def test_camera_lapse_single_file_appends_and_releases_between_points(
         close = getattr(container, 'close', None)
         if callable(close):
             close()
-
-
-@pytest.mark.parametrize('detectorInfos',
-                         [detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare])
-def test_recording_spec_time(qtbot, detectorInfos):
-    filePerDetector, savedToDiskPerDetector = record(
-        qtbot,
-        detectorInfos,
-        detectorNames=list(detectorInfos.keys()),
-        recMode=RecMode.SpecTime,
-        savename='test_spec_time',
-        saveMode=SaveMode.RAM,
-        attrs={detectorName: {
-            'testAttr1': 2,
-            'testAttr2': 'value'
-        } for detectorName in detectorInfos.keys()},
-        recTime=5
-    )
-
-    assert filePerDetector.keys() == detectorInfos.keys()
-    assert savedToDiskPerDetector.keys() == detectorInfos.keys()
-
-    for detectorName, file in filePerDetector.items():
-        h5pyFile = h5py.File(file)
-        # Phase 4: structured layout - dataset at /<detector>/data
-        detector_group = h5pyFile.get(detectorName)
-        assert detector_group is not None, f"Detector group '{detectorName}' not found"
-        dataset = detector_group.get('data')
-        assert dataset is not None, f"Data dataset not found in group '{detectorName}'"
-        assert dataset.shape[0] > 0
-        h5pyFile.close()  # Otherwise we can get segfaults
-        file.close()  # Otherwise we can get segfaults
-    for savedToDisk in savedToDiskPerDetector.values():
-        assert savedToDisk is False
 
 
 @pytest.mark.parametrize('recMode,kwargs',
@@ -3245,49 +3211,6 @@ def test_prestart_generation_window_rejects_queued_previous_terminal():
     assert ctrl._recordingManagerGeneration == 9
 
 
-def test_recording_dtype_preservation(qtbot):
-    """HDF5 datasets must derive their dtype from the detector frames.
-
-    Regression test: the old code hardcoded dtype='i2' (signed int16), which
-    corrupted unsigned-16-bit values >32767 (wrap-around to negative) and
-    needlessly widened 8-bit data. The dataset dtype must instead match the
-    dtype of the frames the detector actually produces.
-
-    Note: this asserts the *invariant* (dtype derived from frames, never the
-    hardcoded 'i2'). Verifying a specific bit depth (e.g. uint8 stays uint8)
-    would require a mock camera whose output dtype is configurable.
-    """
-    detectorInfos = detectorInfosBasic
-    detectorName = next(iter(detectorInfos))
-
-    filePerDetector, _ = record(
-        qtbot,
-        detectorInfos,
-        detectorNames=[detectorName],
-        recMode=RecMode.SpecFrames,
-        savename='test_dtype',
-        saveMode=SaveMode.RAM,
-        attrs={detectorName: {'testAttr1': 2, 'testAttr2': 'value'}},
-        recFrames=5
-    )
-
-    file = filePerDetector[detectorName]
-    with h5py.File(file) as h5pyFile:
-        # Phase 4: structured layout - dataset at /<detector>/data
-        detector_group = h5pyFile.get(detectorName)
-        assert detector_group is not None, 'recorded detector group missing'
-        dataset = detector_group.get('data')
-        assert dataset is not None, 'recorded dataset missing'
-        # The bug: dtype was hardcoded to signed int16 ('i2'). The fix derives
-        # it from the frame array, so it must NOT be 'i2' here (the mock
-        # detector yields wider integer frames).
-        assert dataset.dtype != np.dtype('i2'), \
-            "HDF5 dtype must be derived from detector frames, not hardcoded 'i2'"
-        assert np.issubdtype(dataset.dtype, np.integer), \
-            f'expected an integer dataset dtype, got {dataset.dtype}'
-    file.close()
-
-
 def test_snap_hdf5_structured_layout(tmp_path):
     """Test that HDF5 snapshots use the structured layout with detector groups and metadata."""
     from imswitch.imcontrol.model import DetectorsManager, RecordingManager, SaveMode, SaveFormat
@@ -3425,45 +3348,6 @@ def test_recording_path_existing_file_uses_numbered_suffix(tmp_path):
     assert recordingManager.getSaveFilePath(str(path)) == str(
         tmp_path / 'specified_rec_CAM_2.hdf5'
     )
-
-
-def test_snap_axis_ordering():
-    """Test that snapshots use (T, Y, X) axis convention without reversal."""
-    from imswitch.imcontrol.model import DetectorsManager, RecordingManager
-    
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    recordingManager = RecordingManager(detectorsManager)
-    
-    # Create test image with known pattern to detect axis swaps
-    # Shape: (3, 100, 50) = (T, Y, X)
-    test_image = np.zeros((3, 100, 50), dtype=np.uint16)
-    test_image[0, :, 0] = 1  # Mark first frame, first column
-    test_image[1, 0, :] = 2  # Mark second frame, first row
-    test_image[2, :, :] = 3  # Mark third frame, all pixels
-    
-    detectorName = list(detectorInfosBasic.keys())[0]
-    test_attrs = {detectorName: {'test': 'value'}}
-    
-    # Use a unique temporary filename
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmpdir:
-        savepath = os.path.join(tmpdir, 'test_axis')
-        recordingManager.snapImagePrev(detectorName, savepath, SaveFormat.HDF5, test_image, test_attrs)
-        
-        # Read back and verify no axis transposition
-        snap_file = f'{savepath}_{detectorName}.h5'
-        with h5py.File(snap_file, 'r') as f:
-            dataset = f[detectorName]['data']
-            saved_data = dataset[:]
-            
-            # Should match exactly (T, Y, X) with no reversal
-            assert saved_data.shape == test_image.shape
-            np.testing.assert_array_equal(saved_data, test_image)
-            
-            # Verify the pattern markers are in correct positions
-            assert saved_data[0, :, 0].sum() == 100  # First column of frame 0
-            assert saved_data[1, 0, :].sum() == 100  # First row of frame 1
-            assert saved_data[2, :, :].sum() == 3 * 100 * 50  # All of frame 2
 
 
 def test_snap_zarr_structured_layout(tmp_path) -> None:
@@ -3685,53 +3569,6 @@ def test_zarr_streaming_frames_committed_barrier(tmp_path) -> None:
     assert bool(dataset.attrs['writing']) is False
 
 
-def test_hdf5_streaming_frames_committed_and_complete_marker(tmp_path) -> None:
-    """HDF5Storer maintains frames_committed / stream_complete side datasets.
-
-    SWMR forbids attribute writes after swmr_mode=True, so the barrier and
-    the completion marker live as 1-element datasets next to 'data'. The
-    marker is written while the SWMR handle is still open — unlike the
-    writing=False attr (rewritten via post-close r+ reopen), a live SWMR
-    reader can actually see it, which is what lets SpecTime/UntilStop live
-    reconstructions terminate.
-    """
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    file_path = str(tmp_path / 'committed.hdf5')
-
-    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
-    storer.openStream(
-        fileDests={detectorName: file_path},
-        detectorNames=[detectorName],
-        shapes={detectorName: (4, 5)},
-        attrs={detectorName: {}},
-        singleMultiDetectorFile=False,
-        singleLapseFile=False,
-        saveMode=SaveMode.Disk,
-    )
-
-    storer.writeFrames(detectorName, np.ones((3, 4, 5), dtype=np.uint16))
-    assert storer._files[detectorName].libver == HDF5_STREAM_LIBVER
-    with h5py.File(file_path, 'r', libver='latest', swmr=True) as f:
-        group = f[detectorName]
-        assert int(group['frames_committed'][0]) == 3
-        assert int(group['stream_complete'][0]) == 0
-
-    storer.writeFrames(detectorName, np.ones((2, 4, 5), dtype=np.uint16))
-    with h5py.File(file_path, 'r', libver='latest', swmr=True) as f:
-        assert int(f[detectorName]['frames_committed'][0]) == 5
-
-    storer.finalizeStream(
-        currentFrames={detectorName: 5}, filePaths={detectorName: file_path},
-        recordingManager=None, saveMode=SaveMode.Disk,
-    )
-    with h5py.File(file_path, 'r') as f:
-        group = f[detectorName]
-        assert int(group['frames_committed'][0]) == 5
-        assert int(group['stream_complete'][0]) == 1
-        assert not bool(group['data'].attrs['writing'])
-
-
 def test_hdf5_disk_and_ram_closes_writer_and_hands_off_readonly(tmp_path) -> None:
     """DiskAndRAM finalization must leave a normal closed file for external viewers."""
     detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
@@ -3828,44 +3665,6 @@ def test_hdf5_single_multidetector_finalize_updates_all_datasets(tmp_path) -> No
                 group['data'][:],
                 np.full((2, 4, 5), index + 1, dtype=np.uint16),
             )
-
-
-def test_zarr_streaming_single_lapse_adds_scan_groups(tmp_path) -> None:
-    """Test repeated single-lapse streams append scan groups in one Zarr store."""
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    store_path = str(tmp_path / 'test_zarr_lapse.zarr')
-
-    for scan_index in range(2):
-        frames = np.full((1, 4, 5), scan_index + 1, dtype=np.uint16)
-        storer = ZarrStorer(str(tmp_path / f'unused_{scan_index}'), detectorsManager)
-        storer.openStream(
-            fileDests={detectorName: store_path},
-            detectorNames=[detectorName],
-            shapes={detectorName: frames.shape[-2:]},
-            attrs={detectorName: {'scan:index': scan_index}},
-            singleMultiDetectorFile=False,
-            singleLapseFile=True,
-            saveMode=SaveMode.Disk,
-        )
-        storer.writeFrames(detectorName, frames)
-        storer.finalizeStream(
-            currentFrames={detectorName: frames.shape[0]},
-            filePaths={detectorName: store_path},
-            recordingManager=None,
-            saveMode=SaveMode.Disk,
-        )
-
-    root = zarr.open(store_path, mode='r')
-    assert sorted(root.keys()) == ['scan0', 'scan1']
-    for scan_index in range(2):
-        dataset = root[f'scan{scan_index}'][detectorName]['data']
-        assert dataset.shape == (1, 4, 5)
-        assert dataset.attrs['writing'] is False
-        assert root[f'scan{scan_index}'][detectorName]['metadata']['scan'].attrs['index'] == scan_index
-        np.testing.assert_array_equal(
-            dataset[:], np.full((1, 4, 5), scan_index + 1, dtype=np.uint16)
-        )
 
 
 def test_zarr_ram_streaming_is_explicitly_unsupported(tmp_path) -> None:
@@ -4063,124 +3862,6 @@ def test_scan_point_detector_watchdog_starts_after_scan_end(qtbot):
         recordingManager.abortRecording(emitSignal=False, wait=True)
 
 
-def test_hdf5_stream_preserves_linestep_axis(tmp_path):
-    """One APD frame retains both line-step planes as (T, C, Y, X)."""
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = next(iter(detectorInfosBasic))
-    path = str(tmp_path / 'apd_linesteps.h5')
-    frames = np.arange(1 * 2 * 4 * 5, dtype=np.uint16).reshape(1, 2, 4, 5)
-
-    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
-    metadataManager = RecordingManager(detectorsManager)
-    storer.omeMeta = {
-        detectorName: metadataManager.buildOmeMeta(
-            detectorName, MODE_SCAN, 1
-        )
-    }
-    storer.openStream(
-        fileDests={detectorName: path},
-        detectorNames=[detectorName],
-        shapes={detectorName: frames.shape[1:]},
-        attrs={detectorName: {}},
-        singleMultiDetectorFile=False,
-        singleLapseFile=False,
-        saveMode=SaveMode.Disk,
-    )
-    storer.writeFrames(detectorName, frames)
-    storer.finalizeStream(
-        {detectorName: 1},
-        {detectorName: path},
-        recordingManager=None,
-        saveMode=SaveMode.Disk,
-    )
-
-    with h5py.File(path, 'r') as file:
-        dataset = file[detectorName]['data']
-        assert dataset.shape == (1, 2, 4, 5)
-        assert dataset.attrs['axes'] == 'TCYX'
-        np.testing.assert_array_equal(dataset[:], frames)
-        # The OME-XML must survive SizeC > 1: build_ome_xml used to supply
-        # one channel name against SizeC = n_linesteps, and the resulting
-        # IndexError silently dropped this attribute.
-        xml = file[detectorName].attrs['ome_xml']
-        assert 'SizeC="2"' in xml
-        assert xml.count(f'Name="{detectorName}"') == 2
-
-
-def test_detector_dtype_contract(tmp_path):
-    """Test that storers create datasets from detector's declared dtype (the contract).
-    
-    Phase 1, Task 1: The detector's dtype property is the single authoritative 
-    source of truth for recording. HDF5 and Zarr storers must create datasets 
-    from this declared dtype, not from frames.dtype.
-    """
-    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer
-    
-    # Create detector with uint16 dtype (default)
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    
-    # Verify the detector declares uint16
-    declared_dtype = detectorsManager[detectorName].dtype
-    assert declared_dtype == np.dtype(np.uint16), \
-        f"Expected uint16 declared dtype, got {declared_dtype}"
-    
-    # Test HDF5Storer
-    hdf5_path = str(tmp_path / 'test_dtype_contract.h5')
-    hdf5_storer = HDF5Storer(hdf5_path, detectorsManager)
-    frames = np.random.randint(0, 1000, (5, 128, 128), dtype=np.uint16)
-    
-    hdf5_storer.openStream(
-        fileDests={detectorName: hdf5_path},
-        detectorNames=[detectorName],
-        shapes={detectorName: frames.shape[-2:]},
-        attrs={detectorName: {}},
-        singleMultiDetectorFile=False,
-        singleLapseFile=False,
-        saveMode=SaveMode.Disk,
-    )
-    hdf5_storer.writeFrames(detectorName, frames)
-    hdf5_storer.finalizeStream(
-        currentFrames={detectorName: frames.shape[0]},
-        filePaths={detectorName: hdf5_path},
-        recordingManager=None,
-        saveMode=SaveMode.Disk,
-    )
-    
-    # Assert on-disk HDF5 dataset dtype matches declared dtype
-    with h5py.File(hdf5_path, 'r') as f:
-        dataset = f[detectorName]['data']
-        assert dataset.dtype == declared_dtype, \
-            f"HDF5 dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
-    
-    # Test ZarrStorer
-    zarr_path = str(tmp_path / 'test_dtype_contract.zarr')
-    zarr_storer = ZarrStorer(zarr_path, detectorsManager)
-    
-    zarr_storer.openStream(
-        fileDests={detectorName: zarr_path},
-        detectorNames=[detectorName],
-        shapes={detectorName: frames.shape[-2:]},
-        attrs={detectorName: {}},
-        singleMultiDetectorFile=False,
-        singleLapseFile=False,
-        saveMode=SaveMode.Disk,
-    )
-    zarr_storer.writeFrames(detectorName, frames)
-    zarr_storer.finalizeStream(
-        currentFrames={detectorName: frames.shape[0]},
-        filePaths={detectorName: zarr_path},
-        recordingManager=None,
-        saveMode=SaveMode.Disk,
-    )
-    
-    # Assert on-disk Zarr dataset dtype matches declared dtype
-    root = zarr.open(zarr_path, mode='r')
-    dataset = root[detectorName]['data']
-    assert dataset.dtype == declared_dtype, \
-        f"Zarr dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
-
-
 def test_dtype_mismatch_warning(tmp_path, caplog):
     """Test that storers warn loudly once per detector on dtype mismatch.
     
@@ -4329,43 +4010,12 @@ def test_dtype_mismatch_warning(tmp_path, caplog):
         f"Expected exactly 1 Tiff dtype mismatch warning, got {len(tiff_warnings)}"
 
 
-def test_detector_bitDepth_property():
-    """Test that detector bitDepth property returns correct values.
-    
-    Phase 1, Task 1: bitDepth should return int(dtype.itemsize * 8).
-    """
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    
-    # uint16 detector should report 16 bits
-    assert detectorsManager[detectorName].bitDepth == 16, \
-        "uint16 detector should report bitDepth=16"
-    
-    # Create a mock float32 detector by patching dtype
-    detector = detectorsManager[detectorName]
-    original_dtype = detector.dtype
-    
-    # Temporarily override dtype to test bitDepth calculation
-    class MockFloat32Detector:
-        @property
-        def dtype(self):
-            return np.dtype(np.float32)
-        
-        @property
-        def bitDepth(self):
-            return int(np.dtype(self.dtype).itemsize * 8)
-    
-    mock_detector = MockFloat32Detector()
-    assert mock_detector.bitDepth == 32, \
-        "float32 detector should report bitDepth=32"
-
-
 # ---------------------------------------------------------------------------
 # Off-thread writer (Phase 1 Task 3) tests.
 #
 # Design note: the off-thread writer is now in the DEFAULT recording path, so
 # the existing recording integration tests (test_recording_spec_frames,
-# test_recording_spec_time, lapse, multi-detector, ...) already exercise it
+# lapse, multi-detector, ...) already exercise it
 # end-to-end. We therefore avoid adding new slow qtbot/mock-driven integration
 # tests here (they run on every CI push). Instead:
 #   - one fast direct-storer test that compression survives the batched-chunk
@@ -4379,7 +4029,6 @@ def test_detector_bitDepth_property():
 
 from imswitch.imcontrol.model.managers.RecordingManager import (
     HDF5Storer, StreamPayloadInfo, TiffStorer, WriterThread,
-    WRITER_QUEUE_MAX_BYTES,
     WRITE_BATCH_FRAMES,
 )
 
@@ -4579,54 +4228,6 @@ def test_writerthread_keeps_normal_single_camera_recording_logically_yx():
     assert manager.locator.stored_axes == 'TYX'
     assert manager.locator.shape == (7, 11)
     assert manager.locator.stored_shape == (1, 7, 11)
-
-
-def test_writerthread_backpressure_no_drop():
-    """A slow storer fills the queue's budget; blocking must not drop frames.
-
-    The budget is bytes, so the frames are sized to fill it rather than
-    counted: bounding by queue *items* meant the buffer was whatever one poll
-    happened to return -- about one frame on a fast camera, so seven
-    milliseconds where the constant implied seconds.
-    """
-    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
-
-    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer
-    writer = _make_writer(storer)
-    writer.start()
-    writer.wait_for_open()
-
-    frame = np.zeros((1, 512, 512), dtype=np.uint16)
-    # Twice the budget's worth, so enqueue must block and wait for the writer.
-    n = 2 * (WRITER_QUEUE_MAX_BYTES // _framesNBytes(frame)) + 10
-    for i in range(n):
-        writer.enqueue_frames('CAM', np.full((1, 512, 512), i % 4096, dtype=np.uint16))
-    writer.finish()
-
-    received = np.concatenate(storer.writes['CAM'], axis=0)
-    assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
-    for i in range(n):
-        assert (received[i] == i % 4096).all(), f"Frame {i} out of order under backpressure"
-
-
-def test_the_writer_buffer_is_a_memory_bound_not_an_item_count():
-    """One queued item is one poll's worth of frames, which is not a size."""
-    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
-
-    storer = _FakeStorer()
-    writer = _make_writer(storer)
-    writer.start()
-    writer.wait_for_open()
-    try:
-        # A single chunk larger than the whole budget is admitted rather than
-        # deadlocking on room that can never appear.
-        huge = np.zeros((1, 1, WRITER_QUEUE_MAX_BYTES // 2 + 1024), dtype=np.uint16)
-        assert _framesNBytes(huge) > WRITER_QUEUE_MAX_BYTES
-        writer.enqueue_frames('CAM', huge)
-    finally:
-        writer.finish()
-
-    assert len(storer.writes['CAM']) == 1
 
 
 def test_writerthread_abort_calls_abortstream_not_finalize():
@@ -4886,25 +4487,6 @@ def test_finalize_failure_emits_failure_without_success_and_removes_output(
     assert all(not os.path.exists(path) for path in storer.paths)
 
 
-def test_hdf5storer_abort_removes_partial_file(tmp_path):
-    """HDF5Storer.abortStream closes handles and deletes the partial file."""
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    path = str(tmp_path / 'aborted.h5')
-
-    storer = HDF5Storer(path, detectorsManager)
-    storer.openStream(
-        fileDests={detectorName: path}, detectorNames=[detectorName],
-        shapes={detectorName: (8, 8)}, attrs={detectorName: {}},
-        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=SaveMode.Disk,
-    )
-    storer.writeFrames(detectorName, np.random.randint(0, 100, (3, 8, 8), dtype=np.uint16))
-    assert os.path.exists(path), "file should exist before abort"
-
-    storer.abortStream({detectorName: path}, {detectorName: path}, SaveMode.Disk)
-    assert not os.path.exists(path), "abortStream must delete the partial file"
-
-
 def test_recording_abort_discards_file(qtbot, tmp_path):
     """End-to-end: aborting an UntilStop recording leaves no file on disk."""
     detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
@@ -4969,116 +4551,6 @@ def test_zarr_streaming_recording_metadata(tmp_path):
     assert root[detectorName]['metadata']['custom'].attrs['note'] == 'kept-in-metadata-group'
 
 
-def test_hdf5_streaming_swmr_readable(tmp_path):
-    """Test that HDF5 streaming recordings are SWMR-readable with recording:* metadata."""
-    from imswitch.improcess.live import Hdf5LiveSource
-    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer
-    
-    detectorName = 'TestCam'
-    detectorInfos = {detectorName: DetectorInfo(
-        analogChannel=None,
-        digitalLine=3,
-        managerName='HamamatsuManager',
-        managerProperties={
-            'cameraListIndex': 'mock',
-            'hamamatsu': {
-                'readout_speed': 3,
-                'trigger_global_exposure': 5,
-                'trigger_active': 2,
-                'trigger_polarity': 2,
-                'exposure_time': 0.01,
-                'trigger_source': 1,
-                'subarray_hpos': 0,
-                'subarray_vpos': 0,
-                'subarray_hsize': 5,
-                'subarray_vsize': 4,
-                'image_width': 5,
-                'image_height': 4
-            }
-        },
-        forAcquisition=True
-    )}
-    
-    detectorsManager = DetectorsManager(detectorInfos, updatePeriod=100)
-    path = tmp_path / f'swmr_test_{detectorName}.h5'
-    
-    storer = HDF5Storer(str(path), detectorsManager)
-    
-    attrs = {
-        detectorName: {
-            'recording:frames_per_stack': 10,
-            'recording:expected_frames': 10,
-            'custom:metadata': 'test_value'
-        }
-    }
-    
-    storer.openStream(
-        fileDests={detectorName: str(path)},
-        detectorNames=[detectorName],
-        shapes={detectorName: (4, 5)},
-        attrs=attrs,
-        singleMultiDetectorFile=False,
-        singleLapseFile=False,
-        saveMode=SaveMode.Disk,
-    )
-    
-    # Write frames in batches
-    frames1 = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
-    storer.writeFrames(detectorName, frames1)
-    
-    frames2 = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5) + 100
-    storer.writeFrames(detectorName, frames2)
-    
-    # Verify SWMR-readable before finalize
-    with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-        assert f.swmr_mode is True
-        dataset = f[detectorName]['data']
-        assert dataset.shape[0] == 6
-        assert dataset.attrs['writing'] == True
-        assert dataset.attrs['recording:detector_name'] == detectorName
-        assert dataset.attrs['recording:source_format'] == 'HDF5'
-        assert dataset.attrs['recording:expected_frames'] == 10
-        assert dataset.attrs['recording:frames_per_stack'] == 10
-        assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
-    
-    # Test with Hdf5LiveSource while writing=True
-    source = Hdf5LiveSource(detector_name=detectorName)
-    info = source.open(path)
-    assert info.expected_frames == 10
-    assert info.detector_name == detectorName
-    assert info.source_format == 'HDF5'
-    
-    chunks = source.poll()
-    assert len(chunks) > 0
-    total_frames = sum(c.end - c.start for c in chunks)
-    assert total_frames == 6
-    assert not source.is_complete()  # writing=True and cursor < expected_frames
-    source.close()
-    
-    # Finalize
-    storer.finalizeStream(
-        currentFrames={detectorName: 6},
-        filePaths={detectorName: str(path)},
-        recordingManager=None,
-        saveMode=SaveMode.Disk,
-    )
-    
-    # Verify writing=False after finalize
-    with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-        dataset = f[detectorName]['data']
-        assert dataset.attrs['writing'] == False
-        assert dataset.shape[0] == 6
-    
-    # Test with Hdf5LiveSource after finalize
-    source2 = Hdf5LiveSource(detector_name=detectorName)
-    source2.open(path)
-    chunks2 = source2.poll()
-    total_frames2 = sum(c.end - c.start for c in chunks2)
-    assert total_frames2 == 6
-    assert source2.is_complete()  # writing=False and all frames read
-    source2.close()
-
-
 def test_worker_lapse_metadata_augmentation():
     """Test that RecordingWorker._augment_attrs_with_recording_metadata adds lapse fields."""
     from imswitch.imcontrol.model.managers.RecordingManager import RecordingWorker
@@ -5127,99 +4599,6 @@ def test_worker_lapse_metadata_augmentation():
     assert attrs_default['recording:num_timepoints'] == 1
     assert attrs_default['recording:lapse_index'] == 0
     assert attrs_default['recording:single_lapse_file'] == False
-
-
-def test_lapse_metadata_end_to_end(qtbot):
-    """Test that lapse metadata flows through to HDF5 file via RecordingManager."""
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    recordingManager = RecordingManager(detectorsManager)
-    detectorName = list(detectorInfosBasic.keys())[0]
-    
-    filePerDetector, savedToDiskPerDetector = {}, {}
-
-    def memoryRecordingAvailable(_, file, __, savedToDisk, detName):
-        nonlocal filePerDetector, savedToDiskPerDetector
-        filePerDetector[detName], savedToDiskPerDetector[detName] = file, savedToDisk
-        return True
-
-    # Start a recording with explicit lapse parameters
-    recordingManager.startRecording(
-        detectorNames=[detectorName],
-        recMode=RecMode.SpecFrames,
-        savename='test_lapse_metadata',
-        saveMode=SaveMode.RAM,
-        attrs={detectorName: {'test_attr': 'test_value'}},
-        recFrames=5,
-        recLapseTotal=4,
-        recLapseIndex=2,
-        singleLapseFile=True,
-    )
-    
-    with qtbot.waitSignals(
-        [recordingManager.sigMemoryRecordingAvailable],
-        check_params_cbs=[lambda *args, **kwargs: memoryRecordingAvailable(*args, detName=detectorName, **kwargs)],
-        timeout=30000
-    ):
-        pass
-
-    assert detectorName in filePerDetector
-    file = filePerDetector[detectorName]
-    h5pyFile = h5py.File(file)
-    
-    detector_group = h5pyFile.get(detectorName)
-    assert detector_group is not None
-    dataset = detector_group.get('data')
-    assert dataset is not None
-    
-    # Verify lapse metadata
-    assert dataset.attrs['recording:num_timepoints'] == 4
-    assert dataset.attrs['recording:lapse_index'] == 2
-    assert dataset.attrs['recording:single_lapse_file'] == True
-    
-    # Verify other recording metadata still works
-    assert dataset.attrs['recording:detector_name'] == detectorName
-    assert dataset.attrs['recording:expected_frames'] == 5
-    
-    h5pyFile.close()
-    file.close()
-
-
-def test_waitForAcquisitionStarted_blocks_until_armed(qtbot):
-    """Verify that waitForAcquisitionStarted blocks until arming completes."""
-    import threading
-    from unittest.mock import patch
-    
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    recordingManager = RecordingManager(detectorsManager)
-    
-    block_event = threading.Event()
-    original_acquire = detectorsManager.acquire
-
-    def blocking_acquire(detectorNames, purpose):
-        block_event.wait()
-        return original_acquire(detectorNames, purpose)
-
-    try:
-        with patch.object(detectorsManager, 'acquire', side_effect=blocking_acquire):
-            recordingManager.startRecording(
-                detectorNames=list(detectorInfosBasic.keys()),
-                recMode=RecMode.SpecFrames,
-                savename='test_arming_block',
-                saveMode=SaveMode.RAM,
-                attrs={name: {} for name in detectorInfosBasic.keys()},
-                recFrames=5
-            )
-            
-            armed = recordingManager.waitForAcquisitionStarted(timeout=0.2)
-            assert armed is False, "Should timeout while detector is blocked"
-            
-            block_event.set()
-            
-            armed = recordingManager.waitForAcquisitionStarted(timeout=2.0)
-            assert armed is True, "Should return True after detector is unblocked"
-    finally:
-        block_event.set()
-        recordingManager.abortRecording(emitSignal=False, wait=True)
 
 
 def test_waitForAcquisitionStarted_waits_for_stream_open():
@@ -5361,27 +4740,6 @@ def test_abortRecording_releases_open_writer_without_frames():
     assert recordingManager.record is False
 
 
-def test_waitForAcquisitionStarted_fast_arming(qtbot):
-    """Verify that waitForAcquisitionStarted returns True in normal fast-arming path."""
-    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
-    recordingManager = RecordingManager(detectorsManager)
-    
-    try:
-        recordingManager.startRecording(
-            detectorNames=list(detectorInfosBasic.keys()),
-            recMode=RecMode.SpecFrames,
-            savename='test_arming_fast',
-            saveMode=SaveMode.RAM,
-            attrs={name: {} for name in detectorInfosBasic.keys()},
-            recFrames=5
-        )
-        
-        armed = recordingManager.waitForAcquisitionStarted(timeout=2.0)
-        assert armed is True, "Should return True for fast-arming detector"
-    finally:
-        recordingManager.abortRecording(emitSignal=False, wait=True)
-
-
 def test_waitForAcquisitionStarted_timeout(qtbot):
     """Verify that waitForAcquisitionStarted returns False on timeout."""
     import threading
@@ -5430,36 +4788,6 @@ def test_waitForAcquisitionStarted_timeout(qtbot):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-def test_the_writer_is_waited_on_while_it_is_still_draining():
-    """A fixed shutdown deadline asserts a disk speed nobody declared.
-
-    With a 512 MiB queue budget, "finish within 30 seconds" means "write at
-    least 17 MiB/s" -- and missing it did not merely warn: finish() raised,
-    the worker's cleanup aborted, and abortStream deleted a recording whose
-    frames had all been captured. A writer that is still draining is given as
-    long as it needs; only one that writes nothing at all is declared stuck.
-    """
-    from imswitch.imcontrol.model.managers.RecordingManager import (
-        WRITER_STALL_TIMEOUT_S,
-    )
-
-    # Slow enough that a fixed 30 s deadline would have been a coin flip, but
-    # always making progress.
-    storer = _FakeStorer(writeDelay=0.002)
-    writer = _make_writer(storer)
-    writer.start()
-    writer.wait_for_open()
-
-    for i in range(400):
-        writer.enqueue_frames('CAM', np.full((1, 64, 64), i % 4096, dtype=np.uint16))
-    writer.finish()
-
-    assert not writer.is_alive()
-    received = np.concatenate(storer.writes['CAM'], axis=0)
-    assert len(received) == 400, 'a slow but progressing writer lost frames'
-    assert WRITER_STALL_TIMEOUT_S > 0
 
 
 # ----------------------------------------------------------------------

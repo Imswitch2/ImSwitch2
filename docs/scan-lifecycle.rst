@@ -629,8 +629,9 @@ Active-scan-source layer:
   guard / last-wins), the adoption audit, and channel contract assertions.
 * ``test_beadrec_scan_source.py`` — BeadRec protocol/mixin defaults and the
   active-source-first resolution contract.
-* ``test_communication_channel_contract.py`` — signal inventory unchanged (the
-  active-source API is methods, not signals).
+* ``test_communication_channel_second_pass.py`` — the scripting ``signals()``
+  names stay what scripts wait on (the active-source API is methods, not
+  signals).
 
 Coordinator and lease layer:
 

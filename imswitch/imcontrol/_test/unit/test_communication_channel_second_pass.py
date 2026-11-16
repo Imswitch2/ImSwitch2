@@ -16,6 +16,27 @@ def _channel(controllers=None):
     return CommunicationChannel(main, SimpleNamespace())
 
 
+def test_the_scripting_signals_keep_their_public_names():
+    # Scripts and the shipped tutorials wait on api.imcontrol.signals().<name>.
+    channel = _channel()
+    signals = channel.signals()
+    public = {
+        'acquisitionStarted': channel.sigAcquisitionStarted,
+        'acquisitionStopped': channel.sigAcquisitionStopped,
+        'recordingStarted': channel.sigRecordingStarted,
+        'recordingEnded': channel.sigRecordingEnded,
+        'recordingFailed': channel.sigRecordingFailed,
+        'scanStarting': channel.sigScanStarting,
+        'scanStarted': channel.sigScanStarted,
+        'scanDone': channel.sigScanDone,
+        'scanEnded': channel.sigScanEnded,
+        'scanRejected': channel.sigScanRequestRejected,
+        'saveFocus': channel.sigSaveFocus,
+    }
+    for name, signal in public.items():
+        assert getattr(signals, name) == signal, name  # bound signals: same signal, same channel
+
+
 def test_acquire_image_works_outside_a_script(qtbot):
     # `output` used to exist only after runScript(), so a direct call from the
     # API raised AttributeError.

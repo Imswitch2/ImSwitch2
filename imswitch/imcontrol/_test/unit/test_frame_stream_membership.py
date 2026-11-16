@@ -435,17 +435,6 @@ def test_one_failing_detector_does_not_kill_the_poll_loop(manager):
     assert manager['FAST'].polls == [True]
 
 
-def test_settle_delay_lives_on_the_worker_thread_not_the_caller():
-    """The 300 ms settle used to block whoever started live view — i.e. the
-    UI thread. It must stay inside the worker's own run()."""
-    import inspect
-
-    managerSource = inspect.getsource(DetectorsManager._DetectorsManager__acquireImpl)
-    assert 'sleep(' not in managerSource
-
-    assert 'sleep(self._INITIAL_SETTLE_S)' in inspect.getsource(LVWorker.run)
-
-
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

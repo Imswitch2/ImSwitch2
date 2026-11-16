@@ -11,6 +11,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("z_stack")
+
 
 @pytest.mark.nohardware
 def test_zstack_software_mode():

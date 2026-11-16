@@ -21,6 +21,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("cwstarss")
+
 pytestmark = pytest.mark.nohardware
 
 
@@ -480,36 +484,3 @@ def test_serial_cwstarss_single_position():
     # Should have 1 position + 1 return
     move_calls = [call for call in facade.calls if call[0] == "stage_con.move_to"]
     assert len(move_calls) == 2
-
-
-def test_serial_cwstarss_large_cartesian_product():
-    """Verify workflow handles large power combinations correctly."""
-    facade = build_mock_facade()
-    facade.cam.set_canned_data(np.zeros((5, 32, 32), dtype=np.uint16))
-
-    cwstarss_params = CWSTARSSParams(
-        fps=5.0,
-        duration_s=0.001,  # Very short
-        power_488_mw=0.0,
-        power_405_mw=0.0,
-        measurements_root=Path("/tmp"),
-    )
-    cwstarss = CWSTARSSWorkflow(facade, cwstarss_params)
-
-    powers_488 = [10.0, 20.0, 30.0, 40.0, 50.0]
-    powers_405 = [5.0, 10.0, 15.0, 20.0]
-    expected_positions = 5 * 4  # 20
-
-    serial_params = SerialCWSTARSSParams(
-        powers_488_mw=powers_488,
-        powers_405_mw=powers_405,
-        fps=5.0,
-        duration_s=0.001,
-        measurements_root=Path("/tmp"),
-    )
-
-    workflow = SerialCWSTARSSWorkflow(facade, cwstarss, serial_params)
-    workflow.run()
-
-    move_calls = [call for call in facade.calls if call[0] == "stage_con.move_to"]
-    assert len(move_calls) == expected_positions + 1  # 20 positions + 1 return

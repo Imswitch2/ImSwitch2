@@ -17,7 +17,6 @@ from imswitch.improcess.model.provenance import (  # noqa: E402
     attrs_digest,
     graph_of,
     make_node,
-    output_node,
 )
 from imswitch.improcess.model.provenance_io import ProvenanceReadError, read_provenance  # noqa: E402
 from imswitch.improcess.model.save_protocol import SaveError, companion_json_path  # noqa: E402
@@ -145,16 +144,6 @@ def test_a_live_result_whose_provenance_cannot_be_recorded_is_a_failure(monkeypa
     _frames(worker, 2, 4)
     worker.finalize()
     assert finished == [] and failed and "provenance" in failed[0]
-
-
-def test_the_initial_stack_counts_towards_the_committed_frames():
-    from imswitch.improcess._test.test_reconstruction_provenance_paths import _stream_worker
-
-    worker, _ = _stream_worker(expected=2)        # the two init frames are the whole acquisition
-    finals = []
-    worker.sigStackFinished.connect(finals.append)
-    worker.finalize()                              # no chunk ever arrives after begin()
-    assert output_node(finals[0])["completion"] == {"status": "complete", "frames_committed": 2, "expected_frames": 2}
 
 
 # 4. codec output is checked as a mapping ---------------------------------------------

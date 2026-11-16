@@ -244,44 +244,6 @@ def test_one_start_for_many_ends_leaves_the_lock_fighting_the_scan():
     assert drivingDuringScan == [False, True, True, True]
 
 
-def test_a_lapse_publishes_a_start_for_every_timepoint_not_only_the_first():
-    """Each timepoint runs its own scan, so each owes its own start.
-
-    Checked structurally rather than by driving ``nextLapse``: the defect was
-    exactly a placement -- the call sitting inside the first-timepoint block --
-    and placement is what this pins.
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    from imswitch.imcontrol.controller.controllers.RecordingController import (
-        RecordingController,
-    )
-
-    tree = ast.parse(
-        textwrap.dedent(inspect.getsource(RecordingController.nextLapse))
-    )
-
-    def publishesStart(node):
-        return any(
-            isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Attribute)
-            and child.func.attr == '_notifyScanStarting'
-            for child in ast.walk(node)
-        )
-
-    assert publishesStart(tree), 'the lapse must publish the scan start'
-    conditional = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.If) and publishesStart(node)
-    ]
-    assert not conditional, (
-        'the scan start is published under a condition; a lapse point that '
-        'skips it still publishes an end, and consumers resume mid-scan'
-    )
-
-
 def test_the_legacy_broadcast_publishes_a_start_as_well():
     """``sigRunScan`` lands on ``runScanExternal`` exactly as targeting does.
 

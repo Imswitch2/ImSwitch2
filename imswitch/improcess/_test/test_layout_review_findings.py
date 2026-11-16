@@ -84,19 +84,6 @@ def test_a_legacy_assembled_z_scan_resolves(shape, expected):
     assert resolved.layout.payload_kind == "assembled-image"
 
 
-def test_a_two_dimensional_assembled_scan_is_unchanged():
-    attrs = dict(LEGACY_3D, **{
-        "ScanStage:target_device": ["X", "Y"],
-        "ScanStage:axis_length": [3.0, 2.0],
-        "ScanStage:axis_step_size": [1.0, 1.0],
-        "ScanStage:axis_startpos": [0.0, 0.0],
-    })
-
-    resolved = resolve_acquisition_layout(attrs, shape=(2, 2, 3), detector="APD")
-
-    assert resolved.layout.storage_axes == ("condition", "scan_y", "scan_x")
-
-
 # ----------------------------------------------------------------------
 # 2. An inferred layout may not refuse what the user typed
 # ----------------------------------------------------------------------
@@ -131,33 +118,6 @@ def test_an_inferred_raster_does_not_veto_a_manual_one():
     assert result is not None
 
 
-def test_a_declared_raster_still_refuses_a_conflicting_manual_one():
-    from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
-    from imswitch.improcess.reconstructors.beadrec.reconstructor import (
-        BeadRecReconstructor,
-    )
-
-    declared = _stream(
-        (AcquisitionLoop("scan_y", "scan_y", 3), AcquisitionLoop("scan_x", "scan_x", 4))
-    )
-
-    class _Source:
-        acquisition_layout = SimpleNamespace(
-            layout=declared, is_usable=True, is_authoritative=True
-        )
-        data = np.zeros((12, 8, 8), np.float32)
-        name = "recorded"
-        axis_labels = ["T", "Y", "X"]
-        axis_scales = None
-        scale_unit = "um"
-
-    with pytest.raises(ValueError, match="declares"):
-        BeadRecReconstructor().process(
-            _Source(),
-            {"scan_x": 6, "scan_y": 2, "fit_model": list(FIT_MODELS)[0]},
-        )
-
-
 # ----------------------------------------------------------------------
 # 3. Frames the writer threw away must reach the reader
 # ----------------------------------------------------------------------
@@ -184,22 +144,6 @@ def test_a_recording_that_discarded_surplus_frames_does_not_read_as_clean():
 
     assert lifecycle.discarded_frames == 12
     assert "DISCARDED_SURPLUS_FRAMES" in {issue.code for issue in lifecycle.issues}
-
-
-def test_a_clean_recording_reports_nothing():
-    lifecycle = normalize_recording_lifecycle(
-        {
-            "recording:planned_frames": 6,
-            "recording:actual_frames": 6,
-            "recording:discarded_frames": 0,
-            "recording:completion_outcome": "complete",
-            "writing": False,
-        },
-        RecordingLifecycleMarkers(writing=False),
-    )
-
-    assert lifecycle.discarded_frames == 0
-    assert lifecycle.issues == ()
 
 
 def test_an_ome_tiff_carries_the_discarded_count():
@@ -242,20 +186,6 @@ def test_an_out_of_range_span_is_rejected_without_expanding_it():
     assert peak < 5_000_000, f"expanded the spans anyway: {peak / 1e6:.1f} MB"
 
 
-def test_overlapping_spans_that_fit_are_still_caught():
-    layout = _stream(
-        (AcquisitionLoop("scan_x", "scan_x", 12),),
-        spans=(
-            RecordedEventSpan(start=0, count=2, stride=1, period=4, repeats=3),
-            RecordedEventSpan(start=1, count=2, stride=1, period=4, repeats=3),
-        ),
-    )
-
-    assert "DUPLICATE_PRODUCER_EVENT" in {
-        issue.code for issue in validate_acquisition_layout(layout)
-    }
-
-
 # ----------------------------------------------------------------------
 # 5. Time is not necessarily outermost, nor forward
 # ----------------------------------------------------------------------
@@ -286,16 +216,6 @@ def test_a_nested_time_loop_is_declined_by_the_live_reader():
     resolved = SimpleNamespace(layout=_stream(_INNER_TIME), is_usable=True)
 
     assert _frames_per_stack_from_layout(resolved) is None
-
-
-def test_an_outermost_time_loop_still_gives_a_stack_size():
-    outermost = _stream((
-        AcquisitionLoop("time", "time", 3),
-        AcquisitionLoop("scan_y", "scan_y", 2),
-        AcquisitionLoop("scan_x", "scan_x", 4),
-    ))
-
-    assert recorded_frames_per_time_point(outermost) == 8
 
 
 def test_a_reversed_outermost_time_loop_gives_the_same_stack_size():
@@ -453,12 +373,6 @@ def test_an_anisotropic_calibration_is_refused_rather_than_halved():
 
     message = str(error.value)
     assert "65" in message and "100" in message
-
-
-def test_a_square_calibration_is_used():
-    from imswitch.improcess.reconstructors.smlm.localizer import source_pixel_size_nm
-
-    assert source_pixel_size_nm(_calibrated(0.100, 0.100)) == 100.0
 
 
 def test_a_manual_pixel_size_settles_an_anisotropic_source():

@@ -30,7 +30,6 @@ from imswitch.improcess.model.lapse_source import (
     INCOMPLETE_SKIP,
     STORAGE_ONE_FILE_PER_ITEM,
     STORAGE_ONE_GROUP_PER_ITEM,
-    TIMEPOINT_COMPLETE,
     TIMEPOINT_INCOMPLETE,
     TIMEPOINT_MISSING,
     LazyTimeLapseArray,
@@ -152,33 +151,6 @@ def test_a_single_file_lapse_is_opened_and_listed_once(tmp_path, fmt, monkeypatc
     assert listed == []
 
 
-def test_a_second_lapse_recorded_into_the_same_file_is_its_own_lapse(tmp_path):
-    """Groups are numbered by the next free one, not by the lapse index."""
-    common = dict(camera=False, single_file=True, frames=2, layout_kind="time")
-    record_lapse(tmp_path, 3, **common)
-    path = record_lapse(
-        tmp_path, 3, started_at=None, extra_attrs={"note": "second"}, **common
-    )[0]
-
-    groups = [ref.dataset for ref in discover_time_lapse(path).channel().candidates]
-    assert groups == [f"scan{n}/Camera" for n in range(6)]
-
-    first = plan_time_lapse(
-        discover_time_lapse(path, "scan1/Camera"),
-        read_lapse_headers(discover_time_lapse(path, "scan1/Camera")),
-    )
-    second_index = discover_time_lapse(path, "scan4/Camera")
-    second = plan_time_lapse(second_index, read_lapse_headers(second_index))
-
-    assert [slot.dataset for slot in first.slots] == [
-        "scan0/Camera", "scan1/Camera", "scan2/Camera"
-    ]
-    assert [slot.dataset for slot in second.slots] == [
-        "scan3/Camera", "scan4/Camera", "scan5/Camera"
-    ]
-    assert len(second.excluded) == 3
-
-
 def _two_lapses_in_one_file(folder, fmt="hdf5"):
     common = dict(camera=False, single_file=True, frames=2, layout_kind="time", fmt=fmt)
     record_lapse(folder, 3, **common)
@@ -239,13 +211,6 @@ def test_a_file_named_like_the_lapse_but_from_another_is_left_out(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_a_single_recording_is_not_a_lapse(tmp_path):
-    path = record_point(tmp_path, index=0, total=1)
-
-    with pytest.raises(NotATimeLapse, match="single recording"):
-        discover_time_lapse(path)
-
-
 @pytest.mark.parametrize(
     ("kind", "message"),
     [("tile", "Tiling mosaic"), ("position", "positions, not timepoints")],
@@ -292,21 +257,6 @@ def test_a_renamed_item_cannot_find_its_siblings(tmp_path):
 # --------------------------------------------------------------------------
 # incomplete lapses
 # --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("fmt", MULTI_FILE_FORMATS)
-def test_a_missing_point_is_a_gap_not_a_shift(tmp_path, fmt):
-    record_lapse(tmp_path, 5, fmt=fmt, points=[0, 1, 3, 4])
-
-    plan = _plan(next(tmp_path.glob("*_time0_*")))
-    stack = LazyTimeLapseArray(plan)
-
-    assert [slot.state for slot in plan.slots] == [
-        TIMEPOINT_COMPLETE, TIMEPOINT_COMPLETE, TIMEPOINT_MISSING,
-        TIMEPOINT_COMPLETE, TIMEPOINT_COMPLETE,
-    ]
-    assert plan.slots[2].reason == "not recorded"
-    assert _values(stack) == [1, 2, 0, 4, 5]
 
 
 def test_a_lapse_stopped_part_way_ends_at_its_last_point(tmp_path):

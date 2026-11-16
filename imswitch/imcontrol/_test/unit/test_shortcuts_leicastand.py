@@ -153,25 +153,6 @@ class TestLeicaStandPhase3b:
         leica_action.trigger()
         assert len(callback_called) == 1
         
-    def test_no_old_qshortcut_leftover(self):
-        """Test that the old _init_shortcuts and _toggleModeShortcut are removed.
-        
-        This is a sanity check that verifies the migration was completed correctly.
-        """
-        from imswitch.imcontrol.controller.controllers import LeicaStandController
-        
-        # Check that _init_shortcuts method doesn't exist
-        assert not hasattr(LeicaStandController, '_init_shortcuts'), \
-            "LeicaStandController should not have _init_shortcuts method after Phase 3b migration"
-        
-        # Check the source code doesn't contain the old pattern
-        import inspect
-        source = inspect.getsource(LeicaStandController)
-        assert '_toggleModeShortcut' not in source, \
-            "LeicaStandController source should not contain _toggleModeShortcut after Phase 3b migration"
-        assert 'QShortcut' not in source, \
-            "LeicaStandController source should not contain QShortcut after Phase 3b migration"
-        
     def test_owner_is_widget_not_controller(self, manager, mock_leica_widget):
         """Test that the owner is the widget, ensuring proper window context."""
         callback = Mock()

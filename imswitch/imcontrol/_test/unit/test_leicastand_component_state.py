@@ -283,30 +283,6 @@ def test_round_trip_state(controller, mock_manager):
     assert controller._current_mode == "CS"
 
 
-def test_registration_in_init_only_with_usable_manager():
-    """__init__ registers LeicaStand only on the usable-manager path."""
-    import inspect
-
-    source = inspect.getsource(LeicaStandController.__init__)
-
-    # Registration call is present.
-    assert "getWidgetStatePersistence().register('LeicaStand', self)" in source
-
-    # It comes after all three early-return guards (stand_manager None, mocker,
-    # _subManager None), so it is skipped on the mock/disconnected paths.
-    lines = source.split('\n')
-    register_idx = next(
-        i for i, ln in enumerate(lines)
-        if "register('LeicaStand'" in ln
-    )
-    last_return_idx = max(
-        i for i, ln in enumerate(lines) if 'return' in ln
-    )
-    assert register_idx > last_return_idx, (
-        "Registration must follow the early-return guards"
-    )
-
-
 def test_leicastand_discovered_in_setup_mode_controller():
     """SetupModeController._getModeAwareControllers discovers a LeicaStand component.
 

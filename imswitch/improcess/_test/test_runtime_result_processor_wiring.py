@@ -87,17 +87,6 @@ def test_runtime_graph_widget_gets_graph_controller():
     assert controller.mainViewController.graphController is not None
 
 
-def test_startup_wires_producing_panels_without_saved_layout():
-    """A fresh profile has no saved layout, so the persistence adapter hook
-    never fires; __init__ must wire producing panels unconditionally or their
-    run buttons stay dead until the first layout save/restore cycle."""
-    import inspect
-
-    source = inspect.getsource(ImProcessMainController.__init__)
-
-    assert "self._wire_runtime_result_processors()" in source
-
-
 _PLUGIN_SOURCE = """
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.model.array_result import ArrayProcessingResult

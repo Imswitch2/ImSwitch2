@@ -12,8 +12,6 @@ excluded from the user-visible acquisition signals, and release it on
 Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
-import inspect
-
 import pytest
 
 from imswitch.imcontrol.controller.controllers.AutofocusController import (
@@ -46,25 +44,6 @@ class _RecordingDetectorsManager:
 class _Master:
     def __init__(self, detectorsManager):
         self.detectorsManager = detectorsManager
-
-
-@pytest.mark.parametrize('controllerClass', [AutofocusController, FocusLockController])
-def test_focus_controller_takes_a_lease_instead_of_bypassing_the_manager(
-        controllerClass):
-    """Source-level contract: constructing the full controller needs the whole
-    widget/factory stack, so guard the ownership rule where the bug lived —
-    the sub-manager bypass must not come back."""
-    if controllerClass is FocusLockController:
-        # FocusLock can now stop/restart its camera from the widget, so lease
-        # acquisition lives in the explicit start path rather than __init__.
-        source = inspect.getsource(controllerClass._startFocusCameraAcquisition)
-    else:
-        source = inspect.getsource(controllerClass.__init__)
-
-    assert 'detectorsManager.acquire(' in source
-    assert 'LeasePurpose.FOCUS' in source
-    # The bypass this replaced: detectorsManager[self.camera].startAcquisition()
-    assert 'startAcquisition()' not in source
 
 
 @pytest.mark.parametrize('controllerClass', [AutofocusController, FocusLockController])

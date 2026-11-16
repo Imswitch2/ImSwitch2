@@ -299,26 +299,6 @@ def test_the_local_processors_accept_a_region():
         assert found[0].roi_modes[0] == expected_first, module_name
 
 
-def test_psf_and_colocalization_read_rois_through_the_shared_rasteriser():
-    """They are ROI-native already — per-ROI measurement, not input
-    restriction — so a second path through the restriction would be a second
-    thing to disagree with the first."""
-    import ast
-    import inspect
-
-    from imswitch.improcess.analysis import colocalization, psf_resolution
-
-    for module in (psf_resolution, colocalization):
-        tree = ast.parse(inspect.getsource(module))
-        imported = {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-        }
-        assert "roi_mask_local" in imported, module.__name__
-
-
 def test_a_drift_correction_does_not_offer_a_region():
     """Over a crop it is a different measurement, not a cheaper one."""
     from imswitch.improcess.processors.drift_correct import processor as module

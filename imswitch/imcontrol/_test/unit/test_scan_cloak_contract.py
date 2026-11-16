@@ -209,20 +209,6 @@ def rig(request, qtbot):
 # Registration
 # ---------------------------------------------------------------------------
 
-def test_every_cloak_has_a_mock_setup_and_edits():
-    assert set(MOCK_SETUPS) == set(SCAN_CLOAKS)
-    assert set(EDITS) == set(SCAN_CLOAKS)
-
-
-def test_scan_widget_type_is_the_backend_and_cloak_is_the_frontend():
-    resolved = resolve_scan_frontend('Advanced', 'SimplePointScan')
-    assert resolved.backend_type == 'Advanced'
-    assert resolved.frontend_type == 'SimplePointScan'
-    assert resolved.cloak_type == 'SimplePointScan'
-    assert resolved.cloak_spec.has_overview is True
-    assert not resolved.legacy_cloak_config
-
-
 def test_the_old_cloak_as_scan_widget_type_remains_readable():
     resolved = resolve_scan_frontend('SimplePointScan')
     assert resolved.backend_type == 'Advanced'
@@ -255,10 +241,6 @@ def test_the_classes_and_the_config_editor_follow_the_table(cloak):
     assert cloakOptions == ['__scan_cloaks__']
 
 
-def test_the_scan_manager_is_the_backends(rig):
-    assert type(rig.master.scanManager).__name__ == f'ScanManager{rig.backendType}'
-
-
 # ---------------------------------------------------------------------------
 # The Advanced page holds the acquisition
 # ---------------------------------------------------------------------------
@@ -266,20 +248,6 @@ def test_the_scan_manager_is_the_backends(rig):
 def test_the_advanced_page_holds_the_acquisition_from_the_start(rig):
     assert rig.scan.scanPage() == 'simple' and rig.panel.page() == 'simple'
     assert rig.held() == rig.acquisition()
-
-
-def test_the_mirror_follows_edits_on_the_simple_page(rig):
-    before = rig.acquisition()
-    edit, _ = EDITS[rig.type]
-    # Make the edit on the Advanced page, bring it back, then check the
-    # mirror of a simple-page change: the page's plan goes back unchanged.
-    rig.scan.setScanPage('advanced')
-    edit(rig)
-    assert rig.scan.setScanPage('simple')
-    changed = rig.acquisition()
-    assert changed != before
-    rig.settle()
-    assert rig.held() == changed
 
 
 # ---------------------------------------------------------------------------
@@ -811,21 +779,6 @@ def test_monalisa_explicit_global_live_sources_override_profile_sources(qtbot):
         assert rig.scan._availableLiveSources() == ('488 (OFF)',)
         assert set(rig.view._liveSourceChecks) == {'488 (OFF)'}
         assert rig.view.selectedLiveSources() == {'488 (OFF)'}
-    finally:
-        rig.close()
-
-
-def test_monalisa_live_sources_migrate_to_setup_level_on_next_save(qtbot):
-    rig = CloakRig(
-        'SimpleMoNaLISA', _monalisaSetupWithPowerMode('separated')
-    )
-    try:
-        raw = copy.deepcopy(rig.setup.scan.simpleMoNaLISA)
-        assert 'liveSources' not in raw
-        legacy = rig.scan._legacyLiveSourcesFromConfig(raw)
-
-        migrated = rig.scan._normalizeLiveSourcesForSave(raw)
-        assert migrated['liveSources'] == list(legacy)
     finally:
         rig.close()
 

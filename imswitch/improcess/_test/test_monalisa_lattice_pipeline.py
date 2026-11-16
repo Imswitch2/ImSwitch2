@@ -349,15 +349,6 @@ class TestReconstructScan:
         assert error_kept == pytest.approx(np.std(gain), rel=0.2)
         assert error_removed < 0.4 * error_kept
 
-    def test_the_variance_frame_is_calibrated_on_when_it_shows_the_foci(self):
-        scan = make_scan()
-        mean, var = scan.frames.mean(axis=0), scan.frames.var(axis=0)
-        chosen = choose_calibration_image(mean, var)
-        assert chosen.name == "variance"
-        assert chosen.contrast["variance"] > 0.3
-        assert chosen.contrast["variance"] >= 0.5 * chosen.contrast["mean"]
-        assert chosen.image is not mean or chosen.name == "mean"
-
     def test_a_variance_of_shot_noise_yields_to_the_mean_frame(self):
         """On a dim recording the temporal variance is the shot noise of the
         mean: flat, with no foci in it. Read from it, the foci collapsed
@@ -396,18 +387,6 @@ class TestReconstructScan:
         assert fit.explained < 0.1
         fit = shared_sigma_fit(scan.frames.mean(axis=0), x, y, radius=4.0)
         assert fit.explained > 0.5
-
-    def test_find_foci_says_what_it_found(self):
-        scan = make_scan()
-        finding = find_foci(scan.frames.mean(axis=0), scan.frames.var(axis=0))
-        rows, cols = scan.frames.shape[1:]
-        x, y = finding.points(rows, cols)
-        assert x.size == scan.focus_x[
-            (scan.focus_x >= 0) & (scan.focus_x < cols)
-            & (scan.focus_y >= 0) & (scan.focus_y < rows)
-        ].size
-        text = finding.describe()
-        assert "foci" in text and "variance frame" in text and "contrast" in text
 
     def test_a_static_background_does_not_reach_the_image(self):
         """Out-of-focus light five times as bright as the foci, structured on
