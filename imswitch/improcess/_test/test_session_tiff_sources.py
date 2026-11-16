@@ -18,6 +18,7 @@ from imswitch.improcess.execution.readiness import (
 )
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.processing_session import ProcessingSession
+from imswitch.improcess.model.timepoint_scope import TimepointScope
 
 
 def _write(path, *, outcome="complete", actual=3, planned=3, lapse=None):
@@ -58,7 +59,8 @@ def _finalize(path, *, outcome="complete", actual=3, planned=3, lapse=None, extr
 
 
 def _job(total=None):
-    return SimpleNamespace(timepoint_scope=None, timepoint_total=total)
+    # A real ProcessingJob always carries a scope; the default is every timepoint.
+    return SimpleNamespace(timepoint_scope=TimepointScope.all(), timepoint_total=total)
 
 
 def test_tiff_snapshot_and_external_tiff_appear_in_session(tmp_path):

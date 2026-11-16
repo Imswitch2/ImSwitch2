@@ -31,8 +31,9 @@ class _Signal:
 class _FakeWatcher:
     instances = []
 
-    def __init__(self, root, parent=None):
+    def __init__(self, root, include_tiff_files=False, parent=None):
         self.root = root
+        self.include_tiff_files = include_tiff_files
         self.sigEntryFound = _Signal()
         self.sigEntryChanged = _Signal()
         self.sigEntryRemoved = _Signal()
@@ -115,6 +116,7 @@ def test_review_is_passive_and_follow_reconciles_baseline_once(monkeypatch):
     assert fake._sessionMode == "follow"
     assert len(_FakeWatcher.instances) == 1
     assert fake._directoryWatcher.started
+    assert fake._directoryWatcher.include_tiff_files  # Session Follow sees finite TIFFs.
     assert events.count("reconcile") == 1
     assert fake._watchUnresolvedPaths == {"/tmp/unreadable.h5"}
     assert fake.sigDatasetsAdded.calls == [(('new-from-review',),)]
