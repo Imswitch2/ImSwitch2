@@ -110,9 +110,12 @@ def _programs(grid_s: float, trigger: bool, power: Optional[float] = None
         # A step of its own before every line: the drive parked a micrometre
         # below the line's start, one line pulsed there, the other in the
         # steps; the return to the line start happens inside the prologue.
+        # The lines start at 1 µm so the park is at 0: like every other
+        # program it stays at or above 0 V, which a DAC giving 0 to 10 V
+        # (``dac=1`` on the reference boards) can play.
         return ScanProgram(
             loops=(Loop('y', 'scan_y', 2), Loop('x', 'scan_x', 3)),
-            drives=(DeviceDrive('D', weights_um={'x': 0.5}, motion=jump),),
+            drives=(DeviceDrive('D', offset_um=1.0, weights_um={'x': 0.5}, motion=jump),),
             step_s=t(1000),
             timeline=(TimelineEvent('L0', 'ttl', 0.0, t(300), during='any'),
                       TimelineEvent('L1', 'ttl', t(100), t(400), anchor='prologue:x',

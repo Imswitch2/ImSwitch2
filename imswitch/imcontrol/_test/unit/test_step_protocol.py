@@ -542,10 +542,22 @@ def test_the_reference_board_passes_every_conformance_program(dac_bits):
     lines = []
     results = conformance_runner.run(conformance_runner.simulated_transport(
         1000, dac_bits=dac_bits), report=lines.append)
-    # the four programs, and a power level on its second DAC
+    # the five programs, and a power level on its second DAC
     assert [r.passed for r in results] == [True] * 6, lines
     assert results[-1].program == 'a power level on the second DAC'
     assert lines[0].startswith('simulated (simulated): grid 1000 ns')
+
+
+def test_the_reference_board_passes_on_chosen_channels():
+    """The firmware host test's channel choice, on the simulated board so it
+    also runs on Windows: dac1 gives 0 to 10 V, so no program may need a
+    negative voltage (the prologue program once parked at -1 µm)."""
+    from imswitch.imcontrol.model.managers.scan_engines import conformance_runner
+    lines = []
+    results = conformance_runner.run(conformance_runner.simulated_transport(1000),
+                                     report=lines.append, dac=1, lines=[3, 2, 1], power=False)
+    assert [r.program for r in results if not r.passed] == [], lines
+    assert len(results) == 5
 
 
 def test_firmware_that_writes_off_fails_the_runner_with_the_reason():
