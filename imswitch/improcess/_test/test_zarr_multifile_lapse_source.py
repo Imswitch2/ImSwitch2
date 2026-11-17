@@ -15,12 +15,14 @@ def _write_lapse_file(path, frames, lapse_time, writing=False):
     )
     arr.attrs["detector_name"] = "CAM"
     arr.attrs["writing"] = writing
-    arr.attrs["ImswitchData"] = {
+    metadata = {
         "ScanStage:axis_startpos": [[0], [0], [0]],
         "ScanStage:axis_length": [0.2, 0.2, 0.0],
         "ScanStage:axis_step_size": [0.1, 0.1, 0.1],
-        "Rec:LapseTime": lapse_time,
     }
+    if lapse_time is not None:
+        metadata["Rec:LapseTime"] = lapse_time
+    arr.attrs["ImswitchData"] = metadata
 
 
 def test_multifile_lapse_streams_all_timepoints_as_one_stream(tmp_path):
@@ -291,20 +293,37 @@ def test_multifile_lapse_waits_for_a_midwrite_store_instead_of_skipping_it(tmp_p
     assert min(c.start // fps for c in more) == 1
 
 
-def test_timepoint_count_spans_a_gap_when_metadata_is_absent(tmp_path):
-    """Without Rec:LapseTime the count comes from the highest index on disk.
+def test_timepoint_count_spans_a_gap_when_metadata_is_absent(tmp_path, monkeypatch):
+    """A missing timepoint declaration must not truncate later on-disk indices.
 
-    A contiguous walk would stop at the gap and cap the range, dropping every
-    file after it.
+    This is a path/span contract, not a Zarr-decoding test. Supply the same
+    metadata-free StackInfo returned by the single-store reader and exercise
+    the real multi-file open/count path. Other tests cover real Zarr I/O.
     """
-    fps = 9
-    for t in [0, 1, 4]:
-        _write_lapse_file(tmp_path / f"rec_scan__0{t}__CAM.zarr",
-                          np.full((fps, 4, 5), t + 1, dtype=np.int16), None)
+    from imswitch.improcess.live import sources as live_sources
+    from imswitch.improcess.reconstructors.base import StackInfo
 
+    fps = 9
+    for t in (0, 1, 4):
+        (tmp_path / f"rec_scan__0{t}__CAM.zarr").mkdir()
+
+    def open_without_timepoint_metadata(_reader, _path):
+        return StackInfo(
+            frame_shape=(4, 5), dtype=np.dtype("int16"),
+            attrs={}, expected_frames=fps, frames_per_stack=fps,
+            planned_timepoints=None, detector_name="CAM",
+            dataset_path="/chunks", source_format="ZARR",
+        )
+
+    monkeypatch.setattr(
+        live_sources.ZarrLiveSource, "open", open_without_timepoint_metadata,
+    )
     seed = str(tmp_path / "rec_scan__00__CAM.zarr")
     src = ZarrMultiFileLapseSource(seed)
-    info = src.open(seed)
-    src.close()
+    try:
+        info = src.open(seed)
+    finally:
+        src.close()
 
-    assert info.expected_frames == fps * 5   # spans t0..t4, not just t0..t1
+    assert info.expected_frames == fps * 5
+    assert info.planned_timepoints == 5
