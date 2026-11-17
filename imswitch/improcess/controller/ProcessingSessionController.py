@@ -1943,9 +1943,15 @@ class ProcessingSessionController(ImProcessWidgetController):
                 return
 
     def _currentDataChanged(self, data_obj=None) -> None:
+        previous_id = self._currentDatasetId
         self._sync_current_dataset(data_obj)
-        if self._session is not None:
-            self._render()
+        if self._session is None:
+            return
+        # Only the old/new "current" indicators changed. Rebuilding the whole
+        # catalog here can unexpectedly scroll the Session list on raw loading.
+        for dataset_id in dict.fromkeys((previous_id, self._currentDatasetId)):
+            if dataset_id:
+                self._renderDataset(dataset_id)
 
     def setFollowActiveReconstruction(self, enabled: bool) -> None:
         self._followActiveReconstruction = bool(enabled)
@@ -2429,7 +2435,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         # transition into the familiar FileIO materialisation path.
         self._loadingDatasetId = dataset.id
         self._widget.setStatus(f"Loading {dataset.label}…")
-        self._render()
+        self._renderDataset(dataset.id)
         QtWidgets.QApplication.processEvents()
         try:
             if getattr(dataset, "kind", "") == "time-lapse":
@@ -2449,7 +2455,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                 self._widget.setStatus(f"Loaded {dataset.label}")
         finally:
             self._loadingDatasetId = None
-            self._render()
+            self._renderDataset(dataset.id)
 
     def _selected_dataset_ids(self) -> list[str]:
         ids = list(self._widget.selectedDatasetIds())
