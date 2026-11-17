@@ -42,6 +42,19 @@ class PickSetupDialog(QtWidgets.QDialog):
             self.setupPicker.setCurrentIndex(index)
 
 
+def askForSetup(setups, selectedSetup, information=None, parent=None):
+    """ Show the dialog and wait for it: the setup picked, or None when the
+    user cancelled or there was nothing to pick. """
+    dialog = PickSetupDialog(parent)
+    if information is not None:
+        dialog.informationLabel.setText(information)
+    dialog.setSetups(setups)
+    dialog.setSelectedSetup(selectedSetup)
+    if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        return None
+    return dialog.getSelectedSetup() or None
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

@@ -1,4 +1,4 @@
-import dataclasses
+import functools
 from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
@@ -161,9 +161,7 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
             return
 
         try:
-            configfiletools.saveOptions(
-                dataclasses.replace(options, setupFileName=setupFileName)
-            )
+            configfiletools.saveSetupChoice(setupFileName)
         except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 self,
@@ -172,7 +170,7 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
             )
             return
 
-        self._restartAfterShutdown()
+        self._restartAfterShutdown(setupChosen=True)
 
     def openConfigEditor(self):
         """Open Config Studio even though the normal ImControl controller failed."""
@@ -206,8 +204,9 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
             return
         self._configEditor = None
 
+        setupChosen = editor.active_config_changed
         needsRestart = (
-            editor.active_config_changed
+            setupChosen
             or (
                 self._activeSetupPath is not None
                 and self._activeSetupPath in editor.saved_files()
@@ -216,9 +215,11 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
         editor.deleteLater()
 
         if needsRestart:
-            QtCore.QTimer.singleShot(0, self._promptRestartAfterConfigEdit)
+            QtCore.QTimer.singleShot(
+                0, functools.partial(self._promptRestartAfterConfigEdit, setupChosen=setupChosen)
+            )
 
-    def _promptRestartAfterConfigEdit(self):
+    def _promptRestartAfterConfigEdit(self, setupChosen=False):
         proceed = QtWidgets.QMessageBox.question(
             self,
             'Restart ImSwitch?',
@@ -228,9 +229,11 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
             QtWidgets.QMessageBox.Yes,
         )
         if proceed == QtWidgets.QMessageBox.Yes:
-            self._restartAfterShutdown()
+            self._restartAfterShutdown(setupChosen=setupChosen)
 
-    def _restartAfterShutdown(self):
+    def _restartAfterShutdown(self, setupChosen=False):
         # Use the same deferred-restart path as the normal ImControl UI so
-        # every successfully loaded module is shut down before re-exec.
-        ostools.restartAfterShutdown(self.window().close)
+        # every successfully loaded module is shut down before re-exec. A
+        # setup the user just chose must not be overridden by --setup.
+        arguments = configfiletools.restartArgumentsForSetupChoice() if setupChosen else None
+        ostools.restartAfterShutdown(self.window().close, arguments=arguments)

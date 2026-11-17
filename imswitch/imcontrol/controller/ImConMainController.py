@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import os
 from pathlib import Path
 from typing import Any, Dict
@@ -468,9 +469,8 @@ class ImConMainController(MainController):
         if not proceed:
             return
 
-        options = dataclasses.replace(options, setupFileName=setupFileName)
-        configfiletools.saveOptions(options)
-        self._restartAfterShutdown()
+        configfiletools.saveSetupChoice(setupFileName)
+        self._restartAfterShutdown(setupChosen=True)
 
     def saveWidgetState(self):
         """Save widget states to a JSON file selected by the user."""
@@ -721,8 +721,9 @@ class ImConMainController(MainController):
             return
         self.__configEditor = None
 
+        setupChosen = editor.active_config_changed
         needsRestart = (
-            editor.active_config_changed
+            setupChosen
             or (self.__activeSetupPath is not None
                 and self.__activeSetupPath in editor.saved_files())
         )
@@ -734,9 +735,11 @@ class ImConMainController(MainController):
         # Off the editor's own closeEvent before touching the main window: the
         # answer may be to close the application, and doing that from inside a
         # widget that is still closing is asking for trouble.
-        QtCore.QTimer.singleShot(0, self._promptRestartAfterConfigEdit)
+        QtCore.QTimer.singleShot(
+            0, functools.partial(self._promptRestartAfterConfigEdit, setupChosen=setupChosen)
+        )
 
-    def _promptRestartAfterConfigEdit(self):
+    def _promptRestartAfterConfigEdit(self, setupChosen=False):
         proceed = guitools.askYesNoQuestion(
             self.__mainView,
             'Restart ImSwitch?',
@@ -746,9 +749,9 @@ class ImConMainController(MainController):
         )
         if not proceed:
             return
-        self._restartAfterShutdown()
+        self._restartAfterShutdown(setupChosen=setupChosen)
 
-    def _restartAfterShutdown(self):
+    def _restartAfterShutdown(self, setupChosen=False):
         """ Close the application, then come back up.
 
         Deliberately not ``ostools.restartSoftware()``: that replaces the
@@ -756,8 +759,12 @@ class ImConMainController(MainController):
         finalized and the new process inherits whatever they were doing. Asking
         for the restart and closing the window runs the ordinary shutdown
         first, and ``launchApp`` re-execs once it is done.
+
+        ``setupChosen``: the user picked the setup to start with, so a
+        ``--setup`` this run was started with must not override it.
         """
-        ostools.restartAfterShutdown(self.__mainView.window().close)
+        arguments = configfiletools.restartArgumentsForSetupChoice() if setupChosen else None
+        ostools.restartAfterShutdown(self.__mainView.window().close, arguments=arguments)
 
     def setSessionNote(self, note: str) -> None:
         """Publish the operator's free-text note for this session.
