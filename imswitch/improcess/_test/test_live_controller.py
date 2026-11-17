@@ -3,6 +3,7 @@
 import time
 
 import numpy as np
+import pytest
 from types import SimpleNamespace
 from qtpy import QtCore, QtWidgets
 
@@ -332,6 +333,7 @@ def test_stack_finished_emits_queue_signal_after_cleanup():
     assert controller._source is None
 
 
+@pytest.mark.timeout(30, method="thread")
 def test_controller_processes_two_streaming_sources_sequentially():
     """Sequential live files should not leave the previous QThreads running."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])

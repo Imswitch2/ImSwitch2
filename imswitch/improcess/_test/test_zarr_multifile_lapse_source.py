@@ -1,6 +1,7 @@
 """Tests for ZarrMultiFileLapseSource (per-file timelapse accumulation)."""
 
 import numpy as np
+import pytest
 import zarr
 
 from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
@@ -293,6 +294,7 @@ def test_multifile_lapse_waits_for_a_midwrite_store_instead_of_skipping_it(tmp_p
     assert min(c.start // fps for c in more) == 1
 
 
+@pytest.mark.timeout(30, method="thread")
 def test_timepoint_count_spans_a_gap_when_metadata_is_absent(tmp_path, monkeypatch):
     """A missing timepoint declaration must not truncate later on-disk indices.
 
