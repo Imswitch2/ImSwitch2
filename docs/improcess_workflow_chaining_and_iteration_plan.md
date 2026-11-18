@@ -211,3 +211,28 @@ group of steps applied per index.
   `n_timepoints`, time_lapse) must not be double-looped: with a declared T
   loop, internal `n_timepoints` must be 1, enforced with a clear error.
 - Provenance replay must reproduce auto-indexed and mapped steps exactly.
+
+## Implementation notes
+
+### Phase 0: baseline
+
+Run on `feat/improcess-chaining-iteration` at `bb5ccadf` (the plan commit on
+top of `dev`), `QT_QPA_PLATFORM=offscreen`, Python 3.13, over the 51 test
+modules `test_workflow*.py`, `test_snouty*.py`, `test_python_step*.py`,
+`test_monalisa*.py`, `test_provenance_graph.py`,
+`test_reconstruction_provenance_paths.py`, `test_smartpipeline_adapter.py`
+and `test_points_workflow_end_to_end.py`:
+
+**21 failed, 1192 passed, 4 skipped.** All 21 failures are pre-existing and
+unrelated to this branch:
+
+- `test_snouty.py` (9): `TypeError: not all arguments converted during string
+  formatting` in the SNOUTY metadata/param-widget tests (the attribute
+  readers' debug logging).
+- `test_monalisa_coeffs_per_base.py` (2), `test_monalisa_fast_gauss_placement.py`
+  (5), `test_monalisa_lattice_reconstructor.py` (2): MoNaLISA tests written
+  against the pre-unified (v4) parameter contract / older result types.
+- `test_workflow_document_graph.py`, `test_workflow_editor_gui.py`,
+  `test_workflow_editor_model.py` (1 each): the shipped example
+  `monalisa_reconstruct_chain.yaml` names MoNaLISA parameters that the
+  unified v5 contract no longer accepts, so it fails validation.
