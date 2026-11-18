@@ -17,6 +17,7 @@ import pytest
 import imswitch.imcontrol.controller.controllers.TimelapseController as module
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingRunResult,
+    TilingRunSettings,
 )
 from imswitch.imcontrol.controller.controllers.TimelapseController import (
     TimelapseController,
@@ -148,9 +149,17 @@ class _Tiling:
         self.results = list(results or [])
         self.runs = []
         self.stopped = 0
+        self.grid = (3, 2)
+        self.step_um = 25.0
 
     def snapshotRunSettings(self):
-        return SimpleNamespace(mode=self.mode)
+        return TilingRunSettings(
+            n_tiles_x=self.grid[0], n_tiles_y=self.grid[1], pattern='spiral',
+            step_um=self.step_um, blend_overlaps=False,
+            intensity_correction=False, settle_s=0.0, register_tiles=False,
+            orientation=(False, False, False), save_tiles=False,
+            mode=self.mode, scan_source_key=None, detector_name=None,
+        )
 
     def runTilingForWorkflow(self, settings, folder, *, illuminationGate=None):
         self.runs.append((folder, illuminationGate))
@@ -213,12 +222,14 @@ class _Harness:
         if tiling is not None:
             registry['Tiling'] = tiling
         self.scanSource = SimpleNamespace(name='scanA')
+        self.scanLasers = {}
         commChannel = SimpleNamespace(
             controllerRegistry=lambda: registry,
             getRecordingScanSourceNames=lambda: list(scanSources),
             getRecordingScanSource=lambda key=None: self.scanSource,
             getRecordingFolder=lambda: str(tmp_path),
-            scanWorkflow=SimpleNamespace(laser_scan_state=lambda: {}),
+            scanWorkflow=SimpleNamespace(
+                laser_scan_state=lambda: dict(self.scanLasers)),
         )
         master = SimpleNamespace(
             lasersManager=_Lasers(['L488', 'LED', 'Gate', 'AOTF']),
@@ -633,3 +644,70 @@ def test_stopping_a_timelapse_of_tilings_between_timepoints(make):
     assert len(tiling.runs) == 1
     assert tiling.stopped == 1
     assert h.widget.statusLabel.text().startswith('Stopped after 1/3')
+
+
+# ----------------------------------------------------------------------
+# Switching kinds keeps the operator's choices, not the display's
+# ----------------------------------------------------------------------
+
+def test_a_scan_detector_is_unticked_when_switching_to_camera_frames(make):
+    """Found on the rig: the APD stayed ticked, greyed out, and the camera
+    timelapse refused to start."""
+    h = make(scanSources=['scanA'])
+    h.widget.setKind(KIND_SCAN)
+    h.widget._detectorBoxes['CamA'].setChecked(False)
+    h.widget._detectorBoxes['APD'].setChecked(True)
+    assert h.widget.getDetectors() == ['APD']
+
+    h.widget.setKind(KIND_CAMERA)
+    assert not h.widget._detectorBoxes['APD'].isChecked()
+    assert not h.widget._detectorBoxes['APD'].isEnabled()
+    assert h.widget.getDetectors() == ['CamA'], 'a camera is offered instead'
+    h.ctrl.startTimelapse()
+    assert h.recording.calls[0][1][0] == ['CamA']
+    h.ctrl.closeEvent()
+
+
+def test_the_scan_detector_comes_back_when_switching_back(make):
+    h = make(scanSources=['scanA'])
+    h.widget.setKind(KIND_SCAN)
+    h.widget._detectorBoxes['APD'].setChecked(True)
+    h.widget.setKind(KIND_CAMERA)
+    h.widget.setKind(KIND_SCAN)
+    assert h.widget._detectorBoxes['APD'].isChecked()
+
+
+def test_the_scans_lasers_are_shown_but_never_become_a_camera_selection(make):
+    h = make(scanSources=['scanA'])
+    h.scanSource._publishLaserScanState = lambda: None
+    h.scanLasers = {'L488': SimpleNamespace(active_for_scan=True)}
+    h.widget.setLaserChecked('AOTF', True)  # the operator's own choice
+    h.widget.setKind(KIND_SCAN)
+    assert h.widget._laserRows['L488'][0].isChecked(), 'shown read-only'
+    assert not h.widget._laserRows['AOTF'][0].isChecked()
+
+    h.widget.setKind(KIND_CAMERA)
+    assert [name for name, _ in h.widget.getLasers()] == ['AOTF']
+
+
+def test_the_summary_says_what_each_tiling_timepoint_will_be(make):
+    tiling = _Tiling(_Events())
+    h = make(tiling=tiling)
+    h.widget.setKind(KIND_TILING)
+    text = h.widget.saveSummaryLabel.text()
+    assert '3 \u00d7 2 tiles' in text and '25 \u00b5m step' in text
+    assert 'free-running' in text
+
+
+def test_a_tiling_timelapse_records_the_settings_it_used(make):
+    tiling = _Tiling(_Events())
+    tiling.grid, tiling.step_um = (4, 1), 12.5
+    h = make(tiling=tiling)
+    h.widget.setKind(KIND_TILING)
+    h.widget.setTimepoints(1)
+    h.ctrl.startTimelapse()
+    h.qtbot.waitUntil(lambda: h.ctrl._run is None, timeout=10000)
+    root = tiling.runs[0][0].parent
+    manifest = json.loads((root / 'timelapse.json').read_text())
+    assert manifest['tiling_settings']['n_tiles_x'] == 4
+    assert manifest['tiling_settings']['step_um'] == 12.5

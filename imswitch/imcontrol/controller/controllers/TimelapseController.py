@@ -21,6 +21,7 @@ and the shared attributes Recording writes into each point stay true.
 """
 
 import collections
+import dataclasses
 import json
 import math
 import threading
@@ -71,6 +72,21 @@ _NOTE_TILING_FILES = (
     'folder.'
 )
 _TOOLTIP_SCAN_DRIVEN = 'Scan-driven: records only while a scan runs'
+
+
+def _describeTiling(settings) -> str:
+    """What one tiling of the timelapse is, in the Tiling panel's own terms."""
+    triggered = settings.mode == MODE_TRIGGERED
+    text = (
+        f'{settings.n_tiles_x} \u00d7 {settings.n_tiles_y} tiles, '
+        f'{settings.step_um:g} \u00b5m step, '
+        + ('triggered (one scan per tile)' if triggered else 'free-running')
+    )
+    if settings.detector_name:
+        text += f', detector {settings.detector_name}'
+    if triggered and settings.scan_source_key:
+        text += f', scan source {settings.scan_source_key}'
+    return text
 
 
 class _Stopped(Exception):
@@ -193,9 +209,25 @@ class TimelapseController(ImConWidgetController):
         self._widget.setLasers(self._laserRows())
         self._populateScanSources()
         self._widget.setAvailableKinds(self._availableKinds())
+        self._followTilingPanel()
         if initial:
             self._widget.setKind(self._info.defaultKind)
         self._applyKind(self._widget.getKind())
+
+    def _followTilingPanel(self) -> None:
+        """Refresh the summary whenever the Tiling panel changes (once)."""
+        if self.__dict__.get('_followingTiling'):
+            return
+        tilingWidget = getattr(self._controllers().get('Tiling'), '_widget', None)
+        for name in ('sigParamsChanged', 'sigModeChanged', 'sigDetectorChanged'):
+            signal = getattr(tilingWidget, name, None)
+            if signal is not None:
+                signal.connect(lambda *_a: self._onTilingPanelChanged())
+                self._followingTiling = True
+
+    def _onTilingPanelChanged(self) -> None:
+        if self._widget.getKind() == KIND_TILING and self._run is None:
+            self._applyKind(KIND_TILING)
 
     # ------------------------------------------------------------------
     # Public API
@@ -382,12 +414,20 @@ class TimelapseController(ImConWidgetController):
         else:
             w.setLasersEditable(True)
             w.setDetectorsEnabled(True)
+            cameras = []
             for name, detector in self._acquisitionDetectors().items():
                 scanDriven = bool(getattr(detector, 'isScanDriven', False))
                 w.setDetectorEnabled(
                     name, not scanDriven,
                     _TOOLTIP_SCAN_DRIVEN if scanDriven else '',
                 )
+                if not scanDriven:
+                    cameras.append(name)
+            if cameras and not w.getDetectors():
+                # The scan-driven ones were unticked: offer the first camera,
+                # as the widget opens with, rather than a timelapse that
+                # refuses to start for want of a detector.
+                w.setDetectorChecked(cameras[0], True)
             w.setFramesPerPointEnabled(True)
             w.setSingleFileEnabled(True)
             w.setScanSourceVisible(False)
@@ -432,6 +472,14 @@ class TimelapseController(ImConWidgetController):
         folder = self._recordingFolder() or '(no Recording panel folder)'
         if kind == KIND_TILING:
             text = f'{folder}/timelapse_<date_time>/t###/ (tiling datasets)'
+            tiling = self._controllers().get('Tiling')
+            snapshot = getattr(tiling, 'snapshotRunSettings', None)
+            if callable(snapshot):
+                try:
+                    text = (f'Each timepoint: {_describeTiling(snapshot())}, as the '
+                            f'Tiling panel is set when the timelapse starts. {text}')
+                except Exception:
+                    pass
         else:
             recording = self._controllers().get('Recording')
             fmt = ''
@@ -519,6 +567,10 @@ class TimelapseController(ImConWidgetController):
                 return 'Tiling is not available on this setup.'
             run.tiling = tiling
             run.tilingSettings = tiling.snapshotRunSettings()
+            self._logger.info(
+                'Timelapse of tilings, each timepoint as the Tiling panel is '
+                f'set now: {_describeTiling(run.tilingSettings)}'
+            )
 
         self._darkenAll(run, laser)
         for name, power in run.plan.lasers:
@@ -535,7 +587,14 @@ class TimelapseController(ImConWidgetController):
             run.folder = timelapse_folder(self._recordingFolder())
             run.folder.mkdir(parents=True, exist_ok=True)
             self._writeManifest(run)
-            return self._launchWorker(run, self._tilingWorker)
+            refusal = self._launchWorker(run, self._tilingWorker)
+            if not refusal:
+                self._status(
+                    f'Timelapse running: {run.plan.timepoints} '
+                    f'tiling{"s" if run.plan.timepoints != 1 else ""} of '
+                    f'{_describeTiling(run.tilingSettings)}.'
+                )
+            return refusal
 
         if run.kind == KIND_CAMERA:
             # Held for the whole run: the cameras keep free-running through
@@ -944,6 +1003,10 @@ class TimelapseController(ImConWidgetController):
             'lasers': plan.lasers_dict(),
             'illumination_settle_ms': plan.illumination_settle_ms,
             'started_utc': run.runStartUtc.isoformat(),
+            'tiling_settings': (
+                dataclasses.asdict(run.tilingSettings)
+                if dataclasses.is_dataclass(run.tilingSettings) else None
+            ),
             'points': list(run.points),
         }
         try:

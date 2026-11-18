@@ -201,3 +201,21 @@ def test_editing_emits_params_changed(widget, qtbot):
         widget.setLaserChecked('L488', True)
     with qtbot.waitSignal(widget.sigParamsChanged):
         widget._detectorBoxes['CamB'].setChecked(True)
+
+
+def test_disabling_a_ticked_detector_unticks_it_and_enabling_restores_it(widget):
+    widget._detectorBoxes['APD'].setChecked(True)
+    widget.setDetectorEnabled('APD', False, 'Scan-driven')
+    assert not widget._detectorBoxes['APD'].isChecked()
+    assert 'APD' not in widget.getDetectors()
+    widget.setDetectorEnabled('APD', True)
+    assert widget._detectorBoxes['APD'].isChecked()
+
+
+def test_a_laser_display_is_set_aside_when_the_list_is_editable_again(widget):
+    widget.setLaserChecked('L640', True)
+    widget.setLasersEditable(False, 'The scan decides.')
+    widget.showLaserStates({'L488': True, 'L640': False})
+    assert [n for n, _ in widget.getLasers()] == ['L488'], 'the display'
+    widget.setLasersEditable(True)
+    assert [n for n, _ in widget.getLasers()] == ['L640'], "the operator's"
