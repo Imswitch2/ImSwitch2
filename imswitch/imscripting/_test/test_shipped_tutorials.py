@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 
 import imswitch
+from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 
 pytestmark = pytest.mark.nohardware
 
 USER_DEFAULTS = Path(imswitch.__file__).parent / '_data' / 'user_defaults'
 TUTORIALS = USER_DEFAULTS / 'scripts' / 'tutorial'
-SETUPS = USER_DEFAULTS / 'imcontrol_setups'
 
 # The file name may be followed by a note, e.g. "<- a new setup".
 _MOCK_SETUP = re.compile(r'^\s*Mock setup:\s*(\S+\.json)(?:\s.*)?$', re.MULTILINE)
@@ -67,8 +67,11 @@ def test_header_says_what_it_teaches_and_what_it_needs(path):
                     'Your own microscope:', 'Next:'):
         assert section in doc, f'header is missing "{section}"'
     setup = _MOCK_SETUP.search(doc).group(1)
-    assert (SETUPS / setup).is_file(), f'{setup} is not a shipped setup'
-    json.loads((SETUPS / setup).read_text(encoding='utf-8'))
+    try:
+        path = shippedSetupPath(setup)  # by file name: examples sit in subfolders
+    except FileNotFoundError:
+        pytest.fail(f'{setup} is not a shipped setup')
+    json.loads(path.read_text(encoding='utf-8'))
 
 
 @pytest.mark.parametrize('path', [p for p in _scripts()

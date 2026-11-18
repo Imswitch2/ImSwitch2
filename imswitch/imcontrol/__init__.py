@@ -17,9 +17,21 @@ def getMainViewAndController(moduleCommChannel, *_args,
         from qtpy import QtWidgets
         from imswitch.imcontrol.view.PickSetupDialog import PickSetupDialog
 
-        # Let user pick the setup to use
+        # Let user pick the setup to use. A setup folder that holds no setup
+        # (a share that is not mounted, a mistyped path) must not leave the
+        # operator with an empty list and no way out: offer the default
+        # folder's setups instead.
+        folder = configfiletools.getSetupFilesDir(options)
+        setups = configfiletools.getSetupList(folder)
+        if not setups and getattr(options, 'setupFolder', ''):
+            logger.warning(f'No setup files in the setup folder {folder}; '
+                           f'offering the default setup folder instead')
+            options = dataclasses.replace(options, setupFolder='')
+            folder = configfiletools.getSetupFilesDir(options)
+            setups = configfiletools.getSetupList(folder)
         pickSetupDialog = PickSetupDialog()
-        pickSetupDialog.setSetups(configfiletools.getSetupList())
+        pickSetupDialog.setFolder(folder)
+        pickSetupDialog.setSetups(setups)
         pickSetupDialog.setSelectedSetup(options.setupFileName)
         result = pickSetupDialog.exec_()
         setupFileName = pickSetupDialog.getSelectedSetup()

@@ -1,18 +1,20 @@
 import dataclasses
-import glob
 import json
 import os
-from pathlib import Path
 
 from imswitch.imcommon.model import dirtools
+from . import setupfolder
 from .Options import Options
 
 
 _LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
 
 
-def getSetupList():
-    return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
+def getSetupList(folder=None):
+    """ The setup files in ``folder`` -- by default this computer's setup
+    folder -- and its subfolders, named relative to it ('/' separators):
+    those at the top first, then each subfolder in turn. """
+    return setupfolder.listSetupFiles(getSetupFilesDir() if folder is None else folder)
 
 
 def _defaultSetupFileName(setupList):
@@ -24,18 +26,24 @@ def _defaultSetupFileName(setupList):
     return ''
 
 
-def getSetupFilesDir():
-    """ The directory this installation keeps its hardware setup files in. """
-    return _setupFilesDir
+def getSetupFilesDir(options=None):
+    """ The folder this computer keeps its hardware setup files in: the
+    ``setupFolder`` of ``options`` (by default the options in use), or
+    ``<ImSwitchConfig>/imcontrol_setups`` when that is not set. """
+    if options is None:
+        options, _ = loadOptions()
+    return setupfolder.setupFolderOf(getattr(options, 'setupFolder', ''))
 
 
-def getSetupFilePath(setupFileName):
-    """ Where a setup file of this name lives, whether or not it exists yet. """
-    return os.path.join(_setupFilesDir, setupFileName)
+def getSetupFilePath(setupFileName, options=None):
+    """ Where a setup file of this name lives, whether or not it exists yet:
+    ``setupFileName`` is relative to the setup folder of ``options`` (by
+    default the options in use), or absolute. """
+    return setupfolder.setupFilePath(getSetupFilesDir(options), setupFileName)
 
 
 def loadSetupInfo(options, setupInfoType):
-    with open(os.path.join(_setupFilesDir, options.setupFileName)) as setupFile:
+    with open(getSetupFilePath(options.setupFileName, options)) as setupFile:
         return setupInfoType.from_json(setupFile.read(), infer_missing=True)
 
 
@@ -75,7 +83,7 @@ def pruneDefaultSetupInfoFields(setupInfo) -> dict:
 
 
 def saveSetupInfo(options, setupInfo):
-    with open(os.path.join(_setupFilesDir, options.setupFileName), 'w') as setupFile:
+    with open(getSetupFilePath(options.setupFileName, options), 'w') as setupFile:
         json.dump(pruneDefaultSetupInfoFields(setupInfo), setupFile, indent=4)
 
 
@@ -88,14 +96,40 @@ def loadOptions():
     optionsDidNotExist = False
     if not os.path.isfile(_optionsFilePath):
         _options = Options(
-            setupFileName=_defaultSetupFileName(getSetupList())
+            setupFileName=_defaultSetupFileName(
+                getSetupList(setupfolder.defaultSetupFolder())
+            )
         )
         optionsDidNotExist = True
     else:
         with open(_optionsFilePath, 'r') as optionsFile:
             _options = Options.from_json(optionsFile.read(), infer_missing=True)
+        _options = _followMovedSetup(_options)
 
     return _options, optionsDidNotExist
+
+
+def _followMovedSetup(options):
+    """ Options naming a setup that is no longer where they say, while
+    exactly one setup of that file name is in a subfolder of the setup
+    folder, name that one instead -- the setup was sorted into a subfolder,
+    by the user or by an update that sorted the shipped examples. Written
+    back, so that the Config Studio and the next start agree; a name that
+    matches nothing, or several setups, is left for the setup picker. """
+    name = options.setupFileName
+    found = setupfolder.findSetupFile(getSetupFilesDir(options), name)
+    if found is None or found == name:
+        return options
+    moved = dataclasses.replace(options, setupFileName=found)
+    from imswitch.imcommon.model import initLogger
+    logger = initLogger('setup files')
+    logger.info(f'Setup "{name}" is now "{found}" in the setup folder; using it')
+    try:
+        with open(_optionsFilePath, 'w') as optionsFile:
+            optionsFile.write(moved.to_json(indent=4))
+    except OSError as error:
+        logger.warning(f'Could not record the new place of the setup in the options: {error}')
+    return moved
 
 
 def saveOptions(options):
@@ -107,8 +141,7 @@ def saveOptions(options):
 
 
 dirtools.initUserFilesIfNeeded()
-_setupFilesDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_setups')
-os.makedirs(_setupFilesDir, exist_ok=True)
+os.makedirs(setupfolder.defaultSetupFolder(), exist_ok=True)
 _optionsFilePath = os.path.join(dirtools.UserFileDirs.Config, 'imcontrol_options.json')
 
 _options = None

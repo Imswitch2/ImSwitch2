@@ -12,7 +12,14 @@ class PickSetupDialog(QtWidgets.QDialog):
         self.informationLabel = QtWidgets.QLabel(
             'Select the configuration file for your hardware setup:'
         )
+        # Which folder the list comes from: the setup folder is a setting
+        # (Preferences > Setup folder…), so it is not always the default one.
+        self.folderLabel = QtWidgets.QLabel()
+        self.folderLabel.setWordWrap(True)
+        self.folderLabel.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.folderLabel.hide()
         self.setupPicker = QtWidgets.QComboBox()
+        self.setupPicker.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
 
         self.buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -24,9 +31,15 @@ class PickSetupDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.informationLabel)
+        layout.addWidget(self.folderLabel)
         layout.addWidget(self.setupPicker)
         layout.addWidget(self.buttons)
         self.setLayout(layout)
+
+    def setFolder(self, folder):
+        """ Say which folder the setups are listed from. """
+        self.folderLabel.setText(f'Setup folder: {folder}' if folder else '')
+        self.folderLabel.setVisible(bool(folder))
 
     def setSetups(self, setupList):
         self.setupPicker.clear()

@@ -4,7 +4,7 @@ from imswitch.imcontrol.model.managers.positioners.KinesisStageManager import (
 )
 
 KIRALUX_SETUP_PATH = (
-    'imswitch/_data/user_defaults/imcontrol_setups/example_kiralux_teensy.json'
+    'imswitch/_data/user_defaults/imcontrol_setups/real/widefieldstarss/example_kiralux_teensy.json'
 )
 
 

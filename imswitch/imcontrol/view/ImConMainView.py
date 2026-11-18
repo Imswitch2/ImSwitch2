@@ -15,6 +15,7 @@ from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
+from .SetupFolderDialog import SetupFolderDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -167,6 +168,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenConfigEditor = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
     sigOpenRecordingFolder = QtCore.Signal()
+    sigOpenSetupFolder = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -187,6 +189,9 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
+        self.setupFolderDialog = SetupFolderDialog(
+            self, appliesWhen='Saving restarts ImSwitch with the setup chosen here.'
+        )
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -298,6 +303,15 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.recordingFolderAction.triggered.connect(self.sigOpenRecordingFolder)
         preferences.addAction(self.recordingFolderAction)
+
+        self.setupFolderAction = QtWidgets.QAction('Setup folder…', self)
+        self.setupFolderAction.setToolTip(
+            'Which folder this computer takes hardware setup files from'
+            ' (subfolders included), and the setup to use from it.'
+            ' ImSwitch restarts.'
+        )
+        self.setupFolderAction.triggered.connect(self.sigOpenSetupFolder)
+        preferences.addAction(self.setupFolderAction)
 
         self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
         self.memoryLimitsAction.setToolTip(
@@ -612,6 +626,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.recordingFolderDialog.show()
         self.recordingFolderDialog.raise_()
         self.recordingFolderDialog.activateWindow()
+
+    def showSetupFolderDialog(self):
+        """Raise the setup-folder editor."""
+        self.setupFolderDialog.show()
+        self.setupFolderDialog.raise_()
+        self.setupFolderDialog.activateWindow()
 
     def showSessionNotesDialog(self):
         """Raise the (modeless) session-notes editor, opening it if needed."""

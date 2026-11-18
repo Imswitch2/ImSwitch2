@@ -1,10 +1,16 @@
 import pytest
 
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, setupfolder
+from imswitch.imcontrol.model.Options import Options
+
+
+def _useDefaultSetupFolder(monkeypatch, folder):
+    monkeypatch.setattr(setupfolder, 'defaultSetupFolder', lambda: str(folder))
 
 
 def test_setup_list_is_sorted(tmp_path, monkeypatch):
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(tmp_path))
+    monkeypatch.setattr(configfiletools, '_options',
+                        Options(setupFileName='', setupFolder=str(tmp_path)))
     for name in ('z_scope.json', 'a_scope.json', 'm_scope.json'):
         (tmp_path / name).write_text('{}')
 
@@ -21,7 +27,7 @@ def test_first_run_prefers_no_hardware_setup(tmp_path, monkeypatch):
     for name in ('example_coolLED.json', 'example_no_hardware.json', 'other.json'):
         (setup_dir / name).write_text('{}')
 
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(setup_dir))
+    _useDefaultSetupFolder(monkeypatch, setup_dir)
     monkeypatch.setattr(configfiletools, '_optionsFilePath', str(tmp_path / 'options.json'))
     monkeypatch.setattr(configfiletools, '_options', None)
 
@@ -37,7 +43,7 @@ def test_first_run_falls_back_to_first_sorted_setup(tmp_path, monkeypatch):
     for name in ('z_scope.json', 'a_scope.json'):
         (setup_dir / name).write_text('{}')
 
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(setup_dir))
+    _useDefaultSetupFolder(monkeypatch, setup_dir)
     monkeypatch.setattr(configfiletools, '_optionsFilePath', str(tmp_path / 'options.json'))
     monkeypatch.setattr(configfiletools, '_options', None)
 
