@@ -498,7 +498,14 @@
   ],
   "scripts/workflows/README.md": [
    "2b551bd5cf3884b98d111f3cd20b8121486a24c7ce9023e1dab552469b098f9e",
-   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270"
+   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270",
+   "8705e9e0dfc7089499c1c04e4290fb18a0b483ccd57ee4bd30ae9e7ee48bc5a3"
+  ],
+  "scripts/workflows/polarization/01_polarization_stacks.py": [
+   "7228b109109011d66a4188e56d704fdbde764de0c200d8a5185f255475f284a6"
+  ],
+  "scripts/workflows/polarization/README.md": [
+   "5462d18fc6462a61455ccab35fc6a794e9c9929e8f9dafb282ab8fdcfedcb144"
   ],
   "scripts/workflows/timeresolved/01_binned_photon_arrivals.py": [
    "dd1d25460ea63e07ade1ec9cc41c1ee0f75fcb59691cd351b919808f32a98e70"

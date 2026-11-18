@@ -53,8 +53,21 @@ def _rotator_controller():
     shown = {}
     widget = SimpleNamespace(updatePosition=lambda name, pos: shown.__setitem__(name, pos))
     ctrl = _bare(RotatorController, _widget=widget,
+                 _commChannel=SimpleNamespace(sharedAttrs={}),
                  _master=SimpleNamespace(rotatorsManager=_Rotators(HWP=_Rotator(10.0), QWP=_Rotator())))
     return ctrl, shown
+
+
+def test_a_rotators_angle_goes_into_the_recordings_attributes():
+    """A stack recorded at a waveplate angle carries ``Rotator:<name>:Position``."""
+    ctrl, _ = _rotator_controller()
+    attrs = ctrl._commChannel.sharedAttrs
+    ctrl.setRotatorPosition('HWP', 22.5)
+    ctrl.moveRotator('QWP', 45.0)
+    assert attrs == {('Rotator', 'HWP', 'Position'): 22.5, ('Rotator', 'QWP', 'Position'): 45.0}
+    ctrl._master.rotatorsManager['HWP'].position = None      # a mount that cannot say
+    ctrl.getRotatorPosition('HWP')
+    assert attrs[('Rotator', 'HWP', 'Position')] == 22.5
 
 
 def test_rotator_names_position_and_moves():

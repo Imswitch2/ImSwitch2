@@ -18,6 +18,7 @@ from imswitch.imscripting.model import ScriptExecutor, ScriptRunStatus
 class Channel(SignalInterface):
     scanEnded = Signal()
     withArgs = Signal(str, int)
+    failed = Signal(str)
 
 
 @pytest.fixture
@@ -147,6 +148,29 @@ except TimeoutError:
     result = _run(qtbot, executor, code)
     assert result.status == ScriptRunStatus.SUCCEEDED
     assert marks == ['missed']
+
+
+def test_a_failure_signal_ends_the_wait_at_once_with_its_message(qtbot, executor, chan, marks):
+    # A failed recording emits recordingFailed and never recordingEnded:
+    # without failSignal the script waits out its whole timeout.
+    code = """
+t0 = time.monotonic()
+try:
+    callAndWaitForSignal(chan.scanEnded, chan.failed.emit, 'Hamamatsu stalled',
+                         timeout=10, failSignal=chan.failed)
+except RuntimeError as error:
+    marks.append((str(error), time.monotonic() - t0))
+w = getWaitForSignal(chan.scanEnded, timeout=1, failSignal=chan.failed)
+chan.scanEnded.emit()
+chan.failed.emit('late')                    # the awaited one came first: no failure
+w()
+marks.append('ended')
+"""
+    result = _run(qtbot, executor, code)
+    assert result.status == ScriptRunStatus.SUCCEEDED, result.error
+    (message, seconds), ended = marks
+    assert message == 'Failed instead: Hamamatsu stalled' and seconds < 2.0
+    assert ended == 'ended'
 
 
 def test_call_and_wait_disconnects_when_the_call_raises(qtbot, executor, chan, marks):

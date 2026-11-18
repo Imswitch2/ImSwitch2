@@ -2,7 +2,7 @@
 Global-level functions
 **********************
 
-.. method:: callAndWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, func: Callable, *args, timeout: Optional[float] = None, **kwargs) -> Any
+.. method:: callAndWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, func: Callable, *args, timeout: Optional[float] = None, failSignal: Optional[imswitch.imcommon.framework.qt.Signal] = None, **kwargs) -> Any
 
    Creates a waiter for ``signal``, then calls ``func(*args,
    **kwargs)``, then waits for the signal. Returns what ``func``
@@ -13,7 +13,9 @@ Global-level functions
    Example: ``callAndWaitForSignal(api.imcontrol.signals().recordingEnded,
    api.imcontrol.stopRecording, timeout=60)``. Raises ``TimeoutError``
    after ``timeout`` seconds and ``OperationCancelled`` if the script is
-   stopped.
+   stopped. With ``failSignal`` (``signals.recordingFailed``, say) it
+   raises ``RuntimeError`` as soon as that is emitted instead, as
+   getWaitForSignal does.
 
 .. method:: getLogger() -> logging.LoggerAdapter
 
@@ -24,7 +26,7 @@ Global-level functions
 
    Returns the path to the directory containing the running script.
 
-.. method:: getWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, pollIntervalSeconds: float = 0.05, timeout: Optional[float] = None) -> Callable[[], NoneType]
+.. method:: getWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, pollIntervalSeconds: float = 0.05, timeout: Optional[float] = None, failSignal: Optional[imswitch.imcommon.framework.qt.Signal] = None) -> Callable[[], NoneType]
 
    Returns a function that will wait for the specified signal to emit.
    The returned function will wait until the signal has been emitted
@@ -37,6 +39,12 @@ Global-level functions
    ``OperationCancelled`` if the script is stopped. It accepts an
    optional ``timeout`` argument of its own that overrides the one given
    here. The polling interval defaults to 50 ms.
+
+   ``failSignal`` is a signal that means the awaited one will not come
+   -- ``recordingFailed`` for ``recordingEnded``: when it is emitted
+   first, the function raises ``RuntimeError`` with what it was emitted
+   with (a failed recording's message), instead of waiting out the
+   timeout.
 
 .. method:: importScript(path: str) -> Any
 

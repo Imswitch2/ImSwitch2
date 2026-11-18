@@ -55,7 +55,8 @@ class _Actions:
     @APIExport()
     def getWaitForSignal(self, signal: Signal,
                          pollIntervalSeconds: float = 0.05,
-                         timeout: Optional[float] = None) -> Callable[[], None]:
+                         timeout: Optional[float] = None,
+                         failSignal: Optional[Signal] = None) -> Callable[[], None]:
         """ Returns a function that will wait for the specified signal to emit.
         The returned function will wait until the signal has been emitted
         since its creation, so **create it before triggering the action** that
@@ -66,15 +67,29 @@ class _Actions:
         pass without an emission (``None`` waits indefinitely) and
         ``OperationCancelled`` if the script is stopped. It accepts an
         optional ``timeout`` argument of its own that overrides the one given
-        here. The polling interval defaults to 50 ms. """
+        here. The polling interval defaults to 50 ms.
+
+        ``failSignal`` is a signal that means the awaited one will not come
+        -- ``recordingFailed`` for ``recordingEnded``: when it is emitted
+        first, the function raises ``RuntimeError`` with what it was emitted
+        with (a failed recording's message), instead of waiting out the
+        timeout. """
 
         emitted = False
+        failure = None
 
         def setEmitted(*_args, **_kwargs):
             nonlocal emitted
             emitted = True
 
+        def setFailed(*args, **_kwargs):
+            nonlocal failure
+            if failure is None:
+                failure = args
+
         signal.connect(setEmitted)
+        if failSignal is not None:
+            failSignal.connect(setFailed)
         connected = True
 
         def wait(timeout: Optional[float] = timeout) -> None:
@@ -86,6 +101,10 @@ class _Actions:
                     FrameworkUtils.processPendingEventsCurrThread()
                     if emitted:
                         break
+                    if failure is not None:
+                        said = '; '.join(str(arg) for arg in failure)
+                        raise RuntimeError(f'Failed instead: {said}' if said else
+                                           'The failure signal was emitted instead')
                     if deadline is not None:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -104,17 +123,21 @@ class _Actions:
             nonlocal connected
             if connected:
                 connected = False
-                try:
-                    signal.disconnect(setEmitted)
-                except (TypeError, RuntimeError):
-                    pass  # Already disconnected or the emitter is gone
+                for emitter, slot in ((signal, setEmitted), (failSignal, setFailed)):
+                    if emitter is None:
+                        continue
+                    try:
+                        emitter.disconnect(slot)
+                    except (TypeError, RuntimeError):
+                        pass  # Already disconnected or the emitter is gone
 
         wait.close = close
         return wait
 
     @APIExport()
     def callAndWaitForSignal(self, signal: Signal, func: Callable, *args,
-                             timeout: Optional[float] = None, **kwargs) -> Any:
+                             timeout: Optional[float] = None,
+                             failSignal: Optional[Signal] = None, **kwargs) -> Any:
         """ Creates a waiter for ``signal``, then calls ``func(*args,
         **kwargs)``, then waits for the signal. Returns what ``func``
         returned. This is the safe way to call an API function and wait for
@@ -124,8 +147,10 @@ class _Actions:
         Example: ``callAndWaitForSignal(api.imcontrol.signals().recordingEnded,
         api.imcontrol.stopRecording, timeout=60)``. Raises ``TimeoutError``
         after ``timeout`` seconds and ``OperationCancelled`` if the script is
-        stopped. """
-        wait = self.getWaitForSignal(signal, timeout=timeout)
+        stopped. With ``failSignal`` (``signals.recordingFailed``, say) it
+        raises ``RuntimeError`` as soon as that is emitted instead, as
+        getWaitForSignal does. """
+        wait = self.getWaitForSignal(signal, timeout=timeout, failSignal=failSignal)
         try:
             result = func(*args, **kwargs)
         except BaseException:
