@@ -5,16 +5,9 @@
 # Notes say what had to be resolved in dev; the branch needs the same when it
 # merges main.
 
-fix/simple-scan-once-recording     # Scan once -> REC on the Simple panel; PR to open
 feat/scan-engines                  # Expert panel + Simple view, scan timing, Lifetime 2.0
-claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gauss joint fit; unified Gaussian recon, presets
-                                   #   (the worker adds monalisa:spot_fwhm_nm after main's build_recording_attrs;
-                                   #    AUTO_SATURATED_PERCENT comes from improcess.model.contrast (fiji's windows);
-                                   #    the multi-data column: relocalize box, buttons, live-recon's memory policy)
 feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carried #71 (on main since 2026-11-03)
                                    #   (its recordScanToMemory/recordFramesToMemory replace scan-engines' older one)
-feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists; merged again 2026-11-03 for the
-                                   #   output_kind declarations (any, table without average_psf); changelog kept dev's
 feat/improcess-fiji                # PR #82: Fiji link, image windows
                                    #   (runner: a bound Source publishes on the data port, with main's port mapping;
                                    #    test_workflow_boundaries no longer imports editor 1.0's steplist)
@@ -40,3 +33,7 @@ feat/improcess-tool-menu           # ImProcess analysis tools by category (Fiji-
                                    #   (workflow catalog lives in imcommon here: imcommon Catalog.categories() follows the processor order,
                                    #    the improcess builder sorts by category_sort_key; pick moved to 'Spots and points' -- smart-pipeline
                                    #    needs that (and test_points_processors' expected category) when it merges main; preset table: dev text kept)
+feat/timelapse                     # Timelapse widget: camera/scan/tiling timelapses, lasers on only per timepoint;
+                                   #   Recording camera series + gated camera lapse, Tiling workflow entry; PR to open
+                                   #   (main merged into dev first for PR #69; dock list: SmartPipeline and Timelapse
+                                   #    both kept; changelog: both sides kept)
