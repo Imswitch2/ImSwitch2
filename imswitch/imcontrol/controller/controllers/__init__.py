@@ -51,6 +51,7 @@ _CONTROLLER_MODULES = {
     "SmartPipelineController": "SmartPipelineController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",
+    "TimelapseController": "TimelapseController",
     "TriggerScopeRasterController": "TriggerScopeRasterController",
     "TriggerScopePLSRController": "TriggerScopePLSRController",
     "TriggerScopeGalvoDetectionController": "TriggerScopeGalvoDetectionController",

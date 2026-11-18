@@ -4768,6 +4768,7 @@ def _load_widget_registry() -> dict:
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
+        "Timelapse": "Advanced",
         "Watcher": "Advanced",
     }
 
@@ -4813,6 +4814,7 @@ def _load_widget_registry() -> dict:
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),
             ("Tiling",     "Spiral tiling scan"),
+            ("Timelapse",  "Timelapse of camera frames, scans or tilings"),
             ("Watcher",    "File watcher"),
         ],
     }

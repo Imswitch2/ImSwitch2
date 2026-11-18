@@ -53,6 +53,7 @@ _WIDGET_MODULES = {
     "SmartPipelineWidget": "SmartPipelineWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
+    "TimelapseWidget": "TimelapseWidget",
     "TriggerScopeLSXYRWidget": "TriggerScopeLSXYRWidget",
     "TriggerScopeRasterWidget": "TriggerScopeRasterWidget",
     "TriggerScopePLSRWidget": "TriggerScopePLSRWidget",
