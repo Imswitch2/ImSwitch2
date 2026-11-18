@@ -10,7 +10,8 @@ A deformable mirror takes one value per actuator, sent as a whole
   ``flatFile`` gives one; *Save as flat* in the panel or ``setFlat`` in a
   script replaces it in memory);
 * optionally a **mode matrix** (``modesFile``): row ``k`` is the command
-  for one unit of mode ``firstMode + k``. ``setModes`` sends the flat plus
+  for one unit of mode ``firstMode + k`` (or of the ``k``-th of
+  ``modeNumbers``). ``setModes`` sends the flat plus
   a weighted sum of rows. ALPAO's own ``<serial>-Z2C.csv`` is such a
   matrix, and so is the one the AO calibration script writes.
 
@@ -53,6 +54,32 @@ control matrices); a row per mode and a column per actuator, or the
 transpose. ImSwitch writes commands as ``.csv`` (``Actuator,Push``) or
 ``.npy``.
 
+
+The panel and scripts
+=====================
+
+``"DeformableMirror"`` in ``availableWidgets`` adds the **Deformable
+Mirror** panel: per mirror its last command as bars over the actuators (the
+flat as dots), **Flat**, **Zero**, **Reset** and **Use as flat**, **Load...**
+and **Save...** for command files, a **Poke** of one actuator over the flat,
+and, with a mode matrix, an amplitude per mode and **Apply modes**. A command
+the mirror refuses is shown under it in red.
+
+Scripts reach the mirrors with or without the panel::
+
+    api.imcontrol.getDeformableMirrorNames()            # ['DM']
+    api.imcontrol.getMirrorInfo('DM')                   # actuators, maxCommand, modes, ...
+    api.imcontrol.flattenMirror('DM')
+    api.imcontrol.setMirrorModes('DM', {5: 0.05, 11: -0.02})
+    api.imcontrol.pokeMirrorActuator('DM', 34, 0.1)
+    api.imcontrol.setMirrorCommand('DM', command)       # one value per actuator
+    api.imcontrol.setMirrorFlat('DM')                   # the last command is the flat
+    api.imcontrol.saveMirrorCommand('DM', 'C:/AO/flat_new.csv')
+    api.imcontrol.loadMirrorCommand('DM', 'C:/AO/flat_new.csv')
+
+Every command sent is recorded with the frames: ``DeformableMirror:<name>:Command``
+(one value per actuator) and ``DeformableMirror:<name>:Modes`` (the
+amplitudes, when the command was a sum of modes).
 
 AlpaoDMManager
 ==============
@@ -109,6 +136,12 @@ Reset when ImSwitch closes.
      - int
      - The number of the matrix's first row, e.g. 2 for a Zernike matrix
        that starts at tip (Noll 2). Default 1.
+   * - ``modeNumbers``
+     - list of int
+     - The number of every row, for a matrix whose modes are not
+       consecutive; replaces ``firstMode``. Microscope_GUI's modal control
+       matrix (``control_matrix_modal_*.tif``) has the 16 modes Noll 1-13,
+       16, 17 and 22: ``[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22]``.
    * - ``maxCommand``
      - float
      - The largest absolute value sent to any actuator. Default 1.

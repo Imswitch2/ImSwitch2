@@ -28,6 +28,7 @@ _WIDGET_MODULES = {
     "ImageWidget": "ImageWidget",
     "HardwareStatusWidget": "HardwareStatusWidget",
     "InstrumentsWidget": "InstrumentsWidget",
+    "DeformableMirrorWidget": "DeformableMirrorWidget",
     "LaserWidget": "LaserWidget",
     "LifetimeWidget": "LifetimeWidget",
     "LightSheetMulticolorWidget": "LightSheetMulticolorWidget",

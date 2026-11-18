@@ -17,6 +17,7 @@ _CONTROLLER_MODULES = {
     "BeadRecController": "BeadRecController",
     "BFTimelapseController": "BFTimelapseController",
     "ConsoleController": "ConsoleController",
+    "DeformableMirrorController": "DeformableMirrorController",
     "EtMonalisaController": "EtMonalisaController",
     "EtSTEDController": "EtSTEDController",
     "EtSnoutyController": "EtSnoutyController",

@@ -171,6 +171,15 @@ class ImConMainController(MainController):
                 widget=None,  # API-only, no widget
             )
 
+        # DeformableMirrorController exports the setup's deformable mirrors
+        # to scripts; with the DeformableMirror panel it is that panel's.
+        self.deformableMirrorController = self.controllers.get('DeformableMirror')
+        if self.deformableMirrorController is None:
+            self.deformableMirrorController = self.__factory.createController(
+                controllers.DeformableMirrorController,
+                widget=None,  # API-only, no widget
+            )
+
         # Generate API
         self.__api = None
         apiObjs = (
@@ -179,6 +188,8 @@ class ImConMainController(MainController):
                self.workflowFacadeController, self.reservationController]
             + ([self.instrumentsController]
                if self.instrumentsController not in self.controllers.values() else [])
+            + ([self.deformableMirrorController]
+               if self.deformableMirrorController not in self.controllers.values() else [])
         )
         self.__api = generateAPI(
             apiObjs,

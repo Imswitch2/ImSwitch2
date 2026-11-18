@@ -16,8 +16,9 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
     The manager keeps the last command it sent, the mirror's *flat* (the
     command that makes it flat, all zeros unless ``flatFile`` gives one) and,
     with ``modesFile``, a matrix of mode shapes: row ``k`` is the command for
-    one unit of mode ``firstMode + k`` (for example ALPAO's
-    ``<serial>-Z2C.csv``, or a matrix the AO calibration script wrote).
+    one unit of mode ``firstMode + k``, or of the ``k``-th of
+    ``modeNumbers`` (for example ALPAO's ``<serial>-Z2C.csv``, a matrix the
+    AO calibration script wrote, or Microscope_GUI's modal control matrix).
 
     Commands outside ``±maxCommand`` are refused, never clipped.
 
@@ -28,6 +29,9 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
           .tif): a row per mode, a column per actuator (or the transpose).
         - firstMode (int, default 1): The number of the matrix's first row,
           e.g. 2 for a Zernike matrix that starts at tip (Noll 2).
+        - modeNumbers (list of int, optional): The number of every row, for
+          a matrix whose modes are not consecutive (Microscope_GUI's modal
+          control matrix: Noll 1-13, 16, 17, 22). Replaces firstMode.
         - maxCommand (float, default 1.0): The largest |value| sent to any
           actuator.
     """
@@ -49,6 +53,10 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
         if not self._maxCommand > 0:
             raise ValueError(f'{name}: maxCommand must be positive, not {self._maxCommand}.')
         self._firstMode = int(properties.get('firstMode', 1))
+        numbers = properties.get('modeNumbers')
+        self._modeNumbers = None if numbers is None else [int(n) for n in numbers]
+        if self._modeNumbers is not None and len(set(self._modeNumbers)) != len(self._modeNumbers):
+            raise ValueError(f'{name}: modeNumbers repeats a mode: {self._modeNumbers}')
         self._flatFile = properties.get('flatFile') or None
         self._modesFile = properties.get('modesFile') or None
         self._actuatorCount = 0
@@ -69,6 +77,9 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
             self._check(self._flat, 'flatFile')
         if self._modesFile:
             self._modes = self._orient(read_matrix(self._modesFile), self._modesFile)
+            if self._modeNumbers is not None and len(self._modeNumbers) != self._modes.shape[0]:
+                raise ValueError(f'{self.name}: modeNumbers names {len(self._modeNumbers)} modes, '
+                                 f'{self._modesFile} has {self._modes.shape[0]}')
 
     def _orient(self, matrix: np.ndarray, source) -> np.ndarray:
         n = self._actuatorCount
@@ -109,6 +120,8 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
         matrix). """
         if self._modes is None:
             return []
+        if self._modeNumbers is not None:
+            return list(self._modeNumbers)
         return list(range(self._firstMode, self._firstMode + self._modes.shape[0]))
 
     @property
@@ -178,12 +191,12 @@ class DeformableMirrorManager(DeviceManagerStatusMixin, ABC):
             raise RuntimeError(f'{self.name} has no mode matrix (set modesFile)')
         weights = np.zeros(self._modes.shape[0])
         if isinstance(coefficients, Mapping):
+            rowOf = {number: row for row, number in enumerate(self.modeNumbers)}
             for mode, amplitude in coefficients.items():
-                row = int(mode) - self._firstMode
-                if not 0 <= row < weights.size:
-                    raise KeyError(f'{self.name} has modes {self._firstMode}-'
-                                   f'{self._firstMode + weights.size - 1}, not {mode}')
-                weights[row] = float(amplitude)
+                if int(mode) not in rowOf:
+                    raise KeyError(f'{self.name} has modes {_ranges(self.modeNumbers)}, '
+                                   f'not {mode}')
+                weights[rowOf[int(mode)]] = float(amplitude)
         else:
             values = np.asarray(coefficients, dtype=float).ravel()
             if values.size > weights.size:
@@ -269,6 +282,18 @@ def _guard(cls) -> None:
 # The base class defines the commands itself, so wrap them here too (its
 # subclasses are wrapped by __init_subclass__ when they override one).
 _guard(DeformableMirrorManager)
+
+
+def _ranges(numbers) -> str:
+    """``[1, 2, 3, 5]`` as ``1-3, 5``."""
+    parts, start = [], None
+    for i, n in enumerate(numbers):
+        if start is None:
+            start = n
+        if i + 1 == len(numbers) or numbers[i + 1] != n + 1:
+            parts.append(f'{start}' if start == n else f'{start}-{n}')
+            start = None
+    return ', '.join(parts)
 
 
 def modeDictionary(manager: DeformableMirrorManager, coefficients) -> Dict[int, float]:

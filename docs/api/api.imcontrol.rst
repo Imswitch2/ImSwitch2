@@ -158,11 +158,23 @@ api.imcontrol
 
       Always available.
 
+   .. method:: flattenMirror(name: str) -> List[float]
+
+      Sends the flat command to the mirror ``name``.
+
+      Always available.
+
    .. method:: get_flip_state(name)
 
       Return current state of one flip mirror.
 
       Needs *FlipMirror* in ``availableWidgets``.
+
+   .. method:: getDeformableMirrorNames() -> List[str]
+
+      Returns the names of the setup's deformable mirrors.
+
+      Always available.
 
    .. method:: getDetectorLatestFrame(detectorName: str) -> numpy.ndarray
 
@@ -341,6 +353,34 @@ api.imcontrol
       running, for the frame to be new.
 
       Needs *View* in ``availableWidgets``.
+
+   .. method:: getMirrorCommand(name: str) -> List[float]
+
+      Returns the last command sent to the mirror ``name``, one value
+      per actuator.
+
+      Always available.
+
+   .. method:: getMirrorFlat(name: str) -> List[float]
+
+      Returns the flat command of the mirror ``name``.
+
+      Always available.
+
+   .. method:: getMirrorInfo(name: str) -> Dict[str, Any]
+
+      Returns what is known about the mirror ``name``: ``actuators``,
+      ``maxCommand``, ``modes`` (the mode numbers ``setMirrorModes``
+      takes), ``simulated`` and ``usable`` (commands reach it).
+
+      Always available.
+
+   .. method:: getMirrorModeMatrix(name: str) -> Optional[List[List[float]]]
+
+      Returns the mirror's mode matrix (a row per mode, a column per
+      actuator), or None without one.
+
+      Always available.
 
    .. method:: getPositionerAxes(positionerName: str) -> List[str]
 
@@ -534,6 +574,13 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: loadMirrorCommand(name: str, path: str) -> List[float]
+
+      Sends a command read from ``path`` (.csv, .txt, .npy or the old
+      GUI's .xlsx) to the mirror ``name``.
+
+      Always available.
+
    .. method:: loadParams()
 
       Loads the SLM parameters of the objective chosen in the SLM
@@ -638,6 +685,13 @@ api.imcontrol
 
       Needs *Rotator* in ``availableWidgets``.
 
+   .. method:: pokeMirrorActuator(name: str, actuator: int, value: float) -> List[float]
+
+      Sends the flat with ``value`` added to one actuator (numbered
+      from 0) of the mirror ``name``.
+
+      Always available.
+
    .. method:: post_json(path: str, payload: dict) -> str
 
       Sends the specified command to the RS232 device and returns a
@@ -722,6 +776,12 @@ api.imcontrol
 
       Needs *Reservation* in ``availableWidgets``.
 
+   .. method:: resetMirror(name: str) -> None
+
+      The mirror driver's reset: all actuators of ``name`` to zero.
+
+      Always available.
+
    .. method:: runCellTargeting(feature_callback: Optional[Callable[[int, dict, Tuple[float, float]], NoneType]] = None, move_only: bool = False) -> None
 
       Move through detected cells and optionally run a per-cell workflow.
@@ -769,6 +829,13 @@ api.imcontrol
       stored context even when coupled mode can see every preset.
 
       Needs *Laser* in ``availableWidgets``.
+
+   .. method:: saveMirrorCommand(name: str, path: str, values: Optional[List[float]] = None) -> str
+
+      Writes ``values`` (the last command sent, by default) of the
+      mirror ``name`` to ``path`` (.csv or .npy); returns the path.
+
+      Always available.
 
    .. method:: saveScanParamsToFile(filePath: str) -> None
 
@@ -913,6 +980,30 @@ api.imcontrol
       value or by its name.
 
       Needs *SLM* in ``availableWidgets``.
+
+   .. method:: setMirrorCommand(name: str, values: List[float]) -> List[float]
+
+      Sends ``values`` (one per actuator) to the mirror ``name`` and
+      returns them. A value beyond ``maxCommand`` refuses the whole command
+      (ValueError); nothing is sent.
+
+      Always available.
+
+   .. method:: setMirrorFlat(name: str, values: Optional[List[float]] = None) -> List[float]
+
+      Makes ``values`` (the last command sent, by default) the flat of
+      the mirror ``name``, in memory; ``saveMirrorCommand`` writes it to a
+      file. Nothing is sent.
+
+      Always available.
+
+   .. method:: setMirrorModes(name: str, amplitudes: Union[Dict[int, float], List[float]]) -> List[float]
+
+      Sends the flat plus a sum of modes to the mirror ``name``:
+      ``{mode number: amplitude}``, or a list in the matrix's row order.
+      Needs the mirror's ``modesFile``.
+
+      Always available.
 
    .. method:: setMotorsEnabled(positionerName: str, is_enabled: int) -> None
 
@@ -1143,3 +1234,9 @@ api.imcontrol
       asked for. Call it from a script, not from the GUI thread.
 
       Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: zeroMirror(name: str) -> List[float]
+
+      Sends all zeros (not the flat) to the mirror ``name``.
+
+      Always available.

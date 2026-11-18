@@ -147,3 +147,22 @@ def test_a_reserved_mirror_refuses_other_owners():
         mirror.zero()
     finally:
         set_resource_registry(previous)
+
+
+def test_the_old_guis_modal_control_matrix_is_a_mode_matrix(tmp_path):
+    """Microscope_GUI's control_matrix_modal_*.tif: 69 actuators x its 16
+    Zernike modes, Noll 1-13, 16, 17 and 22."""
+    import tifffile
+    numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22]
+    matrix = np.random.default_rng(1).normal(scale=0.01, size=(69, 16)).astype(np.float32)
+    tifffile.imwrite(tmp_path / 'control_matrix_modal_2026_06_09_09_11.tif', matrix)
+    mirror = _mirror(actuators=69, modesFile=str(tmp_path / 'control_matrix_modal_2026_06_09_09_11.tif'),
+                     modeNumbers=numbers)
+    assert mirror.modeNumbers == numbers
+    assert mirror.setModes({17: 1.0, 5: -0.5}) == pytest.approx(
+        matrix[:, 14] - 0.5 * matrix[:, 4], abs=1e-6)
+    with pytest.raises(KeyError, match='modes 1-13, 16-17, 22, not 14'):
+        mirror.setModes({14: 1.0})
+    with pytest.raises(ValueError, match='modeNumbers names 15 modes'):
+        _mirror(actuators=69, modesFile=str(tmp_path / 'control_matrix_modal_2026_06_09_09_11.tif'),
+                modeNumbers=numbers[:-1])

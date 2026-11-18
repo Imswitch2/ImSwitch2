@@ -7,6 +7,7 @@
       "firstMode": 1,
       "flatFile": "example",
       "maxCommand": 1.5,
+      "modeNumbers": null,
       "modesFile": "example",
       "sdkPath": "example",
       "serialNumber": "example",

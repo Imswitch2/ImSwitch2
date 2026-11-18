@@ -116,8 +116,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # hardware schemas (main's PR #69 adds none here). 281: the BPC303's
     # serialNumber, travelUm, channels, kinesisPath and useMockOnFailure.
     # 289: the ALPAO mirror's serialNumber, actuators, sdkPath,
-    # useMockOnFailure, flatFile, modesFile, firstMode and maxCommand.
-    assert report.keys == 289
+    # useMockOnFailure, flatFile, modesFile, firstMode, modeNumbers and
+    # maxCommand.
+    assert report.keys == 290
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -141,8 +142,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 212 with main: the instrument managers' optional keys, the seven
     # useMockOnFailure flags and the Hamamatsu's mockSample. 216: the
     # BPC303's travelUm, channels, kinesisPath and useMockOnFailure. 223:
-    # the ALPAO mirror's seven optional keys.
-    assert report.optional == 223
+    # the ALPAO mirror's eight optional keys.
+    assert report.optional == 224
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -160,9 +161,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # keep the instrument's own), MockPAX plate1Rotator / plate2Rotator, and
     # the Hamamatsu's mockSample block (None = no synthetic sample). 60: the
     # BPC303's channels (absent: in order) and kinesisPath (absent: the
-    # installer's folder). 63: the ALPAO mirror's sdkPath, flatFile and
-    # modesFile.
-    assert report.none_default_only == 63
+    # installer's folder). 64: the ALPAO mirror's sdkPath, flatFile,
+    # modesFile and modeNumbers.
+    assert report.none_default_only == 64
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -184,8 +185,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # docs/devices/instruments.rst's 18 instrument keys, MockPAX's plate
     # rotators, the seven useMockOnFailure rows and the Hamamatsu's mockSample.
     # 201: the BPC303 card's five rows (docs/devices/positioners.rst). 209:
-    # the ALPAO card's eight (docs/devices/deformable_mirrors.rst).
-    assert (report.docs_agree, report.docs_documented) == (209, 209)
+    # the ALPAO card's nine (docs/devices/deformable_mirrors.rst).
+    assert (report.docs_agree, report.docs_documented) == (210, 210)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

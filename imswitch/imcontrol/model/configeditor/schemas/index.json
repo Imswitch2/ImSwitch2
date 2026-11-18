@@ -2,13 +2,13 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 61,
-    "docs_agree": 211,
-    "docs_documented": 211,
-    "keys": 291,
+    "docs_agree": 212,
+    "docs_documented": 212,
+    "keys": 292,
     "managers": 74,
-    "none_default_only": 64,
-    "none_only": 16,
-    "optional": 225,
+    "none_default_only": 65,
+    "none_only": 17,
+    "optional": 226,
     "reads_any": 70,
     "refs": 15,
     "required": 66,
@@ -122,7 +122,7 @@
         "DeformableMirrorManager"
       ],
       "overridden": false,
-      "properties": 8,
+      "properties": 9,
       "required": 1
     },
     "BPC303PiezoManager": {

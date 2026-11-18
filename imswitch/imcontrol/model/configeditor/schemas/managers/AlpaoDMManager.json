@@ -53,6 +53,13 @@
         "code:optional(get)"
       ]
     },
+    "modeNumbers": {
+      "description": "The number of every row, for a matrix whose modes are not",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
     "modesFile": {
       "description": "The mode matrix (see *Mirror files*). Without one, ``setModes`` is",
       "x-imswitch-kind": "string",

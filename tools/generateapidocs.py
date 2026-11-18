@@ -43,6 +43,9 @@ _ALWAYS_LOADED = {
     'CommunicationChannel': 'imswitch.imcontrol.controller.CommunicationChannel',
     'SetupModeController': 'imswitch.imcontrol.controller.SetupModeController',
     'WorkflowFacadeController': 'imswitch.imcontrol.controller.controllers.WorkflowFacadeController',
+    # API-only when the setup has no DeformableMirror panel.
+    'DeformableMirrorController':
+        'imswitch.imcontrol.controller.controllers.DeformableMirrorController',
 }
 
 
