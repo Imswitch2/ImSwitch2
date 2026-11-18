@@ -426,8 +426,14 @@ class TilingWidget(Widget):
             self.modeCombo.setCurrentIndex(index)
 
     def getScanSource(self):
-        """Selected scan-source widget key, or None to let the app resolve it."""
-        if not self.scanSourceCombo.isVisible():
+        """Selected scan-source widget key, or None to let the app resolve it.
+
+        None when the setup offers no choice. Asked with ``isHidden()``, not
+        ``isVisible()``: the latter is also False while this panel is a tab
+        behind another one, and a run started then -- from a timelapse or a
+        script -- silently used the default instead of the selection.
+        """
+        if self.scanSourceCombo.isHidden():
             return None
         return self.scanSourceCombo.currentData()
 
@@ -458,7 +464,10 @@ class TilingWidget(Widget):
         None when the setup offers no choice, so the setup-file value (and its
         fallback) stays the single authority on rigs with one camera.
         """
-        if not self.detectorCombo.isVisible():
+        # isHidden(), not isVisible(): see getScanSource. A tiling timelapse
+        # started from the Timelapse tab aligned on the setup's default
+        # detector (a scan-driven APD) instead of the selected camera.
+        if self.detectorCombo.isHidden():
             return None
         return self.detectorCombo.currentData()
 
