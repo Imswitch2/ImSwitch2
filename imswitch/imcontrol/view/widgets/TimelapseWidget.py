@@ -61,6 +61,12 @@ class TimelapseWidget(Widget):
         self._detectorsEnabled = True
         self._singleFileEnabled = True
         self._detectorEnabled: Dict[str, bool] = {}
+        # A detector unticked because the kind cannot record it, to tick
+        # again when the kind can: the operator's choice, not ours.
+        self._detectorsSetAside: set = set()
+        # The operator's laser ticks while the list only displays what a scan
+        # fires; restored when the list is theirs to edit again.
+        self._operatorLaserChecks: Optional[Dict[str, bool]] = None
         self._laserRows: Dict[str, Tuple[QtWidgets.QCheckBox,
                                          Optional[QtWidgets.QDoubleSpinBox]]] = {}
         self._laserOrder: List[str] = []
@@ -343,6 +349,7 @@ class TimelapseWidget(Widget):
                 widget.deleteLater()
         self._laserRows = {}
         self._laserOrder = []
+        self._operatorLaserChecks = None
         for row, laser in enumerate(lasers):
             name = str(laser['name'])
             check = QtWidgets.QCheckBox(str(laser.get('label') or name))
@@ -396,10 +403,26 @@ class TimelapseWidget(Widget):
     def setLasersEditable(self, editable: bool, note: str = '') -> None:
         self._lasersEditable = bool(editable)
         self._setNote(self.laserNoteLabel, note)
+        if editable and self._operatorLaserChecks is not None:
+            # Back from a read-only display: the ticks shown were the scan's,
+            # not the operator's, and must not become a selection.
+            saved, self._operatorLaserChecks = self._operatorLaserChecks, None
+            for name, checked in saved.items():
+                row = self._laserRows.get(name)
+                if row is not None:
+                    row[0].setChecked(checked)
         self._applyEnabled()
 
     def showLaserStates(self, states: Dict[str, bool]) -> None:
-        """Show, read-only, which lasers something else will fire."""
+        """Show, read-only, which lasers something else will fire.
+
+        The operator's own ticks are set aside first and come back with
+        :meth:`setLasersEditable`, so a display never turns into a selection.
+        """
+        if self._operatorLaserChecks is None:
+            self._operatorLaserChecks = {
+                name: row[0].isChecked() for name, row in self._laserRows.items()
+            }
         for name, active in states.items():
             row = self._laserRows.get(name)
             if row is None:
@@ -443,6 +466,7 @@ class TimelapseWidget(Widget):
         self._detectorBoxes = {}
         self._detectorOrder = []
         self._detectorEnabled = {}
+        self._detectorsSetAside = set()
         wanted = set(checked or ())
         for name in names:
             box = QtWidgets.QCheckBox(str(name))
@@ -455,10 +479,17 @@ class TimelapseWidget(Widget):
         self._applyEnabled()
 
     def getDetectors(self) -> List[str]:
+        """The ticked detectors this kind can record, in row order."""
         return [
             name for name in self._detectorOrder
             if self._detectorBoxes[name].isChecked()
+            and self._detectorEnabled.get(name, True)
         ]
+
+    def setDetectorChecked(self, name: str, checked: bool) -> None:
+        box = self._detectorBoxes.get(name)
+        if box is not None:
+            box.setChecked(bool(checked))
 
     def setDetectorEnabled(self, name: str, enabled: bool,
                            tooltip: str = '') -> None:
@@ -467,6 +498,14 @@ class TimelapseWidget(Widget):
             return
         self._detectorEnabled[name] = bool(enabled)
         box.setToolTip(tooltip)
+        if not enabled and box.isChecked():
+            # Unticked, not left ticked and greyed out: a detector the kind
+            # cannot record must not look selected, nor be one.
+            self._detectorsSetAside.add(name)
+            box.setChecked(False)
+        elif enabled and name in self._detectorsSetAside:
+            self._detectorsSetAside.discard(name)
+            box.setChecked(True)
         self._applyEnabled()
 
     def setDetectorsEnabled(self, enabled: bool, note: str = '') -> None:
