@@ -216,23 +216,30 @@ group of steps applied per index.
 
 ### Phase 0: baseline
 
-Run on `feat/improcess-chaining-iteration` at `bb5ccadf` (the plan commit on
-top of `dev`), `QT_QPA_PLATFORM=offscreen`, Python 3.13, over the 51 test
-modules `test_workflow*.py`, `test_snouty*.py`, `test_python_step*.py`,
-`test_monalisa*.py`, `test_provenance_graph.py`,
-`test_reconstruction_provenance_paths.py`, `test_smartpipeline_adapter.py`
-and `test_points_workflow_end_to_end.py`:
+The branch was first cut from `dev` and then, on the maintainer's
+instruction, rebased onto `main` (`dev` is a one-way integration branch; this
+branch must carry no dev-only commits). The baseline below is the one on
+`main` (`5c090c56`, plus the plan commit), `QT_QPA_PLATFORM=offscreen`,
+Python 3.13, over the 55 test modules that exist there among
+`test_workflow*.py`, `test_snouty*.py`, `test_python_step*.py`,
+`test_monalisa*.py`, `test_provenance_graph.py` and
+`test_reconstruction_provenance_paths.py`:
 
-**21 failed, 1192 passed, 4 skipped.** All 21 failures are pre-existing and
-unrelated to this branch:
+**9 failed, 1156 passed, 4 skipped.** All 9 failures are pre-existing:
+`test_snouty.py` (`TestSnoutyMetadata` x5, `TestSnoutyParamsWidget` x2,
+`TestSnoutyWidgetPrefill` x2), each `TypeError: not all arguments converted
+during string formatting` from the SNOUTY attribute readers' debug logging.
 
-- `test_snouty.py` (9): `TypeError: not all arguments converted during string
-  formatting` in the SNOUTY metadata/param-widget tests (the attribute
-  readers' debug logging).
-- `test_monalisa_coeffs_per_base.py` (2), `test_monalisa_fast_gauss_placement.py`
-  (5), `test_monalisa_lattice_reconstructor.py` (2): MoNaLISA tests written
-  against the pre-unified (v4) parameter contract / older result types.
-- `test_workflow_document_graph.py`, `test_workflow_editor_gui.py`,
-  `test_workflow_editor_model.py` (1 each): the shipped example
-  `monalisa_reconstruct_chain.yaml` names MoNaLISA parameters that the
-  unified v5 contract no longer accepts, so it fails validation.
+(For the record, the same modules on `dev` gave 21 failed / 1192 passed /
+4 skipped; the 12 extra failures there are MoNaLISA tests and the shipped
+`monalisa_reconstruct_chain.yaml` example, both dev-only states.)
+
+#### Differences between `dev` and `main` that shaped the implementation
+
+- `main` has no step-type registry (`register_step_type`), no schema 2
+  (controls/bypass) and no `imcommon.model.workflow`: the schema lives in
+  `improcess/workflows/steps.py` and the editor model in
+  `improcess/model/workfloweditor/`. `map`/`fold` are therefore built-in step
+  kinds on this branch (see Phase 4).
+- `main`'s runner refuses binding a `Source` to an in-memory result outright;
+  that refusal is kept (see Phase 1).

@@ -58,7 +58,17 @@ class QuickAddPopup(QtWidgets.QFrame):
         recent = list(recent)
         found = candidates(catalog, kind, producer=producer)
         rank = {key: index for index, key in enumerate(recent)}
-        self._candidates = sorted(found, key=lambda c: (rank.get(c.key, len(rank)), 0 if c.step_kind != "process" else 1,
+        # From a result's cable a reconstruction is the unusual next step
+        # (chaining), so it comes after the processing steps; from a
+        # recording, or with no cable, it keeps its place in front.
+        late_reconstruct = kind not in (None, "recording")
+
+        def order(c):
+            if c.step_kind == "process":
+                return 1
+            return 2 if (late_reconstruct and c.step_kind == "reconstruct") else 0
+
+        self._candidates = sorted(found, key=lambda c: (rank.get(c.key, len(rank)), order(c),
                                                         c.category, c.title.lower()))
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)

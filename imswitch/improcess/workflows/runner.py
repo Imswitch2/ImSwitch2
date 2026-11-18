@@ -292,6 +292,7 @@ def run(
     from imswitch.improcess.processors.run import run_processor
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
     from imswitch.improcess.model.provenance import graph_of, output_of
+    from imswitch.improcess.model.result_source import as_reconstruction_input
 
     def report_done(step_id, keys_before, started, cached=False):
         if on_step_done is None:
@@ -379,7 +380,9 @@ def run(
 
             elif isinstance(step, Reconstruct):
                 plugin = registry.get_reconstructor(step.reconstructor)
-                data_obj = report.result(step.inputs[0])
+                # A source's DataObj as it is; any other image result is
+                # bridged, keeping its axes, attributes and provenance.
+                data_obj = as_reconstruction_input(report.result(step.inputs[0]))
                 params = {**type(plugin).default_params(), **step.params}
                 params = plugin.prepare_params(data_obj, params)
                 run_result = run_reconstruction(plugin, data_obj, params)

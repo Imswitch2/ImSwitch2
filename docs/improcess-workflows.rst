@@ -91,7 +91,7 @@ Steps and references
      - ``id``; ``path`` (optional until bound), ``dataset`` (needed when the container holds several), ``source_kind`` (``auto`` / ``image`` / ``tiling-manifest``), ``fingerprint`` (recorded by replay)
      - ``data``
    * - ``Reconstruct``
-     - ``id``, ``reconstructor`` (plugin id), ``params``, ``inputs`` (exactly one source)
+     - ``id``, ``reconstructor`` (plugin id), ``params``, ``inputs`` (exactly one: a source, or any step that produces an image)
      - ``out``
    * - ``Consolidate``
      - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor); no ``params`` — consolidation merges what the reconstructions already are

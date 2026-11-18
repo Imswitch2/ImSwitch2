@@ -639,7 +639,12 @@ class WorkflowDocument:
         if ref.step == step_id or step_id in ancestors(self.steps, ref.step):
             raise DocumentError(f"connecting {ref} to {step_id!r} would make a loop")
         if isinstance(target, Reconstruct) and not isinstance(producer, Source):
-            raise DocumentError("a reconstruction reads from a source step")
+            from imswitch.improcess.model.workfloweditor.nodes import kinds_of
+            from imswitch.improcess.workflows.steps import RECONSTRUCTION_INPUT_KINDS
+
+            kind = kinds_of(self).get(ref.step)
+            if kind is not None and kind not in RECONSTRUCTION_INPUT_KINDS:
+                raise DocumentError(f"a reconstruction reads an image; {ref.step!r} produces {kind} results")
         refs = _refs_of(target)
         if isinstance(target, (Save, Reconstruct)):
             refs = [ref]
@@ -676,8 +681,6 @@ class WorkflowDocument:
         if not isinstance(inserted, Process):
             raise DocumentError("only a processing step can be put on a cable")
         target = self.step(target_id)
-        if isinstance(target, Reconstruct):
-            raise DocumentError("a reconstruction reads from a source step")
         refs = _refs_of(target)
         if not 0 <= index < len(refs):
             raise DocumentError(f"{target_id!r} has no input {index}")

@@ -272,6 +272,19 @@ class CommunicationChannel(SignalInterface):
         ResultProcessorController
     """
 
+    sigUseResultsAsData = Signal(object)
+    """Offer results as reconstruction inputs. Payload: a list of results.
+
+    A reconstructor reads the current *data*, and the data list used to hold
+    only recordings, so a result (a view-only stack, a Python step's reshape,
+    a deskew) could never be reconstructed again. Each image result is
+    bridged into a data-list row (``model.result_source``) that keeps its
+    axes, attributes and provenance; the first becomes the current data.
+
+    Emitters: ImageToolbarController (Image > Use as reconstruction input)
+    Listeners: MultiDataFrameController
+    """
+
     sigWorkflowPreview = Signal(object, str)
     """Show a result from the workflow editor until the next preview. Payload:
     ``(result, displayName)``.

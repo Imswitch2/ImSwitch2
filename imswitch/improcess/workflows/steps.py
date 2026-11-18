@@ -90,7 +90,8 @@ class Source:
 
 @dataclass
 class Reconstruct:
-    """Run a reconstructor over one source. Its single port is ``out``."""
+    """Run a reconstructor over one input -- a source, or any step that
+    produces an image. Its single port is ``out``."""
 
     id: str
     reconstructor: str
@@ -417,6 +418,33 @@ def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
     return issues
 
 
+#: What a reconstruction may read: a recording, an image, or a step whose
+#: kind is not declared (a Python step, a plugin that says nothing) -- the run
+#: checks the data itself, so a workflow that may work is not refused on a guess.
+RECONSTRUCTION_INPUT_KINDS = ("recording", "image", "labels", "any", "unknown")
+
+
+def _reconstruction_input_issues(step, by_id: dict, kinds: dict[str, str]) -> list[Issue]:
+    """Whether a reconstruction's one input can be read as image data.
+
+    Decided by what the input *carries*, never by where it came from: a
+    Source, a view-only reconstruction, a Python step's reshape and a deskew
+    are all images to the next reconstructor. Without a registry the kinds are
+    unknown and only the structure is checked.
+    """
+    ref = step.inputs[0]
+    target = by_id.get(ref.step)
+    if target is None or isinstance(target, Source):
+        return []
+    kind = kinds.get(ref.step)
+    if kind is None or kind in RECONSTRUCTION_INPUT_KINDS:
+        return []
+    return [Issue(
+        step.id,
+        f"a reconstruction's input must be a source or produce an image; {ref.step!r} produces {kind} results",
+    )]
+
+
 def _defaults(plugin) -> dict:
     getter = getattr(type(plugin), "default_params", None)
     try:
@@ -482,9 +510,9 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 
         if isinstance(step, Reconstruct):
             if len(step.inputs) != 1:
-                issues.append(Issue(step.id, "a reconstruction takes exactly one source"))
-            elif not isinstance(by_id.get(step.inputs[0].step), Source):
-                issues.append(Issue(step.id, "a reconstruction's input must be a source step"))
+                issues.append(Issue(step.id, "a reconstruction takes exactly one input"))
+            else:
+                issues.extend(_reconstruction_input_issues(step, by_id, kinds))
             if registry:
                 plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
                 if plugin is None:
@@ -542,6 +570,7 @@ __all__ = [
     "Consolidate",
     "Issue",
     "Process",
+    "RECONSTRUCTION_INPUT_KINDS",
     "Reconstruct",
     "Ref",
     "SCHEMA_VERSION",

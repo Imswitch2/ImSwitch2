@@ -727,7 +727,27 @@ def record_reconstruction(result, reconstructor, params, data_obj, *, extra: dic
     A source that is not a file (a buffered live stack, a RAM recording)
     leaves the node non-replayable with the reason, unless the wrapper knew
     the path the recording was also written to.
+
+    A ``data_obj`` bridged from a result (it names the result as its
+    ``provenance_parent``, see :mod:`~imswitch.improcess.model.result_source`)
+    is not a source at all: the node's input is that result's output, and its
+    whole graph is carried, so a reconstruction of a reshaped or deskewed
+    result replays as the chain that made it.
     """
+    parent = getattr(data_obj, "provenance_parent", None)
+    if parent is not None:
+        node_id, node = make_node(
+            "reconstruct",
+            plugin=reconstructor,
+            params=params,
+            inputs=[output_ref(parent)],
+            input_labels=[_describe(parent)],
+            outputs=(DEFAULT_PORT,),
+            extra=extra,
+        )
+        ancestors = merge_nodes(*(graph.get("nodes", {}) for graph in _graphs_of([parent])))
+        _attach(result, merge_nodes(ancestors, {node_id: node}), node_id, DEFAULT_PORT)
+        return result
     source_id, source = source_node_for(data_obj)
     node_id, node = make_node(
         "reconstruct",

@@ -24,6 +24,9 @@ class MultiDataFrameController(ImProcessWidgetController):
         )
         self._commChannel.sigDataFolderChanged.connect(self.dataFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
+        useAsData = getattr(self._commChannel, 'sigUseResultsAsData', None)
+        if useAsData is not None:
+            useAsData.connect(self.addResultsAsData)
 
         self._widget.sigAddDataClicked.connect(self.addDataClicked)
         self._widget.sigLoadCurrentDataClicked.connect(self.loadCurrData)
@@ -93,6 +96,41 @@ class MultiDataFrameController(ImProcessWidgetController):
         self._widget.addDataObj(name, datasetName, dataObj)
         self._widget.setDataObjMemoryFlag(dataObj, path is None)
         self.updateInfo()
+
+    def addResultsAsData(self, results):
+        """List each image result as data a reconstructor can read; returns
+        the rows added. The first becomes the current data, as a recording
+        opened from disk does."""
+        from imswitch.improcess.model.result_source import data_obj_from_result, is_image_result
+
+        added = []
+        for result in list(results or []):
+            if not is_image_result(result):
+                self._logger.warning(
+                    f'{getattr(result, "name", result)!r} is not an image result; '
+                    'only image results can be reconstructed'
+                )
+                continue
+            dataObj = data_obj_from_result(result)
+            if any(dataObj.describesSameAs(existing) for existing in self._widget.getAllDataObjs()):
+                continue
+            self._widget.addDataObj(dataObj.name, dataObj.datasetName, dataObj)
+            self._widget.setDataObjMemoryFlag(dataObj, True)
+            added.append(dataObj)
+        if added:
+            # Made the current data the way "Set as current" makes a row so.
+            try:
+                self._loadingData = True
+                added[0].checkAndLoadData()
+                self._commChannel.sigCurrentDataChanged.emit(added[0])
+                self._widget.setAllRowsHighlighted(False)
+                highlight = getattr(self._widget, 'setRowHighlightedByDataObj', None)
+                if callable(highlight):
+                    highlight(added[0], True)
+            finally:
+                self._loadingData = False
+        self.updateInfo()
+        return added
 
     def _normalizedPathAndName(self, path):
         source = resolve_dataset_source(path)
@@ -165,6 +203,8 @@ class MultiDataFrameController(ImProcessWidgetController):
     def saveDataObj(self, dataObj):
         if dataObj.dataPath is not None:
             return  # Can't save data already on disk
+        if getattr(dataObj, 'provenance_parent', None) is not None:
+            return  # A result's row: the result is saved from the results list
 
         if (os.path.exists(self._moduleCommChannel.memoryRecordings.getSavePath(dataObj.name)) and
                 not self._widget.requestOverwriteConfirmation(dataObj.name)):

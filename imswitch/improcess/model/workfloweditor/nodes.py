@@ -22,6 +22,7 @@ from imswitch.improcess.workflows.steps import (
     SOURCE_PORT,
     Consolidate,
     Process,
+    RECONSTRUCTION_INPUT_KINDS,
     Reconstruct,
     Ref,
     Save,
@@ -361,7 +362,9 @@ def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
     kinds = kinds if kinds is not None else kinds_of(document)
     kind = kinds.get(producer_id, UNKNOWN_KIND)
     if isinstance(target, Reconstruct):
-        return isinstance(producer, Source)
+        # Any image feeds a reconstruction (a chain of reconstructors, a
+        # reshape before a deskew); the run checks the data itself.
+        return isinstance(producer, Source) or kind in RECONSTRUCTION_INPUT_KINDS
     if isinstance(target, Consolidate):
         return isinstance(producer, Reconstruct) and producer.reconstructor == target.reconstructor
     if isinstance(target, Save):
@@ -390,7 +393,7 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
     ``kind=None`` offers everything (Tab, double-click on the canvas). A cable
     from a recording offers reconstructions; from a reconstruction also its
     consolidation; from any result the processing steps that take it with
-    one input, and Save.
+    one input, and Save; from an image result, last, the reconstructions.
     """
     found: list[Candidate] = []
     if catalog is None:
@@ -416,6 +419,11 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
                 continue
             found.append(Candidate("process", entry.id, entry.name, entry.category, entry.description))
         found.append(Candidate("save", "", "Save", "Steps", _STEP_WORDS["save"]))
+    if kind is not None and kind != RECORDING_KIND and kind in RECONSTRUCTION_INPUT_KINDS:
+        # An image result feeds a reconstruction too (a chain of
+        # reconstructors); offered last, after what a result usually goes to.
+        for entry in catalog.runnable("reconstructor"):
+            found.append(Candidate("reconstruct", entry.id, entry.name, "Reconstruct", entry.description))
     return found
 
 
