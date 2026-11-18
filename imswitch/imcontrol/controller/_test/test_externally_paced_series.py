@@ -110,6 +110,40 @@ def test_an_externally_paced_scan_lapse_schedules_with_zero_delay(harness):
     assert timer.callbacks == [ctrl.nextLapse]
 
 
+def _firstScanPoint(harness, *, pending, failed=False):
+    """recordScanSeries with nextLapse standing in for the first point."""
+    ctrl = harness.ctrl
+    ctrl.setPositioningProvider(lambda index: None)
+
+    def nextLapse():
+        if pending:
+            ctrl._pendingPositioning = PositioningRequest(0, timeout_s=60)
+        if failed:
+            ctrl._recordingFailedCurrent = True
+            ctrl._lastRecordingFailure = 'arm failed'
+        return False
+
+    ctrl.nextLapse = nextLapse
+    return ctrl.recordScanSeries(
+        object(), ['APD'], 3, 30.0, externallyPaced=True)
+
+
+def test_a_first_scan_point_held_by_its_gate_is_a_started_series(harness):
+    """The gate holding point 0 is waiting, not failure: refusing here left
+    the gate's retry timer running a lapse with no series request, which then
+    recorded with the Recording widget's own settings."""
+    result = _firstScanPoint(harness, pending=True)
+    assert result.accepted is True
+    assert harness.ctrl.recording is True
+    assert harness.ctrl._seriesRequest is not None
+
+
+def test_a_failed_first_scan_point_is_still_refused(harness):
+    result = _firstScanPoint(harness, pending=True, failed=True)
+    assert result.accepted is False
+    assert harness.ctrl.recording is False
+
+
 # ---------------------------------------------------------------------------
 # onEnded
 # ---------------------------------------------------------------------------

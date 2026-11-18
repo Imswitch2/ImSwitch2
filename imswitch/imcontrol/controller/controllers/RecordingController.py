@@ -754,7 +754,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     else self._activeScanSeriesSettings.timepoints
                 )
                 self.lapseCurrent = 0
-                if not self.nextLapse():
+                if not self.nextLapse() and not (
+                    # A first point held by its positioning gate is a lapse
+                    # that has started and is waiting, not one that failed:
+                    # the gate's retry timer is armed and will arm the point.
+                    # Returning here would leave that timer running a lapse
+                    # nobody records as active.
+                    self.__dict__.get('_pendingPositioning') is not None
+                    and not self.__dict__.get('_recordingFailedCurrent', False)
+                ):
                     return
             else:
                 if not self._startManagerRecording():
