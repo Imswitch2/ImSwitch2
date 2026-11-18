@@ -1,5 +1,6 @@
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -44,6 +45,55 @@ _OVERVIEW_EMIT_INTERVAL_S = 0.2  # throttle live overview repaints
 _CHUNK_CONSUMER_KEY = 'tiling'
 _SCAN_TIMEOUT_S = 300.0  # generous: one tile is a whole scan
 CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
+
+
+@dataclass(frozen=True)
+class TilingRunSettings:
+    """Everything one tiling run reads from the Tiling widget, taken at once.
+
+    A timelapse of tilings snapshots this on the GUI thread when it starts and
+    hands the same object to every timepoint: all timepoints then share one
+    grid even if the operator edits the panel mid-experiment, and the worker
+    running them never reads Qt widgets from its own thread.
+    """
+
+    n_tiles_x: int
+    n_tiles_y: int
+    pattern: str
+    step_um: float
+    blend_overlaps: bool
+    intensity_correction: bool
+    settle_s: float
+    register_tiles: bool
+    orientation: Tuple[bool, bool, bool]
+    save_tiles: bool
+    mode: str
+    scan_source_key: Optional[str]
+    detector_name: Optional[str]
+
+    @property
+    def n_tiles(self) -> int:
+        return self.n_tiles_x * self.n_tiles_y
+
+
+@dataclass(frozen=True)
+class TilingRunResult:
+    """How one tiling run ended, for a caller that runs tilings itself.
+
+    ``completed`` means every tile was acquired and the stage returned to the
+    origin; ``stopped`` that the operator (or the caller) asked it to stop.
+    ``illumination_gated`` says whether the caller's illumination gate was
+    actually used -- it is not in triggered mode, where the scan arms its own
+    lasers per tile.
+    """
+
+    completed: bool
+    stopped: bool
+    message: str = ''
+    folder: Optional[str] = None
+    tiles_acquired: int = 0
+    stale_tiles: int = 0
+    illumination_gated: bool = False
 
 
 class _FreeRunningTileSource:
@@ -474,6 +524,8 @@ class TilingController(ImConWidgetController):
         self._registrationReport = None
         self._orientation = (False, False, False)
         self._lastSaveFolder = None
+        #: How the last run ended (TilingRunResult), for runTilingForWorkflow.
+        self._lastRunResult = None
         # Every pairwise measurement taken during a run, kept for the
         # whole-run solve that advanced alignment ends with.
         self._alignmentLinks = []
@@ -551,52 +603,19 @@ class TilingController(ImConWidgetController):
                 )
             return
         try:
-            n_tiles_x = self._widget.getNTilesX()
-            n_tiles_y = self._widget.getNTilesY()
-            n_tiles = n_tiles_x * n_tiles_y
-            pattern = self._widget.getPattern()
-            step_um = self._widget.getTileStepUm()
-            blend_overlaps = self._widget.getBlendOverlaps()
-            intensity_correction = self._widget.getIntensityCorrection()
-            settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
-            register_tiles = self._widget.getRegisterTiles()
-            orientation = self._widget.getTileOrientation()
-            save_tiles = self._widget.getSaveTiles()
-            mode = self._widget.getMode()
-            scan_source_key = self._widget.getScanSource()
-            detector_name = self._widget.getDetector()
-
-            self._stitcher = None
-            self._originXY = None
-            self._gridPositions = []
-            self._lastStepUm = step_um
-            self._registrationReport = None
-            self._orientation = orientation
+            settings = self.snapshotRunSettings()
+            self._resetRunState(settings)
 
             self._widget.setRunning(True)
-            self._widget.setProgress(0, n_tiles)
+            self._widget.setProgress(0, settings.n_tiles)
             self._widget.setRegistrationSummary('')
             self._widget.clearCellMarkers()
             self._widget.setCellTargetingEnabled(False)
-            self._cellPositionsRC = None
-            self._cellProps = None
 
-            # By keyword: this argument list is long enough that inserting one
-            # in the middle would otherwise silently shift the rest along.
             self._scanThread = threading.Thread(
                 target=self._runScan,
-                args=(tilingInfo, n_tiles_x, n_tiles_y, pattern,
-                      step_um, blend_overlaps,
-                      intensity_correction),
-                kwargs=dict(
-                    settle_s=settle_s,
-                    register_tiles=register_tiles,
-                    orientation=orientation,
-                    save_tiles=save_tiles,
-                    mode=mode,
-                    scan_source_key=scan_source_key,
-                    detector_name=detector_name,
-                ),
+                args=self._runScanArgs(tilingInfo, settings),
+                kwargs=self._runScanKwargs(settings),
                 daemon=True,
             )
             self._scanThread.start()
@@ -611,6 +630,142 @@ class TilingController(ImConWidgetController):
             self._logger.error(
                 f'Tiling worker could not start: {e}', exc_info=True
             )
+
+    def snapshotRunSettings(self) -> TilingRunSettings:
+        """ The Tiling widget's run settings, read once. GUI thread only. """
+        return TilingRunSettings(
+            n_tiles_x=self._widget.getNTilesX(),
+            n_tiles_y=self._widget.getNTilesY(),
+            pattern=self._widget.getPattern(),
+            step_um=self._widget.getTileStepUm(),
+            blend_overlaps=self._widget.getBlendOverlaps(),
+            intensity_correction=self._widget.getIntensityCorrection(),
+            settle_s=max(0.0, self._widget.getSettleTimeMs() / 1000.0),
+            register_tiles=self._widget.getRegisterTiles(),
+            orientation=self._widget.getTileOrientation(),
+            save_tiles=self._widget.getSaveTiles(),
+            mode=self._widget.getMode(),
+            scan_source_key=self._widget.getScanSource(),
+            detector_name=self._widget.getDetector(),
+        )
+
+    def _resetRunState(self, settings: TilingRunSettings) -> None:
+        """Forget the previous run's mosaic, layout and cell targets."""
+        self._stitcher = None
+        self._originXY = None
+        self._gridPositions = []
+        self._lastStepUm = settings.step_um
+        self._registrationReport = None
+        self._orientation = settings.orientation
+        self._cellPositionsRC = None
+        self._cellProps = None
+
+    @staticmethod
+    def _runScanArgs(tilingInfo, settings: TilingRunSettings) -> tuple:
+        return (tilingInfo, settings.n_tiles_x, settings.n_tiles_y,
+                settings.pattern, settings.step_um, settings.blend_overlaps,
+                settings.intensity_correction)
+
+    @staticmethod
+    def _runScanKwargs(settings: TilingRunSettings, **overrides) -> dict:
+        # By keyword: this argument list is long enough that inserting one in
+        # the middle would otherwise silently shift the rest along.
+        kwargs = dict(
+            settle_s=settings.settle_s,
+            register_tiles=settings.register_tiles,
+            orientation=settings.orientation,
+            save_tiles=settings.save_tiles,
+            mode=settings.mode,
+            scan_source_key=settings.scan_source_key,
+            detector_name=settings.detector_name,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def runTilingForWorkflow(self, settings: TilingRunSettings, saveFolder, *,
+                             illuminationGate=None) -> TilingRunResult:
+        """Run one tiling on the calling thread and say how it ended.
+
+        For a workflow that runs tilings itself, such as a timelapse of
+        tilings. ``settings`` is a :meth:`snapshotRunSettings` taken on the GUI
+        thread (one snapshot can serve many runs). The run always saves, into
+        ``saveFolder``, whatever the panel's Save tiles box says: a workflow
+        that names the folder wants the dataset there.
+
+        ``illuminationGate`` is duck-typed: ``before_tile(index)`` is called
+        after the move and settle, right before the tile's frames are taken,
+        and ``after_tile(index)`` as soon as every image the tile needs is in
+        hand -- before stitching, alignment and disk writes, so the light is
+        not on while the computer works. Every ``before_tile`` is paired with
+        exactly one ``after_tile``, on every exit path. ``before_tile``
+        raising aborts the run; ``after_tile`` raising stops it. Only
+        free-running runs use the gate: in triggered mode the scan arms its
+        own lasers per tile.
+
+        Must not be called on the GUI thread: a saving run in triggered mode
+        waits for recording terminals that are delivered there, so blocking it
+        would deadlock. Refused (with the reason in the result) while a run or
+        cell targeting is busy.
+        """
+        if threading.current_thread() is threading.main_thread():
+            raise RuntimeError(
+                'runTilingForWorkflow blocks until the run ends; call it from '
+                'a worker thread, not the GUI thread.'
+            )
+        tilingInfo = self._setupInfo.tiling
+        if tilingInfo is None:
+            return TilingRunResult(
+                False, False, 'This setup has no tiling section.'
+            )
+        with self._getActivityLock():
+            busyWithCells = self._cellTargetingRunning
+            closed = getattr(self, '_closed', False)
+            busy = self._scanning or busyWithCells or closed
+            if not busy:
+                self._scanning = True
+                self._stopRequested = False
+                self._scanThread = threading.current_thread()
+        if busy:
+            reason = (
+                'Tiling is closed.' if closed
+                else 'Cell targeting owns the stage.' if busyWithCells
+                else 'A tiling run is already in progress.'
+            )
+            return TilingRunResult(False, False, reason)
+
+        self._lastRunResult = None
+        try:
+            self._resetRunState(settings)
+            self.sigRunningChanged.emit(True)
+            self.sigProgressUpdated.emit(0, settings.n_tiles)
+            self.sigRegistrationSummary.emit('')
+            self.sigShowCellMarkers.emit(np.empty((0, 2)))
+            self.sigCellTargetingEnabled.emit(False)
+        except Exception as e:
+            with self._getActivityLock():
+                self._scanning = False
+                self._scanThread = None
+            return TilingRunResult(
+                False, False, f'Tiling could not start: {e}'
+            )
+
+        # _runScan owns the claim from here on and releases it in its finally.
+        self._runScan(
+            *self._runScanArgs(tilingInfo, settings),
+            **self._runScanKwargs(
+                settings,
+                save_tiles=True,
+                save_folder=Path(saveFolder),
+                illumination_gate=illuminationGate,
+            ),
+        )
+        result = self.__dict__.get('_lastRunResult')
+        if result is None:
+            return TilingRunResult(
+                False, bool(self._stopRequested),
+                'The tiling run ended without reporting a result.',
+            )
+        return result
 
     @APIExport()
     def stopTiling(self) -> None:
@@ -712,6 +867,8 @@ class TilingController(ImConWidgetController):
         mode: str = MODE_FREE_RUNNING,
         scan_source_key=None,
         detector_name=None,
+        save_folder=None,
+        illumination_gate=None,
     ) -> None:
         # The grid's total, which is what progress, the payload session and the
         # last-tile test all count. Derived rather than passed so it cannot
@@ -741,6 +898,16 @@ class TilingController(ImConWidgetController):
         saveFolder = None
         tileSource = None
         dispatcher = None
+        tilesAcquired = 0
+        runMessage = ''
+        # The caller's illumination gate, in free-running mode only: in
+        # triggered mode the scan arms its own lasers for every tile.
+        gate = illumination_gate if mode != MODE_TRIGGERED else None
+        if illumination_gate is not None and gate is None:
+            self._logger.info(
+                'Tiling: triggered mode -- the scan arms its own lasers per '
+                'tile, so the illumination gate is not used.'
+            )
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -790,7 +957,10 @@ class TilingController(ImConWidgetController):
                 # tile: a recording session started before the folder existed
                 # would write its payloads somewhere else, and every locator
                 # in the manifest would then point outside the dataset.
-                saveFolder = tiling_folder(self._saveRoot(tilingInfo))
+                saveFolder = (
+                    Path(save_folder) if save_folder is not None
+                    else tiling_folder(self._saveRoot(tilingInfo))
+                )
                 saveFolder.mkdir(parents=True, exist_ok=True)
                 self._logger.info(f'Tiling: saving to {saveFolder}')
 
@@ -846,14 +1016,54 @@ class TilingController(ImConWidgetController):
                     gx, gy,
                     (origin_xy[0] + gx * step_um, origin_xy[1] + gy * step_um),
                 )
-                frame, wasFresh = tileSource.acquire()
+                # Everything this tile needs is captured in one go -- the
+                # alignment frame and, when saving, every other detector's --
+                # so that a caller's illumination is on only for that: not
+                # while the mosaic is stitched, aligned or written below.
+                images = None
+                gateFailure = None
+                lit = False
+                try:
+                    if gate is not None:
+                        # Marked first: a gate that raises part-way may already
+                        # have switched something on, and still gets its off.
+                        lit = True
+                        gate.before_tile(i)
+                    frame, wasFresh = tileSource.acquire()
+                    if frame is not None and save_tiles:
+                        # Every detector's image for this position, captured
+                        # before anything is written and before the stage may
+                        # move again.
+                        images = self._captureSaveSet(
+                            saveSet, camera, frame, tileSource
+                        )
+                finally:
+                    if lit:
+                        try:
+                            gate.after_tile(i)
+                        except Exception as e:
+                            gateFailure = (
+                                f'The illumination gate failed after tile '
+                                f'{i + 1}/{n_tiles}: {e}'
+                            )
+                            self._logger.error(
+                                f'Tiling: {gateFailure}. The lasers may still '
+                                'be on; stopping the run.', exc_info=True,
+                            )
+                if gateFailure is not None:
+                    runMessage = gateFailure
+                    break
                 if frame is None:
                     self._logger.error(
                         'Tiling: no frame available for tile '
                         f'{i + 1}/{n_tiles}; aborting scan'
                     )
+                    runMessage = (
+                        f'No frame was available for tile {i + 1}/{n_tiles}.'
+                    )
                     frameFailure = True
                     break
+                tilesAcquired += 1
                 if not wasFresh:
                     staleFrames += 1
 
@@ -920,11 +1130,6 @@ class TilingController(ImConWidgetController):
                         origin_xy[0] + gx * step_um,
                         origin_xy[1] + gy * step_um,
                     )
-                    # Every detector's image for this position, captured before
-                    # anything is written and before the stage may move again.
-                    images = self._captureSaveSet(
-                        saveSet, camera, frame, tileSource
-                    )
                     self._saveTile(
                         images, camera, gx, gy, stage_xy, dataset, saveFolder,
                         alignmentImage=displayFrame,
@@ -950,7 +1155,10 @@ class TilingController(ImConWidgetController):
                         self.sigOverviewUpdated.emit(self._stitcher.get_overview())
                     self.sigProgressUpdated.emit(i + 1, n_tiles)
 
-            scan_completed = not self._stopRequested and not frameFailure
+            scan_completed = (
+                not self._stopRequested and not frameFailure
+                and not runMessage
+            )
 
             if register_tiles and self._stitcher is not None:
                 # Before anything is written: the solved layout is the one that
@@ -991,6 +1199,7 @@ class TilingController(ImConWidgetController):
                 )
 
         except Exception as e:
+            runMessage = f'Tiling failed: {e}'
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
             # Once the origin is known, every exit path owns returning the
@@ -1052,6 +1261,21 @@ class TilingController(ImConWidgetController):
                         f'Failed to release tiling detector lease: {e}',
                         exc_info=True,
                     )
+            stopped = bool(self._stopRequested)
+            completed = bool(scan_completed and origin_restored)
+            if scan_completed and not origin_restored and not runMessage:
+                runMessage = 'The stage could not be returned to the origin.'
+            elif stopped and not runMessage:
+                runMessage = 'Stopped.'
+            self._lastRunResult = TilingRunResult(
+                completed=completed,
+                stopped=stopped,
+                message=runMessage,
+                folder=str(saveFolder) if saveFolder is not None else None,
+                tiles_acquired=tilesAcquired,
+                stale_tiles=staleFrames,
+                illumination_gated=gate is not None,
+            )
             with self._getActivityLock():
                 self._scanAcqHandle = None
                 self._scanning = False

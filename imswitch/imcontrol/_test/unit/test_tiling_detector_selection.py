@@ -144,11 +144,16 @@ def test_the_selection_is_read_before_the_worker_starts():
     mid-run would leak that lease and read a detector nobody armed."""
     import inspect
 
+    # Read in the snapshot startTiling takes on the GUI thread (a timelapse of
+    # tilings takes the same snapshot once and reuses it for every run).
+    snapshot = inspect.getsource(TilingController.snapshotRunSettings)
+    assert 'self._widget.getDetector()' in snapshot
     source = inspect.getsource(TilingController.startTiling)
-    assert 'self._widget.getDetector()' in source
+    assert 'self.snapshotRunSettings()' in source
 
-    worker = inspect.getsource(TilingController._runScan)
-    assert 'getDetector()' not in worker
+    for workerSide in (TilingController._runScan,
+                       TilingController.runTilingForWorkflow):
+        assert 'getDetector()' not in inspect.getsource(workerSide)
 
 
 def test_config_editor_exposes_the_required_detector_transform_map():
