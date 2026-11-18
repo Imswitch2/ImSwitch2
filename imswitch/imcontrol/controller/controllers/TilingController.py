@@ -1169,6 +1169,12 @@ class TilingController(ImConWidgetController):
                 if not getattr(self, '_closed', False):
                     self.sigOverviewUpdated.emit(self._stitcher.get_overview())
 
+            # Intensity correction solved each tile on arrival; with the whole
+            # run in hand it is solved again, before the mosaic is written.
+            if (self._stitcher is not None and self._stitcher.finish()
+                    and not getattr(self, '_closed', False)):
+                self.sigOverviewUpdated.emit(self._stitcher.get_overview())
+
             if save_tiles and saveFolder is not None:
                 # The mosaic and the sidecars are written even for a stopped or
                 # partial run: whatever tiles reached disk should still be a

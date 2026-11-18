@@ -1,39 +1,42 @@
 import numpy as np
 
 
+#: ImageJ's "Auto" brightness/contrast (``ContrastAdjuster.autoAdjust``):
+#: a 256-bin histogram; any bin holding more than this fraction of the pixels
+#: is treated as background and ignored...
+_IMAGEJ_AUTO_LIMIT_FRACTION = 1 / 10
+#: ...and the levels go from the first to the last bin holding more than
+#: ``pixelCount / AUTO_THRESHOLD`` pixels, ImageJ's ``AUTO_THRESHOLD`` being
+#: 5000 on the first press of the button.
+_IMAGEJ_AUTO_THRESHOLD = 5000
+_IMAGEJ_HISTOGRAM_BINS = 256
+
+
 def bestLevels(arr):
-    # Best cmin, cmax algorithm taken from ImageJ routine:
-    # http://cmci.embl.de/documents/120206pyip_cooking/
-    # python_imagej_cookbook#automatic_brightnesscontrast_button
-    pixelCount = arr.size
-    limit = pixelCount / 10
-    threshold = pixelCount / 5000
-    hist, bin_edges = np.histogram(arr, 256)
-    i = 0
-    found = False
-    count = 0
-    while True:
-        i += 1
-        count = hist[i]
-        if count > limit:
-            count = 0
-        found = count > threshold
-        if found or i >= 255:
-            break
-    hmin = i
+    """Display levels by ImageJ's "Auto" brightness/contrast.
 
-    i = 256
-    while True:
-        i -= 1
-        count = hist[i]
-        if count > limit:
-            count = 0
-        found = count > threshold
-        if found or i < 1:
-            break
-    hmax = i
+    Ported from ImageJ's ``ContrastAdjuster.autoAdjust`` (first press): a
+    256-bin histogram, bins holding more than a tenth of the pixels ignored
+    as background, and the levels running from the first to the last bin
+    holding more than 1/5000 of them -- so a few hot or dead pixels saturate
+    instead of setting the range. As in ImageJ, when no bin qualifies, or
+    the two ends meet, the levels are the data's own minimum and maximum.
 
-    return bin_edges[hmin], bin_edges[hmax]
+    The earlier port (via the CMCI ImageJ cookbook) began its search at the
+    second bin, and returned inverted levels for an image with no
+    qualifying bin, such as a uniform one.
+    """
+    data = np.asarray(arr)
+    pixelCount = data.size
+    hist, bin_edges = np.histogram(data, _IMAGEJ_HISTOGRAM_BINS)
+    counts = np.where(hist > pixelCount * _IMAGEJ_AUTO_LIMIT_FRACTION, 0, hist)
+    qualifying = np.flatnonzero(counts > pixelCount / _IMAGEJ_AUTO_THRESHOLD)
+    if qualifying.size:
+        low = bin_edges[qualifying[0]]
+        high = bin_edges[qualifying[-1]]
+        if high > low:
+            return low, high
+    return data.min(), data.max()
 
 
 def minmaxLevels(arr):
