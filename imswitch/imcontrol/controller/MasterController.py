@@ -1,6 +1,6 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DeformableMirrorsManager, DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced, ScanManagerExpert
 )
@@ -120,6 +120,11 @@ class MasterController:
         self.instrumentsManager = InstrumentsManager(
             getattr(self.__setupInfo, 'instruments', None),
             rotatorsManager=self.rotatorsManager,
+            **lowLevelManagers
+        )
+        # Deformable mirrors (adaptive optics).
+        self.deformableMirrorsManager = DeformableMirrorsManager(
+            getattr(self.__setupInfo, 'deformableMirrors', None),
             **lowLevelManagers
         )
 
@@ -273,7 +278,7 @@ class MasterController:
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
             'rotatorsManager', 'flipMirrorsManager', 'instrumentsManager',
-            'recordingManager',
+            'deformableMirrorsManager', 'recordingManager',
             'slmsManager', 'scanEngines', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'pulseGenerators', 'triggerScopeManager', 'standManager',
             'scanManager', 'timeTaggerManager',

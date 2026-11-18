@@ -854,6 +854,12 @@ class InstrumentInfo(DeviceInfo):
     ``transient``. """
 
 
+@dataclass(frozen=True, kw_only=True)
+class DeformableMirrorInfo(DeviceInfo):
+    """ A deformable mirror: one command vector, a value per actuator,
+    sent as a whole. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -917,6 +923,10 @@ class SetupInfo:
     instruments: Optional[Dict[str, InstrumentInfo]] = field(default_factory=lambda: None)
     """ Measurement instruments (power meters, polarimeters, ...). Usually
     ``transient``: declared here, connected only when needed. """
+
+    deformableMirrors: Optional[Dict[str, DeformableMirrorInfo]] = field(
+        default_factory=lambda: None)
+    """ Deformable mirrors (adaptive optics). """
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

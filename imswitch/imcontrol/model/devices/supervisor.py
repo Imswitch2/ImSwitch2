@@ -38,6 +38,7 @@ _MULTI_MANAGER_SOURCES = (
     ("rotator", "rotatorsManager"),
     ("flip_mirror", "flipMirrorsManager"),
     ("instrument", "instrumentsManager"),
+    ("deformable_mirror", "deformableMirrorsManager"),
     ("rs232", "rs232sManager"),
     ("slm", "slmsManager"),
 )

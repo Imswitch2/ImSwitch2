@@ -66,6 +66,10 @@ def instrument_key(name: str) -> str:
     return f'instrument:{name}'
 
 
+def deformable_mirror_key(name: str) -> str:
+    return f'deformable_mirror:{name}'
+
+
 @dataclass(frozen=True)
 class Reservation:
     token: str

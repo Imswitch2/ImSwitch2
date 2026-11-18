@@ -33,6 +33,8 @@ _SETUP_KINDS: tuple[SetupKindMetadata, ...] = (
     SetupKindMetadata("slm", "slms", "slms", "slms", True),
     SetupKindMetadata("flip_mirror", "flipMirrors", "flipMirrors", "flipMirrors", True),
     SetupKindMetadata("instrument", "instruments", "instruments", "instruments", True),
+    SetupKindMetadata("deformable_mirror", "deformableMirrors", "deformableMirrors",
+                      "deformableMirrors", True),
     SetupKindMetadata("stand", "stands", "microscopeStand", "stands", True),
     # Scan engines run scan programs (docs/design/plans/
     # scan-engines-and-expert-scan.md); a standalone registry-backed loader.

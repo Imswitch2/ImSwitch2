@@ -156,6 +156,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     devices/instruments
+    devices/deformable_mirrors
     devices/pulse_generators
     devices/scan_engines
     devices/step-engine-protocol

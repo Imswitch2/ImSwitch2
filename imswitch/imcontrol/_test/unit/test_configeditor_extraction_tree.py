@@ -66,10 +66,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 65: the pulse-generator scan engine. 66: the step-protocol engine. 68:
     # the step-board positioner and laser managers (set by hand, §7.8).
     # 72 with main's instruments (2026-10-28): two mock and two Thorlabs.
-    # 73: the polarization rig's BPC303 piezo manager.
-    assert report.managers == 73, ("61 plus RS232Manager, the four scan engines, two "
+    # 73: the polarization rig's BPC303 piezo manager. 74: the ALPAO mirror.
+    assert report.managers == 74, ("61 plus RS232Manager, the four scan engines, two "
                                    "step-board devices, two mock and two Thorlabs instruments, "
-                                   "the BPC303")
+                                   "the BPC303, the ALPAO mirror")
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
@@ -82,9 +82,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 63: the Teensy and the Pulse Streamer, built from pulseGenerators entries.
     # 67 with main's instruments: the four instrument managers read
     # self._managerProperties, which their base binds from the InstrumentInfo,
-    # so all four list their keys. 68: the BPC303 piezo manager.
-    assert report.reads_any == 68
-    assert report.with_keys == 68
+    # so all four list their keys. 68: the BPC303 piezo manager. 69: the
+    # ALPAO mirror (its base reads the mirror files and limits).
+    assert report.reads_any == 69
+    assert report.with_keys == 69
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -114,7 +115,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # MoNaLISA reconstruction defaults belong to processing, not detector
     # hardware schemas (main's PR #69 adds none here). 281: the BPC303's
     # serialNumber, travelUm, channels, kinesisPath and useMockOnFailure.
-    assert report.keys == 281
+    # 289: the ALPAO mirror's serialNumber, actuators, sdkPath,
+    # useMockOnFailure, flatFile, modesFile, firstMode and maxCommand.
+    assert report.keys == 289
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -124,12 +127,12 @@ def test_the_coverage_the_plan_is_built_on(report):
     # RS232-backed laser. 62 with Lifetime 2.0: SwabianTimeTagger's three
     # channels are read only without a timeTagger block, so the schema no
     # longer requires them. 64 with main's instruments: PM100/PAX serial.
-    # 65: the BPC303's serialNumber.
-    assert report.required == 65, ("60 under the guard-aware rule, RS232Manager's port and "
+    # 65: the BPC303's serialNumber. 66: the ALPAO mirror's serialNumber.
+    assert report.required == 66, ("60 under the guard-aware rule, RS232Manager's port and "
                                    "recv_termination, the step-board positioner's "
                                    "conversionFactor, CoolLED/MPB rs232device, PM100/PAX "
-                                   "serial, the BPC303's serialNumber, minus the three Swabian "
-                                   "channels")
+                                   "serial, the BPC303's and the ALPAO mirror's "
+                                   "serialNumber, minus the three Swabian channels")
     # +7 simulated step, +2 pulse-generator, +4 step-protocol engine properties,
     # +3 step-board positioner and laser properties, +9 pulse generators' and
     # the pulse-generator laser's; -2 CoolLED/MPB rs232device, now required;
@@ -137,8 +140,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # frame_role, live_fit_period_s, and the three channels, now optional;
     # 212 with main: the instrument managers' optional keys, the seven
     # useMockOnFailure flags and the Hamamatsu's mockSample. 216: the
-    # BPC303's travelUm, channels, kinesisPath and useMockOnFailure.
-    assert report.optional == 216
+    # BPC303's travelUm, channels, kinesisPath and useMockOnFailure. 223:
+    # the ALPAO mirror's seven optional keys.
+    assert report.optional == 223
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -156,8 +160,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # keep the instrument's own), MockPAX plate1Rotator / plate2Rotator, and
     # the Hamamatsu's mockSample block (None = no synthetic sample). 60: the
     # BPC303's channels (absent: in order) and kinesisPath (absent: the
-    # installer's folder).
-    assert report.none_default_only == 60
+    # installer's folder). 63: the ALPAO mirror's sdkPath, flatFile and
+    # modesFile.
+    assert report.none_default_only == 63
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -178,8 +183,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # frame_role and live_fit_period_s have their own rows. 196 with main:
     # docs/devices/instruments.rst's 18 instrument keys, MockPAX's plate
     # rotators, the seven useMockOnFailure rows and the Hamamatsu's mockSample.
-    # 201: the BPC303 card's five rows (docs/devices/positioners.rst).
-    assert (report.docs_agree, report.docs_documented) == (201, 201)
+    # 201: the BPC303 card's five rows (docs/devices/positioners.rst). 209:
+    # the ALPAO card's eight (docs/devices/deformable_mirrors.rst).
+    assert (report.docs_agree, report.docs_documented) == (209, 209)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -194,7 +200,9 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # with main: the 16 instrument keys read through float()/int()/str() and
     # the seven useMockOnFailure reads through bool(). 129: the BPC303's
     # serialNumber (str()), travelUm (float()) and useMockOnFailure (bool()).
-    assert report.typed_by_code == 129
+    # 134: the ALPAO mirror's serialNumber, actuators, firstMode, maxCommand
+    # and useMockOnFailure.
+    assert report.typed_by_code == 134
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -372,5 +380,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 73
+    assert totals["managers"] == 74
 

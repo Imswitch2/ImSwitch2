@@ -22,6 +22,7 @@ _CATEGORY_LABELS = {
     "slm": "SLMs",
     "stand": "Microscope stands",
     "instrument": "Instruments",
+    "deformable_mirror": "Deformable mirrors",
     "infrastructure": "Infrastructure",
 }
 
@@ -34,6 +35,7 @@ _CATEGORY_ORDER = {
     "slm": 5,
     "stand": 6,
     "instrument": 7,
+    "deformable_mirror": 8,
     "infrastructure": 100,
 }
 

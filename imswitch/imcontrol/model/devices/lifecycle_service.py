@@ -649,6 +649,7 @@ class DeviceLifecycleService:
         from imswitch.imcontrol.model.resources import (
             ReservationExpiredError,
             ResourceReservedError,
+            deformable_mirror_key,
             get_resource_registry,
             instrument_key,
             laser_key,
@@ -661,6 +662,7 @@ class DeviceLifecycleService:
             "laser": laser_key,
             "positioner": positioner_key,
             "instrument": instrument_key,
+            "deformable_mirror": deformable_mirror_key,
         }
         keys = sorted({
             keyFor[device.kind](device.name)

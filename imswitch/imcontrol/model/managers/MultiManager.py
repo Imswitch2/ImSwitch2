@@ -22,6 +22,7 @@ SUBMANAGERS_PACKAGE_TO_KIND = {
     'rs232': 'rs232',
     'flipMirrors': 'flip_mirror',
     'instruments': 'instrument',
+    'deformableMirrors': 'deformable_mirror',
     'slms': 'slm',
 }
 

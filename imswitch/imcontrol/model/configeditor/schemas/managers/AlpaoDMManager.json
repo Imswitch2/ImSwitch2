@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "actuators": {
+      "description": "The mock mirror's actuator count. Default 69. A real mirror reports",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "firstMode": {
+      "description": "The number of the matrix's first row, e.g. 2 for a Zernike matrix",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "flatFile": {
+      "description": "The flat command (see *Mirror files*). All zeros without one.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "maxCommand": {
+      "description": "The largest absolute value sent to any actuator. Default 1.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "modesFile": {
+      "description": "The mode matrix (see *Mirror files*). Without one, ``setModes`` is",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "sdkPath": {
+      "description": "The folder that holds the SDK's ``Lib64`` bindings. Default",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "serialNumber": {
+      "description": "The mirror's serial number (required). One that starts with ``MOCK``",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "code:str()"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "A mock when the mirror cannot be opened, instead of a mirror that is",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "serialNumber"
+  ],
+  "title": "AlpaoDMManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "AlpaoDMManager",
+    "DeformableMirrorManager"
+  ]
+}

@@ -1,3 +1,4 @@
+from .DeformableMirrorsManager import DeformableMirrorsManager
 from .DetectorsManager import (DetectorsManager, DetectorFaultedError,
                                LeasePurpose, NoDetectorsError)
 from .FlipMirrorsManager import FlipMirrorsManager
@@ -20,6 +21,7 @@ from .StandManager import StandManager
 from .RotatorsManager import RotatorsManager
 
 __all__ = [
+    'DeformableMirrorsManager',
     'DetectorsManager', 'DetectorFaultedError', 'LeasePurpose',
     'NoDetectorsError',
     'FlipMirrorsManager',

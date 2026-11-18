@@ -226,7 +226,7 @@ def _discover_managers() -> dict:
     base_managers = {
         "DetectorManager", "LaserManager", "PositionerManager", "RotatorManager",
         "FlipMirrorManager", "PulseGeneratorManager", "StandManager",
-        "RS232Manager", "SLMManager"
+        "RS232Manager", "SLMManager", "DeformableMirrorManager"
     }
 
     for cat, (_, dir_name) in _CATEGORY_REGISTRY.items():

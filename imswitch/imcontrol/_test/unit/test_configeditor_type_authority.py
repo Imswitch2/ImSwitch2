@@ -505,8 +505,8 @@ def test_the_corpus_is_what_the_plan_says():
     assert len(shipped_setups()) == 24
     # + the four scan engines, + the step-board positioner and laser managers;
     # + main's mock power meter, mock PAX, Thorlabs PM100 and PAX1000;
-    # + the polarization rig's BPC303 piezo manager.
-    assert len(generated_fixtures()) == 73
+    # + the polarization rig's BPC303 piezo manager. 74: + the ALPAO mirror.
+    assert len(generated_fixtures()) == 74
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

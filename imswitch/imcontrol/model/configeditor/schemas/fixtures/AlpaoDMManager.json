@@ -1,0 +1,16 @@
+{
+  "category": "deformableMirrors",
+  "device": {
+    "managerName": "AlpaoDMManager",
+    "managerProperties": {
+      "actuators": 1,
+      "firstMode": 1,
+      "flatFile": "example",
+      "maxCommand": 1.5,
+      "modesFile": "example",
+      "sdkPath": "example",
+      "serialNumber": "example",
+      "useMockOnFailure": true
+    }
+  }
+}

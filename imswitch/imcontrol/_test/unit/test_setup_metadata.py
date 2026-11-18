@@ -102,6 +102,8 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("instrument", "MockPowerMeterManager"),
     ("instrument", "ThorlabsPAX1000Manager"),
     ("instrument", "ThorlabsPM100Manager"),
+    # Adaptive optics: the ALPAO mirror (a MOCK serial is a mock).
+    ("deformable_mirror", "AlpaoDMManager"),
 }
 
 

@@ -23,6 +23,7 @@ MULTIMANAGER_BACKED_KINDS = {
     "rs232",
     "flip_mirror",
     "instrument",
+    "deformable_mirror",
     "slm",
 }
 
@@ -53,6 +54,7 @@ DeviceKind = Literal[
     "rs232",
     "flip_mirror",
     "instrument",
+    "deformable_mirror",
     "slm",
     "stand",
     "scan_engine",

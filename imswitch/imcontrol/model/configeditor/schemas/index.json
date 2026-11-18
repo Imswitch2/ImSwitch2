@@ -1,28 +1,33 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 58,
-    "docs_agree": 203,
-    "docs_documented": 203,
-    "keys": 283,
-    "managers": 73,
-    "none_default_only": 61,
+    "constrained": 61,
+    "docs_agree": 211,
+    "docs_documented": 211,
+    "keys": 291,
+    "managers": 74,
+    "none_default_only": 64,
     "none_only": 16,
-    "optional": 218,
-    "reads_any": 69,
+    "optional": 225,
+    "reads_any": 70,
     "refs": 15,
-    "required": 65,
-    "typed_by_code": 129,
-    "typed_with_docs": 227,
-    "typed_with_examples": 170,
+    "required": 66,
+    "typed_by_code": 134,
+    "typed_with_docs": 235,
+    "typed_with_examples": 175,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 69,
+    "with_keys": 70,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
   "generator_version": 2,
   "kinds": {
+    "deformable_mirror": {
+      "class": "DeformableMirrorInfo",
+      "fields": 8,
+      "required": 1
+    },
     "detector": {
       "class": "DetectorInfo",
       "fields": 10,
@@ -109,6 +114,16 @@
       "overridden": false,
       "properties": 4,
       "required": 2
+    },
+    "AlpaoDMManager": {
+      "category": "deformableMirrors",
+      "classes": [
+        "AlpaoDMManager",
+        "DeformableMirrorManager"
+      ],
+      "overridden": false,
+      "properties": 8,
+      "required": 1
     },
     "BPC303PiezoManager": {
       "category": "positioners",

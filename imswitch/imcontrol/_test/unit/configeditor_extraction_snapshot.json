@@ -28,6 +28,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 3,
+      "keys": 8,
+      "name": "AlpaoDMManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 1,
       "keys": 5,
       "name": "BPC303PiezoManager",
@@ -660,23 +669,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 58,
-    "docs_agree": 201,
-    "docs_documented": 201,
-    "keys": 281,
-    "managers": 73,
-    "none_default_only": 60,
+    "constrained": 61,
+    "docs_agree": 209,
+    "docs_documented": 209,
+    "keys": 289,
+    "managers": 74,
+    "none_default_only": 63,
     "none_only": 16,
-    "optional": 216,
-    "reads_any": 68,
+    "optional": 223,
+    "reads_any": 69,
     "refs": 14,
-    "required": 65,
-    "typed_by_code": 129,
-    "typed_with_docs": 225,
-    "typed_with_examples": 170,
+    "required": 66,
+    "typed_by_code": 134,
+    "typed_with_docs": 233,
+    "typed_with_examples": 175,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 68,
+    "with_keys": 69,
     "writes": 0
   }
 }

@@ -1,5 +1,6 @@
 from .Options import Options
 from .SetupInfo import (
+    DeformableMirrorInfo,
     DeviceInfo,
     DetectorInfo,
     FlipMirrorInfo,

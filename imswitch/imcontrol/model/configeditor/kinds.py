@@ -35,6 +35,7 @@ KIND_INFO_CLASSES: dict[str, str] = {
     "slm": "SLMsInfo",
     "flip_mirror": "FlipMirrorInfo",
     "instrument": "InstrumentInfo",
+    "deformable_mirror": "DeformableMirrorInfo",
     "stand": "MicroscopeStandInfo",
     "scan_engine": "ScanEngineInfo",
     "pulse_generator": "PulseGeneratorInfo",
