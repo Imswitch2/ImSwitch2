@@ -24,9 +24,7 @@ class MultiDataFrameController(ImProcessWidgetController):
         )
         self._commChannel.sigDataFolderChanged.connect(self.dataFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
-        useAsData = getattr(self._commChannel, 'sigUseResultsAsData', None)
-        if useAsData is not None:
-            useAsData.connect(self.addResultsAsData)
+        self._commChannel.sigUseResultsAsData.connect(self.addResultsAsData)
 
         self._widget.sigAddDataClicked.connect(self.addDataClicked)
         self._widget.sigLoadCurrentDataClicked.connect(self.loadCurrData)

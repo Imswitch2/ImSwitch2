@@ -281,7 +281,7 @@ class CommunicationChannel(SignalInterface):
     bridged into a data-list row (``model.result_source``) that keeps its
     axes, attributes and provenance; the first becomes the current data.
 
-    Emitters: ImageToolbarController (Image > Use as reconstruction input)
+    Emitters: ImageToolbarController
     Listeners: MultiDataFrameController
     """
 

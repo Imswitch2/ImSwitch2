@@ -301,3 +301,25 @@ manual lattice and an explicit 4×4 scan, which exercises the plumbing, not
 the physics: a real recording needs its own scan and lattice. Guide:
 "Chaining reconstructors and iterating over axes" in
 `docs/improcess-workflows.rst`.
+
+### Verification
+
+- The Phase 0 module set (now 57 modules, the new test files included):
+  **9 failed, 1196 passed, 4 skipped**, the same 9 pre-existing SNOUTY
+  logging failures as the baseline.
+- The whole `imswitch/improcess/_test` suite, `main` vs this branch: 10
+  failures on `main`, the same 10 on the branch and no others
+  (main: 4434 passed; branch: 4503 passed).
+
+### Bringing it onto `dev`
+
+A trial merge into `dev` conflicts in `workflows/steps.py`, `runner.py`,
+`workflows/__init__.py`, `model/provenance.py`, the editor's `document.py`,
+`nodes.py` and `canvas/quickadd.py`, `processors/run.py`, the Python step's
+`context.py` and `processor.py`, and `test_python_step.py`. (A further 8
+conflicts, in imcontrol, the changelog and `test_monalisa_live_session.py`,
+come from `main` itself and occur when merging `main` alone into `dev`.)
+The main one is structural: on `dev` the workflow schema lives in
+`imcommon/model/workflow/steps.py` with a step-type registry, so `Map`/`Fold`
+move there and register with `register_step_type("map", Map, run=run_map)`
+instead of being built-in kinds; the runner's `Map` branch then goes away.
