@@ -36,6 +36,8 @@ feat/improcess-tool-menu           # ImProcess analysis tools by category (Fiji-
 feat/timelapse                     # Timelapse widget: camera/scan/tiling timelapses, lasers on only per timepoint;
                                    #   Recording camera series + gated camera lapse, Tiling workflow entry; PR to open
                                    #   (main merged into dev first for PR #69; dock list: SmartPipeline and Timelapse
-                                   #    both kept; changelog: both sides kept)
+                                   #    both kept; changelog: both sides kept; with feat/config-editor-improcess:
+                                   #    its section-template test maps "timelapse" -> TimelapseInfo, and its page list
+                                   #    gains #69's "Calibration" page)
 fix/setup-loader-blank-values      # loader: a blank or unreadable typed setup value warns and uses the default; "false" bools
                                    #   read false (twin of scan-engines' Swabian managerProperties fix); PR to open

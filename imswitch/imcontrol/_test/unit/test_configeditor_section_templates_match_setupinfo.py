@@ -48,6 +48,7 @@ SECTION_CLASSES = {
     "focusLock": setup_info.FocusLockInfo,
     "autofocus": setup_info.AutofocusInfo,
     "tiling": setup_info.TilingInfo,
+    "timelapse": setup_info.TimelapseInfo,
     "scan": setup_info.ScanInfo,
     "microscopeStand": setup_info.MicroscopeStandInfo,
     "etSTED": setup_info.EtSTEDInfo,

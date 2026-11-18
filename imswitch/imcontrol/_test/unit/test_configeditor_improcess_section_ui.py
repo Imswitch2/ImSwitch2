@@ -258,7 +258,7 @@ def test_the_pages_are_the_schema_groups_then_the_fixed_ones(qapp):
     assert dlg._page_titles == [
         "Reconstructors", "Processors", "Drop-in plugins", "Startup layout",
         "Analysis panels", "Localization viewer", "Live mode", "napari plugins",
-        "Custom", "Set on this computer",
+        "Calibration", "Custom", "Set on this computer",
     ]
     assert dlg._page_list.currentRow() == 0 and dlg._page_titles[0] == "Reconstructors"
     assert [dlg._page_list.item(i).text() for i in range(dlg._page_list.count())] == dlg._page_titles
