@@ -1,0 +1,13 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "BPC303PiezoManager",
+    "managerProperties": {
+      "channels": {},
+      "kinesisPath": "example",
+      "serialNumber": "example",
+      "travelUm": 1.5,
+      "useMockOnFailure": true
+    }
+  }
+}

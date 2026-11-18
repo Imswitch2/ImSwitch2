@@ -67,6 +67,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("laser", "PyMicroscopeLaserManager"),
     ("laser", "StepBoardLaserManager"),
     ("laser", "TriggerScopeLaserManager"),
+    ("positioner", "BPC303PiezoManager"),
     ("positioner", "BSC203StageManager"),
     ("positioner", "ESP32StageManager"),
     ("positioner", "GRBLStageManager"),

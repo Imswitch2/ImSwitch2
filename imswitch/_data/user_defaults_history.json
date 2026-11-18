@@ -132,7 +132,8 @@
    "ee7668f38f2f097ee9f5f14d65e193d210e63e6754e6b59df7a0d0cc6fe4b151"
   ],
   "imcontrol_setups/nucleo_polarization_mock_setup.json": [
-   "6beef7d039f3522668cca15c5fe08ede715dbf2d9561dd71852b6842f2a06d12"
+   "6beef7d039f3522668cca15c5fe08ede715dbf2d9561dd71852b6842f2a06d12",
+   "b82df04be878cd142c2f969559ee245322f4b64a753dca538039662ad3459cb2"
   ],
   "imcontrol_setups/simple_mock_setup.json": [
    "5635e6f4f60c9a91ffbb07ed635d6477778c9c2371a8bf3bb5bf907d62b4bf5b",

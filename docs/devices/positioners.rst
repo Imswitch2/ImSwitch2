@@ -83,6 +83,77 @@ startup; ``PiezoconceptZManager`` does not.  ``PiezoconceptZManager2``'s
 docstring describes it as "Adapted to new Firmware as of 2026."
 
 
+BPC303PiezoManager
+==================
+
+A piezo stage on a Thorlabs BPC303 benchtop controller (three channels),
+through the Kinesis .NET libraries over pythonnet, as the polarization rig's
+Microscope_GUI drove it: open loop, each channel by its output voltage. A
+position is ``µm = V × travelUm / Vmax`` (``Vmax`` is the channel's largest
+output voltage, read from the controller), and it is read back from the
+output voltage.
+
+**Setup JSON**
+
+.. code-block:: json
+
+    "positioners": {
+        "Piezo": {
+            "managerName": "BPC303PiezoManager",
+            "managerProperties": {"serialNumber": "71824990", "travelUm": 20.0},
+            "axes": ["X", "Y", "Z"],
+            "forPositioning": true
+        }
+    }
+
+**managerProperties**
+
+.. list-table::
+   :widths: 22 12 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``serialNumber``
+     - str
+     - The controller's serial number (required). One that starts with
+       ``MOCK`` is a mock controller.
+   * - ``travelUm``
+     - float
+     - The stage's travel in µm at the largest output voltage. Default 20.
+   * - ``channels``
+     - dict
+     - Axis to controller channel (1-3), e.g. ``{"X": 1, "Y": 2, "Z": 3}``.
+       Without it the axes take channels 1, 2, 3 in order.
+   * - ``kinesisPath``
+     - str
+     - The folder with the Kinesis DLLs. Default
+       ``C:\Program Files\Thorlabs\Kinesis``.
+   * - ``useMockOnFailure``
+     - bool
+     - A mock when the controller cannot be opened, instead of a positioner
+       that is not connected. Default false.
+
+**PositionerInfo fields used**
+
+* ``axes`` -- one to three, each on a controller channel.
+
+**Axes**
+
+A target outside ``0`` to ``travelUm`` is clamped to it, with a warning;
+``move`` is relative to the position read back. Kinesis returns its numbers
+in the computer's locale (a decimal comma in Sweden); both are read.
+
+**Low-level dependencies**
+
+None. Needs ``pythonnet`` and the Thorlabs Kinesis software on the computer.
+
+**Source**
+
+`BPC303PiezoManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/BPC303PiezoManager.py>`_
+
+
 BSC203StageManager
 ==================
 

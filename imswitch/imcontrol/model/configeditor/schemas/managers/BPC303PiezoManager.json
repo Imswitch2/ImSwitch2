@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "channels": {
+      "description": "Axis to controller channel (1-3), e.g. ``{\"X\": 1, \"Y\": 2, \"Z\": 3}``.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:object"
+      ]
+    },
+    "kinesisPath": {
+      "description": "The folder with the Kinesis DLLs. Default",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "serialNumber": {
+      "description": "The controller's serial number (required). One that starts with",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "code:str()"
+      ]
+    },
+    "travelUm": {
+      "description": "The stage's travel in µm at the largest output voltage. Default 20.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "A mock when the controller cannot be opened, instead of a positioner",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "serialNumber"
+  ],
+  "title": "BPC303PiezoManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "BPC303PiezoManager",
+    "PositionerManager"
+  ]
+}

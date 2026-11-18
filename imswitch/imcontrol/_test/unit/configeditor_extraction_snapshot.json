@@ -28,6 +28,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 1,
+      "keys": 5,
+      "name": "BPC303PiezoManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 4,
       "name": "BSC203StageManager",
@@ -651,23 +660,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 57,
-    "docs_agree": 196,
-    "docs_documented": 196,
-    "keys": 276,
-    "managers": 72,
-    "none_default_only": 58,
+    "constrained": 58,
+    "docs_agree": 201,
+    "docs_documented": 201,
+    "keys": 281,
+    "managers": 73,
+    "none_default_only": 60,
     "none_only": 16,
-    "optional": 212,
-    "reads_any": 67,
+    "optional": 216,
+    "reads_any": 68,
     "refs": 14,
-    "required": 64,
-    "typed_by_code": 126,
-    "typed_with_docs": 220,
-    "typed_with_examples": 167,
+    "required": 65,
+    "typed_by_code": 129,
+    "typed_with_docs": 225,
+    "typed_with_examples": 170,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 67,
+    "with_keys": 68,
     "writes": 0
   }
 }

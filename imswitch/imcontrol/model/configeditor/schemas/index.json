@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 57,
-    "docs_agree": 198,
-    "docs_documented": 198,
-    "keys": 278,
-    "managers": 72,
-    "none_default_only": 59,
+    "constrained": 58,
+    "docs_agree": 203,
+    "docs_documented": 203,
+    "keys": 283,
+    "managers": 73,
+    "none_default_only": 61,
     "none_only": 16,
-    "optional": 214,
-    "reads_any": 68,
+    "optional": 218,
+    "reads_any": 69,
     "refs": 15,
-    "required": 64,
-    "typed_by_code": 126,
-    "typed_with_docs": 222,
-    "typed_with_examples": 167,
+    "required": 65,
+    "typed_by_code": 129,
+    "typed_with_docs": 227,
+    "typed_with_examples": 170,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 68,
+    "with_keys": 69,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -109,6 +109,16 @@
       "overridden": false,
       "properties": 4,
       "required": 2
+    },
+    "BPC303PiezoManager": {
+      "category": "positioners",
+      "classes": [
+        "BPC303PiezoManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 5,
+      "required": 1
     },
     "BSC203StageManager": {
       "category": "positioners",
