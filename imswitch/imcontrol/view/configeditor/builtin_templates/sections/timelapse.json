@@ -4,7 +4,6 @@
   "group": "system",
   "display": "Timelapse",
   "summary": "Optional defaults for the Timelapse widget. The widget works without this section.",
-  "requires_widget": "Timelapse",
   "fields": [
     {"key": "defaultKind",          "label": "Default kind",                "type": "enum",  "default": "camera",         "req": false, "grp": "Basic", "tip": "What a timepoint is when the widget opens: camera frames, a scan, or a tiling. Kinds the setup cannot run are not offered.", "opts": ["camera", "scan", "tiling"]},
     {"key": "defaultTimepoints",    "label": "Default timepoints",          "type": "int",   "default": 10,               "req": false, "grp": "Basic", "tip": "Initial value of the widget only; every run uses what the operator entered.", "opts": []},

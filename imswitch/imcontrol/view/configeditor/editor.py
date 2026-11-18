@@ -905,7 +905,11 @@ def _build_default_section(schema: dict) -> dict:
             else:
                 # A default stated as a value keeps its kind -- None included.
                 out[f["key"]] = v
-        elif v == "null":
+        elif v is None or v == "null":
+            # A null default means "not set" whatever the field's kind. Passed
+            # through str() it became the text "None", which a numeric field
+            # then wrote into the setup file and the loader could not read
+            # (a new Timelapse section's illuminationSettleMs, 2026-11-18).
             out[f["key"]] = None
         elif v == "" and tp in ("ref", "text", "path", "select"):
             out[f["key"]] = ""

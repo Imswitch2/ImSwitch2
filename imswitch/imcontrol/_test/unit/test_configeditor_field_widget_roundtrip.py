@@ -197,6 +197,33 @@ def test_section_default_none_stays_none(qapp):
     assert out["empty"] == {}
 
 
+@pytest.mark.parametrize("tp", ["float", "int", "text", "select", "ref", "path", "enum"])
+def test_a_null_scalar_default_stays_null(qapp, tp):
+    """Not the text "None": a numeric field wrote that into the setup file and
+    ImControl could not start (a new Timelapse section, 2026-11-18)."""
+    out = editor._build_default_section({"fields": [{"key": "k", "type": tp, "default": None}]})
+    assert out["k"] is None
+
+
+def test_no_section_template_seeds_a_null_as_text(qapp):
+    for key, schema in editor.SECTION_SCHEMAS.items():
+        for field, value in editor._build_default_section(schema).items():
+            assert value not in ("None", "null"), f"{key}.{field} seeds {value!r}"
+
+
+def test_a_new_timelapse_section_with_every_default_loads(qapp):
+    """The widget works without the section, so enabling it must not insist
+    on one; a section built from every default must load as written."""
+    from imswitch.imcontrol.model.SetupInfo import SetupInfo
+
+    assert "Timelapse" not in editor._WIDGET_REQUIRES_SECTION
+    block = editor._build_default_section(editor.SECTION_SCHEMAS["timelapse"])
+    assert block["illuminationSettleMs"] is None
+    info = SetupInfo.from_json(json.dumps({"timelapse": block}), infer_missing=True)
+    assert info.timelapse.illuminationSettleMs is None
+    assert info.timelapse.defaultIntervalS == 60.0
+
+
 # ── untouched fields give back exactly what they were handed ──────────────
 # Widgets alter what they display: a spin box clamps and rounds, a check box
 # has no None, a text box reads "null" as null. None of that is an edit.
