@@ -50,6 +50,7 @@ _WIDGET_MODULES = {
     "SLMWidget": "SLMWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
+    "TimelapseWidget": "TimelapseWidget",
     "TriggerScopeLSXYRWidget": "TriggerScopeLSXYRWidget",
     "TriggerScopeRasterWidget": "TriggerScopeRasterWidget",
     "TriggerScopePLSRWidget": "TriggerScopePLSRWidget",
