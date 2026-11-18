@@ -58,36 +58,10 @@ MODE_NAMES = {
 
 
 # --------------------------------------------------------------------------- #
-# Zernike polynomials (Noll)
+# Zernike polynomials (Noll): the shared basis in imcommon, which adaptive
+# optics uses too (re-exported here for existing callers).
 # --------------------------------------------------------------------------- #
-def noll_to_nm(j: int) -> tuple[int, int]:
-    """Noll index to ``(n, m)``; ``m > 0`` is the cosine, ``m < 0`` the sine term."""
-    if j < 1:
-        raise ValueError("Noll indices start at 1")
-    n, j1 = 0, j - 1
-    while j1 > n:
-        n += 1
-        j1 -= n
-    m = (-1) ** j * ((n % 2) + 2 * int((j1 + ((n + 1) % 2)) / 2))
-    return n, m
-
-
-def zernike(j: int, rho: np.ndarray, theta: np.ndarray) -> np.ndarray:
-    """Noll-normalised Zernike polynomial (unit RMS over the unit disk)."""
-    n, m = noll_to_nm(j)
-    am = abs(m)
-    radial = np.zeros_like(rho, dtype=np.float64)
-    for k in range((n - am) // 2 + 1):
-        coefficient = (-1) ** k * math.factorial(n - k) / (
-            math.factorial(k)
-            * math.factorial((n + am) // 2 - k)
-            * math.factorial((n - am) // 2 - k)
-        )
-        radial += coefficient * rho ** (n - 2 * k)
-    if m == 0:
-        return math.sqrt(n + 1) * radial
-    angular = np.cos(am * theta) if m > 0 else np.sin(am * theta)
-    return math.sqrt(2 * (n + 1)) * radial * angular
+from imswitch.imcommon.algorithms.zernike import noll_to_nm, zernike  # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------- #
