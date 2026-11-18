@@ -1,0 +1,162 @@
+{
+    "__comment__": "Hardware-free setup of the polarization rig (formerly run by Microscope_GUI): a Nucleo-H7A3ZI-Q as a step board speaking IMSWITCH_STEP/1 (docs/devices/step-engine-protocol.rst), simulated here. The Nucleo drives galvo X and Y on dac0/dac1 (0-3.3 V, 12 bits) and three TTL lines: the 405 and 488 Cobolts' modulation inputs (ttl0, ttl1) and the Hamamatsu's trigger (ttl2). The Expert panel runs on it (scan.engine); the rig's modes are scan programs built by imswitch/imcontrol/model/scan_program/legacy_microscope_gui.py. The two Elliptec mounts (one waveplate each) are rotators: a scan program cannot drive a serial device, so the polarization loop is a script. To use the real board, replace port \"simulated\" and simulatedBoard with the serial port, baudrate and replyTimeoutS. Placeholders until the rig's values are known: the galvos' conversionFactor (um per volt), the lasers' ports, the Elliptec port, and the piezo, which stands in as a mock positioner until the BPC303 manager exists.",
+    "detectors": {
+        "Hamamatsu": {
+            "analogChannel": null,
+            "digitalLine": "nucleo/ttl2",
+            "managerName": "HamamatsuManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "hamamatsu": {
+                    "trigger_source": 2,
+                    "subarray_hpos": 0,
+                    "subarray_vpos": 0,
+                    "subarray_hsize": 512,
+                    "subarray_vsize": 512,
+                    "image_width": 512,
+                    "image_height": 512
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {
+        "405": {
+            "analogChannel": null,
+            "digitalLine": "nucleo/ttl0",
+            "managerName": "Cobolt0601NewLaserManager",
+            "managerProperties": {
+                "simulation": true,
+                "digitalPorts": ["COM4"]
+            },
+            "wavelength": 405,
+            "valueRangeMin": 0.0,
+            "valueRangeMax": 250.0,
+            "valueRangeStep": 0.1
+        },
+        "488": {
+            "analogChannel": null,
+            "digitalLine": "nucleo/ttl1",
+            "managerName": "Cobolt0601NewLaserManager",
+            "managerProperties": {
+                "simulation": true,
+                "digitalPorts": ["COM5"]
+            },
+            "wavelength": 488,
+            "valueRangeMin": 0.0,
+            "valueRangeMax": 200.0,
+            "valueRangeStep": 0.1
+        }
+    },
+    "positioners": {
+        "GalvoX": {
+            "analogChannel": "nucleo/dac0",
+            "digitalLine": null,
+            "managerName": "StepBoardPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 100.0,
+                "minVolt": 0.0,
+                "maxVolt": 3.3
+            },
+            "axes": ["X"],
+            "forScanning": true,
+            "forPositioning": true
+        },
+        "GalvoY": {
+            "analogChannel": "nucleo/dac1",
+            "digitalLine": null,
+            "managerName": "StepBoardPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 100.0,
+                "minVolt": 0.0,
+                "maxVolt": 3.3
+            },
+            "axes": ["Y"],
+            "forScanning": true,
+            "forPositioning": true
+        },
+        "Piezo": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["X", "Y", "Z"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false
+        }
+    },
+    "rotators": {
+        "WaveplateA": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "COM20",
+                "address": 0,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        },
+        "WaveplateB": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "COM20",
+                "address": 1,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        }
+    },
+    "scanEngines": {
+        "nucleo": {
+            "managerName": "StepProtocolScanEngine",
+            "managerProperties": {
+                "port": "simulated",
+                "simulatedBoard": {
+                    "board": "NUCLEO-H7A3ZI-Q (simulated)",
+                    "gridNs": 1000,
+                    "dacs": {
+                        "0": [0.0, 3.3],
+                        "1": [0.0, 3.3]
+                    },
+                    "dacBits": {
+                        "0": 12,
+                        "1": 12
+                    },
+                    "ttlLines": 3,
+                    "maxSteps": 1000000,
+                    "triggerIn": false,
+                    "aliveTicks": 100000
+                }
+            }
+        }
+    },
+    "scan": {
+        "scanWidgetType": "Expert",
+        "engine": "nucleo",
+        "scanDesigner": null,
+        "scanDesignerParams": {},
+        "TTLCycleDesigner": null,
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 0,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Laser",
+        "Positioner",
+        "Rotator",
+        "Scan"
+    ]
+}

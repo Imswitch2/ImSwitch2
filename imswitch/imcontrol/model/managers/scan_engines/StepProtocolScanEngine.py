@@ -508,7 +508,9 @@ class StepProtocolScanEngine(StepEngineBase):
             moves += [abs(b - a) for a, b in zip(table, table[1:]) if b != a]
             resolution = step * factor
             bits = self._caps.dac_bits[index]
-            if moves and min(moves) < step:
+            # A step of exactly one code is fine: written in µm and brought
+            # back to volts it can come out an ULP under the code.
+            if moves and min(moves) < step * (1 - 1e-9):
                 report.add(f'resolution {device}', IMPOSSIBLE,
                            f'{device} steps by {min(moves) * factor:.4g} µm; {self.name} '
                            f'{drive["device"]} sets {resolution:.4g} µm steps ({bits} bits).')

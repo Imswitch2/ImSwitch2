@@ -207,6 +207,20 @@ def test_a_step_finer_than_one_code_is_refused():
         _wire(dac_bits={0: 12}).compile(program, CHANNELS)
 
 
+def test_a_step_of_exactly_one_code_is_not_refused():
+    """A table on the DAC's codes (12 bits over 20 V, 2 µm per volt): between
+    two codes the volts can come out an ULP under one code. That is still one
+    code, not finer, and the old firmware's waveforms are written so."""
+    code_v = 20 / 4095
+    first = next(c for c in range(4095) if (c + 1) * code_v - c * code_v < code_v)
+    count = _raster().loop('x').count
+    program = ScanProgram(**{**_raster().__dict__, 'drives': (
+        DeviceDrive('X', table_loop='x', motion=JUMP,
+                    table_um=tuple((first + i) * code_v * 2.0 for i in range(count))),)})
+    compiled = _wire(dac_bits={0: 12}).compile(program, CHANNELS)
+    assert compiled.report.verdict('resolution X').verdict == NATIVE
+
+
 def test_the_engine_is_what_the_board_says():
     engine = _wire(ttl_lines=2, dacs={0: (-1.0, 1.0)}, max_steps=99)
     caps = engine.capabilities()
