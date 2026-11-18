@@ -13,11 +13,13 @@ steps:
     id: rec
     reconstructor: monalisa
     params:
-      reconstruction_method: Fast Gauss MoNaLISA
+      preset: Fast
       device: CPU
       pixel_size_nm: 77
-      psf_fwhm_nm: 220
-      bg_modelling: Constant
+      spot_width_mode: Manual/default
+      spot_fwhm: 220
+      spot_fwhm_unit: nm
+      background: constant
     inputs: [raw]
   - step: process
     id: bg

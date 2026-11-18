@@ -1,5 +1,6 @@
 import copy
 import json
+import time
 
 from qtpy import QtCore
 
@@ -580,22 +581,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
     @QtCore.Slot(str)
     def _set_monalisa_update_enabled(self, mode):
         try:
-            fast = str(mode) == "Fast"
-            placement_only = fast
-            reason = "Update reconstruction is currently available only in Fast mode."
-            if fast:
-                widget = getattr(self, "_previewWidget", None)
-                values = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
-                corrected = bool(values.get("intensity_correction", False)) or bool(
-                    values.get("cell_offsets", False)
-                )
-                placement_only = not corrected
-                reason = (
-                    "Re-place the retained Fast extraction after changing scan orientation."
-                    if placement_only
-                    else "Fast corrections require a full reconstruction; placement-only update is unavailable."
-                )
+            from imswitch.improcess.reconstructors.monalisa.params import effective_mode_params
+            widget = getattr(self, "_previewWidget", None)
+            params = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
+            effective = effective_mode_params(params)
+            stages = (
+                str(effective.get("reassignment", "off")) != "off",
+                bool(effective.get("pinhole_stack", False)),
+                bool(effective.get("sharpen", False)),
+                bool(effective.get("variance_weighting", False)),
+                bool(effective.get("intensity_correction", False)),
+                bool(effective.get("cell_offsets", False)),
+            )
+            placement_only = not any(stages) and str(mode) in ("Fast", "Full")
+            reason = (
+                "Re-place retained amplitudes after changing scan orientation."
+                if placement_only else
+                "Placement-only update requires ISM, sharpening and corrections off."
+            )
             self._widget.setUpdateReconstructionEnabled(placement_only, reason)
+            # Full mode explicitly opts into offline-only processing. The
+            # legacy live engine applies additional per-option checks on start.
+            self._widget.setDirectoryWatcherAvailable(str(mode) == "Fast")
         except Exception:
             pass
 
@@ -894,6 +901,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = thread
         self._reconstructionWorker = worker
         self._reconstructionWorkerReconstructor = reconstructor
+        self._timing_dispatch_started = time.perf_counter()
+        self._timing_requested = (reconstructor.id == "monalisa" and any(
+            bool(job.params.get("show_reconstruction_timings", False)) for job in jobs
+        ))
         self._set_reconstruction_job_state(
             True, progress=0.0, status=f"Starting {reconstructor.name}..."
         )
@@ -951,6 +962,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     sync()
                 except Exception as exc:
                     self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
+        if reconstructor is not None and reconstructor.id == "monalisa" and self._timing_requested:
+            elapsed = time.perf_counter() - self._timing_dispatch_started
+            completed = outcome.results or ([outcome.merged] if outcome.merged is not None else [])
+            work = [(getattr(result, "diagnostics", None) or {}).get("timing_worker_s")
+                    for result in completed]
+            worker_seconds = sum(float(value) for value in work if value is not None)
+            worker_seconds = worker_seconds if any(value is not None for value in work) else None
+            widget = getattr(self, "_previewWidget", None)
+            setter = getattr(widget, "set_reconstruction_timings", None)
+            if callable(setter):
+                setter(worker_seconds, elapsed)
+            self._logger.info("MoNaLISA timing: worker=%s s, GUI-inclusive=%.3f s",
+                              worker_seconds, elapsed)
         self._set_reconstruction_job_state(
             False, progress=1.0, status="Reconstruction complete."
         )

@@ -29,7 +29,7 @@ def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
     whose reconstruction of one scan takes half a minute. The polarisation map
     takes measurement runs only — a table of instrument samples, never an image.
     """
-    worker_plugins = {"tiling-mosaic", "time-lapse", "monalisa-lattice"}
+    worker_plugins = {"tiling-mosaic", "time-lapse", "monalisa-lattice", "monalisa"}
     image_less = {"polarisation-map"}
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
         if plugin_id == "tiling-mosaic":

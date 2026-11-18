@@ -43,6 +43,7 @@ from .extraction import (
 )
 from .lattice import Lattice, detect_lattice
 from .localization_settings import LocalizationSettings
+from .dll_equivalent import DllFastExtractionOperator
 from .placement import (
     COMMENSURATE_TOLERANCE,
     DEFAULT_SMOOTHING,
@@ -73,8 +74,11 @@ from .scan_frame import (
     orient_step_columns,
     raster_scan_index,
 )
+from .local_extraction import LocalExtractionOperator
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
+from .footprint_suggestion import suggest_local_footprint_size
+from .footprint_config import footprint_from_params
 
 # A haze term is only used when it removes this share of the residual.
 HAZE_RESIDUAL_RATIO = 0.8
@@ -87,7 +91,9 @@ class PipelineParams:
     """What remains to choose once the geometry is read from the data.
 
     Attributes:
-        reach_sigma: Footprint radius in spot sigmas.
+        reach_sigma: Automatic Joint fit-pixel radius in spot sigmas.
+        joint_footprint_mode: Joint pixel support selection: auto/fixed/lattice.
+        joint_fit_radius_px: Fixed Joint circular fit radius in camera pixels.
         background: ``"none"``, ``"constant"``, ``"constant+haze"``, or
             ``"auto"``: constant, plus haze when the mean frame calls for it.
         haze_sigma_px: Haze width; fitted to the mean frame when ``None``.
@@ -137,9 +143,22 @@ class PipelineParams:
     """
 
     reach_sigma: float = DEFAULT_REACH_SIGMA
+    joint_footprint_mode: str = "auto"
+    joint_fit_radius_px: float = 4.5
     background: str = "constant"
     haze_sigma_px: float | None = None
     joint: bool = True
+    estimator: str = "joint"
+    pixel_size_nm: float | None = None
+    local_footprint_mode: str = "fixed"
+    local_footprint_shape: str = "square"
+    local_footprint_size: int = 9
+    local_sampling: str = "camera_pixels"
+    # None means a historical caller with estimator-specific footprint keys.
+    footprint_shape: str | None = None
+    footprint_mode: str | None = None
+    footprint_size_px: float = 9.0
+    footprint_sigma_factor: float = 2.5
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
     # ``fast`` detects the general lattice directly from the mean frame (the
@@ -178,7 +197,7 @@ class StackGeometry:
     localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
-    operator: ExtractionOperator
+    operator: ExtractionOperator | LocalExtractionOperator | DllFastExtractionOperator
     raster: OutputRaster
     step: np.ndarray
     index_matrix: np.ndarray
@@ -428,6 +447,15 @@ def prepare_geometry(
         else float(first.shared_sigma)
     )
     margin = 3.0 * final_sigma
+    fit = footprint_from_params(vars(params), estimator=params.estimator)
+    if fit.shape == "lattice" or params.estimator == "dll_python":
+        if len(localization.motif) != 1:
+            raise ValueError(
+                "Unit cells require a single-motif axis-aligned rectangular lattice"
+            )
+        # Preserve neighboring canonical cells at camera boundaries so their
+        # ownership is not accidentally expanded into the nearest valid cell.
+        margin = max(margin, 0.6 * max(np.linalg.norm(lattice.matrix, axis=0)))
     x, y = localization.points_in_frame(rows, cols, margin=margin)
     if params.spot_sigma_px is not None:
         spot_model = SpotModel.uniform(x, y, final_sigma)
@@ -452,15 +480,78 @@ def prepare_geometry(
         use_haze = haze_ratio is not None and haze_ratio <= HAZE_RESIDUAL_RATIO
         background = "constant+haze" if use_haze else "constant"
 
-    operator = ExtractionOperator.build(
-        spot_model.x, spot_model.y, sigma, (rows, cols),
-        reach_sigma=params.reach_sigma,
-        background=background,
-        haze_sigma=haze_sigma if background == "constant+haze" else None,
-        joint=params.joint,
-        pixel_mask=pixel_mask,
-        min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
-    )
+    estimator = str(params.estimator).lower()
+    # A single geometric support policy is resolved independently of the
+    # estimator. Changing Local <-> Joint must not silently change fit pixels.
+    shared_sigma = float(np.median(np.asarray(sigma)))
+    resolved_size = fit.resolved_size(localization, shared_sigma)
+    if estimator == "local":
+        if background not in ("none", "constant"):
+            raise ValueError("Local Gaussian extraction supports constant or no background")
+        if pixel_mask is not None:
+            raise ValueError("Local Gaussian extraction does not support pixel masks")
+        if params.variance_weighting:
+            raise ValueError("Variance weighting requires Joint Gaussian extraction")
+        # ISM uses the original sensor pixels. Local bilinear interpolation
+        # changes those observations, so only native camera sampling can feed
+        # the shared reassignment stage. Raw pinhole stacks are independent of
+        # the Gaussian estimator and need no such restriction.
+        if params.reassignment != "off" and params.local_sampling != "camera_pixels":
+            raise ValueError(
+                "Local reassignment requires original camera-pixel sampling"
+            )
+        # Unit-cell support uses actual camera pixels; Local's existing DLL
+        # geometry path already implements this without changing its solver.
+        if fit.shape == "lattice" and params.local_sampling != "camera_pixels":
+            raise ValueError("Lattice unit cells require original camera-pixel sampling")
+        sampling = params.local_sampling
+        operator = LocalExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            background=background,
+            footprint_shape={"square": "rectangular", "circle": "circular",
+                             "lattice": "lattice"}[fit.shape],
+            footprint_size=int(resolved_size) if fit.shape == "square" else 3,
+            pinhole_radius_px=(resolved_size / 2.0 if resolved_size is not None else 1.0),
+            sampling=sampling, lattice=lattice if fit.shape == "lattice" else None,
+            focus_coordinates="localized",
+        )
+    elif estimator == "dll_python":
+        if background != "constant":
+            raise ValueError("DLL-equivalent requires the 9999-nm constant background basis")
+        if pixel_mask is not None:
+            raise ValueError("DLL-equivalent does not support camera pixel masks")
+        if params.variance_weighting or params.reassignment != "off" or params.pinhole_stack != "off":
+            raise ValueError("DLL-equivalent does not support variance weighting, ISM or pinhole stacks")
+        operator = DllFastExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            lattice=lattice, background=background, pixel_size_nm=params.pixel_size_nm,
+        )
+    elif estimator == "joint":
+        if fit.shape == "lattice":
+            support_mode, radius = "lattice", None
+        elif fit.shape == "square":
+            support_mode, radius = "fixed", None
+        elif fit.mode == "fwhm":
+            # Preserve exact per-focus sigma scaling of historical Joint Auto.
+            support_mode, radius = "auto", None
+        else:
+            support_mode, radius = "fixed", resolved_size / 2.0
+        operator = ExtractionOperator.build(
+            spot_model.x, spot_model.y, sigma, (rows, cols),
+            reach_sigma=fit.sigma_factor,
+            footprint_mode=support_mode,
+            fit_shape="square" if fit.shape == "square" else "circle",
+            fit_size_px=resolved_size if fit.shape == "square" else None,
+            fit_radius_px=radius,
+            lattice=lattice if fit.shape == "lattice" else None,
+            background=background,
+            haze_sigma=haze_sigma if background == "constant+haze" else None,
+            joint=params.joint,
+            pixel_mask=pixel_mask,
+            min_pixels=DEFAULT_MIN_PIXELS if pixel_mask is None else DEFAULT_MIN_PIXELS // 2,
+        )
+    else:
+        raise ValueError(f"Unknown Gaussian estimator {params.estimator!r}")
 
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
     step, completed = complete_step(step, lattice, scan_index, step_aspect)
@@ -500,6 +591,31 @@ def prepare_geometry(
         "haze_sigma_px": haze_sigma if background == "constant+haze" else None,
         "haze_residual_ratio": haze_ratio,
         "num_foci": int(operator.valid.sum()),
+        "estimator": estimator,
+        "dll_equivalent_model": (
+            "independent DLL unit cells; integrated Gaussian (2πσ²); "
+            "9999 nm background; CPU extraction" if estimator == "dll_python" else None
+        ),
+        "footprint_shape": fit.shape,
+        "footprint_mode": fit.mode,
+        "footprint_size_px": fit.size_px,
+        "footprint_sigma_factor": fit.sigma_factor,
+        "resolved_footprint_size_px": resolved_size,
+        # Historical aliases remain for old diagnostic consumers, but report
+        # the *effective* common support rather than stale old UI defaults.
+        "joint_footprint_mode": (
+            "lattice" if fit.shape == "lattice" else
+            "auto" if fit.shape == "circle" and fit.mode == "fwhm" else "fixed"
+        ) if estimator == "joint" else None,
+        "joint_fit_radius_px": (
+            resolved_size / 2.0 if estimator == "joint" and fit.shape == "circle"
+            and fit.mode != "fwhm" else None
+        ),
+        "joint_fit_pixel_count": operator.num_fit_pixels if estimator == "joint" else None,
+        "local_footprint_mode": fit.mode if estimator == "local" else None,
+        "local_footprint_shape": fit.shape if estimator == "local" else None,
+        "local_footprint_size": resolved_size if estimator == "local" else None,
+        "local_sampling": params.local_sampling if estimator == "local" else None,
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,
         "step_completed_axes": tuple("xy"[axis] for axis in completed),

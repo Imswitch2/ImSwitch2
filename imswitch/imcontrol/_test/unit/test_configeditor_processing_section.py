@@ -54,7 +54,8 @@ _BOOL_READERS = {
 }
 
 _GROUPS = ["Reconstructors", "Processors", "Startup layout", "Analysis panels",
-           "Localization viewer", "Live mode", "napari plugins"]
+           "Localization viewer", "Live mode", "napari plugins", "Calibration"]
+
 
 
 def _section() -> dict:
@@ -178,7 +179,7 @@ def test_only_reconstructors_is_required():
     assert required == ["reconstructors"]
 
 
-def test_groups_are_the_seven_in_order_reconstructors_and_processors_first():
+def test_groups_are_the_eight_in_order_reconstructors_and_processors_first():
     seen: list[str] = []
     for field in _section()["fields"]:
         if field["grp"] not in seen:
@@ -212,3 +213,11 @@ def test_panels_that_register_a_processor_say_so():
     fields = _fields()
     assert "'projection' processor" in fields["projectionPanel"]["tip"]
     assert "'frc' processor" in fields["frcPanel"]["tip"]
+
+
+def test_monalisa_defaults_are_a_structured_processing_setting():
+    """Reconstruction calibration is a JSON mapping, not a panel checkbox."""
+    field = _fields()["monalisa"]
+    assert field["type"] == "json"
+    assert field["default"] == {}
+    assert field["req"] is False
