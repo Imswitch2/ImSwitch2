@@ -48,6 +48,7 @@ _CONTROLLER_MODULES = {
     "SLMController": "SLMController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",
+    "TimelapseController": "TimelapseController",
     "TriggerScopeRasterController": "TriggerScopeRasterController",
     "TriggerScopePLSRController": "TriggerScopePLSRController",
     "TriggerScopeGalvoDetectionController": "TriggerScopeGalvoDetectionController",
