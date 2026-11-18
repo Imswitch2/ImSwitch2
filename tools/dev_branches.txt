@@ -37,3 +37,5 @@ feat/timelapse                     # Timelapse widget: camera/scan/tiling timela
                                    #   Recording camera series + gated camera lapse, Tiling workflow entry; PR to open
                                    #   (main merged into dev first for PR #69; dock list: SmartPipeline and Timelapse
                                    #    both kept; changelog: both sides kept)
+fix/setup-loader-blank-values      # loader: a blank or unreadable typed setup value warns and uses the default; "false" bools
+                                   #   read false (twin of scan-engines' Swabian managerProperties fix); PR to open
