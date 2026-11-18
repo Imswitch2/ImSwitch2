@@ -38,6 +38,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.lapse_source import (
     INCOMPLETE_MARK,
     INCOMPLETE_SKIP,
@@ -243,6 +244,10 @@ class TimeLapseReconstructor(Reconstructor):
 
     name = "Time lapse"
     id = "time-lapse"
+
+    #: Discovers the time-lapse from the recording's files and groups.
+    core_dims_in = WHOLE_INPUT
+    reads_recording_file = True
     output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff", "tif", "ome.tiff", "zarr"]
     description = "Stack a camera or scan time lapse along T, read as viewed"

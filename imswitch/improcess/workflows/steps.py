@@ -819,6 +819,13 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                 else:
                     issues.extend(_unknown_params(step, plugin))
                     issues.extend(_input_contract_issues(step, plugin))
+                    # A map's ``$item`` is a slice of a result, never a recording.
+                    fed = step.inputs[0].step if len(step.inputs) == 1 else None
+                    if (fed is not None and getattr(plugin, "reads_recording_file", False)
+                            and (fed in _RESERVED_BODY_IDS or not isinstance(by_id.get(fed), Source))):
+                        from imswitch.improcess.reconstructors.base import recording_file_refusal
+
+                        issues.append(Issue(step.id, recording_file_refusal(plugin)))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))

@@ -35,6 +35,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     iter_physical_coordinates,
     select_loops,
 )
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import (
@@ -250,6 +251,10 @@ class BeadRecReconstructor(Reconstructor):
 
     name = "Bead reconstruction"
     id = "beadrec"
+
+    #: Collapses every axis in front of (Y, X) into one frame list itself
+    #: (scan axes, not time), so it takes the whole input in one call.
+    core_dims_in = WHOLE_INPUT
     output_kind = "image"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Raster-reconstruct a recorded bead scan (+ optional fit)"

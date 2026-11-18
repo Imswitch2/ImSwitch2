@@ -78,7 +78,8 @@ def run_reconstruction(reconstructor, source, params: dict | None, context=None,
         shape = tuple(getattr(handle, "shape", ()) or ())
         if shape:
             try:
-                match = iteration.plan(reconstructor, getattr(source, "axis_labels", None) or [], shape, requested)
+                match = iteration.plan(reconstructor, getattr(source, "axis_labels", None) or [], shape, requested,
+                                       labels_declared=bool(getattr(source, "axis_labels_declared", True)))
             except CoreDimsError as exc:
                 raise InputContractError(f"{getattr(reconstructor, 'name', '')}: {exc}") from exc
     extra = None

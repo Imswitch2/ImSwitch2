@@ -19,6 +19,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
@@ -95,6 +96,9 @@ class ViewOnlyReconstructor(StreamingReconstructor):
 
     name = "View only"
     id = "view-only"
+
+    #: Shows the input as it is: one call with the whole input, never looped.
+    core_dims_in = WHOLE_INPUT
     output_kind = "image"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Display raw frames without any reconstruction"

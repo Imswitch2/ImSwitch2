@@ -52,6 +52,7 @@ from imswitch.imcommon.algorithms.tile_mosaic import (
     solve_layout,
 )
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import (
@@ -385,6 +386,10 @@ class TilingReconstructor(Reconstructor):
 
     name = "Tiling mosaic"
     id = "tiling-mosaic"
+
+    #: Reads the tiling run's manifest and tile files, not one array.
+    core_dims_in = WHOLE_INPUT
+    reads_recording_file = True
     output_kind = "image"
     file_extensions = ["json", "tiff", "tif", "ome.tiff", "hdf5", "h5", "zarr"]
     description = "Reassemble a saved tiling run into a stitched mosaic"

@@ -54,7 +54,7 @@ def slice_along(result, axis_label: str, index: int):
     scales = list(getattr(result, "axis_scales", None) or [1.0] * len(labels))
     rest_labels = labels[:axis] + labels[axis + 1:]
     rest_scales = scales[:axis] + scales[axis + 1:]
-    name = f"{result.name} [{axis_label}={index + 1}]"
+    name = f"{result.name} [{axis_label}={index + 1}/{np.shape(result.data)[axis]}]"
     unit = getattr(result, "scale_unit", "px")
     if getattr(result, "kind", "image") == "labels":
         made = LabelsResult(name, piece, rest_labels, axis_scales=rest_scales, scale_unit=unit)
@@ -111,6 +111,7 @@ def run_map(step: Map, report, registry, *, logger=None, progress=None, cancel=N
     body = Workflow(f"{step.id}-body", [*standins, *step.body])
 
     outputs = []
+    body_records: list[dict] = []        # per index: body step id -> its provenance node
     for index in range(count):
         iteration.check_cancelled(cancel)
         item = slice_along(source, step.over, index)
@@ -118,6 +119,7 @@ def run_map(step: Map, report, registry, *, logger=None, progress=None, cancel=N
         with run(body, registry=registry, bindings=bindings, logger=logger, cancel=cancel,
                  write_saves=False) as inner:
             produced = inner.result(step.output)
+            body_records.append(_body_nodes(step, inner))
         if index == 0:
             iteration.guard_memory(produced, count, f"map {step.id!r}")
         outputs.append(produced)
@@ -145,22 +147,71 @@ def run_map(step: Map, report, registry, *, logger=None, progress=None, cancel=N
         else:
             broadcast[step_id] = position
             position += 1
+    body_steps, varying, reasons = _summarise_body(body_records)
+    extra = {
+        "label": f"map over {step.over}",
+        "body": step.to_dict()["body"],
+        "body_steps": body_steps,
+        "broadcast": broadcast,
+        "iterated_over": {step.over: count},
+    }
+    if varying:
+        extra["body_params_by_index"] = varying
     node_id, node = make_node(
         "map",
         params={"over": step.over, "output": str(step.output)},
         inputs=[output_ref(item) for item in consumed],
         input_labels=[_describe(item) for item in consumed],
         outputs=(DEFAULT_PORT,),
-        extra={
-            "label": f"map over {step.over}",
-            "body": step.to_dict()["body"],
-            "broadcast": broadcast,
-            "iterated_over": {step.over: count},
-        },
+        extra=extra,
     )
+    if reasons:
+        # A body step that cannot be replayed makes the whole map
+        # unreplayable, for the same reason, as it would on its own.
+        node["replayable"] = False
+        node["reasons"] = list(dict.fromkeys([*(node.get("reasons") or []), *reasons]))
     ancestors = merge_nodes(*(graph.get("nodes", {}) for graph in _graphs_of(consumed)))
     _attach(stacked, merge_nodes(ancestors, {node_id: node}), node_id, DEFAULT_PORT)
     return stacked
+
+
+#: What a body step's own provenance node contributes to the map's record:
+#: who ran (plugin and version), with what (its parameters, encoded by the
+#: plugin's own codec, so exactly as a standalone step would record them),
+#: and whether that can be replayed.
+_BODY_NODE_KEYS = ("op", "plugin_id", "plugin_version", "params_version", "params", "replayable",
+                   "reasons", "iterated_over", "iterate", "restriction")
+
+
+def _body_nodes(step: Map, inner) -> dict[str, dict]:
+    """``{body step id: its node}`` for one index, from the inner run's results."""
+    from imswitch.improcess.model.provenance import output_node
+
+    found: dict[str, dict] = {}
+    for body_step in step.body:
+        for port in inner.ports_of(body_step.id):
+            node = output_node(inner.result(Ref(body_step.id, port)))
+            if node:
+                found[body_step.id] = {key: node[key] for key in _BODY_NODE_KEYS if key in node}
+                break
+    return found
+
+
+def _summarise_body(records: list[dict]) -> tuple[dict, dict, list[str]]:
+    """The body steps as recorded at the first index; the parameters of any
+    step that differed between indices (a parameter a plugin derives from its
+    input, per slice); and every reason a body step is not replayable."""
+    first = dict(records[0]) if records else {}
+    varying: dict[str, list] = {}
+    for step_id, node in first.items():
+        values = [record.get(step_id, {}).get("params") for record in records]
+        if any(value != node.get("params") for value in values):
+            varying[step_id] = values
+    reasons = []
+    for step_id, node in first.items():
+        if not node.get("replayable", True):
+            reasons.extend(f"body step {step_id!r}: {reason}" for reason in (node.get("reasons") or ["not replayable"]))
+    return first, varying, reasons
 
 
 __all__ = ["run_map", "slice_along"]

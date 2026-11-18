@@ -52,10 +52,21 @@ class IterationError(RuntimeError):
     """An auto-indexed run could not be put together."""
 
 
-def plan(plugin, axis_labels: Sequence[str], shape: Sequence[int], params: dict | None) -> CoreMatch:
-    """How ``plugin`` will be run over an input of these axes: the loop (maybe empty)."""
+def plan(plugin, axis_labels: Sequence[str], shape: Sequence[int], params: dict | None, *,
+         labels_declared: bool = True) -> CoreMatch:
+    """How ``plugin`` will be run over an input of these axes: the loop (maybe empty).
+
+    No loop when the plugin declares no core dims (``None`` or
+    ``WHOLE_INPUT``), when the step asked for the whole stack
+    (``_iterate: false``), or when the input's axis labels are a *guess*
+    (``labels_declared=False``: a raw file that names no axes gets labels from
+    its rank alone). Guessed labels must not decide which axis is time and
+    which is a scan axis, so such an input is handed to the plugin whole, as
+    before auto-indexing existed. Results, and files that name their axes,
+    are looped.
+    """
     core = getattr(plugin, "core_dims_in", None)
-    if not core or not wants_iteration(params):
+    if not core or not wants_iteration(params) or not labels_declared:
         return CoreMatch(core_labels=tuple(str(label) for label in axis_labels))
     return match_core_dims(axis_labels, shape, core)
 
@@ -66,6 +77,17 @@ def index_text(match: CoreMatch, index: tuple[int, ...]) -> str:
         f"{label}={position + 1}/{size}"
         for label, position, size in zip(match.loop_labels, index, match.loop_shape)
     )
+
+
+def unindexed_name(name: str, match: CoreMatch) -> str:
+    """``name`` without the ``[T=1/120]`` the first slice was given.
+
+    The per-index results are named after their slice; the stacked result
+    stands for every index, and a downstream step's provenance label must not
+    read as if only the first one was used.
+    """
+    first = f" [{index_text(match, (0,) * len(match.loop_shape))}]"
+    return str(name).replace(first, "") if first.strip(" []") else str(name)
 
 
 def iterated_over(match: CoreMatch) -> dict[str, int]:
@@ -180,6 +202,31 @@ def stack_arrays(arrays: list, out_labels: Sequence[str], match: CoreMatch) -> t
     return np.ascontiguousarray(data), labels, origin
 
 
+def _same(a, b) -> bool:
+    try:
+        if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+            return np.array_equal(np.asarray(a), np.asarray(b))
+        return bool(a == b)
+    except Exception:
+        return False
+
+
+def common_attrs(results: list) -> dict:
+    """The attributes every per-index result agrees on.
+
+    The stacked result stands for all indices; an attribute that differs
+    between them (a value one call derived from its own slice) describes one
+    index, not the stack, and a later step must not read it as if it held for
+    all -- so it is left out rather than taken from the first.
+    """
+    if not results:
+        return {}
+    first = dict(getattr(results[0], "attrs", None) or {})
+    others = [dict(getattr(r, "attrs", None) or {}) for r in results[1:]]
+    return {key: value for key, value in first.items()
+            if all(key in other and _same(value, other[key]) for other in others)}
+
+
 def stack_results(results: list, match: CoreMatch, *, loop_scales=None):
     """One result from the per-index results (the default
     :meth:`Reconstructor.stack_results <imswitch.improcess.reconstructors.base.Reconstructor.stack_results>`).
@@ -187,7 +234,8 @@ def stack_results(results: list, match: CoreMatch, *, loop_scales=None):
     The type is generic (an image, or labels if the outputs were labels):
     a plugin whose own result type matters overrides the hook. Scales come
     from the input for the loop axes and from the outputs for theirs; the
-    attributes and the unit are the first output's.
+    unit is the first output's; the attributes are those every output agrees
+    on (:func:`common_attrs`).
     """
     from imswitch.improcess.model.array_result import ArrayProcessingResult
     from imswitch.improcess.model.contrast import finite_range
@@ -215,7 +263,7 @@ def stack_results(results: list, match: CoreMatch, *, loop_scales=None):
         stacked = ArrayProcessingResult(first.name, data, labels, axis_scales=scales,
                                         scale_unit=getattr(first, "scale_unit", "px"),
                                         display_levels=finite_range(data), metadata=metadata)
-    stacked.attrs = dict(getattr(first, "attrs", None) or {})
+    stacked.attrs = common_attrs(results)
     return stacked
 
 
@@ -285,8 +333,11 @@ def reconstruct_each(reconstructor, data_obj, params: dict, match: CoreMatch, *,
     stack = getattr(reconstructor, "stack_results", None)
     loop_scales = scales[: len(match.loop_shape)] if len(scales) >= len(match.loop_shape) else None
     if callable(stack):
-        return stack(outputs, match, loop_scales=loop_scales)
-    return stack_results(outputs, match, loop_scales=loop_scales)
+        stacked = stack(outputs, match, loop_scales=loop_scales)
+    else:
+        stacked = stack_results(outputs, match, loop_scales=loop_scales)
+    stacked.name = unindexed_name(stacked.name, match)
+    return stacked
 
 
 # --------------------------------------------------------------------------
@@ -356,6 +407,8 @@ def process_each(processor, result, params: dict, match: CoreMatch, *,
     scales = list(getattr(result, "axis_scales", None) or [])
     loop_scales = scales[: len(match.loop_shape)] if len(scales) >= len(match.loop_shape) else None
     stacked = [stack_results(per_port[key], match, loop_scales=loop_scales) for key in ports or []]
+    for item in stacked:
+        item.name = unindexed_name(item.name, match)
     return stacked, list(ports or [])
 
 
@@ -371,8 +424,10 @@ __all__ = [
     "reconstruct_each",
     "slice_input",
     "slice_result",
+    "common_attrs",
     "stack_arrays",
     "stack_results",
+    "unindexed_name",
     "without_reserved",
 ]
 

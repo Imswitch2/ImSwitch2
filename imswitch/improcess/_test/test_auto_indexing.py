@@ -133,8 +133,10 @@ def test_the_stacked_result_takes_loop_scales_from_the_input_and_attrs_from_the_
     first = ArrayProcessingResult("a", np.zeros((4, 4)), ["Y", "X"], axis_scales=[0.1, 0.2])
     first.attrs = {"geometry": "deskewed"}
     second = ArrayProcessingResult("a", np.ones((4, 4)), ["Y", "X"], axis_scales=[0.1, 0.2])
+    second.attrs = {"geometry": "deskewed", "only_here": 1}
     stacked = stack_results([first, second], CoreMatch(("T",), (2,), ("Y", "X")), loop_scales=[5.0])
     assert stacked.axis_labels == ["T", "Y", "X"] and stacked.axis_scales == [5.0, 0.1, 0.2]
+    # What every output agrees on (test_provenance_chaining_integrity has the rest).
     assert stacked.attrs == {"geometry": "deskewed"}
 
 

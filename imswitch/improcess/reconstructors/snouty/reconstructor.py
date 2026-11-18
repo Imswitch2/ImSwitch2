@@ -16,6 +16,35 @@ if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
 
+def double_time_split(plugin, data_obj, params: dict | None) -> list[str]:
+    """Refuse ``n_timepoints != 1`` when the runner already loops over time.
+
+    With axes in front of the stack (a ``(T, Z, Y, X)`` input whose labels
+    are declared) the runner calls the plugin once per timepoint; splitting
+    each stack again into ``n_timepoints`` would cut one timepoint's planes
+    into pieces. Shared by SNOUTY deskew and SNOUTY projections.
+    """
+    from imswitch.improcess.model import iteration
+    from imswitch.improcess.model.core_dims import CoreDimsError
+
+    params = dict(params or {})
+    if data_obj is None:
+        return []
+    shape = tuple(getattr(getattr(data_obj, "data_handle", None), "shape", ()) or ())
+    try:
+        match = iteration.plan(plugin, getattr(data_obj, "axis_labels", None) or [], shape, params,
+                               labels_declared=bool(getattr(data_obj, "axis_labels_declared", True)))
+    except CoreDimsError:
+        return []          # reported by the core-dims check itself
+    if match.iterates and int(params.get("n_timepoints", 1) or 1) != 1:
+        return [
+            f"{plugin.name}: the input already has {', '.join(match.loop_labels)} in front of the "
+            f"stack, so each call gets one timepoint; set n_timepoints to 1 "
+            f"(it is {params.get('n_timepoints')})"
+        ]
+    return []
+
+
 class SnoutyReconstructor(Reconstructor):
     """
     SNOUTY lightsheet deskew reconstructor.
@@ -95,31 +124,9 @@ class SnoutyReconstructor(Reconstructor):
         self._logger = initLogger('SnoutyReconstructor')
     
     def check_input(self, data_obj, params: dict | None) -> list[str]:
-        """The core-dims check, and no double loop over time.
-
-        With a time axis in front of the stack the runner already calls the
-        deskew once per timepoint; splitting each stack again into
-        ``n_timepoints`` would cut one timepoint's planes into pieces.
-        """
-        from imswitch.improcess.model.core_dims import CoreDimsError, match_core_dims, wants_iteration
-
-        problems = super().check_input(data_obj, params)
-        params = dict(params or {})
-        if data_obj is None or not wants_iteration(params):
-            return problems
-        handle = getattr(data_obj, "data_handle", None)
-        shape = tuple(getattr(handle, "shape", ()) or ())
-        try:
-            match = match_core_dims(getattr(data_obj, "axis_labels", None) or [], shape, self.core_dims_in)
-        except CoreDimsError:
-            return problems
-        if match.iterates and int(params.get("n_timepoints", 1) or 1) != 1:
-            problems.append(
-                f"{self.name}: the input already has {', '.join(match.loop_labels)} in front of the "
-                f"stack, so each deskew gets one timepoint; set n_timepoints to 1 "
-                f"(it is {params.get('n_timepoints')})"
-            )
-        return problems
+        """The core-dims check, and no double loop over time
+        (:func:`double_time_split`)."""
+        return super().check_input(data_obj, params) + double_time_split(self, data_obj, params)
 
     def stack_results(self, results: list, match, *, loop_scales=None):
         """A time loop stacks back into a 4D :class:`SnoutyResult` (its
@@ -131,7 +138,9 @@ class SnoutyReconstructor(Reconstructor):
                 name=first.name, data=data, params=dict(first.params),
                 display_levels=_display_levels(data),
             )
-            stacked.attrs = dict(first.attrs)
+            from imswitch.improcess.model.iteration import common_attrs
+
+            stacked.attrs = common_attrs(results)
             return stacked
         return super().stack_results(results, match, loop_scales=loop_scales)
 

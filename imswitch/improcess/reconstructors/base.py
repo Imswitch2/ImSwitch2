@@ -145,6 +145,15 @@ def preflight_acquisition_layout(
     return tuple(issues)
 
 
+def recording_file_refusal(reconstructor) -> str:
+    """The one message for a file-reading reconstructor handed a result."""
+    name = getattr(reconstructor, "name", None) or getattr(reconstructor, "id", "This reconstructor")
+    return (
+        f"{name} reads its recording file (not only the pixels), so it can only "
+        "reconstruct a recording, not a result of another step"
+    )
+
+
 def params_from_attrs(reconstructor, data_obj, params: dict | None, keys) -> dict:
     """``params`` with each of ``keys`` taken from the input's attributes
     where the parameter still holds the reconstructor's default.
@@ -317,15 +326,37 @@ class Reconstructor(ABC):
     # -- declared input contract (all optional) -----------------------------
 
     core_dims_in: tuple[str, ...] | None = None
-    """The axes one call of :meth:`process` consumes, or ``None``.
+    """What one call of :meth:`process` consumes. **Every reconstructor
+    declares it** (``test_reconstructor_contract`` checks the built-ins):
 
-    The trailing axes of the input, in order; an entry is a label, several
-    labels any of which will do (``"Z|Frame"``) or ``"*"`` (see
-    :mod:`~imswitch.improcess.model.core_dims`). An input with more axes than
-    these is *auto-indexed*: the runner calls :meth:`process` once per index
-    of the extra leading axes (T, C, a position) and stacks the outputs with
-    those axes in front. ``None`` (the default) keeps the old contract: one
-    call with whatever the input is.
+    * a tuple of axes -- the trailing axes of the input, in order; an entry
+      is a label, several labels any of which will do (``"Z|Frame"``) or
+      ``"*"`` (see :mod:`~imswitch.improcess.model.core_dims`). An input with
+      more axes than these is **auto-indexed**: :meth:`process` is called once
+      per index of the extra leading axes (T, C, a position), and the outputs
+      are stacked with those axes in front (:meth:`stack_results`). An input
+      of exactly this rank is passed as it is.
+    * :data:`~imswitch.improcess.model.core_dims.WHOLE_INPUT` (``()``) --
+      one call with the whole input, never looped (view-only, a localizer
+      that consumes a whole movie).
+    * ``None`` -- not declared: a plugin written before this contract. It is
+      treated as ``WHOLE_INPUT`` so it keeps working; new plugins must not
+      leave it ``None``.
+
+    Whatever is declared, the run goes through
+    :func:`~imswitch.improcess.reconstructors.run.run_reconstruction`, which
+    records one provenance node (with ``iterated_over`` when it looped).
+    """
+
+    reads_recording_file: bool = False
+    """``True`` when :meth:`process` needs the *recording file* itself, not
+    just its pixels and attributes: a path, sibling files, a manifest, a
+    measurement-run file. Such a reconstructor can only reconstruct a
+    ``Source``; given a result (a reshape, another reconstruction) it is
+    refused with the same message everywhere -- :meth:`check_input` before a
+    run, workflow validation, and the editor's cables. ``False``: it reads
+    ``data``/``data_handle``, ``axis_labels``, ``attrs``, and so takes a
+    recording or any image result alike.
     """
 
     core_dims_out: tuple[str, ...] | None = None
@@ -353,9 +384,14 @@ class Reconstructor(ABC):
             return []
         problems: list[str] = []
         params = dict(params or {})
+        if self.reads_recording_file and getattr(data_obj, "provenance_parent", None) is not None:
+            return [recording_file_refusal(self)]
         handle = getattr(data_obj, "data_handle", None)
         shape = tuple(getattr(handle, "shape", None) or getattr(getattr(data_obj, "data", None), "shape", ()) or ())
-        if self.core_dims_in and wants_iteration(params) and shape:
+        # Guessed labels (a raw file that names no axes) decide nothing:
+        # such an input is handed over whole, as before (iteration.plan).
+        declared = bool(getattr(data_obj, "axis_labels_declared", True))
+        if self.core_dims_in and wants_iteration(params) and shape and declared:
             try:
                 match_core_dims(getattr(data_obj, "axis_labels", None) or [], shape, self.core_dims_in)
             except CoreDimsError as exc:

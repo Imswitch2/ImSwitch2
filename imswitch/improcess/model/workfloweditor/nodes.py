@@ -377,8 +377,14 @@ def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
     kind = kinds.get(producer_id, UNKNOWN_KIND)
     if isinstance(target, Reconstruct):
         # Any image feeds a reconstruction (a chain of reconstructors, a
-        # reshape before a deskew); the run checks the data itself.
-        return isinstance(producer, Source) or kind in RECONSTRUCTION_INPUT_KINDS
+        # reshape before a deskew); the run checks the data itself. A
+        # reconstructor that reads its recording file takes only a source.
+        if isinstance(producer, Source):
+            return True
+        entry = document.entry_for(target)
+        if entry is not None and getattr(entry.plugin, "reads_recording_file", False):
+            return False
+        return kind in RECONSTRUCTION_INPUT_KINDS
     if isinstance(target, Consolidate):
         return isinstance(producer, Reconstruct) and producer.reconstructor == target.reconstructor
     if isinstance(target, Save):
@@ -437,6 +443,8 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
         # An image result feeds a reconstruction too (a chain of
         # reconstructors); offered last, after what a result usually goes to.
         for entry in catalog.runnable("reconstructor"):
+            if getattr(entry.plugin, "reads_recording_file", False):
+                continue        # takes only a recording (Reconstructor.reads_recording_file)
             found.append(Candidate("reconstruct", entry.id, entry.name, "Reconstruct", entry.description))
     return found
 

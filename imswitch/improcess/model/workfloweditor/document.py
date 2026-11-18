@@ -650,6 +650,11 @@ class WorkflowDocument:
             kind = kinds_of(self).get(ref.step)
             if kind is not None and kind not in RECONSTRUCTION_INPUT_KINDS:
                 raise DocumentError(f"a reconstruction reads an image; {ref.step!r} produces {kind} results")
+            entry = self.entry_for(target)
+            if entry is not None and getattr(entry.plugin, "reads_recording_file", False):
+                from imswitch.improcess.reconstructors.base import recording_file_refusal
+
+                raise DocumentError(recording_file_refusal(entry.plugin))
         refs = _refs_of(target)
         if isinstance(target, (Save, Reconstruct)):
             refs = [ref]

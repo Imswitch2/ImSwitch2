@@ -39,6 +39,19 @@ ITERATE_PARAM = "_iterate"
 #: Matches any axis.
 ANY_AXIS = "*"
 
+#: ``core_dims_in = WHOLE_INPUT``: the plugin consumes its whole input in one
+#: call and is never auto-indexed (view-only, a localizer that wants the whole
+#: movie). Declared on purpose -- unlike ``None``, which means the plugin was
+#: written before core dims existed and says nothing (it is treated the same
+#: way, so old and third-party plugins keep working).
+WHOLE_INPUT: tuple = ()
+
+
+def declared(core_dims) -> bool:
+    """Whether a plugin stated its core dims (a tuple, possibly
+    :data:`WHOLE_INPUT`) rather than leaving them ``None``."""
+    return core_dims is not None
+
 
 class CoreDimsError(ValueError):
     """The input's axes do not fit the plugin's declared core dims."""
@@ -141,6 +154,8 @@ def without_reserved(params: dict | None) -> dict:
 
 __all__ = [
     "ANY_AXIS",
+    "WHOLE_INPUT",
+    "declared",
     "CoreDimsError",
     "CoreMatch",
     "ITERATE_PARAM",
