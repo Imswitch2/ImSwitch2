@@ -81,6 +81,56 @@ Every command sent is recorded with the frames: ``DeformableMirror:<name>:Comman
 (one value per actuator) and ``DeformableMirror:<name>:Modes`` (the
 amplitudes, when the command was a sum of modes).
 
+Adaptive optics with a Shack-Hartmann sensor
+============================================
+
+The sensor is an ordinary camera behind a lenslet array (on the
+polarization rig, its TIS camera behind a Thorlabs MLA150-5C). Four scripts
+in ``scripts/workflows/adaptive_optics`` do what Microscope_GUI's AO panel
+did, and write everything to ``<ImSwitchConfig>/adaptive_optics/<mirror>/``:
+
+``01_wavefront_sensor.py``
+    Finds the lenslet grid in a frame of the flat mirror (or builds the old
+    GUI's typed-in grid), takes the reference -- that frame, or the fitted
+    lattice of an ideal array -- and saves the sensor. Prints the wavefront
+    in Zernike µm RMS.
+``02_mirror_calibration.py``
+    Pushes each actuator up and down over the flat and saves the influence
+    matrix, and a mode matrix: the command for 1 µm RMS of each Zernike mode.
+    Set that file as the mirror's ``modesFile`` (``firstMode`` 2) and the
+    panel's modes and ``setMirrorModes`` are in µm RMS.
+``03_closed_loop.py``
+    Measure, correct (an integrator over the calibration's pseudo-inverse),
+    repeat, until the sensor reads the reference; optionally keeps the
+    result as the mirror's flat.
+``04_sensorless_modes.py``
+    The old GUI's "Run AO": scans each mode's amplitude, scores the imaging
+    camera's image (maximum, sum, high-pass or band ratio of its spectrum),
+    and keeps the parabola's peak.
+
+The computations are in ``imswitch.imcommon.algorithms``: ``zernike`` (the
+Noll, unit-RMS basis the bead-PSF aberration fit uses too),
+``shack_hartmann`` (grid, spot shifts by centroid or cross-correlation,
+slopes, Zernike fit, zonal map) and ``adaptive_optics`` (calibration,
+control, metrics). They differ from the old GUI where it was broken or
+fixed to one rig: the grid is found instead of typed in, the slope scale
+comes from the camera pixel and the lenslets' focal length, the closed loop
+is an integrator (the old LQG controller read a calibration file nothing
+wrote), and the Fourier wavefront reconstruction became a least-squares
+one that takes any pupil.
+
+**The rig's own files.**  Microscope_GUI's ``.xlsx`` flat file is a
+``flatFile`` as it is. Its modal control matrix (``control_matrix_modal_*.tif``,
+69 actuators by 16 modes) is a ``modesFile`` with ``modeNumbers``
+``[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22]``, in that GUI's
+units; a new calibration gives µm RMS instead.
+
+**Without hardware.**  ``adaptive_optics_mock_setup.json`` has a mock DM69
+and a mock TIS camera (``mockShackHartmann``, see :doc:`detectors`) that
+shows a simulated sensor behind it, with a fixed aberration the closed loop
+removes.
+
+
 AlpaoDMManager
 ==============
 

@@ -5,6 +5,9 @@
    "8cb776b27450be6f10a9d2b7e86d0d0c60096569c6e9212c68837873e37f81d1",
    "b330c1f9840d42ab579415826a4363febb58925b9d0dee054c0bdaf517902840"
   ],
+  "imcontrol_setups/adaptive_optics_mock_setup.json": [
+   "12bede774cab80e0a2373b9bc6ff23c6fc8942c8ff07e16f121a78c07a2963f0"
+  ],
   "imcontrol_setups/example_coolLED.json": [
    "0c89c6437c20943e93cd643f257a7caa3fd962bb44a5a72ca528fc5b0b975e1a",
    "70d0ad1db5a278ce18c07ead262c74f5fb4a4ad6335c49cd4c007b5f2ef1f7e3",
@@ -499,7 +502,26 @@
   "scripts/workflows/README.md": [
    "2b551bd5cf3884b98d111f3cd20b8121486a24c7ce9023e1dab552469b098f9e",
    "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270",
-   "8705e9e0dfc7089499c1c04e4290fb18a0b483ccd57ee4bd30ae9e7ee48bc5a3"
+   "8705e9e0dfc7089499c1c04e4290fb18a0b483ccd57ee4bd30ae9e7ee48bc5a3",
+   "1772839cb6d8b2fc9a5bf0a023068fcf4a47066b31410680baaa6506c4182024"
+  ],
+  "scripts/workflows/adaptive_optics/01_wavefront_sensor.py": [
+   "d22115e5003f2cebe02137c83382a7c2554a14686f2dfa97875b016f9c1948ca"
+  ],
+  "scripts/workflows/adaptive_optics/02_mirror_calibration.py": [
+   "485eef5d566f37811cc449719d6e53d893717fcc45ff0cb995ddb2af423b1909"
+  ],
+  "scripts/workflows/adaptive_optics/03_closed_loop.py": [
+   "5d71b7e00533c454a46b922a6253c265e0d66ea1b080aa0fcb2705fca615dea4"
+  ],
+  "scripts/workflows/adaptive_optics/04_sensorless_modes.py": [
+   "dd4ac947ac7bf892927a653b99324a2fc25fd28273f3d9a5ceb50eb0e06be815",
+   "ce1672da7fdfe2df930a2d9b082bd6b86c6d2dded497719bec4a608e587f3304",
+   "710c8ff7739bf49e5346e3aef9f2c07602b061c1afaa9be8fb473291d9ff7939",
+   "22e13ba0e5cba67b36734f06be1048ed77d1a759470e34e340e57fc78e28b74a"
+  ],
+  "scripts/workflows/adaptive_optics/README.md": [
+   "2ea2f52c2c1b9617aa72010ece166bb3692e29866e240c64c0480a462d134a7e"
   ],
   "scripts/workflows/polarization/01_polarization_stacks.py": [
    "7228b109109011d66a4188e56d704fdbde764de0c200d8a5185f255475f284a6"

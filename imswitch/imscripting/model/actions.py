@@ -356,12 +356,14 @@ class _Actions:
 
     @APIExport()
     def returningToPositions(self, stages: Optional[Sequence[str]] = None,
-                             rotators: Optional[Sequence[str]] = None):
+                             rotators: Optional[Sequence[str]] = None,
+                             mirrors: Optional[Sequence[str]] = None):
         """ A context manager: remembers where ``stages`` (positioner names;
-        every axis of each) and ``rotators`` are, and moves them back there on
-        leaving the ``with`` block, also when it raises or the script is
-        stopped. Separate from the settings managers on purpose: putting a
-        stage back is a move, and a script decides on it by itself::
+        every axis of each) and ``rotators`` are, and the command of each
+        deformable mirror in ``mirrors``, and puts them back on leaving the
+        ``with`` block, also when it raises or the script is stopped.
+        Separate from the settings managers on purpose: putting a stage back
+        is a move, and a script decides on it by itself::
 
             with returningToPositions(stages=['X', 'Y']):
                 for x in range(5):
@@ -372,6 +374,7 @@ class _Actions:
         positions = imcontrol.getPositionerPositions() if stages else {}
         stagePositions = {stage: dict(positions[stage]) for stage in (stages or [])}
         angles = {rotator: imcontrol.getRotatorPosition(rotator) for rotator in (rotators or [])}
+        commands = {mirror: imcontrol.getMirrorCommand(mirror) for mirror in (mirrors or [])}
 
         def restore():
             steps = []
@@ -382,6 +385,9 @@ class _Actions:
             for rotator, angle in angles.items():
                 steps.append((rotator, lambda rotator=rotator, angle=angle:
                               imcontrol.setRotatorPosition(rotator, angle)))
+            for mirror, command in commands.items():
+                steps.append((mirror, lambda mirror=mirror, command=command:
+                              imcontrol.setMirrorCommand(mirror, command)))
             return steps
 
         return _Restoring(lambda: None, restore, 'the positions', self._scriptLogger)

@@ -8,6 +8,8 @@ script, and edit the device names and output folders before running.
   (Kiralux camera, Teensy pulses, rotators).
 * `polarization/` -- the polarization rig on its Nucleo step board:
   one Expert scan stack per pair of waveplate angles.
+* `adaptive_optics/` -- a deformable mirror and a Shack-Hartmann sensor:
+  sensor setup, mirror calibration, closed loop, sensorless mode scans.
 
 The time-resolved acquisitions (binned photon arrivals, gated STED, tau
 STED) are tutorials now: `../tutorial/timetagger/11_*` to `13_*`, which run

@@ -20,6 +20,7 @@ class _Imcontrol:
         self.scan = {'step': 0.1}
         self.stages = {'XY': {'X': 1.0, 'Y': 2.0}}
         self.angles = {'HWP': 10.0}
+        self.mirrors = {'DM': [0.0, 0.1, -0.1]}
         self.failOn = None
 
     def _log(self, *call):
@@ -76,6 +77,13 @@ class _Imcontrol:
     def setRotatorPosition(self, r, v):
         self._log('setRotatorPosition', r, v)
         self.angles[r] = v
+
+    def getMirrorCommand(self, m):
+        return list(self.mirrors[m])
+
+    def setMirrorCommand(self, m, values):
+        self._log('setMirrorCommand', m, list(values))
+        self.mirrors[m] = list(values)
 
 
 @pytest.fixture
@@ -182,3 +190,11 @@ def test_every_step_is_tried_after_the_cleanup_time_ran_out(imc, helpers, token,
                 imc.angles['HWP'] = 5.0
                 token.expireNow()
     assert 'XY X' in caplog.text and 'HWP' in caplog.text
+
+
+def test_a_mirror_gets_its_command_back_also_after_stop(imc, helpers, token):
+    with pytest.raises(OperationCancelled):
+        with helpers['returningToPositions'](mirrors=['DM']):
+            imc.setMirrorCommand('DM', [0.5, 0.5, 0.5])
+            token.requestStop()             # the block ends before any checkpoint
+    assert imc.mirrors['DM'] == [0.0, 0.1, -0.1]

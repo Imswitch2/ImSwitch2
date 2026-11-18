@@ -1007,8 +1007,11 @@ setups naming ``TISManager`` keep using this manager.
    * - ``tis``
      - dict
      - Camera properties. ``image_width`` and ``image_height`` (pixels) set the full-chip size the manager reports. ``exposure``, ``gain`` and ``brightness`` are accepted but not applied at startup: the camera keeps its own settings, the detector parameters show what it reports, and edits there (exposure in ms, gain/brightness in device units) are written to the camera.
+   * - ``mockShackHartmann``
+     - dict
+     - For a mock camera: show the lenslet spots of a simulated Shack-Hartmann sensor behind a mock deformable mirror instead of random peaks -- ``mirror`` (its setup name), ``pixelUm``, ``lensletPitchUm``, ``focalLengthUm``, ``lensletsAcross``, ``aberration`` (``{Noll mode: µm RMS}``), ``noise``. See ``adaptive_optics_mock_setup.json`` and :doc:`deformable_mirrors`.
 
-Both fields are **required**; no defaults.
+``cameraListIndex`` and ``tis`` are **required**; ``mockShackHartmann`` defaults to ``null``.
 
 **Low-level dependencies**
 

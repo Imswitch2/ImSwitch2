@@ -501,8 +501,9 @@ def test_the_corpus_is_what_the_plan_says():
     # 22: galvo_flim_mock_scan_setup.json, the Lifetime 2.0 FLIM mock. 23:
     # simple_monalisa_mock_scan_setup.json, the SimpleMoNaLISA cloak's mock
     # (main has it too). 24: nucleo_polarization_mock_setup.json, the
-    # polarization rig's Nucleo as a step board.
-    assert len(shipped_setups()) == 24
+    # polarization rig's Nucleo as a step board. 25:
+    # adaptive_optics_mock_setup.json, a mock mirror and wavefront sensor.
+    assert len(shipped_setups()) == 25
     # + the four scan engines, + the step-board positioner and laser managers;
     # + main's mock power meter, mock PAX, Thorlabs PM100 and PAX1000;
     # + the polarization rig's BPC303 piezo manager. 74: + the ALPAO mirror.

@@ -4,7 +4,8 @@
     "managerName": "TISManager",
     "managerProperties": {
       "cameraListIndex": 1,
-      "cameraPixelSizeUm": null,
+      "cameraPixelSizeUm": 1.5,
+      "mockShackHartmann": {},
       "tis": {}
     }
   }

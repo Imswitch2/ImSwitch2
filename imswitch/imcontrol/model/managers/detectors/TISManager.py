@@ -109,12 +109,16 @@ class TISManager(DetectorManager):
       micrometers, i.e. physical sensor pitch divided by total optical
       magnification. Exposed at runtime as the 'Camera pixel size' detector
       parameter. Default: 0.15 µm.
+    - ``mockShackHartmann`` -- for a mock camera: show the lenslet spots of a
+      simulated Shack-Hartmann sensor behind a mock deformable mirror
+      (``imcontrol/model/interfaces/ao_simulation.py`` lists its keys).
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
         self._cameraId = detectorInfo.managerProperties['cameraListIndex']
+        self._mockShackHartmann = detectorInfo.managerProperties.get('mockShackHartmann')
         # .items(): config-editor extraction then sees the vendor dict as an object.
         tisProperties = dict(detectorInfo.managerProperties['tis'].items())
         self._startupCameraProperties = {
@@ -411,7 +415,13 @@ class TISManager(DetectorManager):
                 exc_info=True
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
-            camera = MockCameraTIS()
+            simulation = None
+            if self._mockShackHartmann is not None:
+                from imswitch.imcontrol.model.interfaces.ao_simulation import (
+                    SimulatedShackHartmann,
+                )
+                simulation = SimulatedShackHartmann(dict(self._mockShackHartmann))
+            camera = MockCameraTIS(simulation=simulation)
             if str(cameraId).strip().lower().startswith("mock"):
                 self._setMockActive("Mock camera configured")
             else:

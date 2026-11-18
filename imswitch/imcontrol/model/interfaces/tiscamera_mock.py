@@ -5,7 +5,10 @@ import time
 
 
 class MockCameraTIS:
-    def __init__(self):
+    def __init__(self, simulation=None):
+        # A frame source (``frame(shape)``), e.g. a simulated Shack-Hartmann
+        # sensor (ao_simulation.SimulatedShackHartmann); random peaks without.
+        self._simulation = simulation
         self.properties = {
             'image_height': 800,
             'image_width': 800,
@@ -53,6 +56,8 @@ class MockCameraTIS:
         pass
 
     def grabFrame(self, **kwargs):
+        if self._simulation is not None:
+            return self._simulation.frame(self.shape)
         mocktype = "random_peak"
         if mocktype=="focus_lock":
             img = np.zeros(self.shape)

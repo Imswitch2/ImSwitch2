@@ -3,7 +3,7 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices.status import backend_attribute
+from imswitch.imcontrol.model.devices.status import DeviceRuntimeMode, backend_attribute
 from .DeformableMirrorManager import DeformableMirrorManager
 
 
@@ -64,6 +64,10 @@ class AlpaoDMManager(DeformableMirrorManager):
             except Exception:
                 count = mockActuators
         self._loadFiles(count)
+        if self.runtimeMode is DeviceRuntimeMode.MOCK:
+            # A mock wavefront sensor (TISManager's mockShackHartmann) sees it.
+            from imswitch.imcontrol.model.interfaces.ao_simulation import register_mirror
+            register_mirror(name, self)
 
     #: The driver, read from the backend holder: a reconnect replaces it.
     _mirror = backend_attribute()

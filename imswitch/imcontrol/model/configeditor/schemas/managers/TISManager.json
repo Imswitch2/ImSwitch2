@@ -4,16 +4,31 @@
   "properties": {
     "cameraListIndex": {
       "description": "Index of the camera in the enumerated TIS camera list (0-based).  Set to an invalid value (e.g. ``\"mock\"``) to force the mock fallback.",
-      "x-imswitch-kind": "integer",
+      "x-imswitch-kind": [
+        "integer",
+        "string"
+      ],
       "x-imswitch-source": [
         "code:required",
-        "example:integer"
+        "example:integer",
+        "example:string"
       ]
     },
     "cameraPixelSizeUm": {
+      "x-imswitch-kind": "number",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "example:number"
+      ]
+    },
+    "mockShackHartmann": {
+      "description": "For a mock camera: show the lenslet spots of a simulated Shack-Hartmann sensor behind a mock deformable mirror instead of random peaks -- ``mirror`` (its setup name), ``pixelUm``, ``lensletPitchUm``, ``focalLengthUm``, ``lensletsAcross``, ``aberration`` (``{Noll mode: µm RMS}``), ``noise``. See ``adaptive_optics_mock_setup.json`` and :doc:`deformable_mirrors`.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:object"
       ]
     },
     "tis": {

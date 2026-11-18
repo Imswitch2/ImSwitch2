@@ -51,13 +51,14 @@ Global-level functions
    Imports the script at the specified path (either absolute or
    relative to the main script) and returns it as a module variable.
 
-.. method:: returningToPositions(stages: Optional[Sequence[str]] = None, rotators: Optional[Sequence[str]] = None)
+.. method:: returningToPositions(stages: Optional[Sequence[str]] = None, rotators: Optional[Sequence[str]] = None, mirrors: Optional[Sequence[str]] = None)
 
    A context manager: remembers where ``stages`` (positioner names;
-   every axis of each) and ``rotators`` are, and moves them back there on
-   leaving the ``with`` block, also when it raises or the script is
-   stopped. Separate from the settings managers on purpose: putting a
-   stage back is a move, and a script decides on it by itself::
+   every axis of each) and ``rotators`` are, and the command of each
+   deformable mirror in ``mirrors``, and puts them back on leaving the
+   ``with`` block, also when it raises or the script is stopped.
+   Separate from the settings managers on purpose: putting a stage back
+   is a move, and a script decides on it by itself::
 
        with returningToPositions(stages=['X', 'Y']):
            for x in range(5):

@@ -363,6 +363,15 @@ class ShackHartmannSensor:
         self.reference_image = np.asarray(image, dtype=np.float64).copy()
         return positions
 
+    def set_lattice_reference(self, image: np.ndarray) -> np.ndarray:
+        """Take the grid's lattice as the reference positions: what a plane
+        wave makes on an ideal lenslet array, so readings are absolute
+        (up to the array's own errors, and the tip, tilt and defocus the
+        fitted lattice absorbed). ``image`` gives the spots' brightness."""
+        self.set_reference(image)
+        self.reference_positions = self.grid.lattice.copy()
+        return self.reference_positions
+
     def measure(self, image: np.ndarray) -> Reading:
         if self.reference_positions is None:
             raise RuntimeError("set a reference first (a frame of the flat wavefront)")

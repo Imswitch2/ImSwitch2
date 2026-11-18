@@ -1,0 +1,57 @@
+{
+  "__comment__": "Adaptive optics without hardware, for the scripts in scripts/workflows/adaptive_optics: a mock ALPAO DM69 ('DM'), a mock TIS camera ('WFS') that shows a simulated Shack-Hartmann sensor behind it (the rig's 3.45 um pixels and MLA150-5C lenslets, a fixed aberration of Z5 0.08 and Z7 0.05 um RMS), and a free-running mock Hamamatsu. The polarization rig's real values: serial BAX677, flat file dm_files/bax677/flat_file_BAX677_2026_05_06_10_45.xlsx on the rig PC.",
+  "detectors": {
+    "WFS": {
+      "analogChannel": null,
+      "digitalLine": null,
+      "managerName": "TISManager",
+      "managerProperties": {
+        "cameraListIndex": "mock",
+        "tis": {
+          "image_width": 800,
+          "image_height": 800
+        },
+        "cameraPixelSizeUm": 3.45,
+        "mockShackHartmann": {
+          "mirror": "DM",
+          "pixelUm": 3.45,
+          "lensletPitchUm": 150.0,
+          "focalLengthUm": 5200.0,
+          "lensletsAcross": 16,
+          "aberration": {"5": 0.08, "7": 0.05},
+          "noise": 2.0
+        }
+      },
+      "forAcquisition": true
+    },
+    "Hamamatsu": {
+      "analogChannel": null,
+      "digitalLine": null,
+      "managerName": "HamamatsuManager",
+      "managerProperties": {
+        "cameraListIndex": "mock",
+        "hamamatsu": {
+          "trigger_source": 1,
+          "subarray_hpos": 0,
+          "subarray_vpos": 0,
+          "subarray_hsize": 512,
+          "subarray_vsize": 512,
+          "image_width": 512,
+          "image_height": 512
+        }
+      },
+      "forAcquisition": true
+    }
+  },
+  "deformableMirrors": {
+    "DM": {
+      "managerName": "AlpaoDMManager",
+      "managerProperties": {
+        "serialNumber": "MOCK_BAX677",
+        "actuators": 69,
+        "maxCommand": 0.9
+      }
+    }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "DeformableMirror"]
+}
