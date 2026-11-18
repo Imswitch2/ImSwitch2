@@ -777,6 +777,11 @@ class TimelapseController(ImConWidgetController):
             )
         try:
             self._wait(run, scheduled.at_s)
+            # The timepoint begins here, with the light going on. This -- not
+            # the release after the frame proof -- anchors the next start, or
+            # every start-to-start period would also carry the time spent
+            # switching on and proving the light.
+            began = time.monotonic()
             if run.illumination:
                 self._callOnGui(run, lambda: self._lightsOn(run))
                 if plan.illumination_settle_ms:
@@ -811,7 +816,7 @@ class TimelapseController(ImConWidgetController):
             ),
         )
         with run.wake:
-            run.lastStart = time.monotonic()
+            run.lastStart = began
             run.released = max(run.released, index + 1)
             run.releasedIndex = index
         if not request.resolve():

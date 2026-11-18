@@ -425,6 +425,37 @@ def test_start_to_start_cadence_holds_the_next_point(make):
     h.ctrl.closeEvent()
 
 
+def test_start_to_start_is_anchored_at_switch_on_not_at_release(
+        make, monkeypatch):
+    """The frame proof takes time after the light goes on; counting the
+    period from the release would add that time to every interval."""
+    h = make()
+    fast = module.grab_fresh_frame
+
+    def slowProof(detector, key, **kwargs):
+        time.sleep(0.5)
+        return fast(detector, key, **kwargs)
+
+    monkeypatch.setattr(module, 'grab_fresh_frame', slowProof)
+    switchOns = []
+    setActive = h.laser.setLaserActive
+
+    def timed(name, active):
+        if active:
+            switchOns.append(time.monotonic())
+        setActive(name, active)
+
+    h.laser.setLaserActive = timed
+    h.configureCamera(interval=0.5)
+    h.ctrl.startTimelapse()
+    h.releasePoint(0)
+    h.recording.terminal()
+    h.releasePoint(1)
+    gap = switchOns[1] - switchOns[0]
+    assert 0.45 <= gap < 0.8, f'{gap:.3f} s between switch-ons'
+    h.ctrl.closeEvent()
+
+
 def test_end_to_start_waits_after_the_previous_end(make):
     h = make()
     h.configureCamera(interval=0.3, mode=MODE_END_TO_START)
