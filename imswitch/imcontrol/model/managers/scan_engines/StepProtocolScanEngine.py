@@ -57,6 +57,7 @@ from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
     scan_voltage_range_refusal,
 )
 from .SimulatedStepEngine import Compiled, StepEngineBase
+from .simulated_frames import deliver_run_frames
 from .step_board import SimulatedStepBoard
 from .step_executor import RunLog
 from .step_protocol import (
@@ -208,6 +209,10 @@ class StepProtocolScanEngine(StepEngineBase):
         self._abortPending = False
         self._closing = False
         self._follower = None
+        #: A simulated board's run hands its camera pulses to the mock
+        #: cameras before it is over; a Stop meanwhile sets this.
+        self._framesStop = threading.Event()
+        self._delivering = False
         self._log: Optional[RunLog] = None
         self._quiet = False
         self._onEnd = None
@@ -599,6 +604,7 @@ class StepProtocolScanEngine(StepEngineBase):
             self._end('stopped', '')
             return
         self._log = None
+        self._framesStop.clear()
         self._write('RUN')
         self._expect('RUN')
         self._running = True
@@ -610,6 +616,10 @@ class StepProtocolScanEngine(StepEngineBase):
             self._follower.start()
 
     def abort(self) -> str:
+        self._framesStop.set()
+        if self._delivering:
+            # The board's run is over; only its frames are being handed over.
+            return 'step-boundary'
         if self._running:
             self._write('STOP')
         else:
@@ -691,6 +701,7 @@ class StepProtocolScanEngine(StepEngineBase):
         run counts as running (a Stop still reaches the board) until the board
         says it ended."""
         outcome, reason = 'failed', ''
+        wall = None                   # the run's length, as the board reports it
         stop = None                   # None: the board ended the run itself
         transport = self._transport
         limit = self._silence_limit(transport)
@@ -726,6 +737,7 @@ class StepProtocolScanEngine(StepEngineBase):
                         self.sigBarrierReleased.emit(int(fields[0]), int(fields[1]))
                 elif kind in ('DONE', 'STOPPED'):
                     outcome = kind.lower()
+                    wall = int(fields[0] if kind == 'DONE' else fields[1])
                     break
                 elif kind == 'FAILED':
                     # The board ended the run itself, in its safe state.
@@ -740,6 +752,9 @@ class StepProtocolScanEngine(StepEngineBase):
         except (OSError, ProtocolError, ValueError, IndexError) as error:
             reason = f'the link failed: {text(error)}'
             stop = 'confirm'
+        board = self.board
+        if board is not None and stop is None and outcome in ('done', 'stopped'):
+            outcome = self._simulatedFrames(board, outcome, wall)
         try:
             if stop is not None:
                 reason += self._stopAfterFailure(transport, confirm=stop == 'confirm')
@@ -748,6 +763,25 @@ class StepProtocolScanEngine(StepEngineBase):
         if outcome == 'failed':
             self.__logger.error(f'{self.name}: {reason}')
         self._end(outcome, reason)
+
+    def _simulatedFrames(self, board, outcome, wall):
+        """A simulated board triggers no camera: its run's camera pulses go to
+        the mock cameras that are acquiring (``simulated_frames``), over the
+        run's duration, before the run is reported over. 'stopped' when a
+        Stop came meanwhile."""
+        back = self._prepared.back if self._prepared is not None else {}
+        entries = _translated(RunLog(list(board.log.entries)), back).entries
+        self._delivering = True
+        try:
+            handed = deliver_run_frames(self, entries, wall, self._framesStop,
+                                        paced=outcome == 'done')
+        except Exception as error:
+            self.__logger.warning(f'{self.name}: simulated camera frames not handed over: '
+                                  f'{error}')
+            return outcome
+        finally:
+            self._delivering = False
+        return outcome if handed else 'stopped'
 
     def _end(self, outcome, reason):
         """The run is over: record how, then signal it -- or, quiet, tell

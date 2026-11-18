@@ -1,11 +1,9 @@
 """The polarization rig's stack script (``scripts/workflows/polarization``)
 run headless on the rig's mock setup, as the tutorials are
 (:mod:`.test_shipped_tutorials`): one recorded stack per pair of waveplate
-angles, each holding the angles it was taken at.
-
-The mock Hamamatsu gets frames from a simulated NI-DAQ only, not from a
-simulated step board, so here it runs on its internal trigger; on the rig the
-Nucleo's ttl2 triggers it.
+angles, each holding the angles it was taken at. The mock Hamamatsu is on its
+external trigger, as on the rig: the simulated Nucleo's camera pulses reach it
+(``scan_engines/simulated_frames.py``).
 """
 
 import json
@@ -25,14 +23,6 @@ SCRIPT = USER_DEFAULTS / 'scripts' / 'workflows' / 'polarization' / '01_polariza
 SETUP = USER_DEFAULTS / 'imcontrol_setups' / 'nucleo_polarization_mock_setup.json'
 
 
-def _freeRunningCamera(tmp_path):
-    setup = json.loads(SETUP.read_text(encoding='utf-8'))
-    setup['detectors']['Hamamatsu']['managerProperties']['hamamatsu']['trigger_source'] = 1
-    path = tmp_path / 'setup.json'
-    path.write_text(json.dumps(setup), encoding='utf-8')
-    return path, setup
-
-
 def _twoAnglePairs(tmp_path):
     text = SCRIPT.read_text(encoding='utf-8')
     line = next(line for line in text.splitlines() if line.startswith('ANGLE_PAIRS_DEG = '))
@@ -49,7 +39,9 @@ def test_one_stack_per_angle_pair_holding_its_angles(tmp_path):
 
     from imswitch.imcontrol.model.scan_program import legacy_microscope_gui as lm
 
-    setupPath, setup = _freeRunningCamera(tmp_path)
+    setup = json.loads(SETUP.read_text(encoding='utf-8'))
+    assert setup['detectors']['Hamamatsu']['managerProperties']['hamamatsu'][
+        'trigger_source'] == 2                            # external, as on the rig
     home = tmp_path / 'home'
     scans = home / 'ImSwitchConfig' / 'imcontrol_scans' / 'polarization_rig'
     scans.mkdir(parents=True)
@@ -59,7 +51,7 @@ def test_one_stack_per_angle_pair_holding_its_angles(tmp_path):
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen', MPLBACKEND='Agg')
     completed = subprocess.run(
         [sys.executable, '-m', 'imswitch.imscripting._test.tutorial_runner',
-         str(setupPath), str(_twoAnglePairs(tmp_path)), '--timeout', '120',
+         str(SETUP), str(_twoAnglePairs(tmp_path)), '--timeout', '120',
          '--home', str(home)],
         capture_output=True, text=True, env=env, timeout=170,
     )

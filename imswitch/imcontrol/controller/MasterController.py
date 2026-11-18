@@ -140,6 +140,15 @@ class MasterController:
             lowLevelManagers=lowLevelManagers,
         )
         self.scanEngine = self.scanEngines.engine
+        # A simulated step board triggers no camera: its runs' camera pulses
+        # go to the mock cameras that are acquiring, as a simulated NI-DAQ's do.
+        from imswitch.imcontrol.model.managers.scan_engines.simulated_frames import (
+            FrameDelivery,
+        )
+        frameDelivery = FrameDelivery(self.detectorsManager)
+        for engine in self.scanEngines.engines.values():
+            if hasattr(type(engine), 'frameDelivery'):
+                engine.frameDelivery = frameDelivery
 
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:

@@ -45,6 +45,7 @@ from imswitch.imcontrol.model.scan_program.program import Wait
 from imswitch.imcontrol.model.scan_program.schedule import (
     ScheduleRefused, approach_span, grid_ticks, realize,
 )
+from .simulated_frames import deliver_run_frames
 from .step_executor import Listener, RunLog, StepExecutor, StepPlan
 
 
@@ -73,6 +74,10 @@ class StepEngineBase(SignalInterface, ScanEngine):
     #: (step about to run, steps): emitted in a composite's quiet runs too,
     #: so a leader's progress is the run's.
     sigScanProgress = Signal(int, int)
+
+    #: Who takes a simulated run's camera pulses (``simulated_frames.
+    #: FrameDelivery``), set by the master controller; ``None``: nobody.
+    frameDelivery = None
 
     #: Where the declared capabilities came from (for the report).
     _capsSource = 'managerProperties'
@@ -448,11 +453,22 @@ class _Signals(Listener):
         self.engine.sigScanProgress.emit(step, steps)
 
     def done(self, wall):
+        # The mock cameras' frames first, over the run's duration: the run is
+        # over once its last camera pulse is (a Stop meanwhile stops it).
+        engine = self.engine
+        if not deliver_run_frames(engine, engine.log.entries, wall, engine._stop):
+            self._stopped()
+            return
         self._end('done')
         if not self.quiet:
-            self.engine.sigScanDone.emit()
+            engine.sigScanDone.emit()
 
     def stopped(self, step):
+        engine = self.engine
+        deliver_run_frames(engine, engine.log.entries, None, engine._stop, paced=False)
+        self._stopped()
+
+    def _stopped(self):
         self._end('stopped')
         if not self.quiet:
             self.engine.sigScanStopped.emit()

@@ -189,6 +189,17 @@ event that must stand still while a device moves, a move that leaves no still
 time in its step, a time off the grid, a restore it cannot know. It is
 registered as ``SimulatedStepEngine`` and ``builtin.simulated-step-board``.
 
+A simulated step board -- this one, and a ``StepProtocolScanEngine`` on the
+``simulated`` port -- triggers the mock cameras its program pulses, as a
+simulated NI-DAQ does: after a run, the rising edges it played on each camera
+are handed to that camera's mock while the camera is acquiring (live view or
+a recording), spread over the run's own duration (at least 0.2 s, at most
+5 s), and the run reports its end after the last one; a Stop meanwhile stops
+it. A camera that is not acquiring gets nothing and the run does not wait. So
+a recording on a step-board mock setup (``nucleo_polarization_mock_setup.json``)
+gets its frames with the camera on its external trigger, as on the rig. A real
+board triggers its cameras itself.
+
 **managerProperties**
 
 .. list-table::
