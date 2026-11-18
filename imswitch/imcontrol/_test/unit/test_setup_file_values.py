@@ -407,3 +407,30 @@ def test_nan_float_value_reads_as_finite_default():
 
     assert math.isfinite(decoded.focusLock.reacquireTolerancePx)
     assert decoded.focusLock.reacquireTolerancePx == 0.5
+
+
+# ---------------------------------------------------------------------------
+# The same findings, as records, for the config editor's validation
+# ---------------------------------------------------------------------------
+
+def test_find_reports_each_unreadable_value_with_its_path_and_whether_it_is_dropped():
+    from imswitch.imcontrol.model.setup_file_values import findUnreadableSetupValues
+
+    data = {'tiling': {'xyPositioner': 'XY', 'defaultTileStepUm': 'None'},
+            'nidaq': {'simulation': 'false'}}
+    fixes = findUnreadableSetupValues(data, SetupInfo)
+    byPath = {fix.path: fix for fix in fixes}
+    assert set(byPath) == {'tiling.defaultTileStepUm', 'nidaq.simulation'}
+    assert byPath['tiling.defaultTileStepUm'].dropped is True
+    assert "'None'" in byPath['tiling.defaultTileStepUm'].message
+    assert byPath['nidaq.simulation'].dropped is False
+    # the loader's messages are the same sentences
+    _cleaned, messages = sanitizeSetupData(data, SetupInfo)
+    assert sorted(messages) == sorted(fix.message for fix in fixes)
+    assert data['tiling']['defaultTileStepUm'] == 'None', 'input untouched'
+
+
+def test_find_reports_nothing_for_a_clean_file():
+    from imswitch.imcontrol.model.setup_file_values import findUnreadableSetupValues
+
+    assert findUnreadableSetupValues({'tiling': {'xyPositioner': 'XY'}}, SetupInfo) == []

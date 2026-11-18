@@ -55,6 +55,25 @@ class _Drop:
 _DROP = _Drop()
 
 
+@dataclasses.dataclass(frozen=True)
+class SetupValueFix:
+    """One value of a setup file that its field's type cannot read as written.
+
+    ``path`` is the JSON path (``tiling.defaultTileStepUm``,
+    ``lasers.488.valueRangeMin``, ``x[2].y``); ``message`` the whole sentence,
+    starting with the path, saying what is done instead. ``dropped`` is True
+    when the value is left out so the default is used, False when it is read
+    differently from how it is written (the string ``"false"`` as false).
+    """
+
+    path: str
+    message: str
+    dropped: bool = True
+
+    def __str__(self) -> str:
+        return self.message
+
+
 def sanitizeSetupData(data: Any, setupInfoType: type) -> Tuple[Any, List[str]]:
     """Return a cleaned copy of parsed setup-file JSON and the fixes made.
 
@@ -63,10 +82,25 @@ def sanitizeSetupData(data: Any, setupInfoType: type) -> Tuple[Any, List[str]]:
     or ``ViewSetupInfo``). The input is not modified. A top level that is not
     a JSON object is returned unchanged for the decoder to reject as before.
     """
+    cleaned, fixes = _sanitize(data, setupInfoType)
+    return cleaned, [fix.message for fix in fixes]
+
+
+def findUnreadableSetupValues(data: Any, setupInfoType: type) -> List[SetupValueFix]:
+    """Every value the loader would drop or read differently, without loading.
+
+    The same walk as :func:`sanitizeSetupData`, for a caller that reports
+    rather than loads -- the config editor's validation -- so the editor and
+    the loader can never disagree about what a setup file says.
+    """
+    return _sanitize(data, setupInfoType)[1]
+
+
+def _sanitize(data: Any, setupInfoType: type) -> Tuple[Any, List[SetupValueFix]]:
     if not isinstance(data, dict) or not dataclasses.is_dataclass(setupInfoType):
         return data, []
     cleaned = copy.deepcopy(data)
-    fixes: List[str] = []
+    fixes: List[SetupValueFix] = []
     _walkDataclass(cleaned, setupInfoType, '', fixes)
     return cleaned, fixes
 
@@ -99,7 +133,7 @@ def _fieldDefaultText(fieldInfo) -> str:
     return 'left unset (the field has no default)'
 
 
-def _walkDataclass(obj: dict, cls, path: str, fixes: List[str]) -> None:
+def _walkDataclass(obj: dict, cls, path: str, fixes: List[SetupValueFix]) -> None:
     hints = _typeHints(cls)
     for fieldInfo in dataclasses.fields(cls):
         name = fieldInfo.name
@@ -122,7 +156,7 @@ def _unionArgs(tp):
     return None
 
 
-def _clean(value, tp, path: str, fixes: List[str], instead):
+def _clean(value, tp, path: str, fixes: List[SetupValueFix], instead):
     """Return the value to decode, or ``_DROP``.
 
     ``instead`` is a callable describing what replaces a dropped value (the
@@ -155,10 +189,11 @@ def _clean(value, tp, path: str, fixes: List[str], instead):
         if isinstance(value, dict):
             _walkDataclass(value, tp, path, fixes)
             return value
-        fixes.append(
+        fixes.append(SetupValueFix(
+            path,
             f'{path} = {value!r} is not a section (a JSON object); '
-            f'{instead()}.'
-        )
+            f'{instead()}.',
+        ))
         return _DROP
 
     origin = typing.get_origin(tp)
@@ -193,48 +228,50 @@ def _clean(value, tp, path: str, fixes: List[str], instead):
     return value
 
 
-def _cleanBool(value, path: str, fixes: List[str], instead):
+def _cleanBool(value, path: str, fixes: List[SetupValueFix], instead):
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
         word = value.strip().lower()
         if word in _TRUE_WORDS or word in _FALSE_WORDS:
             result = word in _TRUE_WORDS
-            fixes.append(
+            fixes.append(SetupValueFix(
+                path,
                 f'{path} = {value!r} is a string, not true/false; '
-                f'read as {str(result).lower()}.'
-            )
+                f'read as {str(result).lower()}.',
+                dropped=False,
+            ))
             return result
     elif isinstance(value, int) and value in (0, 1):
         return bool(value)
-    fixes.append(f'{path} = {value!r} is not true or false; {instead()}.')
+    fixes.append(SetupValueFix(path, f'{path} = {value!r} is not true or false; {instead()}.'))
     return _DROP
 
 
-def _cleanNumber(value, kind: str, path: str, fixes: List[str], instead):
+def _cleanNumber(value, kind: str, path: str, fixes: List[SetupValueFix], instead):
     """``kind`` is ``'whole number'`` for ``int``, ``'number'`` otherwise."""
     if isinstance(value, bool):
         # true/false in a number field decodes as 1/0, as it always did.
         return value
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
-            fixes.append(f'{path} = {value!r} is not a finite {kind}; {instead()}.')
+            fixes.append(SetupValueFix(path, f'{path} = {value!r} is not a finite {kind}; {instead()}.'))
             return _DROP
         return value
     if isinstance(value, str):
         text = value.strip()
         if not text:
-            fixes.append(f'{path} = {value!r} is blank; {instead()}.')
+            fixes.append(SetupValueFix(path, f'{path} = {value!r} is blank; {instead()}.'))
             return _DROP
         number = _parseNumber(text, wholeOnly=(kind == 'whole number'))
         if number is None:
-            fixes.append(f'{path} = {value!r} is not a {kind}; {instead()}.')
+            fixes.append(SetupValueFix(path, f'{path} = {value!r} is not a {kind}; {instead()}.'))
             return _DROP
         if isinstance(number, float) and not math.isfinite(number):
-            fixes.append(f'{path} = {value!r} is not a finite {kind}; {instead()}.')
+            fixes.append(SetupValueFix(path, f'{path} = {value!r} is not a finite {kind}; {instead()}.'))
             return _DROP
         return number
-    fixes.append(f'{path} = {value!r} is not a {kind}; {instead()}.')
+    fixes.append(SetupValueFix(path, f'{path} = {value!r} is not a {kind}; {instead()}.'))
     return _DROP
 
 
