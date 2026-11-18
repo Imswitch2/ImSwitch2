@@ -10,9 +10,12 @@ scan-program interpreter edge by edge, as the simulated board's does. The
 fake board takes the simulated board's test-only hooks -- trigger arrivals
 chosen in advance, an injected failure -- outside the protocol.
 
-Skipped when no C++ compiler builds it.
+Skipped when no C++ compiler builds it; ``IMSWITCH_STEP_HOST_BOARD`` names a
+prebuilt one instead (on Windows, built with Visual Studio as host_board.cpp
+says).
 """
 
+import os
 import queue
 import shutil
 import subprocess
@@ -42,18 +45,20 @@ GRID_NS = 1000
 RATE = 1_000_000
 LATENCY_TICKS = 2
 
-pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='the fake board is POSIX')
-
-
 @pytest.fixture(scope='module')
 def binary(tmp_path_factory):
+    prebuilt = os.environ.get('IMSWITCH_STEP_HOST_BOARD')
+    if prebuilt:
+        return Path(prebuilt)
     compiler = shutil.which('c++') or shutil.which('g++') or shutil.which('clang++')
-    if compiler is None:
-        pytest.skip('no C++ compiler to build the fake board')
+    if compiler is None or sys.platform == 'win32':
+        pytest.skip('no C++ compiler to build the fake board (on Windows: build it with '
+                    'Visual Studio as host_board.cpp says, then IMSWITCH_STEP_HOST_BOARD)')
     out = tmp_path_factory.mktemp('firmware') / 'host_board'
     core = HOST.parent / 'TriggerScopeStep'
-    subprocess.run([compiler, '-std=c++11', '-O1', '-Wall', f'-I{core}', '-o', str(out),
-                    str(HOST / 'host_board.cpp'), str(core / 'step_core.cpp')], check=True)
+    subprocess.run([compiler, '-std=c++11', '-O1', '-Wall', '-pthread', f'-I{core}', '-o',
+                    str(out), str(HOST / 'host_board.cpp'), str(core / 'step_core.cpp')],
+                   check=True)
     return out
 
 

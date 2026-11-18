@@ -11,21 +11,89 @@
 //   #FAIL,-                 no injected failure
 // each answered OK,#ARRIVE or OK,#FAIL.
 //
-// Build: make (in this folder). Run: ./host_board [--grid-ns N]
+// Build: make (in this folder), or on Windows with Visual Studio:
+//   cl /std:c++14 /EHsc /O2 /I..\TriggerScopeStep host_board.cpp ..\TriggerScopeStep\step_core.cpp
+// Run: ./host_board [--grid-ns N]
 //
 // Copyright (C) 2026 ImSwitch developers. GPL-3.0-or-later.
 
 #include "../TriggerScopeStep/step_core.h"
 
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <thread>
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#define READ_STDIN(buffer, size) _read(0, (buffer), (unsigned)(size))
+#else
 #include <unistd.h>
-#include <sys/select.h>
+#define READ_STDIN(buffer, size) read(0, (buffer), (size))
+#endif
 
 using namespace stepfw;
 
 static const uint32_t LOG_CAPACITY = 1u << 18;
+
+// stdin, read by a thread: the board reads it without blocking (readByte),
+// the main loop and an endless trigger wait block on it. Portable where
+// select() on stdin is not (Windows).
+class Link {
+public:
+    void start() {
+        std::thread([this] {
+            unsigned char buffer[4096];
+            while (true) {
+                int n = (int)READ_STDIN(buffer, sizeof buffer);
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (n <= 0) {
+                    closed_ = true;
+                    ready_.notify_all();
+                    return;
+                }
+                bytes_.insert(bytes_.end(), buffer, buffer + n);
+                ready_.notify_all();
+            }
+        }).detach();
+    }
+    // A byte, or -1 when none is waiting; the process ends once the host has
+    // closed the link and everything it sent is read.
+    int tryRead() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (bytes_.empty()) {
+            if (closed_) exit(0);
+            return -1;
+        }
+        int c = bytes_.front();
+        bytes_.pop_front();
+        return c;
+    }
+    // A byte, waiting for it; -1 once the link is closed and empty.
+    int read() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_.wait(lock, [this] { return !bytes_.empty() || closed_; });
+        if (bytes_.empty()) return -1;
+        int c = bytes_.front();
+        bytes_.pop_front();
+        return c;
+    }
+    void waitForData() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_.wait(lock, [this] { return !bytes_.empty() || closed_; });
+    }
+private:
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    std::deque<unsigned char> bytes_;
+    bool closed_ = false;
+};
+
+static Link stdinLink;   // not "link": POSIX has a link()
 
 class VirtualHal : public Hal {
 public:
@@ -58,27 +126,13 @@ public:
         // Nothing is coming and nothing is waited out: the board waits for
         // a STOP, which the core reads once this returns. Block until the
         // link has something, so the process does not spin.
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        select(STDIN_FILENO + 1, &fds, NULL, NULL, NULL);
+        stdinLink.waitForData();
         return SLICE;
     }
 
     int readByte() override {
-        // Non-blocking between runs too: the main loop blocks on select.
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        struct timeval zero = {0, 0};
-        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &zero) <= 0) return -1;
-        unsigned char c;
-        ssize_t n = read(STDIN_FILENO, &c, 1);
-        if (n <= 0) {
-            if (n == 0) exit(0);     // the host closed the link
-            return -1;
-        }
-        return c;
+        // Non-blocking between runs too: the main loop blocks on the link.
+        return stdinLink.tryRead();
     }
 
     void writeLine(const char* line) override {
@@ -148,17 +202,18 @@ int main(int argc, char** argv) {
 
     // The hooks are read here, before the core sees a line; everything else
     // is the core's. A RUN is noted so the hooks' ticks are since RUN.
-    char line[LINE_MAX + 2];
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    stdinLink.start();
+    static char line[LINE_MAX + 2];
     size_t length = 0;
     bool hook = false;
     while (true) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, NULL) <= 0) continue;
-        unsigned char c;
-        ssize_t n = read(STDIN_FILENO, &c, 1);
-        if (n <= 0) break;
+        int byte = stdinLink.read();
+        if (byte < 0) break;
+        unsigned char c = (unsigned char)byte;
         if (length == 0 && c == '#') hook = true;
         if (hook) {
             if (c == '\n') {

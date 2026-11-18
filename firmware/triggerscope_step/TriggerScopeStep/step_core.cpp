@@ -67,6 +67,20 @@ static bool sameChannel(const Channel& a, const Channel& b) {
     return a.kind == b.kind && a.index == b.index;
 }
 
+// Whether an event plays in `phase`. Its phases are ascending (check), so a
+// step finds its own by bisection: a window over hundreds of steps of a
+// table loop lists hundreds of phases, and a linear scan per event per step
+// would cost more than a short step lasts.
+static bool hasPhase(const Event& e, uint32_t phase) {
+    uint16_t lo = 0, hi = e.phaseCount;
+    while (lo < hi) {
+        uint16_t mid = (uint16_t)((lo + hi) / 2);
+        if (e.phases[mid] < phase) lo = (uint16_t)(mid + 1);
+        else hi = mid;
+    }
+    return lo < e.phaseCount && e.phases[lo] == phase;
+}
+
 // A number as the wire writes it: enough digits for a double to round-trip,
 // so a DAC code's volts read back as the exact value the host computes.
 static void fmtValue(double v, char* out, size_t size) {
@@ -796,6 +810,20 @@ bool Board::check() {
         channelName(p.prepare[i].channel, name, sizeof name);
         if (!hasChannel(p.prepare[i].channel)) { fail(E_CHANNEL, "%s: this board has no such channel", name); return false; }
     }
+    // Each event's phases ascending, for hasPhase (an insertion sort: the
+    // host sends them in order, so this is one pass).
+    for (uint8_t i = 0; i < p.eventCount; ++i) {
+        Event& e = p.events[i];
+        for (uint16_t j = 1; j < e.phaseCount; ++j) {
+            uint32_t v = e.phases[j];
+            uint16_t k = j;
+            while (k > 0 && e.phases[k - 1] > v) {
+                e.phases[k] = e.phases[k - 1];
+                --k;
+            }
+            e.phases[k] = v;
+        }
+    }
     uint64_t steps = 1;
     for (uint8_t i = 0; i < p.loopCount; ++i) {
         steps *= p.loops[i].count;
@@ -934,13 +962,14 @@ void Board::edge(const Event& ev, int64_t start, int64_t end) {
 bool Board::schedule(int64_t wall, const Channel& c, double value) {
     // Outputs are kept in time order; equal times keep their order of
     // scheduling, which is the executor's order of logging. A time already
-    // past (an edge timed before its step) is now.
+    // past (an edge timed before its step, a step's opening outputs timed
+    // while the board prepared the step) is written at once, but keeps its
+    // time here: two writes to one channel meant for the same instant must
+    // still meet in drain().
     if (scheduled_ >= MAX_SCHEDULE) {
         runFailed("more than %u outputs timed ahead of the clock", (unsigned)MAX_SCHEDULE);
         return false;
     }
-    int64_t now = nowRel();
-    if (wall < now) wall = now;
     uint16_t i = scheduled_;
     while (i > 0 && schedule_[i - 1].wall > wall) {
         schedule_[i] = schedule_[i - 1];
@@ -963,12 +992,28 @@ void Board::passTime(int64_t untilRel, const char* heartbeatKind) {
 }
 
 void Board::drain(int64_t untilWall) {
-    // Every output due by `untilWall`, each at its time.
+    // Every output due by `untilWall`, each at its time. Of the writes to
+    // one channel at one instant only the last reaches the pin: a window
+    // that runs on over a step boundary is an off and an on there, and
+    // written one after the other they would be a glitch on the line -- one
+    // a camera's level trigger can take for the end of its exposure.
     while (scheduled_ > 0 && schedule_[0].wall <= untilWall) {
         Scheduled s = schedule_[0];
         passTime(s.wall, "ALIVE");
-        if (s.channel.kind == CH_DAC) hal_.writeDac(s.channel.index, s.value);
-        else if (s.channel.kind == CH_TTL) hal_.writeTtl(s.channel.index, (uint8_t)s.value);
+        bool replaced = false;
+        for (uint16_t i = 1; i < scheduled_ && schedule_[i].wall == s.wall; ++i) {
+            if (sameChannel(schedule_[i].channel, s.channel)) {
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            uint64_t due = runStart_ + (uint64_t)(s.wall < 0 ? 0 : s.wall);
+            uint64_t now = hal_.now();
+            if (now > due) hal_.late(now - due);
+            if (s.channel.kind == CH_DAC) hal_.writeDac(s.channel.index, s.value);
+            else if (s.channel.kind == CH_TTL) hal_.writeTtl(s.channel.index, (uint8_t)s.value);
+        }
         memmove(&schedule_[0], &schedule_[1], (scheduled_ - 1) * sizeof(Scheduled));
         --scheduled_;
     }
@@ -976,10 +1021,14 @@ void Board::drain(int64_t untilWall) {
 
 void Board::advanceTo(int64_t tick) {
     // (executor) _advance(): the clocks move to `tick`; here time passes too.
+    // What is due before `tick` is written on its way; what is due at `tick`
+    // itself stays until the next step has timed its own outputs, so that
+    // writes meant for one instant meet in drain(). The next drain -- the
+    // next step's, a wait's, the end of the run -- writes it.
     int64_t target = wallOf(tick);
     wall_ = target;
     tick_ = tick;
-    drain(target);
+    drain(target - 1);
     passTime(target, "ALIVE");
 }
 
@@ -1083,6 +1132,7 @@ bool Board::wait(const Wait& w, const double* here) {
         advanceTo(tick_ + w.interval);
         return true;
     }
+    drain(wall_);           // what is due now happens before the wait, not after it
     int64_t start = wall_;
     if (stopped()) return false;
     uint64_t at = 0;
@@ -1242,11 +1292,7 @@ bool Board::walk() {
                 for (uint8_t i = 0; i < p.eventCount; ++i) {
                     const Event& e = p.events[i];
                     if (e.anchor != AT_PROLOGUE || e.anchorLoop != pr.loop) continue;
-                    if (!e.allPhases) {
-                        bool inPhase = false;
-                        for (uint8_t j = 0; j < e.phaseCount; ++j) inPhase |= e.phases[j] == phaseHere;
-                        if (!inPhase) continue;
-                    }
+                    if (!e.allPhases && !hasPhase(e, phaseHere)) continue;
                     edge(e, proStart + e.start, proStart + e.end);
                 }
                 for (uint8_t i = 0; i < p.driveCount; ++i) {
@@ -1269,11 +1315,7 @@ bool Board::walk() {
 
         for (uint8_t i = 0; i < p.eventCount; ++i) {
             const Event& e = p.events[i];
-            if (!e.allPhases) {
-                bool inPhase = false;
-                for (uint8_t j = 0; j < e.phaseCount; ++j) inPhase |= e.phases[j] == phase;
-                if (!inPhase) continue;
-            }
+            if (!e.allPhases && !hasPhase(e, phase)) continue;
             if (e.anchor == AT_STEP) {
                 edge(e, stepStart + e.start, stepStart + e.end);
             } else if (e.anchor == PASS_START) {

@@ -56,6 +56,11 @@ public:
     // The outputs.
     virtual void writeDac(uint8_t index, double volts) = 0;
     virtual void writeTtl(uint8_t index, uint8_t level) = 0;
+
+    // An output is being written this many ticks after its time. A board may
+    // show it (the Nucleo lights an LED when the executor falls behind its
+    // steps); the log, and so the host, never sees it.
+    virtual void late(uint64_t ticks) { (void)ticks; }
 };
 
 // ---------------------------------------------------------------------------
@@ -89,19 +94,39 @@ struct BoardInfo {
 // ---------------------------------------------------------------------------
 // Capacities: fixed, so the firmware allocates nothing while it runs. A
 // program past any of them is refused with ERR,capacity and the limit named.
+// A board with more memory raises them by defining STEPFW_<NAME> before this
+// header is included, in the one translation unit that builds the core (the
+// Nucleo's firmware does: a waveform in a table takes a long TABLE line, and
+// a window over many steps of that table many phases).
 // ---------------------------------------------------------------------------
+
+#ifndef STEPFW_TABLE_POOL
+#define STEPFW_TABLE_POOL 4096
+#endif
+#ifndef STEPFW_MAX_EVENTS
+#define STEPFW_MAX_EVENTS 32
+#endif
+#ifndef STEPFW_MAX_PHASES
+#define STEPFW_MAX_PHASES 16
+#endif
+#ifndef STEPFW_MAX_SCHEDULE
+#define STEPFW_MAX_SCHEDULE 512
+#endif
+#ifndef STEPFW_LINE_MAX
+#define STEPFW_LINE_MAX 16384
+#endif
 
 static const uint8_t MAX_LOOPS = 8;
 static const uint8_t MAX_TIME_CHANNELS = 8;
 static const uint8_t MAX_DRIVES = MAX_DACS + MAX_TIME_CHANNELS;
-static const uint16_t TABLE_POOL = 4096;    // floats, all tables together
-static const uint8_t MAX_EVENTS = 32;
-static const uint8_t MAX_PHASES = 16;       // per event
+static const uint16_t TABLE_POOL = STEPFW_TABLE_POOL;     // floats, all tables together
+static const uint8_t MAX_EVENTS = STEPFW_MAX_EVENTS;
+static const uint16_t MAX_PHASES = STEPFW_MAX_PHASES;     // per event
 static const uint8_t MAX_WAITS = 16;
 static const uint8_t MAX_PREPARE = MAX_DRIVES;
 static const uint8_t MAX_SAFE = MAX_DACS + MAX_TTLS;
-static const uint16_t MAX_SCHEDULE = 512;   // outputs timed ahead of the clock
-static const uint16_t LINE_MAX = 16384;     // a TABLE line can be long
+static const uint16_t MAX_SCHEDULE = STEPFW_MAX_SCHEDULE; // outputs timed ahead of the clock
+static const uint16_t LINE_MAX = STEPFW_LINE_MAX;         // a TABLE line can be long
 
 // ---------------------------------------------------------------------------
 // The program as the board holds it.
@@ -144,8 +169,8 @@ struct Event {
     uint8_t anchor;
     int8_t anchorLoop;
     bool allPhases;
-    uint8_t phaseCount;
-    uint32_t phases[MAX_PHASES];
+    uint16_t phaseCount;
+    uint32_t phases[MAX_PHASES];    // ascending, once the program is checked
     double on, off;
 };
 
