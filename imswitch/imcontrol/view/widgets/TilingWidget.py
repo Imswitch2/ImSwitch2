@@ -2,6 +2,7 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.view.guitools.imagetools import bestLevels
 from imswitch.imcontrol.model.workflows.spiral import SERPENTINE, SPIRAL
 
 from imswitch.imcontrol.view import guitools
@@ -11,6 +12,15 @@ from .basewidgets import Widget
 #: 'triggered' depends on the detector, which the controller works out.
 MODE_FREE_RUNNING = 'free-running'
 MODE_TRIGGERED = 'triggered'
+
+#: Auto contrast reads a strided subsample of the overview, strided the way
+#: pyqtgraph's own histogram is (``ImageItem.getHistogram``'s default
+#: ``targetImageSize``): a mosaic of 2048 px tiles runs to hundreds of
+#: megapixels, and the levels are a statistic of the whole, not of each pixel.
+_AUTO_CONTRAST_SAMPLES_PER_SIDE = 200
+#: The range ``StitchedImage.get_overview`` returns values in, and so the
+#: levels when an overview gives nothing to fit (blank, or uniform).
+_OVERVIEW_RANGE = (0.0, 1.0)
 
 
 class TilingWidget(Widget):
@@ -70,6 +80,9 @@ class TilingWidget(Widget):
         self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
         self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
         self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
+        # Display only: contrast changes nothing the run records.
+        self.autoContrastCheck.toggled.connect(self._onAutoContrastToggled)
+        self.overviewHist.sigLevelsChanged.connect(self._onOverviewLevelsChanged)
 
     # ------------------------------------------------------------------
     # Layout blocks
@@ -278,9 +291,19 @@ class TilingWidget(Widget):
         self.navigateToggle.setToolTip(
             'Click anywhere on the overview to drive the stage there.'
         )
+        self.autoContrastCheck = QtWidgets.QCheckBox('Auto contrast')
+        self.autoContrastCheck.setChecked(True)
+        self.autoContrastCheck.setToolTip(
+            "Fit the overview's contrast to each update (ImageJ's Auto).\n"
+            'Drag the levels beside the overview to set your own: they then\n'
+            'hold while tiles arrive, until this is ticked again.\n'
+            'Right-click the colour bar for other colour maps.\n'
+            'Display only: saved tiles and the mosaic are not changed.'
+        )
         row.addWidget(self.startButton, 2)
         row.addWidget(self.stopButton, 1)
         row.addWidget(self.navigateToggle)
+        row.addWidget(self.autoContrastCheck)
         return row
 
     def _buildStatusBlock(self) -> QtWidgets.QWidget:
@@ -313,6 +336,14 @@ class TilingWidget(Widget):
         self._overviewVB.setAspectLocked(True)
         self._overviewVB.invertY(True)
         self._overviewVB.addItem(self.overviewItem)
+
+        # Levels and colour map beside the overview. Every repaint used to
+        # fit the levels to the image's own minimum and maximum, so there was
+        # no way to set a contrast and keep it while tiles arrived.
+        self._overviewImage = None
+        self._settingOverviewLevels = False
+        self.overviewHist = pg.HistogramLUTItem(image=self.overviewItem)
+        self.overviewView.addItem(self.overviewHist)
 
         # Cell marker overlays
         self.cellMarkers = pg.ScatterPlotItem(
@@ -349,8 +380,59 @@ class TilingWidget(Widget):
             self.sigClickOnOverview.emit(row, col)
 
     def updateOverview(self, image: np.ndarray) -> None:
-        """Display a new stitched overview (float32 H×W array)."""
-        self.overviewItem.setImage(image.T)
+        """Display a new stitched overview (float32 H×W array, 0 to 1).
+
+        With Auto contrast ticked the levels are fitted to it; otherwise the
+        operator's levels stay where they are.
+        """
+        self._overviewImage = image
+        if self.autoContrastCheck.isChecked():
+            levels = self._autoContrastLevels(image)
+        else:
+            levels = tuple(self.overviewHist.getLevels())
+        self._showOverview(image, levels)
+
+    def _showOverview(self, image: np.ndarray, levels) -> None:
+        # The histogram follows the image's levels on every update, and says
+        # so through the same signal a drag does; this flag tells them apart.
+        self._settingOverviewLevels = True
+        try:
+            self.overviewItem.setImage(image.T, autoLevels=False, levels=levels)
+        finally:
+            self._settingOverviewLevels = False
+
+    @staticmethod
+    def _autoContrastLevels(image: np.ndarray):
+        """ImageJ's Auto levels for an overview, or its full range if blank.
+
+        The canvas outside the tiles placed so far is zero; ImageJ's rule
+        already ignores a bin holding over a tenth of the pixels, so it does
+        not drag the levels down while the mosaic is still small.
+        """
+        stride = [
+            max(1, int(np.ceil(extent / _AUTO_CONTRAST_SAMPLES_PER_SIDE)))
+            for extent in image.shape[:2]
+        ]
+        sample = np.asarray(image[::stride[0], ::stride[1]])
+        if sample.size == 0:
+            return _OVERVIEW_RANGE
+        low, high = (float(level) for level in bestLevels(sample))
+        if not (np.isfinite(low) and np.isfinite(high)) or high <= low:
+            return _OVERVIEW_RANGE
+        return low, high
+
+    def _onOverviewLevelsChanged(self, *_args) -> None:
+        if self._settingOverviewLevels:
+            return
+        # The operator moved the levels: theirs from now on.
+        if self.autoContrastCheck.isChecked():
+            self.autoContrastCheck.setChecked(False)
+
+    def _onAutoContrastToggled(self, checked: bool) -> None:
+        if checked and self._overviewImage is not None:
+            self._showOverview(
+                self._overviewImage, self._autoContrastLevels(self._overviewImage),
+            )
 
     def setProgress(self, current: int, total: int) -> None:
         self.progressLabel.setText(f'{current} / {total}')

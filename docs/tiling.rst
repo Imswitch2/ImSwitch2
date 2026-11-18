@@ -122,6 +122,16 @@ Stitching
     Each tile keeps its own vignetting in the live overview; ``Correct
     vignetting`` in the offline reconstructor removes it.
 
+Contrast
+    The levels and colour map sit beside the overview. ``Auto contrast``
+    (beside the run buttons, on by default) fits the levels to every update
+    with ImageJ's *Auto* rule, so a few hot pixels saturate instead of setting
+    the range and the empty canvas around the first tiles is ignored. Drag the
+    levels to set your own: ``Auto contrast`` turns off and they hold while
+    tiles arrive -- also across the timepoints of a tiling timelapse -- until
+    it is ticked again. Right-click the colour bar for other colour maps.
+    Contrast is display only; the saved tiles and mosaic are unchanged.
+
 Offline, the **Tiling mosaic** reconstructor additionally offers ``Correct
 vignetting``, which is described under `Correcting uneven illumination`_.
 
