@@ -39,6 +39,7 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_SAVE_TEMPLATE,
     SOURCE_PORT,
     Consolidate,
+    Map,
     Issue,
     Process,
     Reconstruct,
@@ -244,7 +245,7 @@ class WorkflowDocument:
         for step in self.producers_before(step_id):
             if isinstance(step, Source):
                 options.append(PortOption(step.id, None, f"{step.id} ({SOURCE_PORT})"))
-            elif isinstance(step, (Reconstruct, Consolidate)):
+            elif isinstance(step, (Reconstruct, Consolidate, Map)):
                 options.append(PortOption(step.id, None, f"{step.id} ({DEFAULT_PORT})"))
             elif isinstance(step, Process):
                 entry = self.entry_for(step)
@@ -403,6 +404,10 @@ class WorkflowDocument:
             refs = _refs_of(later)
             if any(ref.step == step_id for ref in refs):
                 _set_refs(later, [Ref(new_id, ref.port) if ref.step == step_id else ref for ref in refs])
+            if isinstance(later, Map):
+                # A map's body reads outer steps by id too; the cable into the
+                # map is only its ``input``.
+                later.rename_outer({step_id: Ref(new_id)})
         positions = self._stored_positions()
         if positions is not None and step_id in positions:
             positions[new_id] = positions.pop(step_id)

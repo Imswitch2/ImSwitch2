@@ -181,10 +181,213 @@ class Save:
                 "path_template": self.path_template}
 
 
-Step = Source | Reconstruct | Consolidate | Process | Save
+#: How a ``map``/``fold`` body names the slice of the current index (and, in
+#: a fold, the carried value). Written ``$item`` in a file; held as a
+#: reference to a reserved step id inside, so every reference check works on
+#: it unchanged.
+ITEM_REF = "$item"
+CARRY_REF = "$carry"
+ITEM_STEP = "_item"
+CARRY_STEP = "_carry"
+_RESERVED_BODY_IDS = (ITEM_STEP, CARRY_STEP)
+
+
+def _body_ref_in(text):
+    text = str(text)
+    if text == ITEM_REF or text.startswith(ITEM_REF + "."):
+        return ITEM_STEP + text[len(ITEM_REF):]
+    if text == CARRY_REF or text.startswith(CARRY_REF + "."):
+        return CARRY_STEP + text[len(CARRY_REF):]
+    return text
+
+
+def _body_ref_out(ref: Ref) -> str:
+    if ref.step == ITEM_STEP:
+        return ITEM_REF + (f".{ref.port}" if ref.port else "")
+    if ref.step == CARRY_STEP:
+        return CARRY_REF + (f".{ref.port}" if ref.port else "")
+    return str(ref)
+
+
+def _body_refs(step) -> list[Ref]:
+    if isinstance(step, Save):
+        return [step.input]
+    return list(getattr(step, "inputs", None) or [])
+
+
+def _parse_body(owner: str, body) -> list:
+    if not isinstance(body, list) or not body:
+        raise WorkflowError(f"step {owner!r}: a body must be a non-empty list of steps")
+    steps = []
+    for item in body:
+        if isinstance(item, dict):
+            item = dict(item)
+            if "inputs" in item and isinstance(item["inputs"], list):
+                item["inputs"] = [_body_ref_in(ref) for ref in item["inputs"]]
+            if "input" in item:
+                item["input"] = _body_ref_in(item["input"])
+            step = step_from_dict(item)
+        else:
+            step = item
+        if step.id in _RESERVED_BODY_IDS:
+            raise WorkflowError(f"step {owner!r}: {step.id!r} is reserved inside a body")
+        steps.append(step)
+    seen = set()
+    for step in steps:
+        if step.id in seen:
+            raise WorkflowError(f"step {owner!r}: duplicate body step id {step.id!r}")
+        seen.add(step.id)
+    return steps
+
+
+def _body_to_dicts(body) -> list[dict]:
+    out = []
+    for step in body:
+        payload = step.to_dict()
+        if "inputs" in payload:
+            payload["inputs"] = [_body_ref_out(ref) for ref in _body_refs(step)]
+        if "input" in payload and isinstance(step, Save):
+            payload["input"] = _body_ref_out(step.input)
+        out.append(payload)
+    return out
+
+
+@dataclass
+class Map:
+    """Run a sub-workflow (``body``) once per index of the ``over`` axis of
+    ``input``, and stack its ``output`` along that axis. Port ``out``.
+
+    For what auto-indexing cannot express: a *group* of steps per index
+    (deskew, crop, reconstruct, frame by frame), where only the stacked end
+    result is wanted. The body names the slice of the current index
+    ``$item``; it may also read any earlier step of the workflow (that result
+    is handed unchanged to every index). Save is not allowed inside a body.
+    The provenance records the body once, with ``iterated_over``.
+    """
+
+    id: str
+    input: Ref
+    over: str
+    body: list = field(default_factory=list)
+    output: Ref | None = None
+
+    kind = "map"
+    ports = (DEFAULT_PORT,)
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        self.input = parse_ref(self.input)
+        self.over = str(self.over or "")
+        self.body = _parse_body(self.id, self.body)
+        if self.output is None:
+            self.output = Ref(self.body[-1].id)
+        self.output = parse_ref(self.output)
+
+    @property
+    def body_ids(self) -> set[str]:
+        return {step.id for step in self.body}
+
+    def outer_refs(self) -> list[Ref]:
+        """References from the body to steps of the enclosing workflow, in order, once each."""
+        inner = self.body_ids | set(_RESERVED_BODY_IDS)
+        seen, found = set(), []
+        for step in self.body:
+            for ref in _body_refs(step):
+                if ref.step not in inner and str(ref) not in seen:
+                    seen.add(str(ref))
+                    found.append(ref)
+        return found
+
+    @property
+    def inputs(self) -> list[Ref]:
+        """What this step reads from the enclosing workflow: ``input`` first,
+        then whatever the body broadcasts. Read by every graph walk."""
+        return [self.input, *[ref for ref in self.outer_refs() if str(ref) != str(self.input)]]
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        # The editor rewires the cable into the step; the body's own
+        # references to the enclosing workflow are the body's.
+        refs = list(refs or [])
+        if refs:
+            self.input = parse_ref(refs[0])
+
+    def rename_outer(self, mapping: dict[str, Ref]) -> None:
+        """Point the body's references to outer steps at new ids (``old id -> Ref``)."""
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            step.inputs = [
+                (Ref(mapping[ref.step].step, ref.port if ref.port is not None else mapping[ref.step].port)
+                 if ref.step in mapping else ref)
+                for ref in _body_refs(step)
+            ]
+
+    def _payload(self) -> dict:
+        return {"step": self.kind, "id": self.id, "input": str(self.input), "over": self.over,
+                "body": _body_to_dicts(self.body), "output": str(self.output)}
+
+    def to_dict(self) -> dict:
+        return self._payload()
+
+
+@dataclass
+class Fold(Map):
+    """Like :class:`Map`, with state carried from one index to the next
+    (LabVIEW's shift register): a drift reference, a crop box chosen on the
+    first frame.
+
+    ``carry`` is ``{"init": ref or null, "next": "body_step.port"}``: the
+    body reads the carried value as ``$carry`` (``init`` at the first index,
+    or nothing when ``init`` is null) and its ``next`` port is what the next
+    index finds there. **Designed, not implemented yet**: a fold validates,
+    loads, saves and round-trips; running one is refused with a clear error.
+    """
+
+    carry: dict = field(default_factory=dict)
+
+    kind = "fold"
+
+    def __init__(self, id, input, over, body=None, output=None, carry=None):
+        self.id = id
+        self.input = input
+        self.over = over
+        self.body = body or []
+        self.output = output
+        self.carry = dict(carry or {})
+        self.__post_init__()
+        if set(self.carry) - {"init", "next"}:
+            raise WorkflowError(f"step {self.id!r}: carry has only 'init' and 'next'")
+        if not self.carry.get("next"):
+            raise WorkflowError(f"step {self.id!r}: carry needs 'next', the body port that is carried on")
+        self.carry["next"] = str(parse_ref(self.carry["next"]))
+        if self.carry.get("init") is not None:
+            self.carry["init"] = str(parse_ref(self.carry["init"]))
+        else:
+            self.carry["init"] = None
+
+    @property
+    def inputs(self) -> list[Ref]:
+        refs = Map.inputs.fget(self)
+        init = self.carry.get("init")
+        if init and init not in {str(ref) for ref in refs}:
+            refs.append(parse_ref(init))
+        return refs
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        Map.inputs.fset(self, refs)
+
+    def to_dict(self) -> dict:
+        payload = self._payload()
+        payload["carry"] = {"init": self.carry.get("init"), "next": self.carry["next"]}
+        return payload
+
+
+Step = Source | Reconstruct | Consolidate | Process | Save | Map | Fold
 
 _STEP_TYPES = {"source": Source, "reconstruct": Reconstruct, "consolidate": Consolidate,
-               "process": Process, "save": Save}
+               "process": Process, "save": Save, "map": Map, "fold": Fold}
 
 
 def step_from_dict(payload: dict) -> Step:
@@ -335,7 +538,7 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
     """Whether ``port`` is one ``step`` can produce (statically)."""
     if isinstance(step, Source):
         return (port in (None, SOURCE_PORT)), SOURCE_PORT
-    if isinstance(step, (Reconstruct, Consolidate)):
+    if isinstance(step, (Reconstruct, Consolidate, Map)):
         return (port in (None, DEFAULT_PORT)), DEFAULT_PORT
     if isinstance(step, Process):
         processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
@@ -392,8 +595,29 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
                     kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
                 except Exception:
                     kind = UNKNOWN_KIND
+        elif registry is not None and isinstance(step, Map):
+            kind = _map_output_kind(workflow, step, registry)
         kinds[step.id] = str(kind or UNKNOWN_KIND)
     return kinds
+
+
+def _map_output_kind(workflow: Workflow, step: "Map", registry) -> str:
+    """What a map produces: what its body's output step declares, the body
+    read as the workflow it runs as. ``unknown`` when that cannot be said."""
+    from imswitch.improcess.model.result import UNKNOWN_KIND
+
+    before = []
+    for item in workflow.steps:
+        if item is step:
+            break
+        if not isinstance(item, Save):
+            before.append(item)
+    placeholders = [Source(ITEM_STEP)] + ([Source(CARRY_STEP)] if isinstance(step, Fold) else [])
+    try:
+        sub = Workflow(f"{step.id}-body", [*before, *placeholders, *step.body])
+        return declared_kinds(sub, registry).get(step.output.step, UNKNOWN_KIND)
+    except Exception:
+        return UNKNOWN_KIND
 
 
 def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
@@ -497,6 +721,43 @@ def _unknown_params(step, plugin) -> list[Issue]:
     return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
 
 
+def _body_issues(step: "Map", outer: list, registry) -> list[Issue]:
+    """A map/fold body checked as the workflow it runs as: the enclosing
+    steps before it, ``$item`` (and ``$carry``) as inputs, then the body."""
+    issues: list[Issue] = []
+    what = f"{step.kind} {step.id!r}"
+    if not step.over:
+        issues.append(Issue(step.id, f"{what}: 'over' must name the axis to iterate over"))
+    for inner in step.body:
+        if isinstance(inner, (Save, Map)):
+            issues.append(Issue(step.id, f"{what}: a {inner.kind} step ({inner.id!r}) is not allowed in a body"))
+    outer_ids = {item.id for item in outer}
+    for inner in step.body:
+        if inner.id in outer_ids:
+            issues.append(Issue(step.id, f"{what}: body step {inner.id!r} has the id of a step outside it"))
+    if step.output.step not in step.body_ids:
+        issues.append(Issue(step.id, f"{what}: output {str(step.output)!r} is not a step of its body"))
+    if isinstance(step, Fold):
+        nxt = parse_ref(step.carry["next"])
+        if nxt.step not in step.body_ids:
+            issues.append(Issue(step.id, f"{what}: carry.next {str(nxt)!r} is not a step of its body"))
+    if issues:
+        return issues
+    placeholders = [Source(ITEM_STEP)]
+    if isinstance(step, Fold):
+        placeholders.append(Source(CARRY_STEP))
+    try:
+        sub = Workflow(f"{step.id}-body", [*outer, *placeholders, *step.body])
+    except WorkflowError as exc:
+        return [Issue(step.id, f"{what}: {exc}")]
+    body_ids = step.body_ids
+    for issue in validate(sub, registry):
+        if issue.step in body_ids:
+            text = issue.message.replace(repr(ITEM_STEP), repr(ITEM_REF)).replace(repr(CARRY_STEP), repr(CARRY_REF))
+            issues.append(Issue(step.id, f"in the body, {issue.step}: {text}"))
+    return issues
+
+
 def validate(workflow: Workflow, registry=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
@@ -569,6 +830,8 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
                     issues.extend(_unknown_params(step, processor))
                     issues.extend(_kind_issues(step, processor, kinds))
+        elif isinstance(step, Map):
+            issues.extend(_body_issues(step, list(by_id.values()), registry))
         elif isinstance(step, Save):
             from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 
@@ -583,8 +846,12 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 __all__ = [
     "DEFAULT_PORT",
     "DEFAULT_SAVE_TEMPLATE",
+    "CARRY_REF",
     "Consolidate",
+    "Fold",
+    "ITEM_REF",
     "Issue",
+    "Map",
     "Process",
     "RECONSTRUCTION_INPUT_KINDS",
     "Reconstruct",

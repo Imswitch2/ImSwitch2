@@ -37,6 +37,7 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
+    Map,
     Process,
     Reconstruct,
     Ref,
@@ -485,6 +486,16 @@ def run(
                         if key in report.results:
                             raise RunError(f"{step.id}: {step.processor!r} produced port {port!r} twice")
                         report.results[key] = result
+
+            elif isinstance(step, Map):
+                # A map (or fold) runs its body once per index through this
+                # same function; see workflows.mapping.
+                from imswitch.improcess.workflows.mapping import run_map
+
+                report.results[f"{step.id}.{DEFAULT_PORT}"] = run_map(
+                    step, report, registry, logger=logger,
+                    progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                )
 
             elif isinstance(step, Save):
                 result = report.result(step.input)

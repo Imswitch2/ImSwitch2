@@ -10,8 +10,9 @@ be run again from what was written down.
 This module records a graph instead, under ``metadata["provenance"]``:
 
 * a **node** per operation (``source``, ``reconstruct``, ``consolidate``,
-  ``process``, ``napari-import``; ``opaque`` for a result whose origin is
-  unknown), with a minted step id, the plugin that ran, its parameters,
+  ``process``, ``map`` -- a workflow's sub-workflow run once per index,
+  recorded once with its body and ``iterated_over`` --, ``napari-import``;
+  ``opaque`` for a result whose origin is unknown), with a minted step id, the plugin that ran, its parameters,
   **ordered** input references and **named** output ports;
 * every result carries the **transitive** union of its inputs' nodes plus its
   own, keyed by step id so shared ancestors deduplicate, and an ``output``
@@ -44,7 +45,7 @@ from imswitch.imcommon.algorithms.spatial_frame import mint_uid
 PROVENANCE_KEY = "provenance"
 SCHEMA_VERSION = 1
 
-OPS = ("source", "reconstruct", "consolidate", "process", "napari-import", "opaque")
+OPS = ("source", "reconstruct", "consolidate", "process", "map", "napari-import", "opaque")
 DEFAULT_PORT = "out"
 SOURCE_PORT = "data"
 

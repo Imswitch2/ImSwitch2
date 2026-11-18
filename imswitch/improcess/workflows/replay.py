@@ -31,12 +31,14 @@ from imswitch.improcess.model.save_protocol import ProvenanceDocument
 from imswitch.improcess.workflows.sources import SourceSpec
 from imswitch.improcess.workflows.steps import (
     Consolidate,
+    Map,
     Process,
     Reconstruct,
     Ref,
     Save,
     Source,
     Workflow,
+    WorkflowError,
 )
 
 
@@ -55,7 +57,7 @@ class ReplayResult:
     node_ids: dict[str, str] = field(default_factory=dict)   # step id -> provenance node id
 
 
-_PREFIX = {"source": "src", "reconstruct": "rec", "consolidate": "cons", "process": "proc"}
+_PREFIX = {"source": "src", "reconstruct": "rec", "consolidate": "cons", "process": "proc", "map": "map"}
 
 
 class _Skip(Exception):
@@ -220,6 +222,34 @@ class _Builder:
                 restriction = None
             sid = self.step_id_for(node_id, op)
             self.steps.append(Process(sid, plugin_id, params, inputs=refs, restriction=restriction))
+            return
+        if op == "map":
+            # The body is recorded as written; what it read from the
+            # enclosing workflow is in the node's inputs (the mapped one
+            # first), at the positions ``broadcast`` names, under the ids the
+            # original workflow used. Point those at the replayed steps.
+            refs = [self.ref_for(r) for r in node.get("inputs") or []]
+            if not refs:
+                self.reasons.append(f"{label}: the map recorded no input")
+                self.skipped.add(node_id)
+                return
+            mapping = {}
+            for old_id, where in dict(node.get("broadcast") or {}).items():
+                position = min(where.values()) if isinstance(where, dict) else where
+                if isinstance(position, int) and 0 <= position < len(refs):
+                    target = refs[position]
+                    mapping[str(old_id)] = Ref(target.step, None if isinstance(where, dict) else target.port)
+            params = dict(node.get("params") or {})
+            sid = self.step_id_for(node_id, op)
+            try:
+                step = Map(sid, refs[0], params.get("over"), body=list(node.get("body") or []),
+                           output=params.get("output"))
+            except WorkflowError as exc:
+                self.reasons.append(f"{label}: its recorded body cannot be read ({exc})")
+                self.skipped.add(node_id)
+                return
+            step.rename_outer(mapping)
+            self.steps.append(step)
             return
         self.reasons.append(f"{label}: {op} steps cannot be replayed")
         self.skipped.add(node_id)

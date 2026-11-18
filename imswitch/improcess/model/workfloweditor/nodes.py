@@ -21,6 +21,8 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
+    Fold,
+    Map,
     Process,
     RECONSTRUCTION_INPUT_KINDS,
     Reconstruct,
@@ -156,6 +158,14 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if isinstance(step, Consolidate):
         count = len(step.inputs)
         return (f"merges {count} reconstruction{'s' if count != 1 else ''}",), ()
+    if isinstance(step, Map):
+        # The body is shown as the chain it runs per index; editing it is
+        # done in the file for now (the node keeps it intact either way).
+        chain = " → ".join(item.id for item in step.body)
+        lines = (f"each {step.over}: {chain}", f"output {step.output}")
+        if isinstance(step, Fold):
+            lines += (f"carries {step.carry.get('next')}",)
+        return lines, ()
     params = dict(getattr(step, "params", {}) or {})
     if isinstance(step, Process) and step.processor == "python":
         code = [line.rstrip() for line in str(params.get("code", "")).splitlines()]
@@ -175,6 +185,8 @@ def title_of(document, step) -> str:
         return "Recording"
     if isinstance(step, Save):
         return f"Save · {str(step.fmt).upper()}"
+    if isinstance(step, Map):
+        return f"{'Fold' if isinstance(step, Fold) else 'Map'} over {step.over or '?'}"
     entry = document.entry_for(step)
     if entry is not None:
         return entry.name
@@ -223,7 +235,7 @@ def _outputs(document, step, kind: str) -> tuple[OutputSlot, ...]:
         return ()
     if isinstance(step, Source):
         return (OutputSlot(SOURCE_PORT, step.id, "", kind),)
-    if isinstance(step, (Reconstruct, Consolidate)):
+    if isinstance(step, (Reconstruct, Consolidate, Map)):
         return (OutputSlot(DEFAULT_PORT, step.id, "", kind),)
     entry = document.entry_for(step)
     spec = entry.output_spec(step.params) if entry is not None else None
@@ -333,6 +345,8 @@ _STEP_WORDS = {
     "source": "A recording: a file, or the one bound when the workflow runs",
     "save": "Writes one result to a file",
     "consolidate": "Merges several reconstructions of one kind into one",
+    "map": "Runs its steps once per index of an axis and stacks the outputs",
+    "fold": "Like a map, carrying a value from one index to the next (not runnable yet)",
 }
 
 

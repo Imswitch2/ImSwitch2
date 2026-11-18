@@ -39,7 +39,9 @@ from imswitch.improcess.workflows.runtime import bootstrap_registry, describe_re
 from imswitch.improcess.workflows.sources import SourceError, SourceSpec, open_source, parse_binding
 from imswitch.improcess.workflows.steps import (
     Consolidate,
+    Fold,
     Issue,
+    Map,
     Process,
     Reconstruct,
     Ref,
@@ -54,7 +56,9 @@ __all__ = [
     "BatchReport",
     "BatchRow",
     "Consolidate",
+    "Fold",
     "Issue",
+    "Map",
     "Process",
     "Reconstruct",
     "Ref",
