@@ -1785,10 +1785,25 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             item = self.datasetList.topLevelItem(index)
             if str(item.data(0, QtCore.Qt.UserRole) or "") != dataset_id:
                 continue
-            self.datasetList.clearSelection()
-            item.setSelected(True)
-            self.datasetList.setCurrentItem(item)
-            self.datasetList.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
+            # A click can select a result, which follows back to this same row.
+            # Do not re-center a row the user is already looking at.
+            already_selected = (
+                self.datasetList.currentItem() is item
+                and item.isSelected()
+                and len(self.datasetList.selectedItems()) == 1
+            )
+            if not already_selected:
+                self.datasetList.clearSelection()
+                self.datasetList.setCurrentItem(item)
+                item.setSelected(True)
+            # An external result selection may refer to a dataset off-screen.
+            # Reveal it minimally, without moving a row that is already visible.
+            if not self.datasetList.viewport().rect().intersects(
+                self.datasetList.visualItemRect(item)
+            ):
+                self.datasetList.scrollToItem(
+                    item, QtWidgets.QAbstractItemView.EnsureVisible
+                )
             return True
         return False
 
@@ -1964,7 +1979,11 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         finally:
             self.dimensionFilterCombo.blockSignals(False)
 
-    def _applyDatasetView(self, *_args) -> None:
+    def _applyDatasetView(self, *_args, preserve_scroll: bool = False) -> None:
+        # A catalog refresh is not navigation. Preserve the viewport when its
+        # rows are recreated; user-requested sorting/filter changes may reset it.
+        scroll_bar = self.datasetList.verticalScrollBar()
+        previous_scroll = scroll_bar.value() if preserve_scroll else None
         selected_ids = set(self.selectedDatasetIds())
         current_id = self.currentDatasetId()
         query = self.datasetSearchEdit.text().strip().casefold()
@@ -2051,6 +2070,10 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             elif not self.datasetList.topLevelItemCount():
                 self.sigDatasetSelectionChanged.emit(None)
         self.datasetList.fitAuxiliaryColumns()
+        if previous_scroll is not None:
+            # Ensure the new scrollbar range is calculated before restoring it.
+            self.datasetList.doItemsLayout()
+            scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
         self._update_selection_summary()
 
     def _updateDatasetItem(self, item, entry: dict) -> None:
@@ -2099,7 +2122,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if not replaced:
             self._datasetEntries.append(entry)
             self._refreshDimensionFilter()
-            self._applyDatasetView()
+            self._applyDatasetView(preserve_scroll=True)
             return
 
         # State-filtering or state-ordering can change row membership/position,
@@ -2109,7 +2132,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             str(self.datasetShowCombo.currentData() or "all") != "all"
             or str(self._statusOrderMode or "none") != "none"
         ):
-            self._applyDatasetView()
+            self._applyDatasetView(preserve_scroll=True)
             return
 
         for index in range(self.datasetList.topLevelItemCount()):
@@ -2123,7 +2146,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def setDatasets(self, entries: list[dict]) -> None:
         self._datasetEntries = [dict(entry) for entry in entries]
         self._refreshDimensionFilter()
-        self._applyDatasetView()
+        self._applyDatasetView(preserve_scroll=True)
 
     def setSelectedDataset(self, title: str, _summary: str) -> None:
         self._selectedDatasetTitle = str(title or "")

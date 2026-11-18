@@ -254,6 +254,7 @@ def test_two_thread_runner_finishes_without_duplicate_frames(qtbot):
     assert recon.session.closed and src.closed
 
 
+@pytest.mark.timeout(30, method="thread")
 def test_two_thread_cancel_discards_partial_and_releases_resources(qtbot):
     from imswitch.improcess.execution.runner import QtIncrementalRunner
     from imswitch.improcess.reconstructors.base import StackInfo
