@@ -188,6 +188,8 @@ class _Builder:
                 return
             refs = [self.ref_for(r) for r in node.get("inputs") or []]
             params = _decode(node, plugin, self.warnings, label)
+            if node.get("iterate") is False:
+                params["_iterate"] = False
             sid = self.step_id_for(node_id, op)
             if op == "reconstruct":
                 if node.get("mode") == "streaming":
@@ -205,6 +207,8 @@ class _Builder:
                 return
             refs = [self.ref_for(r) for r in node.get("inputs") or []]
             params = _decode(node, plugin, self.warnings, label)
+            if node.get("iterate") is False:
+                params["_iterate"] = False
             restriction = node.get("restriction")
             if isinstance(restriction, dict):
                 restriction = {k: v for k, v in restriction.items() if k != "summary"}

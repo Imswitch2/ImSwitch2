@@ -37,18 +37,66 @@ class ReconstructionRun:
     node: dict = field(default_factory=dict)         # {"node", "port"} of the result
 
 
-def run_reconstruction(reconstructor, source, params: dict | None, context=None) -> ReconstructionRun:
+class InputContractError(ValueError):
+    """The input does not fit what the reconstructor declared (``check_input``)."""
+
+
+def run_reconstruction(reconstructor, source, params: dict | None, context=None, *,
+                       progress=None, cancel=None) -> ReconstructionRun:
     """Call ``reconstructor.process`` and record the reconstruct node.
 
     ``context`` is passed only when given: reconstructors written before the
     context existed (and test stubs) still take ``(data_obj, params)``.
+
+    ``source`` may be a result as well as a ``DataObj``: it is bridged
+    (:mod:`~imswitch.improcess.model.result_source`). A reconstructor that
+    declares ``core_dims_in`` is first asked whether it can take the input
+    (``check_input``; :class:`InputContractError` with every reason before a
+    pixel is processed) and, given more axes than its core dims, is
+    **auto-indexed** over the extra leading ones
+    (:mod:`~imswitch.improcess.model.iteration`): one call per index, the
+    outputs stacked, and one provenance node recording ``iterated_over``.
+    ``params["_iterate"] = False`` hands it the whole stack instead.
+    ``progress(done, total, "T=3/120")`` and ``cancel() -> bool`` are asked
+    once per index.
     """
-    params = dict(params or {})
-    if context is not None:
-        result = reconstructor.process(source, params, context=context)
+    from imswitch.improcess.model import iteration
+    from imswitch.improcess.model.core_dims import ITERATE_PARAM, CoreDimsError
+    from imswitch.improcess.model.result_source import as_reconstruction_input
+
+    source = as_reconstruction_input(source)
+    requested = dict(params or {})
+    params = iteration.without_reserved(requested)
+    check = getattr(reconstructor, "check_input", None)
+    if callable(check):
+        problems = check(source, requested)
+        if problems:
+            raise InputContractError("; ".join(str(problem) for problem in problems))
+    match = None
+    if getattr(reconstructor, "core_dims_in", None):
+        handle = getattr(source, "data_handle", None)
+        shape = tuple(getattr(handle, "shape", ()) or ())
+        if shape:
+            try:
+                match = iteration.plan(reconstructor, getattr(source, "axis_labels", None) or [], shape, requested)
+            except CoreDimsError as exc:
+                raise InputContractError(f"{getattr(reconstructor, 'name', '')}: {exc}") from exc
+    extra = None
+    if match is not None and match.iterates:
+        result = iteration.reconstruct_each(
+            reconstructor, source, params, match, context=context, progress=progress, cancel=cancel,
+        )
+        extra = {"iterated_over": iteration.iterated_over(match)}
     else:
-        result = reconstructor.process(source, params)
-    record_reconstruction(result, reconstructor, params, source)
+        if context is not None:
+            result = reconstructor.process(source, params, context=context)
+        else:
+            result = reconstructor.process(source, params)
+        if ITERATE_PARAM in requested and not iteration.wants_iteration(requested):
+            # Not a parameter of the plugin, so not in ``params``; a replay
+            # must still hand it the whole stack.
+            extra = {"iterate": False}
+    record_reconstruction(result, reconstructor, params, source, extra=extra)
     return ReconstructionRun(
         result=result,
         source=describe_source(source),
@@ -92,7 +140,7 @@ def record_snapshot(result, reconstructor, params, source, *, session, status: s
     )
 
 
-__all__ = ["ReconstructionRun", "record_snapshot", "run_consolidation", "run_reconstruction"]
+__all__ = ["InputContractError", "ReconstructionRun", "record_snapshot", "run_consolidation", "run_reconstruction"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
