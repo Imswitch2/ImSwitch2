@@ -97,6 +97,31 @@ Stitching
     tile win. ``Intensity correction`` matches each tile's brightness to its
     neighbours where they overlap.
 
+    What it corrects is what changes from tile to tile: a lamp that flickered,
+    a frame taken before the light had settled, illumination that faded during
+    the run. What the detector does is left out of the comparison. Vignetting
+    is fixed to the detector, so wherever two tiles overlap, one sees the
+    sample through the bright side of the field and the other through the dim
+    side; matched as if that were sample, every tile came out a little darker
+    than the last, and the mosaic ran from bright to dark across its width.
+    The correction divides out the illumination profile estimated from the
+    tiles themselves (as ``Correct vignetting`` does offline, from four tiles
+    on), then takes out whatever every overlap of the same direction still
+    agrees on. A real change belongs to one tile, and so to only a few of its
+    direction's overlaps, and is still corrected.
+
+    Two limits follow from this. A brightness trend that runs evenly across
+    the whole mosaic looks exactly like vignetting from the overlaps, so it is
+    left as captured, as with the correction off; strong tile-to-tile flicker
+    can leave a gentle slope of a few percent for the same reason. And with
+    only one overlap in a direction there is nothing to compare against, so
+    two tiles alone are left as they are. Gains are solved again at 4 and 9
+    tiles, each time the count doubles after that, and once more when the run
+    ends.
+
+    Each tile keeps its own vignetting in the live overview; ``Correct
+    vignetting`` in the offline reconstructor removes it.
+
 Offline, the **Tiling mosaic** reconstructor additionally offers ``Correct
 vignetting``, which is described under `Correcting uneven illumination`_.
 

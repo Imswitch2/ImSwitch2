@@ -165,3 +165,79 @@ def test_the_correction_is_off_unless_asked_for():
 
     assert not np.allclose(plain, corrected)
     np.testing.assert_allclose(plain[:, :32], fields[0], rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Border handling and the downsampled estimate (live stitcher, 2026-11-18)
+# ---------------------------------------------------------------------------
+# Overlaps are tile borders, so the live stitcher needs the profile right
+# exactly where holding the border value flattens it; and it runs between two
+# tiles, where full-resolution smoothing took 8.5 s on a 2048 px camera.
+
+from imswitch.imcommon.algorithms.tile_mosaic import (  # noqa: E402
+    SHADING_EDGES_LINEAR,
+    SHADING_SAMPLES_PER_SIGMA,
+)
+
+
+def _edge_error(estimated, profile):
+    expected = profile / np.median(profile)
+    return float(np.abs(estimated[:, [0, -1]] / expected[:, [0, -1]] - 1).max())
+
+
+def test_holding_the_border_flattens_a_falloff_and_a_local_plane_does_not():
+    profile = _one_sided_ramp(96, 96)
+    flat_fields = [profile] * SHADING_MIN_TILES
+    held = estimate_shading_profile(flat_fields)
+    fitted = estimate_shading_profile(flat_fields, edges=SHADING_EDGES_LINEAR)
+    assert _edge_error(held, profile) > 0.05
+    assert _edge_error(fitted, profile) < 1e-4
+
+
+def test_the_downsampled_estimate_matches_full_resolution():
+    # Both the block grid and the interpolation back must reach the border,
+    # including the remainder a 100 px tile leaves after whole blocks.
+    profile = _one_sided_ramp(100, 100)
+    tiles = _tiles(profile, 40)
+    full = estimate_shading_profile(tiles, edges=SHADING_EDGES_LINEAR)
+    fast = estimate_shading_profile(
+        tiles, edges=SHADING_EDGES_LINEAR,
+        samples_per_sigma=SHADING_SAMPLES_PER_SIGMA,
+    )
+    assert fast.shape == full.shape == profile.shape
+    assert fast.dtype == np.float32
+    assert np.abs(fast / full - 1).max() < 0.01
+
+
+def test_a_downsampled_held_border_is_no_worse_than_full_resolution():
+    # Compared with the truth, not with the full-resolution estimate: held at
+    # full resolution, the border is one pixel's noise copied outward, while
+    # the block grid holds a block's mean.
+    profile = _one_sided_ramp(100, 100)
+    expected = profile / np.median(profile)
+    tiles = _tiles(profile, 40)
+    full = estimate_shading_profile(tiles)
+    fast = estimate_shading_profile(
+        tiles, samples_per_sigma=SHADING_SAMPLES_PER_SIGMA,
+    )
+    assert np.abs(fast / expected - 1).max() <= np.abs(full / expected - 1).max()
+
+
+def test_the_default_is_unchanged_for_the_offline_mosaic():
+    # Offline "Correct vignetting" keeps its full-resolution, held-border
+    # estimate unless asked otherwise.
+    from scipy.ndimage import gaussian_filter
+
+    from imswitch.imcommon.algorithms.tile_mosaic import SHADING_SMOOTH_FRACTION
+
+    profile = _one_sided_ramp(96, 96)
+    tiles = _tiles(profile, 40)
+    mean = np.mean([tile / tile.mean() for tile in tiles], axis=0).astype(np.float32)
+    expected = gaussian_filter(mean, 96 * SHADING_SMOOTH_FRACTION, mode='nearest')
+    expected /= np.median(expected)
+    np.testing.assert_allclose(estimate_shading_profile(tiles), expected, rtol=1e-5)
+
+
+def test_an_unknown_border_mode_is_refused():
+    with pytest.raises(ValueError):
+        estimate_shading_profile(_tiles(_one_sided_ramp(32, 32), 4), edges='mirror')

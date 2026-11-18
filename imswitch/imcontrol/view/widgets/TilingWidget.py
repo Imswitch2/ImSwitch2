@@ -260,7 +260,9 @@ class TilingWidget(Widget):
         )
         self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
         self.intensityCorrectionCheck.setToolTip(
-            'Match each tile to its neighbours\' brightness where they overlap.'
+            'Match each tile\'s brightness to its neighbours\' where they overlap.\n'
+            'Corrects what changes from tile to tile (flicker, fading light);\n'
+            'the vignetting every tile shares is left out of the comparison.'
         )
         row.addWidget(self.blendOverlapsCheck)
         row.addWidget(self.intensityCorrectionCheck)
