@@ -2,6 +2,8 @@
 its Nucleo as a simulated step board and compared with the old waveform
 generator (``legacy_microscope_gui``) sample by sample."""
 
+import json
+
 import pytest
 
 from imswitch.imcontrol.model.managers.scan_engines.loader import build_scan_engines
@@ -134,3 +136,72 @@ def test_line_scan_2d_visits_the_old_grid_y_fastest(rig):
     passes = sorted({tick // (cycle * len(positions)) for tick in _ons(log, 'ttl0')})
     assert passes == [1]                                             # the 405 in the second pass
     assert len(_ons(log, 'ttl2')) == steps                           # a frame at every dot
+
+
+# --- the old panel's values, and the scans the Expert panel opens -------------------
+
+def test_the_old_panels_saved_values_set_the_parameters():
+    panel = {'QDoubleSpinBox_galvo_x': 1.1, 'QDoubleSpinBox_galvo_y': 1.5,
+             'QDoubleSpinBox_galvo_range_y': 0.3, 'QDoubleSpinBox_dot_step_x': 0.02,
+             'QDoubleSpinBox_ttl_start_405': 0.004, 'QDoubleSpinBox_ttl_stop_405': 0.020,
+             'QSpinBox_dot_step_x': 15, 'QDoubleSpinBox_cobolt_unrelated': 3.0}
+    timing = {'QDoubleSpinBox_ttl_start_405': 0.006, 'QDoubleSpinBox_ttl_stop_thorcam': 0.030}
+    params = lm.LegacyParams.from_panel(panel, timing)
+    assert params.origins == (1.1, 1.5)
+    assert params.galvo_ranges == (0.4, 0.3)              # x kept its default
+    assert params.dot_steps == (0.02, 0.0172)
+    assert params.window_405 == (0.006, 0.020)            # the mode's preset wins
+    assert params.camera_window == (0.008, 0.030)
+    assert lm.LegacyParams.from_panel() == lm.LegacyParams()
+
+
+def test_a_galvo_without_a_conversion_factor_is_refused():
+    setup = json.loads(open(SETUP).read())
+    setup['positioners']['GalvoY']['managerProperties'].pop('conversionFactor')
+    with pytest.raises(ValueError, match='GalvoY has no conversionFactor'):
+        lm.Wiring.from_setup(setup)
+
+
+def test_the_rig_scans_are_saved_as_the_expert_panel_saves_them():
+    from imswitch.imcontrol.controller.controllers.ScanControllerExpert import (
+        PROGRAM_FEATURE, PROGRAM_FEATURE_REASON,
+    )
+    from imswitch.imcontrol.model.scan_program.serialize import program_from_dict
+
+    wiring = lm.Wiring.from_setup(json.loads(open(SETUP).read()))
+    scans = lm.rig_scans(wiring, pairs=2)
+    assert sorted(scans) == ['dark_frames', 'galvo_scan_live', 'line_scan_2d',
+                             'wide_field_2d', 'wide_field_live']
+    for name, state in scans.items():
+        assert state['requiredFeatures'] == {PROGRAM_FEATURE: PROGRAM_FEATURE_REASON}
+        assert state['mode']['repeatEnabled'] == name.endswith('_live')
+    assert program_from_dict(scans['galvo_scan_live']['program']) == \
+        lm.galvo_scan(lm.LegacyParams(), wiring)
+    assert program_from_dict(scans['wide_field_2d']['program']) == \
+        lm.wide_field_2d(lm.LegacyParams(), wiring, pairs=2)
+
+
+def test_the_tool_writes_scans_the_nucleo_runs(rig, tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('polarization_rig_scans',
+                                                  'tools/polarization_rig_scans.py')
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    panel = tmp_path / 'ConWidget.json'
+    panel.write_text(json.dumps({'QDoubleSpinBox_galvo_x': 1.05}))
+    timing = tmp_path / 'digital_timing_presets.json'
+    timing.write_text(json.dumps({'Wide Field 2D': {'QDoubleSpinBox_ttl_stop_488': 0.030}}))
+    out = tmp_path / 'scans'
+    assert tool.main(['--setup', SETUP, '--panel', str(panel), '--timing', str(timing),
+                      '--pairs', '1', '--out', str(out)]) == 0
+    from imswitch.imcontrol.model.scan_program.serialize import program_from_dict
+    engine, channels, wiring = rig
+    for path in sorted(out.glob('*.json')):
+        program = program_from_dict(json.loads(path.read_text())['program'])
+        _run(engine, channels, program)
+    wide_2d = program_from_dict(json.loads((out / 'wide_field_2d.json').read_text())['program'])
+    galvo_x = next(d for d in wide_2d.drives if d.device == wiring.galvo_x)
+    assert galvo_x.offset_um == pytest.approx(1.05 * wiring.um_per_volt_x)
+    # the mode's own timing preset: the 488 window ends at 30 ms
+    ends = sorted(e.end_s for e in wide_2d.timeline if e.device == wiring.laser_488)
+    assert ends[-1] == pytest.approx(0.030)

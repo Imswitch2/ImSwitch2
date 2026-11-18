@@ -88,6 +88,40 @@ class LegacyParams:
         """Seconds as the old code turned them into samples: truncated."""
         return int(seconds * self.sample_rate)
 
+    @classmethod
+    def from_panel(cls, values: Optional[Mapping[str, float]] = None,
+                   timing: Optional[Mapping[str, float]] = None) -> 'LegacyParams':
+        """The parameters from the old control panel's saved values.
+
+        ``values``: its spin boxes by name, as ``save_spinbox_values`` wrote
+        them to the file the old config calls ``ConWidget Path`` (a galvo scan
+        preset, from ``Galvo Scan Presets``, holds the galvo ones). ``timing``:
+        one mode's entry of ``Digital Timing Presets``, whose TTL times win
+        over the spin boxes'. A key that is missing keeps its default.
+        """
+        merged = dict(values or {})
+        merged.update(timing or {})
+        base = cls()
+        fields = {}
+        for field_name, keys in _PANEL_KEYS.items():
+            current = getattr(base, field_name)
+            fields[field_name] = tuple(float(merged.get(key, old))
+                                       for key, old in zip(keys, current))
+        return cls(**fields)
+
+
+#: LegacyParams fields and the old panel's spin boxes (widget_con.py) they come from.
+_PANEL_KEYS = {
+    'off_window': ('QDoubleSpinBox_ttl_start_off', 'QDoubleSpinBox_ttl_stop_off'),
+    'window_405': ('QDoubleSpinBox_ttl_start_405', 'QDoubleSpinBox_ttl_stop_405'),
+    'window_488': ('QDoubleSpinBox_ttl_start_488', 'QDoubleSpinBox_ttl_stop_488'),
+    'camera_window': ('QDoubleSpinBox_ttl_start_thorcam', 'QDoubleSpinBox_ttl_stop_thorcam'),
+    'origins': ('QDoubleSpinBox_galvo_x', 'QDoubleSpinBox_galvo_y'),
+    'galvo_ranges': ('QDoubleSpinBox_galvo_range_x', 'QDoubleSpinBox_galvo_range_y'),
+    'dot_ranges': ('QDoubleSpinBox_dot_range_x', 'QDoubleSpinBox_dot_range_y'),
+    'dot_steps': ('QDoubleSpinBox_dot_step_x', 'QDoubleSpinBox_dot_step_y'),
+}
+
 
 @dataclass(frozen=True)
 class Wiring:
@@ -103,12 +137,20 @@ class Wiring:
 
     @classmethod
     def from_setup(cls, setup, **names) -> 'Wiring':
-        """The wiring with each galvo's ``conversionFactor`` read from the setup."""
+        """The wiring with each galvo's ``conversionFactor`` read from the
+        setup: a loaded setup, or its JSON as a dict."""
         wiring = cls(**names)
         factors = {}
         for axis, name in (('x', wiring.galvo_x), ('y', wiring.galvo_y)):
-            info = setup.positioners[name]
-            factors[f'um_per_volt_{axis}'] = float(info.managerProperties['conversionFactor'])
+            if isinstance(setup, Mapping):
+                properties = setup['positioners'][name]['managerProperties']
+            else:
+                properties = setup.positioners[name].managerProperties
+            factor = properties.get('conversionFactor')
+            if factor is None:
+                raise ValueError(f'{name} has no conversionFactor (µm per volt) in the setup: '
+                                 'the programs place the galvos in µm through it.')
+            factors[f'um_per_volt_{axis}'] = float(factor)
         return cls(**{**names, **factors})
 
 
@@ -406,6 +448,53 @@ def line_scan_2d(params: LegacyParams = LegacyParams(), wiring: Wiring = Wiring(
         timing_policy=STRICT, approach=False))
 
 
+# --- the scans the Expert panel opens ------------------------------------------------
+
+#: What a saved Expert scan declares it needs (ScanControllerExpert's
+#: PROGRAM_FEATURE and its reason): the other scan panels refuse the file.
+PROGRAM_FEATURE = 'scan-program'
+PROGRAM_FEATURE_REASON = 'an Expert scan program (scan-program/1)'
+
+
+def scan_file(program: ScanProgram, *, repeat: bool = False) -> dict:
+    """``program`` as the Expert panel saves a scan: what its Load and the
+    scripting API's ``loadScanParamsFromFile`` open. ``repeat``: the panel's
+    Repeat, which runs it live."""
+    from .serialize import program_to_dict
+    return {
+        'controller': 'ScanControllerExpert',
+        'scanWidgetType': 'Expert',
+        'program': program_to_dict(program),
+        'timingPolicy': program.timing_policy,
+        'mode': {'repeatEnabled': bool(repeat)},
+        'requiredFeatures': {PROGRAM_FEATURE: PROGRAM_FEATURE_REASON},
+    }
+
+
+def rig_scans(wiring: Wiring, *, panel: Optional[Mapping[str, float]] = None,
+              timing_presets: Optional[Mapping[str, Mapping[str, float]]] = None,
+              pairs: int = 5, galvo_step_samples: int = 2) -> Dict[str, dict]:
+    """The rig's scans by file name, from the old panel's saved values
+    (``LegacyParams.from_panel``): each mode with its own entry of the old
+    ``Digital Timing Presets``, under the old GUI's mode names, when there is
+    one. The live modes run with Repeat; ``pairs`` sets the 2D acquisitions'
+    pairs of frames or passes."""
+    presets = timing_presets or {}
+
+    def params(mode):
+        return LegacyParams.from_panel(panel, presets.get(mode))
+
+    return {
+        'wide_field_live': scan_file(wide_field(params('Wide Field'), wiring), repeat=True),
+        'galvo_scan_live': scan_file(
+            galvo_scan(params('Galvo Scan'), wiring, step_samples=galvo_step_samples),
+            repeat=True),
+        'wide_field_2d': scan_file(wide_field_2d(params('Wide Field 2D'), wiring, pairs=pairs)),
+        'line_scan_2d': scan_file(line_scan_2d(params('Line Scan 2D'), wiring, pairs=pairs)),
+        'dark_frames': scan_file(dark_frames(params('Line Scan 2D'), wiring)),
+    }
+
+
 # --- comparing a run with the old buffers --------------------------------------------
 
 def sampled(board_log_entries, *, channels: Mapping[str, str], grid_ns: int,
@@ -441,7 +530,8 @@ def sampled(board_log_entries, *, channels: Mapping[str, str], grid_ns: int,
 __all__ = [
     'DAC_VOLTS_PER_CODE', 'LEGACY_COUNTS_PER_VOLT', 'LegacyBuffers', 'LegacyParams', 'Wiring',
     'dark_frames', 'galvo_scan', 'legacy_galvo_scan', 'legacy_line_scan_positions',
-    'legacy_wide_field', 'line_scan_2d', 'sampled', 'wide_field', 'wide_field_2d',
+    'legacy_wide_field', 'line_scan_2d', 'rig_scans', 'sampled', 'scan_file', 'wide_field',
+    'wide_field_2d',
 ]
 
 
