@@ -182,7 +182,11 @@ crop, another reconstruction. The result is handed to the reconstructor as a
 recording would be, with its axes, scales and attributes, and the new
 result's provenance continues the whole chain before it. Whether a
 reconstructor can take an input is decided from the data (its axes and
-attributes), never from where it came from.
+attributes), never from where it came from. The exception is a
+reconstructor that reads its *recording file* (tiling, time-lapse,
+polarisation map, widefield-STARSS): it takes only a source, and validation
+and the editor say so before anything runs. Which reconstructor does what is
+in the table under :ref:`improcess-input-contract`.
 
 **Auto-indexing.** A plugin may declare the axes one call works on, its
 *core dims* (SNOUTY: one ``(Z, Y, X)`` stack; MoNaLISA: one ``(frames, Y, X)``
@@ -193,7 +197,11 @@ for it in the workflow; the provenance records it once, as
 ``iterated_over: {T: 120}``, and a replay loops again. A step that wants the
 whole stack in one call sets ``params: {_iterate: false}``. Progress reads
 ``deskew [T=3/120]``; a cancel stops between indices and leaves no half
-result. Plugins that declare no core dims run exactly as before.
+result. Only axes that are *declared* are looped: a raw file that names no
+axes gets labels guessed from its rank, and is handed to the plugin whole,
+as before. The parameters are prepared once, from the whole input, and are
+the same for every index. The stacked result keeps only the attributes
+every index agrees on.
 
 **A Python step carries metadata on.** Its outputs inherit the first input's
 attributes (``make_result(..., inherit_attrs=False)`` to start empty) and
@@ -219,8 +227,13 @@ stacks its ``output``::
 A body step reads the current slice as ``$item`` and may read any earlier
 step of the workflow (that result is the same for every index). A body cannot
 contain a ``save`` or another map; its steps are validated as the workflow
-they run as. The provenance records the body once with ``iterated_over``;
-replay rebuilds the map. The editor shows a map as one node ("Map over T",
+they run as. Each index runs the body as a workflow of its own, so a
+plugin that prepares parameters from its input does so per index. The
+provenance records one node: the body as written, each body step's own
+record (plugin, version, encoded parameters, replayable), ``iterated_over``,
+and the parameters of any body step that differed between indices; a body
+step that cannot be replayed makes the map unreplayable with its reason
+(:ref:`improcess-provenance-loops`). Replay rebuilds the map. The editor shows a map as one node ("Map over T",
 the chain it runs) and keeps the body intact; the body is edited in the file.
 
 A ``fold`` is a map with state carried from one index to the next (a drift

@@ -323,3 +323,61 @@ The main one is structural: on `dev` the workflow schema lives in
 `imcommon/model/workflow/steps.py` with a step-type registry, so `Map`/`Fold`
 move there and register with `register_step_type("map", Map, run=run_map)`
 instead of being built-in kinds; the runner's `Map` branch then goes away.
+
+## Review before merging (sanity check)
+
+A second pass over the finished branch, aimed at three questions: is the
+provenance intact, do all reconstructors behave the same way, and is the
+contract clear for reconstructors written later. Findings and what was done:
+
+### Reconstructor contract
+
+| Finding | Fix |
+|---|---|
+| Only 3 of 12 reconstructors declared core dims; the other 9 behaved "as before" by omission, so the rule depended on who had touched which plugin. | Every built-in now declares `core_dims_in`: a tuple of axes, or `WHOLE_INPUT` (one call, never looped). `None` now means *undeclared* and is tolerated only for third-party plugins. |
+| File-reading reconstructors (tiling, time-lapse, polarisation map, widefield-STARSS) accepted a result cable and then failed deep inside with unrelated errors (no path, no manifest). | `reads_recording_file = True`; `check_input`, workflow validation (including a map's `$item`), the editor's cables and its quick-add all refuse a result with one shared message (`recording_file_refusal`). |
+| BeadRec folds every leading axis into one frame list itself (scan axes, not time); looping it over its first axis would have produced garbage silently. | `WHOLE_INPUT`; documented why. |
+| A raw file that names no axes gets labels guessed from its rank; a 4D raw file would have been looped over a guessed "T". | Only declared labels start a loop (`iteration.plan(..., labels_declared=...)`); guessed ones hand the input over whole, as before. |
+| SNOUTY projections did not loop while SNOUTY deskew did; MoNaLISA legacy did not while MoNaLISA did. | Same declarations within each family; SNOUTY's `n_timepoints` check is shared by both SNOUTY plugins. |
+
+`test_reconstructor_contract.py` runs over the whole registry (42 checks):
+every reconstructor declares; file readers refuse results the same way in
+all four places; every looping one loops over a declared leading axis,
+passes its own rank unchanged and honours `_iterate: false`; guessed labels
+never loop; `WHOLE_INPUT` never loops; an undeclared third-party plugin
+still runs once with one node; and no production code calls `process()`
+around `run_reconstruction`.
+
+### Provenance
+
+| Finding | Fix |
+|---|---|
+| A `map` node recorded its body as written but not the body steps' plugin versions or encoded parameters, which every standalone step records -- and which decide whether a step is replayable. | `body_steps`: each body step's own node (plugin, version, params version, codec-encoded params, replayable). An unreplayable body step makes the map unreplayable with its reason; replay refuses it like any other. Parameters that differ between indices are recorded (`body_params_by_index`). |
+| A stacked result took the first slice's name, so a downstream step's input label read `… [T=1/2]` -- as if only timepoint 1 had been used. | Stacked results are named after their input. |
+| A stacked result copied the first index's attributes; one that differed per index would have been passed on as if it held for the whole stack (and read downstream as a parameter default). | Only attributes every index agrees on are kept (`iteration.common_attrs`), for the generic stacker and SNOUTY's. |
+
+Checked and found sound: one node per looped step with `iterated_over`;
+`iterate: false` recorded and replayed; a bridged input links to its
+parent's output and carries the whole upstream graph; the GUI path and the
+runner record the same node (both go through `run_reconstruction`).
+
+`test_provenance_chaining_integrity.py` checks end to end on the SNOUTY
+example: the chain from the source fingerprint through every step, all
+references resolving, `validate_graph` passing; the graph read back from
+OME-TIFF and HDF5 equal to the one in memory; bit-for-bit replay of the
+chained, auto-indexed and mapped results; GUI-path/runner parity; the map's
+body record; an unreplayable body step refused at replay.
+
+### Known limitations (documented, not fixed)
+
+- A stacked output is held in memory (a guard checks after the first index);
+  spilling to a temporary zarr store is a follow-up.
+- A looped MoNaLISA run returns a generic image result, not
+  `MonalisaProcessingResult` (no `stack_results` override yet); the pixels
+  and provenance are complete, MoNaLISA's own result views are not.
+- Auto-indexed steps prepare parameters once from the whole input; a map
+  prepares them per index. Both are recorded as used.
+- Live streaming sessions are unchanged: they reconstruct raw frames as they
+  arrive and are not auto-indexed.
+- `fold` is designed, not runnable; a map's body is edited in the file, not
+  on the canvas.
