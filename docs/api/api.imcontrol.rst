@@ -490,6 +490,13 @@ api.imcontrol
 
       Needs *Tiling* in ``availableWidgets``.
 
+   .. method:: getTimelapseStatus() -> Dict[str, Any]
+
+      Whether a timelapse is running, its kind, how many timepoints
+      are done of how many, and the last status message.
+
+      Needs *Timelapse* in ``availableWidgets``.
+
    .. method:: isFocusLocked() -> bool
 
       Whether the focus is locked right now.
@@ -1095,6 +1102,13 @@ api.imcontrol
 
       Needs *Tiling* in ``availableWidgets``.
 
+   .. method:: startTimelapse() -> None
+
+      Starts a timelapse with the Timelapse widget's settings. The
+      status line says why when it cannot start.
+
+      Needs *Timelapse* in ``availableWidgets``.
+
    .. method:: stepPositionerDown(positionerName: str, axis: str) -> None
 
       Moves the specified positioner axis in negative direction by its
@@ -1123,6 +1137,12 @@ api.imcontrol
       Asks the running tiling run, or cell targeting, to stop.
 
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: stopTimelapse() -> None
+
+      Stops the running timelapse after its current timepoint.
+
+      Needs *Timelapse* in ``availableWidgets``.
 
    .. method:: toggleSLMDisplay(enabled)
 
