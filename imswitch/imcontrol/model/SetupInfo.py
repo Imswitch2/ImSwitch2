@@ -467,6 +467,42 @@ class TilingInfo:
 
 
 @dataclass(frozen=True)
+class TimelapseInfo:
+    """ Timelapse widget defaults. These are UI starting values only: every run
+    uses what the operator entered, never these. """
+
+    defaultKind: str = 'camera'
+    """ Initial run kind: ``"camera"``, ``"scan"`` or ``"tiling"``. Only the
+    widget's initial value; every run uses what the operator entered. """
+
+    defaultTimepoints: int = 10
+    """ Initial number of timepoints. Only the widget's initial value; every run
+    uses what the operator entered. """
+
+    defaultIntervalS: float = 60.0
+    """ Initial interval between timepoints, in seconds. Only the widget's
+    initial value; every run uses what the operator entered. """
+
+    defaultIntervalMode: str = 'start_to_start'
+    """ Initial interval meaning: ``"start_to_start"`` or ``"end_to_start"``.
+    Only the widget's initial value; every run uses what the operator entered. """
+
+    defaultFramesPerPoint: int = 1
+    """ Initial frames recorded per timepoint (camera kind). Only the widget's
+    initial value; every run uses what the operator entered. """
+
+    defaultSingleFile: bool = True
+    """ Initial "all timepoints in one file" choice. Only the widget's initial
+    value; every run uses what the operator entered. """
+
+    illuminationSettleMs: Optional[float] = None
+    """ Extra wait, in ms, after switching the lasers on and before the frame
+    boundary handshake, for sources slower than one camera frame (shutters,
+    AOTF rise time). ``null`` means none declared and is recorded as such in
+    the metadata -- it is never guessed. """
+
+
+@dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
     """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
@@ -730,6 +766,9 @@ class SetupInfo:
 
     tiling: Optional[TilingInfo] = field(default_factory=lambda: None)
     """ Tiling scan settings. None = tiling disabled. """
+
+    timelapse: Optional[TimelapseInfo] = field(default_factory=lambda: None)
+    """ Timelapse widget defaults. None = built-in defaults; the widget works without it. """
 
     scan: Optional[ScanInfo] = field(default_factory=lambda: None)
     """ Scan settings. Required to be defined to use scan functionality. """
