@@ -1542,7 +1542,7 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
         return [
             (diag.severity, _diagnostic_message_to_html(diag))
             for diag in report.diagnostics
-            if diag.code.startswith(("xref.", "widget.", "legacy."))
+            if diag.code.startswith(("xref.", "widget.", "legacy.", "value."))
         ]
     except Exception:
         issues = []
