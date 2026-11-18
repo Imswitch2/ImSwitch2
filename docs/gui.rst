@@ -969,6 +969,16 @@ See :doc:`tiling` for the controls in detail, cell detection, illumination
 correction, multi-detector runs, the saved output and the controller API.
 
 
+Timelapse widget
+----------------
+
+The Timelapse widget repeats camera frames, a scan or a whole tiling N times
+with a delay between the repetitions, switching the chosen lasers on only
+while a timepoint is acquired.  Camera and scan timelapses are saved by the
+Recording panel in its ordinary timelapse format; a timelapse of tilings is
+one tiling dataset folder per timepoint.  See :doc:`timelapse`.
+
+
 TriggerScope panels
 -------------------
 

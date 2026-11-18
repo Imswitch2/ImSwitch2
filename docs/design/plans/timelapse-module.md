@@ -1,6 +1,6 @@
 # Timelapse module (widget + controller)
 
-Status: plan, 2026-11-17. Branch `feat/timelapse` (worktree `../Imswitch2-timelapse`, off origin/main 8c749cceb). Nothing implemented yet.
+Status: implemented 2026-11-18 on `feat/timelapse` (worktree `../Imswitch2-timelapse`, off origin/main 8c749cceb); see "Outcome" at the end. Rig validation owed.
 
 ## Goal
 
@@ -75,3 +75,17 @@ Implementation workflow: Sonnet agents from structured briefs, one at a time in 
 - That `recordingCycleEnded` (~2597) calls `_cycleTerminalCallback` for CameraLapse, not only ScanLapse.
 - `_validateCameraLapse` rejects externally triggered or scan-driven detectors; the widget should filter on the same rule.
 - Rig validation owed (PR review = rig test): laser gating against real exposure timing.
+
+## Outcome (2026-11-18)
+
+Built in the order T3, T1, T2, T5 (widget before controller, so the controller was written against the real widget), T4, T6. User docs: `docs/timelapse.rst`.
+
+Verified end to end on the hardware-free app (`simple_mock_setup.json` + a mock XY stage + Tiling + Timelapse, booted offscreen): camera 3/3 timepoints into one grouped HDF5 file, 488 on ~0.25 s per timepoint and off between, `metadata/timelapse` and `Laser:488:Enabled = True` in every point; scan 2/2 APD scans grouped, slip recorded for an overrunning point; tiling 2/2 timepoints of 2x2 tiles in `t0/`, `t1/` with `timelapse.json`, the laser switched once per tile.
+
+The end-to-end run found two defects the unit tests had not:
+- Recording: a scan series whose first point was held by the gate was reported as not started while its retry timer ran on (fixed, regression test).
+- Timelapse: start-to-start was anchored at the release, adding the switch-on + frame-proof time to every period (fixed, regression test).
+
+Found outside this work, not fixed here: the mock Marzhauser stage (`example_mock.json`) cannot answer `?pos`, marks its position unknown and refuses every move, so Tiling cannot step on that mock at all.
+
+Still owed: rig validation of the light timing against real exposures (PR review = rig test).
