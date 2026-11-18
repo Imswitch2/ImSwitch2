@@ -243,3 +243,61 @@ during string formatting` from the SNOUTY attribute readers' debug logging.
   kinds on this branch (see Phase 4).
 - `main`'s runner refuses binding a `Source` to an in-memory result outright;
   that refusal is kept (see Phase 1).
+
+### Phase 1: any image result feeds a reconstructor
+
+As planned. `model/result_source.py::data_obj_from_result` (a `ResultDataObj`,
+no copy, lazy stays lazy) is applied by the runner and by
+`reconstructors/run.run_reconstruction`, so the GUI paths get it too.
+`ProcessingResult.attrs` carries source-style attributes on; view-only
+results keep their recording's. GUI: **Image → Use as reconstruction input**
+lists selected image results in the data list. Deviation: binding a `Source`
+to an in-memory result stays refused (main's rule); bind the reconstruction
+instead.
+
+### Phase 2: input contracts
+
+As planned, with two refinements: core dims are the *trailing* axes one call
+consumes, an entry may be `A|B` (alternatives) or `*` (any label), matched
+case-insensitively and only checked when there are extra axes; and
+`Reconstructor.params_from_attrs()` fills defaults (pixel size) from attrs.
+SNOUTY: `(Z|Frame|Plane, Y, X)`, output `geometry: deskewed` with voxel size,
+`n_timepoints != 1` refused when a T axis is already in front. MoNaLISA and
+MoNaLISA lattice: `(*, Y, X)`.
+
+### Phase 3: auto-indexing
+
+`model/iteration.py`, used by `run_reconstruction` and `processors/run.run_batch`
+(runner and GUI share it). Output stacking: a loop axis fills a length-1
+output axis of the same name (MoNaLISA's own T); otherwise loop axes go in
+front and a clashing label gets `_loop`. **Not done:** spilling large stacked
+outputs to a temporary zarr store; there is a memory guard after the first
+index instead (follow-up).
+
+### Phase 4: map and fold
+
+`main` has no step-type registry, so `map`/`fold` are built-in kinds in
+`workflows/steps.py`; the runner is `workflows/mapping.py`, which runs each
+index through `runner.run` itself with the slice and broadcast results bound
+to stand-in steps (same checks and provenance as any workflow). Provenance:
+one `map` node (new op in `OPS`) with the body as written, `iterated_over`
+and `broadcast` (where the body's outer reads sit in the node's inputs);
+replay rebuilds the map and points broadcast reads at the replayed steps.
+`declared_kinds` of a map is its body output's kind. `fold` validates, loads,
+saves and shows in the editor; running it is refused.
+
+Editor (minimum from the plan): a map is one node titled "Map over T" with
+the chain it runs; its body survives save, rename reaches into it, deleting
+its input leaves a map that loads and is reported. **Follow-up:** editing
+the body on the canvas (group node), adding a map from the palette.
+
+### Phase 5: example and docs
+
+`examples/improcess_workflows/snouty_side_by_side_timelapse{.py,.yaml,_map.yaml}`
+plus `_synthetic.write_side_by_side_snouty`: reshape → SNOUTY → crop →
+MoNaLISA, auto-indexed and as a map; the script checks both agree and is run
+by `test_workflow_examples.py`. MoNaLISA runs there on synthetic data with a
+manual lattice and an explicit 4×4 scan, which exercises the plumbing, not
+the physics: a real recording needs its own scan and lattice. Guide:
+"Chaining reconstructors and iterating over axes" in
+`docs/improcess-workflows.rst`.

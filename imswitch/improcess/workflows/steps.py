@@ -276,7 +276,9 @@ class Map:
 
     def __post_init__(self):
         self.id = _check_id(self.id)
-        self.input = parse_ref(self.input)
+        # An editor may leave a map without its input for a moment (its
+        # input step deleted); that loads, and validate() reports it.
+        self.input = parse_ref(self.input) if self.input not in (None, "") else None
         self.over = str(self.over or "")
         self.body = _parse_body(self.id, self.body)
         if self.output is None:
@@ -302,15 +304,33 @@ class Map:
     def inputs(self) -> list[Ref]:
         """What this step reads from the enclosing workflow: ``input`` first,
         then whatever the body broadcasts. Read by every graph walk."""
-        return [self.input, *[ref for ref in self.outer_refs() if str(ref) != str(self.input)]]
+        head = [self.input] if self.input is not None else []
+        return [*head, *[ref for ref in self.outer_refs() if self.input is None or str(ref) != str(self.input)]]
 
     @inputs.setter
     def inputs(self, refs) -> None:
         # The editor rewires the cable into the step; the body's own
-        # references to the enclosing workflow are the body's.
-        refs = list(refs or [])
-        if refs:
-            self.input = parse_ref(refs[0])
+        # references to the enclosing workflow are the body's, except that
+        # a broadcast read the editor dropped is dropped from the body too.
+        refs = [parse_ref(ref) for ref in (refs or [])]
+        kept = {str(ref) for ref in refs}
+        gone = {ref.step for ref in self.outer_refs() if str(ref) not in kept}
+        if self.input is not None and str(self.input) not in kept:
+            gone.discard(self.input.step)
+        if gone:
+            self.drop_outer(gone)
+        self.input = refs[0] if refs else None
+
+    def drop_outer(self, step_ids) -> None:
+        """Forget the body's reads of the outer steps ``step_ids`` (deleted ones)."""
+        step_ids = set(step_ids)
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            refs = _body_refs(step)
+            kept = [ref for ref in refs if ref.step not in step_ids]
+            if len(kept) != len(refs):
+                step.inputs = kept
 
     def rename_outer(self, mapping: dict[str, Ref]) -> None:
         """Point the body's references to outer steps at new ids (``old id -> Ref``)."""
@@ -324,7 +344,8 @@ class Map:
             ]
 
     def _payload(self) -> dict:
-        return {"step": self.kind, "id": self.id, "input": str(self.input), "over": self.over,
+        return {"step": self.kind, "id": self.id, "input": str(self.input) if self.input is not None else None,
+                "over": self.over,
                 "body": _body_to_dicts(self.body), "output": str(self.output)}
 
     def to_dict(self) -> dict:
@@ -726,6 +747,8 @@ def _body_issues(step: "Map", outer: list, registry) -> list[Issue]:
     steps before it, ``$item`` (and ``$carry``) as inputs, then the body."""
     issues: list[Issue] = []
     what = f"{step.kind} {step.id!r}"
+    if step.input is None:
+        issues.append(Issue(step.id, f"{what} needs an input to iterate over"))
     if not step.over:
         issues.append(Issue(step.id, f"{what}: 'over' must name the axis to iterate over"))
     for inner in step.body:

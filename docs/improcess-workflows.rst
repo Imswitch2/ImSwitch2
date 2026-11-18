@@ -99,6 +99,12 @@ Steps and references
    * - ``Process``
      - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered), ``restriction`` (optional ROI restriction in the form the provenance records it; the run is narrowed to those regions, as the GUI's "apply within ROI" does)
      - what the processor declares (see below)
+   * - ``Map``
+     - ``id``, ``input`` (the result to iterate over), ``over`` (an axis label), ``body`` (steps; ``$item`` is the current slice), ``output`` (a body step; default the last)
+     - ``out``
+   * - ``Fold``
+     - as ``Map``, plus ``carry: {init, next}``; designed, not runnable yet
+     - ``out``
    * - ``Save``
      - ``id``, ``input`` (one reference), ``fmt``, ``path_template``
      - none
@@ -166,6 +172,71 @@ Multi-input processors (``channel-merge``, ``image-calculator``,
 ``colocalization``, ``frc`` …) take their inputs in the order listed.
 
 .. _workflows-python-steps:
+
+Chaining reconstructors and iterating over axes
+-----------------------------------------------
+
+**Any image result can feed a reconstructor.** A ``Reconstruct`` step reads
+a source *or* any step that produces an image: a Python step's reshape, a
+crop, another reconstruction. The result is handed to the reconstructor as a
+recording would be, with its axes, scales and attributes, and the new
+result's provenance continues the whole chain before it. Whether a
+reconstructor can take an input is decided from the data (its axes and
+attributes), never from where it came from.
+
+**Auto-indexing.** A plugin may declare the axes one call works on, its
+*core dims* (SNOUTY: one ``(Z, Y, X)`` stack; MoNaLISA: one ``(frames, Y, X)``
+scan). Given more axes than that, the runner calls it once per index of the
+axes in front -- T, C, a position -- and stacks the outputs with those axes
+kept in front, as a LabVIEW loop auto-indexes an array. Nothing is written
+for it in the workflow; the provenance records it once, as
+``iterated_over: {T: 120}``, and a replay loops again. A step that wants the
+whole stack in one call sets ``params: {_iterate: false}``. Progress reads
+``deskew [T=3/120]``; a cancel stops between indices and leaves no half
+result. Plugins that declare no core dims run exactly as before.
+
+**A Python step carries metadata on.** Its outputs inherit the first input's
+attributes (``make_result(..., inherit_attrs=False)`` to start empty) and
+may set their own (``attrs={"geometry": "skewed"}``), so a reshape keeps,
+for example, the SNOUTY geometry a later deskew needs. The code reads them as
+``attrs``.
+
+**A map runs a group of steps per index.** For a chain whose intermediates
+are only wanted frame by frame (or would not fit in memory for the whole
+time-lapse), a ``map`` step runs its ``body`` once per index of one axis and
+stacks its ``output``::
+
+    - step: map
+      id: per_t
+      input: reshape
+      over: T
+      body:
+        - {step: reconstruct, id: deskew, reconstructor: snouty, params: {...}, inputs: [$item]}
+        - {step: process, id: crop, processor: python, params: {code: ...}, inputs: [deskew]}
+        - {step: reconstruct, id: mona, reconstructor: monalisa, params: {...}, inputs: [crop]}
+      output: mona
+
+A body step reads the current slice as ``$item`` and may read any earlier
+step of the workflow (that result is the same for every index). A body cannot
+contain a ``save`` or another map; its steps are validated as the workflow
+they run as. The provenance records the body once with ``iterated_over``;
+replay rebuilds the map. The editor shows a map as one node ("Map over T",
+the chain it runs) and keeps the body intact; the body is edited in the file.
+
+A ``fold`` is a map with state carried from one index to the next (a drift
+reference, a crop box chosen on the first frame), LabVIEW's shift register:
+``carry: {init: <ref or null>, next: <body port>}``, read in the body as
+``$carry``. It loads, validates, saves and shows in the editor; running one is
+refused until it is implemented.
+
+Workflows stay a fixed graph: no step repeats "until" something happens, so
+every run can be replayed from what its provenance recorded. An iteration to
+convergence belongs inside one plugin.
+
+``examples/improcess_workflows/snouty_side_by_side_timelapse.py`` runs both
+forms on a synthetic time-lapse filed as one 3D array (the timepoints side by
+side along X): reshape → SNOUTY → crop → MoNaLISA, auto-indexed and as a map,
+and checks that they agree.
 
 Python steps
 ------------

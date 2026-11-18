@@ -20,8 +20,10 @@ receipts. The guide is `docs/improcess-workflows.rst`.
 | `python_step_autocrop.yaml` | A Python step: Crop to the bright region plus a margin; each file in a batch gets its own crop. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `python_step_crosstalk.yaml` | A Python step: Remove channel bleed-through with a measured mixing matrix. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `monalisa_reconstruct_chain.yaml` | MoNaLISA reconstruction → background subtraction → Z projection, two saves. Scan geometry comes from the recording's attributes. | needs a MoNaLISA recording |
+| `snouty_side_by_side_timelapse.py` / `.yaml` | A SNOUTY time-lapse filed as one 3D array (timepoints side by side along X): Python reshape to `(T, Z, Y, X)` → SNOUTY deskew → crop → MoNaLISA. Reconstructors chained on results; each one runs once per T by itself (auto-indexing). | yes (no arguments) |
+| `snouty_side_by_side_timelapse_map.yaml` | The same chain as a `map` over T: deskew → crop → MoNaLISA run as a group, one timepoint at a time. | yes (via the script above) |
 | `consolidate_two_sources.yaml` | Two reconstructions consolidated into one, bound from a two-column manifest. | needs MoNaLISA recordings |
-| `_synthetic.py` | Writes the synthetic recording the runnable examples use. | — |
+| `_synthetic.py` | Writes the synthetic recordings the runnable examples use. | — |
 
 The `python_step_<recipe>.yaml` files are generated from the snippets in
 `imswitch/_data/user_defaults/improcess_snippets/`, which ImSwitch also installs

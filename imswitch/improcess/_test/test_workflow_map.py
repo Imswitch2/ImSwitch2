@@ -301,3 +301,25 @@ def test_the_editor_window_draws_a_map_node(registry, tmp_path):
     finally:
         window.document.dirty = False
         window.close()
+
+
+def test_deleting_what_a_map_reads_leaves_a_map_that_loads_and_is_reported(registry, tmp_path):
+    from imswitch.improcess.model.workfloweditor import WorkflowDocument, build_catalog
+
+    raw, _ = side_by_side(tmp_path / "raw.h5")
+    workflow = Workflow("broadcast", [
+        *head(raw),
+        Map("per_t", "reshape", "T", body=[
+            {"step": "process", "id": "shift", "processor": "python",
+             "params": {"code": ADD_OFFSET}, "inputs": ["$item", "view"]},
+        ]),
+    ])
+    document = WorkflowDocument(workflow, catalog=build_catalog(registry))
+    document.delete_step("reshape")
+    step = document.step("per_t")
+    assert step.input is None and [str(ref) for ref in step.inputs] == ["view"]
+    assert any("needs an input" in issue.message for issue in document.issues_for("per_t"))
+    document.delete_step("view")
+    assert step.inputs == [] and step.to_dict()["body"][0]["inputs"] == ["$item"]
+    document.save(tmp_path / "left.yaml")
+    assert Workflow.load(tmp_path / "left.yaml").step("per_t").input is None

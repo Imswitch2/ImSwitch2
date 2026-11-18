@@ -401,13 +401,13 @@ class WorkflowDocument:
         step = self.step(step_id)
         step.id = new_id
         for later in self.steps:
+            if isinstance(later, Map):
+                # A map's body reads outer steps by id too: rename those
+                # first, so the map's cables already match the new id.
+                later.rename_outer({step_id: Ref(new_id)})
             refs = _refs_of(later)
             if any(ref.step == step_id for ref in refs):
                 _set_refs(later, [Ref(new_id, ref.port) if ref.step == step_id else ref for ref in refs])
-            if isinstance(later, Map):
-                # A map's body reads outer steps by id too; the cable into the
-                # map is only its ``input``.
-                later.rename_outer({step_id: Ref(new_id)})
         positions = self._stored_positions()
         if positions is not None and step_id in positions:
             positions[new_id] = positions.pop(step_id)
@@ -710,6 +710,13 @@ class WorkflowDocument:
                               if isinstance(step, Save) and step.input.step == step_id}
         for step in self.steps:
             if step.id in doomed or isinstance(step, (Source, Save)):
+                continue
+            if isinstance(step, Map):
+                # Its input and its body's broadcast reads go separately: a
+                # map whose input is gone keeps its body and is reported.
+                if step.input is not None and step.input.step in doomed:
+                    step.input = None
+                step.drop_outer(doomed)
                 continue
             kept = [ref for ref in step.inputs if ref.step not in doomed]
             if len(kept) != len(step.inputs):
