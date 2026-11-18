@@ -445,6 +445,20 @@ def _reconstruction_input_issues(step, by_id: dict, kinds: dict[str, str]) -> li
     )]
 
 
+def _input_contract_issues(step, plugin) -> list[Issue]:
+    """What the plugin's ``check_input`` can say from the parameters alone
+    (``data_obj=None``): the data is not known before the run, which checks
+    it again with the data before any pixel is processed."""
+    check = getattr(plugin, "check_input", None)
+    if not callable(check):
+        return []
+    try:
+        problems = check(None, {**_defaults(plugin), **step.params})
+    except Exception:
+        return []
+    return [Issue(step.id, str(problem)) for problem in problems or []]
+
+
 def _defaults(plugin) -> dict:
     getter = getattr(type(plugin), "default_params", None)
     try:
@@ -475,7 +489,8 @@ def _unknown_params(step, plugin) -> list[Issue]:
         allowed = None
     if allowed is None:
         return []
-    unknown = sorted(set(step.params) - set(allowed))
+    # ``_iterate`` is the runner's, not the plugin's (auto-indexing on/off).
+    unknown = sorted(set(step.params) - set(allowed) - {"_iterate"})
     if not unknown:
         return []
     plugin_id = getattr(plugin, "id", type(plugin).__name__)
@@ -519,6 +534,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                     issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
                 else:
                     issues.extend(_unknown_params(step, plugin))
+                    issues.extend(_input_contract_issues(step, plugin))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))

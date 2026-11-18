@@ -385,6 +385,10 @@ def run(
                 data_obj = as_reconstruction_input(report.result(step.inputs[0]))
                 params = {**type(plugin).default_params(), **step.params}
                 params = plugin.prepare_params(data_obj, params)
+                # Said before any pixel is processed, all at once.
+                problems = plugin.check_input(data_obj, params)
+                if problems:
+                    raise WorkflowError(f"{step.id}: " + "; ".join(problems))
                 run_result = run_reconstruction(plugin, data_obj, params)
                 report.results[f"{step.id}.{DEFAULT_PORT}"] = run_result.result
 

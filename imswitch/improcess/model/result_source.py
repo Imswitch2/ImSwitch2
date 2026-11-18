@@ -203,17 +203,31 @@ class ResultDataObj(DataObj):
             return self._acquisitionLayoutResolution
         from imswitch.improcess.model.acquisition_layout_resolver import resolve_acquisition_layout
 
+        from imswitch.improcess.model.acquisition_layout_resolver import AcquisitionLayoutResolutionError
+
         attrs = self._attrs or {}
         detector = attrs.get("recording:detector_name") or attrs.get("detector_name") or self.name
         self._acquisitionLayoutDetector = str(detector)
-        self._acquisitionLayoutResolution = resolve_acquisition_layout(
-            attrs,
-            shape=tuple(self._dataSource.array.shape),
-            detector=str(detector),
-            axis_labels=self._axis_labels,
-            axis_metadata_explicit=True,
-            user_override=self._acquisitionLayoutOverride,
-        )
+
+        def resolve(source_attrs):
+            return resolve_acquisition_layout(
+                source_attrs,
+                shape=tuple(self._dataSource.array.shape),
+                detector=str(detector),
+                axis_labels=self._axis_labels,
+                axis_metadata_explicit=True,
+                user_override=self._acquisitionLayoutOverride,
+            )
+
+        try:
+            self._acquisitionLayoutResolution = resolve(attrs)
+        except AcquisitionLayoutResolutionError:
+            # A result inherits the layout its *recording* declared, and a
+            # reshape or crop upstream legitimately leaves it describing
+            # frames this array does not have. A file with such a layout is
+            # an error; a derived result is not: its layout is inferred from
+            # what it is (and a plugin that needs more says so).
+            self._acquisitionLayoutResolution = resolve(slice_attrs(attrs))
         return self._acquisitionLayoutResolution
 
     def describesSameAs(self, other):

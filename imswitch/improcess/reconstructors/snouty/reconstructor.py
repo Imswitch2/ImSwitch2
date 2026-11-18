@@ -35,6 +35,13 @@ class SnoutyReconstructor(Reconstructor):
     output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Lightsheet deskew for SNOUTY/OPM/MS-RESOLFT data"
+
+    #: One deskew consumes one skewed stack. A ``(T, Z, Y, X)`` input (a
+    #: time-lapse a Python step has reshaped) is auto-indexed over T by the
+    #: runner; the 3D layout with ``n_timepoints`` along the plane axis stays
+    #: as it was. The plane axis goes by several names.
+    core_dims_in = ("Z|Frame|Plane", "Y", "X")
+    core_dims_out = ("Z", "Y", "X")
     
     @classmethod
     def default_params(cls) -> dict:
@@ -87,6 +94,47 @@ class SnoutyReconstructor(Reconstructor):
     def __init__(self):
         self._logger = initLogger('SnoutyReconstructor')
     
+    def check_input(self, data_obj, params: dict | None) -> list[str]:
+        """The core-dims check, and no double loop over time.
+
+        With a time axis in front of the stack the runner already calls the
+        deskew once per timepoint; splitting each stack again into
+        ``n_timepoints`` would cut one timepoint's planes into pieces.
+        """
+        from imswitch.improcess.model.core_dims import CoreDimsError, match_core_dims, wants_iteration
+
+        problems = super().check_input(data_obj, params)
+        params = dict(params or {})
+        if data_obj is None or not wants_iteration(params):
+            return problems
+        handle = getattr(data_obj, "data_handle", None)
+        shape = tuple(getattr(handle, "shape", ()) or ())
+        try:
+            match = match_core_dims(getattr(data_obj, "axis_labels", None) or [], shape, self.core_dims_in)
+        except CoreDimsError:
+            return problems
+        if match.iterates and int(params.get("n_timepoints", 1) or 1) != 1:
+            problems.append(
+                f"{self.name}: the input already has {', '.join(match.loop_labels)} in front of the "
+                f"stack, so each deskew gets one timepoint; set n_timepoints to 1 "
+                f"(it is {params.get('n_timepoints')})"
+            )
+        return problems
+
+    def stack_results(self, results: list, match, *, loop_scales=None):
+        """A time loop stacks back into a 4D :class:`SnoutyResult` (its
+        orthogonal views and HDF5 layout); any other loop is generic."""
+        if tuple(match.loop_labels) == ("T",) and all(isinstance(r, SnoutyResult) and r.data.ndim == 3 for r in results):
+            data = np.stack([np.asarray(r.data) for r in results], axis=0)
+            first = results[0]
+            stacked = SnoutyResult(
+                name=first.name, data=data, params=dict(first.params),
+                display_levels=_display_levels(data),
+            )
+            stacked.attrs = dict(first.attrs)
+            return stacked
+        return super().stack_results(results, match, loop_scales=loop_scales)
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """Create and return the SNOUTY parameter widget."""
         return SnoutyParamsWidget(parent)
@@ -141,17 +189,47 @@ class SnoutyReconstructor(Reconstructor):
             result_data = deskewed_timepoints[0]
         self._logger.info(f'Reconstruction complete: {result_data.shape}')
 
-        # Compute display levels
-        data_min = float(np.percentile(result_data, 1))
-        data_max = float(np.percentile(result_data, 99.9))
-        
-        # Create result
-        return SnoutyResult(
+        result = SnoutyResult(
             name=data_obj.name,
             data=result_data,
             params=params,
-            display_levels=(data_min, data_max)
+            display_levels=_display_levels(result_data),
         )
+        result.attrs = deskewed_attrs(data_obj, params)
+        return result
+
+
+#: Attribute keys that describe the *camera* grid of a skewed recording; after
+#: a deskew they no longer describe the data, which is on the sample grid.
+_CAMERA_GRID_KEYS = ("camera pixel size", "pixel size")
+
+
+def deskewed_attrs(data_obj, params: dict) -> dict:
+    """What a deskewed volume tells the next step: the input's attributes
+    without the raw layout and camera-grid keys, and ``geometry: deskewed``
+    with the isotropic voxel size it was resampled to (nm)."""
+    from imswitch.improcess.model.result_source import slice_attrs
+
+    try:
+        attrs = slice_attrs(dict(getattr(data_obj, "attrs", None) or {}))
+    except Exception:
+        attrs = {}
+    attrs = {
+        key: value for key, value in attrs.items()
+        if not (str(key).lower().startswith("detector:")
+                and str(key).split(":")[-1].strip().lower() in _CAMERA_GRID_KEYS)
+    }
+    voxel = float(params.get("sample_vx_size", 0.0) or 0.0)
+    attrs.update({
+        "geometry": "deskewed",
+        "voxel_size_nm": [voxel, voxel, voxel],
+        "pixel_size_nm": voxel,
+    })
+    return attrs
+
+
+def _display_levels(data) -> tuple[float, float]:
+    return float(np.percentile(data, 1)), float(np.percentile(data, 99.9))
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -34,7 +34,7 @@ from imswitch.improcess.processors.python_step.context import (
 
 #: The names :meth:`ConsoleSession.refresh` rebinds when the selection changes;
 #: any other name in the namespace is the user's and is never touched.
-REBOUND_NAMES = ("data", "inputs", "axes", "scales", "unit", "axis", "results")
+REBOUND_NAMES = ("data", "inputs", "axes", "scales", "unit", "attrs", "axis", "results")
 #: The step's namespace has these for the code to set; a console has no use for them.
 _STEP_ONLY_NAMES = ("outputs", "out")
 
@@ -106,7 +106,7 @@ class ConsoleSession:
                 self.namespace[name] = fresh[name]
         else:
             self.namespace.update(
-                {"data": None, "inputs": [], "axes": [], "scales": [], "unit": "px", "results": []}
+                {"data": None, "inputs": [], "axes": [], "scales": [], "unit": "px", "attrs": {}, "results": []}
             )
             self.namespace["axis"] = _no_axes
         return list(chosen)
