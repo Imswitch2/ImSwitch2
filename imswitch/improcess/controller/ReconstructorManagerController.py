@@ -1,8 +1,15 @@
 import copy
 import json
+import os
+import uuid
+
 import time
 
 from qtpy import QtCore
+
+from imswitch.improcess.execution.result_assembly import ResultAssemblyPlan
+from imswitch.improcess.execution.result_publication import PublicationHooks, ResultPublication
+from imswitch.improcess.model.processing_queue import supports_session_auto, supports_session_manual
 
 from .reconstruction_worker import (
     ReconstructionWorker,
@@ -35,12 +42,43 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = None
         self._reconstructionWorker = None
         self._reconstructionWorkerReconstructor = None
+        self._reconstructionJobLabels = []
+        self._multiPublication = None
+        self._multiPublicationError = None
+        self._multiPublicationCount = 0
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
         self._localizationThread = None
         self._localizationWorker = None
         self._localizationActiveJob = None
         self._localizationPendingJob = None
         self._localizationRequestCounter = 0
         self._localizationExpectedRequestId = None
+        # The logical lapse a pass-through plugin last showed whole; see
+        # showPassThrough.
+        self._passThroughLapse = None
+        current_result_changed = getattr(self._commChannel, "sigCurrentResultChanged", None)
+        if current_result_changed is not None:
+            current_result_changed.connect(lambda _result: self.refreshUpdateReconstructionAvailability())
+
+    def rememberMonalisaAutoCalibration(self, result, *, source_label: str = "") -> bool:
+        """Expose a completed queued Auto calibration for explicit Lock-current.
+
+        This does not set the widget's auto_localization input or change the
+        selected reconstruction settings: future Auto jobs still localize anew.
+        """
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        snapshot = metadata.get("monalisa_calibration")
+        if not isinstance(snapshot, dict):
+            snapshot = dict(getattr(result, "params", {}) or {}).get("calibration_snapshot")
+        if not isinstance(snapshot, dict) or "per_data_item" in snapshot:
+            return False
+        active = getattr(self._main, "_activeReconstructor", None)
+        widget = getattr(self, "_previewWidget", None)
+        if getattr(active, "id", "") != "monalisa":
+            return False
+        remember = getattr(widget, "remember_auto_reconstruction", None)
+        return bool(remember(snapshot, source_label=source_label)) if callable(remember) else False
 
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
@@ -213,6 +251,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # It is allowed to finish in its worker thread, but its result is no
         # longer eligible to mutate the UI/session state.
         self._invalidate_localization_requests()
+
+        if data_obj is None:
+            # Clearing a deleted current source must not make a None object look
+            # like a generic image source and silently switch reconstructors.
+            self._publishReconstructorChoices()
+            return
+
         active = self._main._activeReconstructor
         if active is None or not self._accepts_current_source(active):
             compatible = [
@@ -379,7 +424,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     and self._main._currentDataObj is not None
                 ):
                     try:
-                        self.reconstruct([self._main._currentDataObj], consolidate=False)
+                        self.showPassThrough(self._main._currentDataObj, again=True)
                     except Exception as exc:
                         self._logger.warning(
                             f"Pass-through auto-route on reconstructor switch failed: {exc}"
@@ -408,6 +453,12 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._logger.warning(f"Could not reopen {path}: {exc}")
             return False
         return True
+
+    def _refreshSessionStreamingCapability(self, *_unused) -> None:
+        session = getattr(self._main, "processingSessionController", None)
+        sync = getattr(session, "_sync_streaming_capability", None)
+        if callable(sync):
+            sync()
 
     def _install_reconstructor_params(self, reconstructor):
         # Multi-data relocalization is orchestration state, not a MoNaLISA
@@ -444,13 +495,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
-        # Gate the modality-specific Actions buttons:
+        # Gate the modality-specific DATA-footer actions:
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
         #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' reuses retained MoNaLISA coefficients.
-        #   Legacy has its classic coefficient re-render; unified MoNaLISA
-        #   exposes the placement-only Fast path for quick orientation checks.
+        # - Update reconstruction is now owned by unified MoNaLISA's Scanning
+        #   controls; the compatibility flag below no longer creates a footer
+        #   button.
         # - The multidata button stays visible for every plugin. Pass-through
         #   plugins get it relabeled as a batch 'load to viewer' action with
         #   the consolidate entry hidden; plugins without consolidation
@@ -484,9 +535,27 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # meaningful for a reconstructor that can make a session. Declared
         # capability, like is_pass_through above -- not another id check.
         try:
-            self._widget.setDirectoryWatcherAvailable(
-                bool(getattr(reconstructor, 'supports_streaming', False))
+            streaming = bool(getattr(reconstructor, 'supports_streaming', False))
+            session_manual = supports_session_manual(reconstructor)
+            # Auto after explicit finite readiness works for offline-only
+            # reconstructors too. Only true acquisition-time following needs
+            # a StreamingSession.
+            session_controller = getattr(self._main, 'processingSessionController', None)
+            auto_available = bool(
+                supports_session_auto(reconstructor) and session_controller is not None
+                and getattr(session_controller, 'session', None) is not None
+                and getattr(session_controller, 'sessionMode', 'review') == 'follow'
             )
+            self._widget.setDirectoryWatcherAvailable(streaming)
+            self._widget.processingSessionFrame.setProcessingAvailable(session_manual)
+            self._widget.setBatchProcessingAvailable(session_manual)
+            self._widget.setSessionAutoProcessingAvailable(auto_available)
+            # An unavailable Auto control must not leave a hidden policy armed.
+            # Re-enabling Auto is an explicit user action for the new reconstructor.
+            if not auto_available:
+                queue_controller = getattr(self._main, 'processingQueueController', None)
+                if queue_controller is not None and queue_controller.autoPolicy.enabled:
+                    queue_controller.setAutoEnabled(False)
         except Exception:
             # Logged, not swallowed silently: a failure here leaves the panel
             # offering a run the plugin cannot perform, which looks like the
@@ -501,12 +570,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if reconstructor.id == "monalisa-legacy":
             try:
                 self._widget.setLegacyMonalisaParameterWidget()
-                self._widget.setUpdateReconstructionEnabled(True)
             except Exception:
                 pass
+            self._refreshSessionStreamingCapability()
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        for signal_name in (
+            "sigModeChanged", "sigDetectionParamsChanged", "sigUpdateEligibilityChanged",
+            "sigLocalizationModeChanged", "sigParamsChanged", "sigParametersChanged",
+        ):
+            signal = getattr(widget, signal_name, None)
+            if signal is not None and hasattr(signal, "connect"):
+                signal.connect(self._refreshSessionStreamingCapability)
+        self._refreshSessionStreamingCapability()
         # The widget exists now, on the GUI thread: the one safe place to
         # compare it with the plugin's headless declaration. A mismatch is
         # remembered on the class, so this reconstructor's results record
@@ -529,12 +606,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
-        if reconstructor.id == "monalisa" and hasattr(widget, "sigModeChanged"):
+        if reconstructor.id == "monalisa":
             try:
-                widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
-                self._set_monalisa_update_enabled(
-                    widget.get_values().get("preset", "Fast")
-                )
+                if hasattr(widget, "sigModeChanged"):
+                    widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
+                if hasattr(widget, "sigUpdateRequested"):
+                    widget.sigUpdateRequested.connect(self.updateReconstruction)
+                if hasattr(widget, "sigUpdateEligibilityChanged"):
+                    widget.sigUpdateEligibilityChanged.connect(
+                        self.refreshUpdateReconstructionAvailability
+                    )
+                self.refreshUpdateReconstructionAvailability()
             except Exception:
                 pass
 
@@ -579,32 +661,39 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
 
     @QtCore.Slot(str)
-    def _set_monalisa_update_enabled(self, mode):
+    def _set_monalisa_update_enabled(self, _mode):
+        self.refreshUpdateReconstructionAvailability()
+
+    @QtCore.Slot()
+    def refreshUpdateReconstructionAvailability(self):
+        """Keep the MoNaLISA Scan/Orientation update action exactly gated."""
+        reconstructor = getattr(self._main, "_activeReconstructor", None)
+        widget = getattr(self, "_previewWidget", None)
+        if widget is None:
+            widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "setUpdateReconstructionEnabled", None)
+        if reconstructor is None or reconstructor.id != "monalisa" or not callable(setter):
+            return
+        if self.isReconstructionRunning():
+            setter(False, "Wait for the current reconstruction to finish.")
+            return
+        if self._shared_processing_queue_busy():
+            setter(False, "Pause or finish queued processing before updating reconstruction.")
+            return
+        result = None
+        reconstruction_controller = getattr(self._main, "reconstructionController", None)
+        if reconstruction_controller is not None:
+            result = reconstruction_controller.getActiveResult()
         try:
-            from imswitch.improcess.reconstructors.monalisa.params import effective_mode_params
-            widget = getattr(self, "_previewWidget", None)
-            params = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
-            effective = effective_mode_params(params)
-            stages = (
-                str(effective.get("reassignment", "off")) != "off",
-                bool(effective.get("pinhole_stack", False)),
-                bool(effective.get("sharpen", False)),
-                bool(effective.get("variance_weighting", False)),
-                bool(effective.get("intensity_correction", False)),
-                bool(effective.get("cell_offsets", False)),
-            )
-            placement_only = not any(stages) and str(mode) in ("Fast", "Full")
-            reason = (
-                "Re-place retained amplitudes after changing scan orientation."
-                if placement_only else
-                "Placement-only update requires ISM, sharpening and corrections off."
-            )
-            self._widget.setUpdateReconstructionEnabled(placement_only, reason)
-            # Full mode explicitly opts into offline-only processing. The
-            # legacy live engine applies additional per-option checks on start.
-            self._widget.setDirectoryWatcherAvailable(str(mode) == "Fast")
-        except Exception:
-            pass
+            params = widget.get_values() if hasattr(widget, "get_values") else {}
+            checker = getattr(reconstructor, "can_update_reconstruction", None)
+            if callable(checker):
+                enabled, reason = checker(result, params)
+            else:
+                enabled, reason = False, "Update reconstruction is unavailable."
+        except Exception as exc:
+            enabled, reason = False, str(exc)
+        setter(bool(enabled), str(reason or ""))
 
     @QtCore.Slot(str)
     def _set_monalisa_relocalize_enabled(self, mode):
@@ -624,10 +713,45 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             return bool(self._widget.multiDataFrame.relocalizeEachDataItem())
         except Exception:
+            return True  # Independent datasets require independent Auto calibration.
+
+    def reuseMonalisaCalibration(
+        self, snapshot: dict, *, mode: str = "both", source_label: str = "reconstruction"
+    ) -> str | None:
+        """Import a reconstruction calibration into the active MoNaLISA registry/UI."""
+        active = getattr(self._main, "_activeReconstructor", None)
+        if active is None or active.id != "monalisa":
+            self._on_user_changed_reconstructor("monalisa")
+            active = getattr(self._main, "_activeReconstructor", None)
+        if active is None or active.id != "monalisa":
+            raise ValueError("Select the MoNaLISA reconstructor before reusing its calibration")
+
+        widget = getattr(self, "_previewWidget", None)
+        apply_snapshot = getattr(widget, "reuse_calibration_snapshot", None)
+        if not callable(apply_snapshot):
+            raise RuntimeError("The active MoNaLISA parameter widget cannot import calibration")
+        return apply_snapshot(
+            dict(snapshot or {}), mode=str(mode), source_label=str(source_label or "reconstruction")
+        )
+
+    def _shared_processing_queue_busy(self) -> bool:
+        controller = getattr(self._main, 'processingQueueController', None)
+        if controller is None:
             return False
+        queue = getattr(controller, 'queue', None)
+        if queue is None:
+            return False
+        if getattr(queue, 'current', None) is not None:
+            return True
+        return bool(getattr(queue, 'waiting', ())) and not bool(getattr(queue, 'paused', False))
 
     def updateReconstruction(self):
         """Refresh the active MoNaLISA result without repeating extraction."""
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Reconstruction queue is active; pause it before updating."
+            )
+            return
         reconstructor = self._main._activeReconstructor
         if reconstructor is None:
             return
@@ -667,12 +791,159 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
 
     def reconstructCurrent(self):
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Reconstruction queue is active; pause it before reconstructing current data."
+            )
+            return
+        data_controller = getattr(self._main, 'dataFrameController', None)
+        ready = getattr(data_controller, 'currentDataReadyForProcessing', None)
+        if callable(ready) and not ready():
+            self._set_reconstruction_job_state(
+                False, status='Current data is still loading.'
+            )
+            return
         if self._main._currentDataObj is None:
             return
 
         self.reconstruct([self._main._currentDataObj], consolidate=False)
 
+    def showPassThrough(self, data_obj, *, again: bool = False) -> None:
+        """Show Current data through the active pass-through plugin.
+
+        The data is the result. One timepoint of a logical lapse stands for
+        the whole lapse: it is opened once in the Time lapse viewer, as
+        Session's ``Open in viewer`` does, and stepping through its timepoints
+        adds no result per timepoint. ``again`` shows a lapse already shown,
+        for an explicit switch to the pass-through plugin.
+        """
+        lapse = getattr(data_obj, '_timeLapseParent', None)
+        if lapse is None:
+            self._passThroughLapse = None
+            self.reconstruct([data_obj], consolidate=False)
+            return
+        if lapse is self._passThroughLapse and not again:
+            return
+        self._passThroughLapse = lapse
+
+        from imswitch.improcess.model.DataObj import DataObj
+
+        # A source of its own: closing the result unloads its backing object,
+        # and Current data still navigates this lapse.
+        source = DataObj.fromMetadataSource(
+            lapse.name, lapse.dataPath, lapse.sourceKind, lapse.sourceMetadata,
+            originalPath=getattr(lapse, 'sourceOriginalPath', None),
+        )
+        try:
+            self.openInspection('time-lapse', source)
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not open {lapse.name} as a time lapse ({exc}); "
+                "showing the current timepoint only"
+            )
+            self._passThroughLapse = None
+            self.reconstruct([data_obj], consolidate=False)
+
+    def openInspection(self, plugin_id: str, data_obj) -> str:
+        """Publish one inspection result without changing the active plugin.
+
+        Session's ``Open in viewer`` is a navigation/inspection action, not a
+        processing choice.  It therefore resolves the inspection plugin
+        directly from the registry and runs it with its own defaults instead
+        of installing it in the Parameters panel.
+        """
+        from imswitch.improcess.reconstructors import (
+            available_reconstructor_specs,
+            register_reconstructor_by_id,
+        )
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        reconstructor = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+        registered_for_viewer = False
+        if reconstructor is None:
+            try:
+                reconstructor = register_reconstructor_by_id(registry, plugin_id)
+            except Exception as exc:
+                viewer_name = (
+                    "Time Lapse" if plugin_id == "time-lapse" else "image"
+                )
+                raise RuntimeError(
+                    f"Could not load the {viewer_name} viewer; see the log for details"
+                ) from exc
+            registered_for_viewer = True
+
+        if (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            != "inspection"
+        ):
+            # ``openInspection`` is deliberately restricted to inspection
+            # plugins. If an unexpected id was auto-registered above, undo it
+            # rather than silently changing the runtime plugin set.
+            if registered_for_viewer:
+                registry.unregister_reconstructor(plugin_id)
+            raise ValueError(
+                f"Reconstructor {plugin_id!r} is not an inspection plugin"
+            )
+
+        if registered_for_viewer:
+            self._logger.info(
+                f"Auto-loaded inspection reconstructor {plugin_id!r} for viewer"
+            )
+            # Registration must not activate the plugin, but it should update
+            # the ordinary plugin UI so Tools -> Load reconstructor does not
+            # continue to advertise it as unloaded.
+            self._publishReconstructorChoices()
+            setter = getattr(self._widget, "setAvailableReconstructors", None)
+            if callable(setter):
+                try:
+                    loaded = {plugin.id for plugin in registry.reconstructors()}
+                    setter(
+                        [
+                            (known_id, name, description)
+                            for known_id, name, description
+                            in available_reconstructor_specs()
+                            if known_id not in loaded
+                        ]
+                    )
+                except Exception as exc:
+                    # Menu refresh is cosmetic; a working viewer must not fail
+                    # just because the optional plugin menu could not refresh.
+                    self._logger.debug(
+                        f"Could not refresh reconstructor load menu: {exc}"
+                    )
+
+        params = copy.deepcopy(reconstructor.default_params())
+        validator = getattr(reconstructor, "validate_source", None)
+        if callable(validator):
+            validator(data_obj)
+
+        if getattr(reconstructor, "execution_policy", "inline") == "worker":
+            started = self._start_worker_reconstruction(
+                reconstructor, [data_obj], False, params_override=params
+            )
+            if not started:
+                raise RuntimeError("The viewer could not be started")
+            return "started"
+
+        from imswitch.improcess.reconstructors.run import run_reconstruction
+
+        result = run_reconstruction(reconstructor, data_obj, params).result
+        # View-only results can point directly at a lazy source handle. Keep
+        # its DataObj alive for exactly as long as the result remains loaded;
+        # ReconstructionViewController already owns this resource contract.
+        result._session_backing_data_obj = data_obj
+        self._publishPluginResult(
+            result, getattr(result, "name", "viewer"), reconstructor=reconstructor
+        )
+        return "ready"
+
     def reconstructMulti(self, consolidate):
+        if self._shared_processing_queue_busy():
+            self._set_reconstruction_job_state(
+                False, status="Reconstruction queue is active; pause it before reconstructing Multi-data."
+            )
+            return
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
@@ -746,14 +1017,69 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         self._publishPluginResult(merged, f'{merged.name}_multi')
 
-    def _params_for_data_obj(self, reconstructor):
-        params = self._widget.getReconstructionParams()
+    def snapshotProcessingParams(self, reconstructor=None):
+        """Return an immutable-by-convention queue-time parameter snapshot.
+
+        Queued work must not silently change when the user edits the parameter
+        widget later.  The queue stores the returned dict and hands a fresh copy
+        to each processing unit.
+        """
+        reconstructor = reconstructor or self._main._activeReconstructor
+        if reconstructor is None:
+            return {}
+        params = copy.deepcopy(self._widget.getReconstructionParams())
         if reconstructor.id == "monalisa":
             params = dict(params)
             params['scan_params'] = copy.deepcopy(
                 self._main.monalisaController._scanParDict
             )
         return params
+
+    def _params_for_data_obj(self, reconstructor):
+        return self.snapshotProcessingParams(reconstructor)
+
+    def publishQueuedResult(self, result, displayName, reconstructor=None):
+        """Publish one queue-produced result through the normal ImProcess path."""
+        self._publishPluginResult(result, displayName, reconstructor=reconstructor)
+
+    @staticmethod
+    def _same_data_source(left, right) -> bool:
+        """Whether two DataObj-like values identify the same concrete source.
+
+        Auto-localization belongs to the Current-data source.  Detector identity
+        alone is not sufficient for Multi-data reuse: two acquisitions from the
+        same camera can require different localization.
+        """
+        if left is right and left is not None:
+            return True
+        if left is None or right is None:
+            return False
+
+        if str(getattr(left, "sourceKind", "image") or "image") != str(
+            getattr(right, "sourceKind", "image") or "image"
+        ):
+            return False
+
+        def normalized_path(obj):
+            path = getattr(obj, "dataPath", None)
+            if not path:
+                file_obj = getattr(obj, "_file", None)
+                path = getattr(file_obj, "filename", None)
+            if not path:
+                return None
+            try:
+                return os.path.normcase(os.path.abspath(os.fspath(path)))
+            except (TypeError, ValueError):
+                return str(path)
+
+        left_path = normalized_path(left)
+        right_path = normalized_path(right)
+        if left_path is None or right_path is None or left_path != right_path:
+            return False
+
+        return str(getattr(left, "datasetName", "") or "") == str(
+            getattr(right, "datasetName", "") or ""
+        )
 
     @staticmethod
     def _default_memory_budget_bytes() -> int:
@@ -766,21 +1092,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
             available = 2 * 1024 ** 3
         return max(256 * 1024 ** 2, int(available * 0.6))
 
-    def _start_worker_reconstruction(self, reconstructor, data_objs, consolidate):
+    def _start_worker_reconstruction(
+        self, reconstructor, data_objs, consolidate, *, params_override=None
+    ):
         if self._reconstructionThread is not None:
             self._logger.warning("A reconstruction job is already running")
             self._set_reconstruction_job_state(
                 True, status="A reconstruction is already running."
             )
-            return
+            return False
         if not data_objs:
-            return
+            return False
+
+        def params_for(data_obj):
+            if params_override is not None:
+                return copy.deepcopy(params_override)
+            return self._params_for_data_obj(reconstructor)
 
         budget = self._default_memory_budget_bytes()
         shared_auto_localizations = {}
         relocalize_each = False
         if reconstructor.id == "monalisa" and len(data_objs) > 1:
-            first_params = self._params_for_data_obj(reconstructor)
+            first_params = params_for(data_objs[0])
             if str(first_params.get("localization_mode", "Auto")) == "Auto":
                 relocalize_each = self._monalisa_relocalize_each_data_item()
                 if not relocalize_each:
@@ -788,18 +1121,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         detector_identity,
                     )
 
-                    # Reuse once per detector, never across detectors.  The
-                    # normal timelapse case therefore still localizes exactly
-                    # once, while a mixed-detector batch remains physically safe.
-                    current_data = getattr(self._main, "_currentDataObj", None)
-                    current_detector = detector_identity(current_data) if current_data is not None else None
-                    current_payload = dict(first_params.get("auto_localization") or {})
-                    if current_payload and current_detector:
-                        shared_auto_localizations[current_detector] = current_payload
-
+                    # Reuse once per detector, never across detectors.  A
+                    # Current-data auto-localization is source-owned, though:
+                    # detector identity alone must not let localization from a
+                    # different acquisition seed this batch.
                     first_by_detector = {}
                     for item in data_objs:
                         first_by_detector.setdefault(detector_identity(item), item)
+
+                    current_data = getattr(self._main, "_currentDataObj", None)
+                    current_detector = (
+                        detector_identity(current_data)
+                        if current_data is not None
+                        else None
+                    )
+                    current_payload = dict(first_params.get("auto_localization") or {})
+                    current_first_item = first_by_detector.get(current_detector)
+                    if (
+                        current_payload
+                        and current_detector
+                        and self._same_data_source(current_data, current_first_item)
+                    ):
+                        shared_auto_localizations[current_detector] = current_payload
                     localizer = getattr(reconstructor, "localize", None)
                     for detector, first_item in first_by_detector.items():
                         if detector in shared_auto_localizations:
@@ -818,7 +1161,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         except Exception as exc:
                             self._logger.error(f"MoNaLISA localization failed: {exc}")
                             self._setPreviewStatus(f"Localization failed: {exc}")
-                            return
+                            return False
                         shared_auto_localizations[detector] = localization.to_dict()
                         if first_item is current_data:
                             widget = getattr(self, "_previewWidget", None)
@@ -831,7 +1174,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         jobs = []
         for data_obj in data_objs:
-            params = self._params_for_data_obj(reconstructor)
+            params = params_for(data_obj)
             if reconstructor.id == "monalisa" and len(data_objs) > 1:
                 if relocalize_each:
                     params = dict(params)
@@ -854,7 +1197,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._set_reconstruction_job_state(
                     False, status=f"Preflight failed: {exc}"
                 )
-                return
+                return False
             confirmed = False
             if estimate is not None and estimate.required_bytes > budget:
                 confirmer = getattr(
@@ -872,7 +1215,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         False,
                         status="Reconstruction not started: memory estimate declined.",
                     )
-                    return
+                    return False
             jobs.append(ReconstructionWorkerJob(
                 data_obj=data_obj,
                 params=dict(params),
@@ -880,13 +1223,44 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 confirmed_over_budget=confirmed,
             ))
 
+        # Consolidated Multi Data belongs on Dataset, not T, unless a future
+        # explicit common-lapse identity says otherwise. Progressive assembly
+        # is independent of true acquisition-time streaming.
+        progressive = bool(
+            consolidate and len(jobs) > 1
+            and getattr(reconstructor, "supports_progressive_finite", False)
+        )
+        self._multiPublication = None
+        self._multiPublicationError = None
+        self._multiPublicationCount = 0
+        self._publishWorkerItemsSeparately = not consolidate
+        self._latestWorkerResult = None
+        if progressive:
+            ids = tuple(
+                f"{getattr(job.data_obj, 'dataPath', '')}::"
+                f"{getattr(job.data_obj, 'datasetName', '')}#{index}"
+                for index, job in enumerate(jobs)
+            )
+            plan = ResultAssemblyPlan.for_datasets(
+                uuid.uuid4().hex, "multidata", dataset_ids=ids,
+            )
+            channel = self._commChannel
+            self._multiPublication = ResultPublication(plan, PublicationHooks(
+                preview=channel.sigLiveResultUpdated.emit,
+                finalized=channel.sigResultFinalized.emit,
+                current_changed=channel.sigCurrentResultChanged.emit,
+            ))
+
         thread = QtCore.QThread()
         worker = ReconstructionWorker(
-            reconstructor, jobs, consolidate=consolidate
+            reconstructor, jobs,
+            consolidate=consolidate and not progressive,
+            retain_results=consolidate and not progressive,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._on_reconstruction_progress)
+        worker.itemProgress.connect(self._on_reconstruction_item_progress)
+        worker.resultReady.connect(self._on_reconstruction_result_ready)
         worker.finished.connect(self._on_reconstruction_finished)
         worker.failed.connect(self._on_reconstruction_failed)
         worker.cancelled.connect(self._on_reconstruction_cancelled)
@@ -901,14 +1275,32 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = thread
         self._reconstructionWorker = worker
         self._reconstructionWorkerReconstructor = reconstructor
+        self._reconstructionJobLabels = [
+            str(getattr(job.data_obj, "name", "") or getattr(job.data_obj, "datasetName", "") or "Data")
+            for job in jobs
+        ]
+        inspection = (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            == "inspection"
+        )
         self._timing_dispatch_started = time.perf_counter()
         self._timing_requested = (reconstructor.id == "monalisa" and any(
             bool(job.params.get("show_reconstruction_timings", False)) for job in jobs
         ))
         self._set_reconstruction_job_state(
-            True, progress=0.0, status=f"Starting {reconstructor.name}..."
+            True,
+            progress=0.0,
+            status=(
+                "Opening in viewer..."
+                if inspection
+                else f"Starting {reconstructor.name}..."
+            ),
+            item_index=1,
+            item_total=max(1, len(jobs)),
+            item_label=(self._reconstructionJobLabels[0] if self._reconstructionJobLabels else ""),
         )
         thread.start()
+        return True
 
     def cancelReconstruction(self):
         worker = self._reconstructionWorker
@@ -922,16 +1314,103 @@ class ReconstructorManagerController(ImProcessWidgetController):
             True, status="Cancelling after the current read or processing step..."
         )
 
-    @QtCore.Slot(object)
-    def _on_reconstruction_progress(self, progress):
-        status = progress.message or progress.phase.capitalize()
+    @QtCore.Slot(int, int, object)
+    def _on_reconstruction_item_progress(self, item_index, item_total, progress):
+        status = progress.message or progress.phase.replace("_", " ").capitalize()
+        label = ""
+        index = int(item_index) - 1
+        if 0 <= index < len(self._reconstructionJobLabels):
+            label = self._reconstructionJobLabels[index]
         self._set_reconstruction_job_state(
-            True, progress=progress.fraction, status=status
+            True,
+            progress=progress.fraction,
+            status=status,
+            item_index=int(item_index),
+            item_total=int(item_total),
+            item_label=label,
         )
+
+    @QtCore.Slot(object, object)
+    def _on_reconstruction_result_ready(self, result, run) -> None:
+        if self._multiPublicationError is not None:
+            return
+        publisher = self._multiPublication
+        if publisher is not None:
+            try:
+                publisher.append_completed(result, self._multiPublicationCount, run=run)
+                self._multiPublicationCount += 1
+            except Exception as exc:
+                self._multiPublicationError = str(exc)
+                self._logger.exception("Multi Data progressive assembly failed")
+                if self._reconstructionWorker is not None:
+                    self._reconstructionWorker.request_cancel()
+        elif self._publishWorkerItemsSeparately:
+            self._latestWorkerResult = result
+            # Independent data entries can be published immediately; this is
+            # not a consolidated result and never silently shares a T axis.
+            self._publishPluginResult(
+                result, getattr(result, "name", "result"),
+                reconstructor=self._reconstructionWorkerReconstructor,
+            )
 
     @QtCore.Slot(object)
     def _on_reconstruction_finished(self, outcome: ReconstructionWorkerOutcome):
         reconstructor = self._reconstructionWorkerReconstructor
+        if getattr(self, "_multiPublication", None) is not None:
+            publisher = self._multiPublication
+            self._multiPublication = None
+            if self._multiPublicationError:
+                publisher.finish("failed")
+                self._set_reconstruction_job_state(
+                    False, status=f"Multi-data assembly failed: {self._multiPublicationError}"
+                )
+                self._multiPublicationError = None
+                return
+            try:
+                if publisher.published is None:
+                    raise RuntimeError("Multi Data produced no completed output")
+                publisher.finish("complete")
+            except Exception as exc:
+                self._logger.exception("Multi Data finalization failed")
+                try:
+                    publisher.finish("failed")
+                except Exception:
+                    self._logger.exception("Could not finalize retained Multi Data partial")
+                self._set_reconstruction_job_state(False, status=f"Multi-data finalization failed: {exc}")
+                return
+            # Preserve existing MoNaLISA result/widget synchronization.
+            widget = getattr(self, "_previewWidget", None)
+            sync = getattr(widget, "sync_reconstruction_results", None)
+            if callable(sync) and reconstructor is not None and reconstructor.id == "monalisa":
+                sync((publisher.published,))
+            sync_session = getattr(widget, "sync_current_transient", None)
+            if callable(sync_session) and reconstructor is not None and reconstructor.id == "monalisa":
+                try:
+                    sync_session()
+                except Exception as exc:
+                    self._logger.debug("Could not refresh MoNaLISA session calibration: %s", exc)
+            self._set_reconstruction_job_state(False, progress=1.0, status="Reconstruction complete.")
+            return
+        if getattr(self, "_publishWorkerItemsSeparately", False):
+            self._publishWorkerItemsSeparately = False
+            last = self._latestWorkerResult
+            self._latestWorkerResult = None
+            widget = getattr(self, "_previewWidget", None)
+            if reconstructor is not None and reconstructor.id == "monalisa":
+                sync_spot = getattr(widget, "sync_reconstruction_results", None)
+                if callable(sync_spot) and last is not None:
+                    try:
+                        sync_spot((last,))
+                    except Exception as exc:
+                        self._logger.debug("Could not refresh MoNaLISA spot width: %s", exc)
+                sync = getattr(widget, "sync_current_transient", None)
+                if callable(sync):
+                    try:
+                        sync()
+                    except Exception as exc:
+                        self._logger.debug("Could not refresh MoNaLISA calibration: %s", exc)
+            self._set_reconstruction_job_state(False, progress=1.0, status="Reconstruction complete.")
+            return
         if outcome.merged is not None:
             self._publishPluginResult(
                 outcome.merged,
@@ -962,7 +1441,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     sync()
                 except Exception as exc:
                     self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
-        if reconstructor is not None and reconstructor.id == "monalisa" and self._timing_requested:
+        if reconstructor is not None and reconstructor.id == "monalisa" and getattr(self, "_timing_requested", False):
             elapsed = time.perf_counter() - self._timing_dispatch_started
             completed = outcome.results or ([outcome.merged] if outcome.merged is not None else [])
             work = [(getattr(result, "diagnostics", None) or {}).get("timing_worker_s")
@@ -975,12 +1454,29 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 setter(worker_seconds, elapsed)
             self._logger.info("MoNaLISA timing: worker=%s s, GUI-inclusive=%.3f s",
                               worker_seconds, elapsed)
-        self._set_reconstruction_job_state(
-            False, progress=1.0, status="Reconstruction complete."
+        inspection = (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            == "inspection"
         )
+        # Inspection is a transient open/view operation rather than a
+        # reconstruction result. Clear the shared DATA progress row as soon as
+        # the viewer is ready instead of leaving a completed "Viewer ready"
+        # bar visible until another tab/state refresh happens.
+        if inspection:
+            self._set_reconstruction_job_state(False)
+        else:
+            self._set_reconstruction_job_state(
+                False, progress=1.0, status="Reconstruction complete."
+            )
 
     @QtCore.Slot(object)
     def _on_reconstruction_failed(self, failure: ReconstructionWorkerFailure):
+        if self._multiPublication is not None:
+            self._multiPublication.finish("failed")
+            self._multiPublication = None
+        self._multiPublicationError = None
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
         self._logger.error(
             f"Reconstruction failed: {failure.message}\n{failure.traceback}"
         )
@@ -990,6 +1486,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     @QtCore.Slot(str)
     def _on_reconstruction_cancelled(self, message):
+        if self._multiPublication is not None:
+            self._multiPublication.finish("cancelled" if not self._multiPublicationError else "failed")
+            self._multiPublication = None
+        assembly_error = self._multiPublicationError
+        self._multiPublicationError = None
+        self._publishWorkerItemsSeparately = False
+        self._latestWorkerResult = None
+        if assembly_error:
+            self._logger.error("Multi-data assembly failed: %s", assembly_error)
+            self._set_reconstruction_job_state(
+                False, status=f"Multi-data assembly failed: {assembly_error}"
+            )
+            return
         self._logger.info(message or "Reconstruction cancelled")
         self._set_reconstruction_job_state(
             False, status="Reconstruction cancelled."
@@ -1000,15 +1509,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._reconstructionThread = None
             self._reconstructionWorker = None
             self._reconstructionWorkerReconstructor = None
+            self._reconstructionJobLabels = []
 
     def _set_reconstruction_job_state(
-        self, running, *, progress=None, status=""
+        self, running, *, progress=None, status="", item_index=None, item_total=None,
+        item_label=""
     ):
         setter = getattr(self._widget, 'setReconstructionJobState', None)
         if callable(setter):
             setter(
-                bool(running), progress=progress, status=str(status or "")
+                bool(running), progress=progress, status=str(status or ""),
+                item_index=item_index, item_total=item_total, item_label=str(item_label or ""),
             )
+        self.refreshUpdateReconstructionAvailability()
 
     def closeEvent(self):
         self.cancelReconstruction()
@@ -1022,11 +1535,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
 
     def _publishPluginResult(self, result, displayName, reconstructor=None):
+        producer = reconstructor or self._main._activeReconstructor
         self._commChannel.sigResultProduced.emit(result, displayName)
+        if str(getattr(producer, "result_role", "derived") or "derived") != "inspection":
+            finalized = getattr(self._commChannel, "sigResultFinalized", None)
+            if finalized is not None:
+                finalized.emit(result, displayName)
         self._commChannel.sigCurrentResultChanged.emit(result)
         # NOTE: Special-case by ID retained because widefield-starss batch result
         # collection is plugin-specific and not part of the generic plugin API.
-        producer = reconstructor or self._main._activeReconstructor
         if producer is not None and producer.id == "widefield-starss":
             self._main.wfsBatchController.appendSingleResult(result)
         # Push reconstruction-derived metadata (e.g. MoNaLISA's computed

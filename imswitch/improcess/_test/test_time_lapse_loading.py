@@ -21,6 +21,7 @@ import pytest
 
 from imswitch.improcess._test._lapse_recordings import FRAME_SHAPE, record_lapse, record_point
 from imswitch.improcess.controller.FileIOController import FileIOController
+from imswitch.improcess.controller.DataFrameController import DataFrameController
 from imswitch.improcess.controller.ReconstructionViewController import (
     ReconstructionViewController,
 )
@@ -344,3 +345,184 @@ def test_the_real_view_keeps_a_dask_array_lazy(monkeypatch):
 
     assert layer.data is stack
     assert computed == []
+
+# --------------------------------------------------------------------------
+# Current-data lazy timepoint navigation
+# --------------------------------------------------------------------------
+
+
+def test_quick_load_catalog_recognizes_lapse_without_switching_reconstructor(
+    single_file_lapse,
+):
+    """Quick Load owns data discovery, so a recorded lapse is catalogued as
+    one logical source even while an image reconstructor is active. The
+    metadata source itself is not published as Current: Current data starts its
+    asynchronous first-timepoint load and the active reconstructor can keep
+    seeing ordinary image DataObjs only.
+    """
+    active = _AVAILABLE_RECONSTRUCTOR_CLASSES["view-only"]()
+    opened = []
+    catalogued = []
+    selected = []
+
+    class _LoadedFrame:
+        def addOrUpdateDataObj(self, data_obj, **_kwargs):
+            catalogued.append(data_obj)
+
+        def setCurrentDataObj(self, data_obj):
+            selected.append(data_obj)
+
+    io = FileIOController.__new__(FileIOController)
+    io._main = SimpleNamespace(
+        _activeReconstructor=active,
+        _currentDataObj=None,
+        dataFrameController=SimpleNamespace(openTimeLapseSource=opened.append),
+    )
+    io._logger = _QUIET
+    io._commChannel = SimpleNamespace(
+        sigCurrentDataChanged=SimpleNamespace(emit=lambda _obj: None)
+    )
+    io._loadedDataObjs = []
+    io._replaceLoadedCatalogOnNextRegistration = False
+    io._widget = SimpleNamespace(
+        loadedDataFrame=_LoadedFrame(),
+        raiseCurrentDataDock=lambda: None,
+        showPickDatasetsDialog=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dataset picker was shown")
+        ),
+    )
+    io.pickDatasetsController = SimpleNamespace(setDatasets=lambda *_args: None)
+
+    outcome = io._loadFromPath(
+        str(single_file_lapse),
+        prefer_as_current=True,
+        route_to_loaded=True,
+    )
+
+    assert outcome == "current"
+    assert len(opened) == 1
+    logical = opened[0]
+    assert logical.sourceKind == TIME_LAPSE_SOURCE_KIND
+    assert logical in catalogued
+    assert selected[-1] is logical
+    assert io._main._currentDataObj is None
+    assert io._main._activeReconstructor is active
+
+
+def test_current_timepoint_worker_materializes_only_an_image_timepoint(
+    single_file_lapse,
+):
+    """The Current-data worker converts one logical T position into a normal
+    image DataObj; reconstruction/localization code therefore does not need a
+    second logical-lapse code path.
+    """
+    from imswitch.improcess.controller.DataFrameController import _TimepointLoadWorker
+
+    logical = _opened_lapse(single_file_lapse)
+    loaded = []
+    failed = []
+    worker = _TimepointLoadWorker(logical, 3)
+    worker.sigLoaded.connect(loaded.append)
+    worker.sigFailed.connect(failed.append)
+
+    worker.run()
+
+    assert failed == []
+    assert len(loaded) == 1
+    plan, position, data_obj = loaded[0]
+    assert position == 3
+    assert len(plan.slots) == 5
+    assert data_obj.sourceKind == "image"
+    assert data_obj.dataLoaded
+    assert data_obj._timeLapseParent is logical
+    assert data_obj._timeLapsePlan is plan
+    assert data_obj._timeLapsePosition == 3
+    assert data_obj.numFrames == 2
+    data_obj.checkAndUnloadData()
+
+
+def test_current_timepoint_worker_reports_multi_lapse_choice_before_loading(tmp_path):
+    """Quick Load may defer the expensive ambiguity check, but it must not
+    silently open the first lapse when one HDF5 contains several logical runs.
+    The worker performs the header scan off the GUI thread and returns one
+    representative item per lapse before reading any pixels.
+    """
+    from imswitch.improcess.controller.DataFrameController import _TimepointLoadWorker
+
+    path = _two_lapses_in_one_file(tmp_path)
+    index = discover_time_lapse(path)
+    logical = DataObj.fromMetadataSource(
+        index.name, index.anchor.path, TIME_LAPSE_SOURCE_KIND, index,
+        originalPath=path,
+    )
+    logical._timeLapseRunExplicit = False
+    loaded = []
+    ambiguous = []
+    failed = []
+    worker = _TimepointLoadWorker(logical, 0)
+    worker.sigLoaded.connect(loaded.append)
+    worker.sigAmbiguous.connect(ambiguous.append)
+    worker.sigFailed.connect(failed.append)
+
+    worker.run()
+
+    assert failed == []
+    assert loaded == []
+    assert ambiguous == [("scan0/Camera", "scan3/Camera")]
+
+
+def test_current_reconstruction_is_blocked_while_lazy_timepoint_is_pending():
+    """Keyboard shortcuts/signals must obey the same guard as the disabled
+    Reconstruct current button while T navigation is loading.
+    """
+    manager = Manager.__new__(Manager)
+    statuses = []
+    reconstructed = []
+    manager._main = SimpleNamespace(
+        _currentDataObj=object(),
+        dataFrameController=SimpleNamespace(
+            currentDataReadyForProcessing=lambda: False
+        ),
+    )
+    manager._set_reconstruction_job_state = (
+        lambda running, **kwargs: statuses.append((running, kwargs))
+    )
+    manager.reconstruct = lambda *args, **kwargs: reconstructed.append((args, kwargs))
+
+    manager.reconstructCurrent()
+
+    assert reconstructed == []
+    assert statuses == [(False, {"status": "Current data is still loading."})]
+
+
+def test_clear_current_data_releases_authoritative_data_obj():
+    """Current Data unload must release the model object, not only blank the view."""
+    released = []
+    emitted = []
+    data_obj = SimpleNamespace(checkAndUnloadData=lambda: released.append(True))
+    io = FileIOController.__new__(FileIOController)
+    io._main = SimpleNamespace(_currentDataObj=data_obj)
+    io._commChannel = SimpleNamespace(
+        sigCurrentDataChanged=SimpleNamespace(emit=emitted.append)
+    )
+
+    io.clearCurrentData()
+
+    assert released == [True]
+    assert io._main._currentDataObj is None
+    assert emitted == [None]
+
+
+def test_current_data_unload_delegates_to_authoritative_owner():
+    calls = []
+    controller = DataFrameController.__new__(DataFrameController)
+    controller._main = SimpleNamespace(
+        fileIOController=SimpleNamespace(clearCurrentData=lambda: calls.append('clear'))
+    )
+    controller._invalidateTimepointRequests = lambda **kwargs: calls.append(
+        ('invalidate', kwargs)
+    )
+
+    controller.unloadData()
+
+    assert calls == [('invalidate', {'clear_context': True}), 'clear']

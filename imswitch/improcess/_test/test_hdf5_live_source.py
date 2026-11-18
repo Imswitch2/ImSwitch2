@@ -409,20 +409,26 @@ def _hdf5_streaming_recorder(path, n_frames_first_batch=3):
     return storer
 
 
-def test_hdf5_live_source_streams_and_completes_via_stream_complete_marker(tmp_hdf5_path):
-    """A live SWMR reader terminates via the stream_complete marker.
+def test_hdf5_live_source_streams_and_completes_via_stream_complete_marker(
+    tmp_hdf5_path, monkeypatch
+):
+    """A SWMR reader terminates via the stream_complete marker.
 
     The final writing=False attr is rewritten through a post-close r+ reopen
-    that a live SWMR handle can never see, and with no
-    recording:expected_frames (SpecTime/UntilStop) the reader previously had
-    no way to complete at all (audit root cause 2). The marker dataset is
-    written while the recorder's SWMR handle is still open, so the live
-    reader sees it.
+    that a live SWMR handle cannot see. The stream_complete marker is written
+    while the recorder's SWMR handle is still open. Isolate this low-level
+    protocol test from the application's *in-process* second-reader guard:
+    real concurrent readers may reside in a different process, while the
+    guard is tested separately and must remain enforced in production.
     """
     from unittest.mock import MagicMock
 
+    import imswitch.improcess.live.sources as live_sources
     from imswitch.imcontrol.model.managers.RecordingManager import SaveMode
 
+    monkeypatch.setattr(
+        live_sources, "assert_raw_hdf5_new_reader_available", lambda _path: None
+    )
     storer = _hdf5_streaming_recorder(tmp_hdf5_path, n_frames_first_batch=3)
 
     source = Hdf5LiveSource(detector_name="CAM")

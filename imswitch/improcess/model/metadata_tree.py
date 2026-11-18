@@ -22,6 +22,8 @@ from typing import Any, Iterator, Mapping
 
 import numpy as np
 
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
+
 
 KIND_ROOT = "root"
 KIND_GROUP = "group"
@@ -313,9 +315,7 @@ def value_detail(value: Any) -> str:
 
 def _open_container(path: str, format_id: str) -> Any:
     if format_id == "hdf5":
-        import h5py
-
-        return h5py.File(path, "r")
+        return open_raw_hdf5(path)
     if format_id == "tiff":
         import tifffile as tiff
 

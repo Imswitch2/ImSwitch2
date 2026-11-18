@@ -162,3 +162,24 @@ def test_a_panel_that_both_publishes_and_follows_gets_both_wirings():
     results.append(("b", SimpleNamespace(name="b")))
     channel.sigResultsChanged.emit()
     assert [name for name, _r in panel.available] == ["a", "b"]
+
+
+def test_results_changed_releases_session_backing_for_removed_result():
+    channel = CommunicationChannel()
+    events = []
+    backing = SimpleNamespace(checkAndUnloadData=lambda: events.append("closed"))
+    result = SimpleNamespace(_session_backing_data_obj=backing)
+
+    stub = SimpleNamespace(
+        _commChannel=channel,
+        _knownResultObjects={id(result): result},
+        getAllResults=lambda: [],
+    )
+    stub._releaseResultResources = ReconstructionViewController._releaseResultResources
+    stub._retainNapariStormDatasets = lambda: None
+
+    ReconstructionViewController._resultsChanged(stub)
+
+    assert events == ["closed"]
+    assert result._session_backing_data_obj is None
+    assert stub._knownResultObjects == {}

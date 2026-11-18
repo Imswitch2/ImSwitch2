@@ -10,12 +10,20 @@ from imswitch.improcess.reconstructors.base import Reconstructor
 
 def test_reconstructor_base_default_is_not_pass_through():
     assert Reconstructor.is_pass_through is False
+    assert Reconstructor.result_role == "derived"
 
 
 def test_view_only_opts_into_pass_through():
     from imswitch.improcess.reconstructors.view_only import ViewOnlyReconstructor
 
     assert ViewOnlyReconstructor.is_pass_through is True
+    assert ViewOnlyReconstructor.result_role == "inspection"
+
+
+def test_time_lapse_view_is_an_inspection_result():
+    from imswitch.improcess.reconstructors.time_lapse import TimeLapseReconstructor
+
+    assert TimeLapseReconstructor.result_role == "inspection"
 
 
 def test_modality_reconstructors_are_not_pass_through_by_default():

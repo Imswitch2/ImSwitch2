@@ -91,6 +91,41 @@ def test_fast_update_swaps_layer_data_and_logs_nothing():
     assert (a.refreshes, b.refreshes) == (1, 1)
 
 
+def test_fast_update_refreshes_shared_buffer_without_reassigning_layer_data():
+    """No napari data setter => no needless dimension-range/slider reset."""
+    class _CountingLayer:
+        def __init__(self, data):
+            self._data = data
+            self.assignments = 0
+            self.refreshes = 0
+
+        @property
+        def data(self):
+            return self._data
+
+        @data.setter
+        def data(self, value):
+            self.assignments += 1
+            self._data = value
+
+        def refresh(self):
+            self.refreshes += 1
+
+    backing = np.zeros((3, 5, 7), dtype=np.float32)
+    layer = _CountingLayer(backing)
+    view = _ViewStub(img_layer=layer, anchor=True)
+    for i in range(1, 4):
+        backing[i - 1].fill(float(i))
+        # display_layer_data() may return new numpy VIEWS per frame, so
+        # object identity alone is not sufficient to skip a .data swap.
+        arr = backing.view()
+        assert arr is not backing
+        assert view.tryFastLiveUpdate(_Result([arr]), [0, 1, 2])
+    assert layer.assignments == 0
+    assert layer.refreshes == 3
+    np.testing.assert_array_equal(layer.data, backing)
+
+
 def test_fast_update_without_display_layers_uses_result_data():
     layer = _FakeLayer(np.zeros((2, 3)))
     view = _ViewStub(img_layer=layer)

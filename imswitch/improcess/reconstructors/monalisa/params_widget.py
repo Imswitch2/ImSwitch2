@@ -131,6 +131,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigLocalizeRequested = QtCore.Signal()
     sigLocalizationModeChanged = QtCore.Signal(str)
     sigModeChanged = QtCore.Signal(str)
+    sigUpdateRequested = QtCore.Signal()
+    sigUpdateEligibilityChanged = QtCore.Signal()
 
     _MODE_LABELS = (
         ("Fast", PRESET_FAST),
@@ -423,7 +425,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         scan.addWidget(self.lockOrientationButton, 0, 3)
         scan.addWidget(self.clearOrientationButton, 0, 4)
         scan.addWidget(self.saveOrientationDefaultButton, 0, 5)
-        scan.setColumnStretch(6, 1)
+        self.updateReconstructionButton = QtWidgets.QPushButton("Update")
+        self.updateReconstructionButton.setToolTip(
+            "Re-place extracted Fast amplitudes using the selected scan orientation."
+        )
+        self.updateReconstructionButton.setEnabled(False)
+        scan.addWidget(self.updateReconstructionButton, 0, 6)
+        scan.setColumnStretch(7, 1)
 
         self.scanSummaryLabel = QtWidgets.QLabel("Scan metadata: —")
         self.scanSummaryLabel.setWordWrap(True)
@@ -744,6 +752,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.footprintSigmaSpin.valueChanged.connect(self._fitting_changed)
         self.fwhmSpin.valueChanged.connect(self._fwhm_changed)
         self.scanningAdvancedButton.clicked.connect(self._open_scanning_advanced)
+        self.updateReconstructionButton.clicked.connect(self.sigUpdateRequested.emit)
         self.advancedButton.clicked.connect(self._open_advanced_reconstruction)
 
         for control in (
@@ -814,6 +823,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.outputBox.setVisible(not fast and not legacy and not dll)
         self._update_sharpening_enabled()
         self.legacyBox.setVisible(legacy)
+        self.updateReconstructionButton.setVisible(fast)
         # Spot width is useful for Legacy too; fitting is Gaussian-only.
         self.spotModeCombo.setVisible(not legacy)
         self.fittingBox.setVisible(not legacy and not dll)
@@ -938,6 +948,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftYSpin.setEnabled(manual_ism)
         self.shiftXLabel.setEnabled(True)
         self.shiftYLabel.setEnabled(True)
+        self.sigUpdateEligibilityChanged.emit()
         QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def _update_localization_summary(self, *_):
@@ -1046,6 +1057,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             corrections.append("Cell offsets")
         self.correctionsBox.setSummary(" · ".join(corrections) if corrections else "Off")
         self.outputBox.setSummary("On" if self.sharpenCheck.isChecked() else "Off")
+
+    def setUpdateReconstructionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        """Expose placement-only update only when the selected result permits it."""
+        self.updateReconstructionButton.setEnabled(bool(enabled))
+        self.updateReconstructionButton.setToolTip(str(tooltip or
+            "Re-place the selected Fast MoNaLISA reconstruction using the current scan orientation."))
 
     def _refresh_scroll_minimum(self) -> None:
         """Keep the full workflow reachable instead of vertically compressing labels."""
@@ -1184,14 +1201,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if mode == LOCALIZATION_MANUAL:
             return self._manual_localization(), "manual"
         if mode == LOCALIZATION_AUTO:
-            localization = PatternLocalization.from_dict(self._auto_localization)
-            source = "auto"
-            if localization is None and self._registry is not None:
+            # The transient registry includes calibration from queued Auto
+            # reconstruction, even if the source was never loaded as Current.
+            # Prefer the latest resolved detector calibration for Lock-current;
+            # do not copy it into auto_localization used by future jobs.
+            if self._registry is not None:
                 transient = self._registry.current_localization(self._detector_id)
                 if transient is not None:
-                    localization, source = transient.localization, transient.source
+                    return transient.localization, transient.source
+            localization = PatternLocalization.from_dict(self._auto_localization)
             if localization is not None:
-                return localization, source
+                return localization, "auto"
         return None
 
     def _lock_current_localization(self):
@@ -1210,11 +1230,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         )
         if not ok:
             return
+        transient = self._registry.current_localization(self._detector_id)
         profile = self._registry.lock_localization(
             name=str(name), detector=self._detector_id, localization=localization,
             source=source,
-            source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
-            source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
+            source_dataset=(str(transient.source_dataset) if transient is not None
+                            and transient.localization is localization else
+                            str(getattr(self._current_data_obj, "name", "") or "")),
+            source_path=(str(transient.source_path) if transient is not None
+                         and transient.localization is localization else
+                         str(getattr(self._current_data_obj, "dataPath", "") or "")),
             diagnostics=dict(localization.provenance),
         )
         self._selected_locked_localization_id = profile.id
@@ -1294,12 +1319,130 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
             source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
         )
+        # A previously unavailable Locked item is disabled in the combo's
+        # model. Enable it before switching modes, even when the registry's
+        # notification has already refreshed the rest of the UI.
+        self._sync_locked_mode_availability()
         self._set_combo_data(self.orientationModeCombo, ORIENTATION_LOCKED)
+        self._refresh_orientation_display()
+        self._update_ui()
         self.setPreviewStatus(f"Locked orientation {orientation.to_literal()} for {self._detector_id}")
 
     def _clear_locked_orientation(self):
         if self._registry is not None:
             self._registry.clear_orientation(self._detector_id)
+
+    def reuse_calibration_snapshot(
+        self,
+        snapshot: dict,
+        *,
+        mode: str = "both",
+        source_label: str = "reconstruction",
+    ) -> str | None:
+        """Lock calibration resolved by a previous MoNaLISA reconstruction.
+
+        This is intentionally explicit: the snapshot is copied into the current
+        session registry and the corresponding controls enter Locked mode.  It
+        never reloads the source pixels or re-runs localization.
+        """
+        if self._registry is None:
+            raise RuntimeError("Session localization registry is unavailable")
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError("This reconstruction has no MoNaLISA calibration snapshot")
+
+        mode = str(mode or "both").lower()
+        reuse_localization = mode in {"localization", "both"}
+        reuse_orientation = mode in {"orientation", "both"}
+        if not (reuse_localization or reuse_orientation):
+            raise ValueError(f"Unknown calibration reuse mode: {mode}")
+
+        source_detector = str(snapshot.get("detector") or "unknown")
+        current_detector = str(self._detector_id or "unknown")
+        if (
+            source_detector != "unknown"
+            and current_detector != "unknown"
+            and source_detector != current_detector
+        ):
+            raise ValueError(
+                f"Calibration belongs to detector {source_detector}, but the current "
+                f"data uses {current_detector}."
+            )
+        if current_detector == "unknown" and source_detector != "unknown":
+            raise ValueError(
+                f"Select data from detector {source_detector} before reusing this calibration."
+            )
+        detector = current_detector if current_detector != "unknown" else source_detector
+
+        localization = None
+        if reuse_localization:
+            localization = PatternLocalization.from_dict(snapshot.get("resolved_localization"))
+            if localization is None:
+                raise ValueError("This reconstruction has no resolved localization to reuse")
+
+        orientation = None
+        if reuse_orientation:
+            literal = str(snapshot.get("resolved_orientation") or "").strip()
+            if not literal:
+                raise ValueError("This reconstruction has no resolved scan orientation to reuse")
+            orientation = ScanOrientation.from_literal(literal)
+
+        profile_name = None
+        if localization is not None:
+            suggested = str(snapshot.get("locked_localization_name") or "").strip()
+            if not suggested:
+                suggested = f"From {source_label}" if source_label else "Reused localization"
+            profile_name, ok = QtWidgets.QInputDialog.getText(
+                self, "Lock localization from reconstruction", "Name", text=suggested
+            )
+            if not ok:
+                return None
+            profile_name = str(profile_name or "").strip()
+            if not profile_name:
+                raise ValueError("Locked localization needs a name")
+
+        profile = None
+        source = f"reconstruction:{source_label}" if source_label else "reconstruction"
+        if localization is not None:
+            profile = self._registry.lock_localization(
+                name=profile_name,
+                detector=detector,
+                localization=localization,
+                source=source,
+                diagnostics={
+                    "reused_from_reconstruction": str(source_label or ""),
+                    "calibration_snapshot": deepcopy(snapshot),
+                },
+            )
+            self._selected_locked_localization_id = profile.id
+
+        if orientation is not None:
+            self._registry.lock_orientation(
+                detector, orientation, source=source
+            )
+
+        self._refresh_registry_controls()
+        if profile is not None:
+            self._selected_locked_localization_id = profile.id
+            old = self.lockedLocalizationCombo.blockSignals(True)
+            try:
+                self._set_combo_data(self.lockedLocalizationCombo, profile.id)
+            finally:
+                self.lockedLocalizationCombo.blockSignals(old)
+            self._set_combo_data(self.localizationModeCombo, LOCALIZATION_LOCKED)
+        if orientation is not None:
+            self._set_combo_data(self.orientationModeCombo, ORIENTATION_LOCKED)
+            self._refresh_orientation_display()
+
+        self._update_ui()
+        self.sigDetectionParamsChanged.emit()
+        pieces = []
+        if profile is not None:
+            pieces.append(f"localization '{profile.name}'")
+        if orientation is not None:
+            pieces.append(f"orientation {orientation.to_literal()}")
+        message = "Locked " + " and ".join(pieces) + " from reconstruction"
+        self.setPreviewStatus(message)
+        return message
 
     def _refresh_orientation_display(self) -> None:
         mode = str(self._combo_data(self.orientationModeCombo))
@@ -2154,6 +2297,48 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._sync_locked_mode_availability()
         self._refresh_orientation_display()
         self._update_ui()
+
+    def remember_auto_reconstruction(self, snapshot: dict, *, source_label: str = "") -> bool:
+        """Expose resolved Auto calibration to Lock-current without reusing it.
+
+        Queued Session jobs may finish without a Current Data selection. Keep
+        their detector-specific transient calibration in the registry, while
+        leaving auto_localization (the next job's input) untouched.
+        """
+        if self._registry is None or not isinstance(snapshot, dict):
+            return False
+        detector = str(snapshot.get("detector") or "unknown")
+        if detector == "unknown":
+            return False  # cannot safely associate this calibration with a detector
+        updated = False
+        if str(snapshot.get("localization_source") or "").lower() == "auto":
+            localization = PatternLocalization.from_dict(snapshot.get("resolved_localization"))
+            if localization is not None:
+                self._registry.set_current_localization(
+                    detector, localization, source="auto",
+                    source_dataset=str(source_label or ""),
+                    diagnostics={"status": "Auto localization resolved during Session reconstruction"},
+                )
+                updated = True
+        if str(snapshot.get("orientation_source") or "").lower() == "auto":
+            literal = str(snapshot.get("resolved_orientation") or "")
+            if literal:
+                self._registry.set_current_orientation(
+                    detector, literal, source="auto", source_dataset=str(source_label or ""),
+                )
+                updated = True
+        if not updated:
+            return False
+        # When nothing has been loaded into Current Data, the Parameters panel
+        # can still refer to the detector that produced the completed result.
+        if self._current_data_obj is None:
+            self._detector_id = detector
+        if detector == self._detector_id:
+            self._refresh_registry_controls()
+            self.setPreviewStatus(
+                f"Session Auto calibration ready to lock ({source_label or detector})"
+            )
+        return True
 
     def sync_current_transient(self):
         if self._registry is None:

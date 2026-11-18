@@ -11,6 +11,7 @@ from qtpy import QtCore, QtWidgets  # noqa: E402
 from imswitch.improcess.reconstructors.monalisa.params import (  # noqa: E402
     PRESET_FAST,
     PRESET_FULL,
+    PRESET_LEGACY,
     default_params,
 )
 from imswitch.improcess.reconstructors.monalisa.params_widget import MonalisaParamsWidget  # noqa: E402
@@ -270,7 +271,8 @@ def test_lock_current_orientation_enters_locked_mode(qapp, tmp_path):
 
     registry = MonalisaSessionRegistry(tmp_path)
     widget = MonalisaParamsWidget(session_registry=registry)
-    registry.set_current_orientation("unknown", "-x-y", source="auto")
+    # Session calibration is detector-scoped; startup may select a real camera.
+    registry.set_current_orientation(widget._detector_id, "-x-y", source="auto")
     widget._refresh_registry_controls()
 
     widget._lock_current_orientation()
@@ -587,7 +589,14 @@ def test_spot_model_source_badges_do_not_consume_space(qapp):
     assert "FWHM source:" in widget.fwhmMenuButton.toolTip()
 
 
-def test_spot_model_keeps_fwhm_visible_and_collapses_only_fitting(qapp):
+def test_spot_model_keeps_fwhm_visible_and_collapses_only_fitting(qapp, monkeypatch):
+    # This is a default-layout test, independent of the user's selected
+    # microscope setup and any saved detector fitting preferences.
+    from imswitch.improcess.reconstructors.monalisa import params_widget as module
+    from imswitch.improcess.reconstructors.monalisa.setup_defaults import DetectorSetupDefaults
+
+    monkeypatch.setattr(module, "startup_detector_id", lambda: "unknown")
+    monkeypatch.setattr(module, "read_detector_defaults", lambda detector: DetectorSetupDefaults(detector))
     widget = MonalisaParamsWidget()
     assert widget.fittingToggle.isChecked() is False
     assert widget.fittingDetailsWidget.isHidden() is True
@@ -654,7 +663,10 @@ def test_fitting_collapse_matches_results_splitter_header(qapp):
     assert header.layout().contentsMargins().bottom() == 0
     assert header.height() == toggle.fontMetrics().height() + 2
     assert toggle.text().startswith("› Fitting")
-    assert "Local · Square · From lattice" in header._summary_label.text()
+    # The visible label is deliberately elided when the container is narrow.
+    # Test the full scientific summary and accessible tooltip instead.
+    assert "Local · Square · From lattice" in header._summary
+    assert "Local · Square · From lattice" in toggle.toolTip()
     # The actual Results splitter uses all-transparent button states, not the
     # native arrow-button and alternate-base hover used before this hotfix.
     css = toggle.styleSheet().replace(" ", "")
@@ -1158,3 +1170,73 @@ def test_patch_o_explicit_saved_correction_values_survive_mode_changes():
         switched = apply_preset(saved, mode)
         assert switched["intensity_correction"] is False
         assert switched["cell_offsets"] is False
+
+
+def test_reuse_calibration_snapshot_locks_both_and_selects_locked_modes(qapp, tmp_path, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.params import (
+        LOCALIZATION_LOCKED,
+        ORIENTATION_LOCKED,
+    )
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    widget._detector_id = "Camera"
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=12.0,
+        offset_x=1.0,
+        offset_y=2.0,
+        source="auto",
+    )
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("Known good", True),
+    )
+
+    message = widget.reuse_calibration_snapshot(
+        {
+            "detector": "Camera",
+            "resolved_localization": localization.to_dict(),
+            "resolved_orientation": "-x-y",
+        },
+        mode="both",
+        source_label="MoNaLISA - Fast",
+    )
+
+    profiles = registry.localization_profiles("Camera")
+    assert len(profiles) == 1
+    assert profiles[0].name == "Known good"
+    assert profiles[0].localization.to_dict() == localization.to_dict()
+    assert registry.locked_orientation("Camera").orientation.to_literal() == "-x-y"
+    assert widget._combo_data(widget.localizationModeCombo) == LOCALIZATION_LOCKED
+    assert widget._combo_data(widget.orientationModeCombo) == ORIENTATION_LOCKED
+    assert "Known good" in message
+
+
+def test_reuse_calibration_snapshot_rejects_detector_mismatch(qapp, tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    widget._detector_id = "CameraB"
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=10.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        source="auto",
+    )
+
+    with pytest.raises(ValueError, match="CameraA"):
+        widget.reuse_calibration_snapshot(
+            {
+                "detector": "CameraA",
+                "resolved_localization": localization.to_dict(),
+                "resolved_orientation": "+x+y",
+            },
+            mode="orientation",
+        )
