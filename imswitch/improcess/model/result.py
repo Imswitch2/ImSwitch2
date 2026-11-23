@@ -36,6 +36,16 @@ RESULT_KINDS = (
 )
 
 
+#: What a workflow *port* may carry, beyond the result kinds: a Source's
+#: recording (before any reconstruction), ``any`` for a step that declares its
+#: output depends on the run (the Python step), and ``unknown`` for a plugin
+#: that declares nothing. Only a declared result kind is ever checked.
+RECORDING_KIND = "recording"
+ANY_KIND = "any"
+UNKNOWN_KIND = "unknown"
+PORT_KINDS = RESULT_KINDS + (RECORDING_KIND, ANY_KIND, UNKNOWN_KIND)
+
+
 def result_kind(result) -> str:
     """Semantic kind of ``result``; duck-typed/legacy results count as images."""
     return str(getattr(result, "kind", "image") or "image")
@@ -150,6 +160,16 @@ class ProcessingResult(ABC):
     #: summary values; leave it False when they are bulk data (a localization
     #: table can run to six figures of rows).
     publishes_table_rows: bool = False
+    #: qtawesome icon name the results list shows for this result instead of
+    #: the one its ``kind`` and shape imply (see
+    #: :mod:`imswitch.improcess.model.content_summary`); ``None`` = derived.
+    list_icon: str | None = None
+
+    def list_summary(self) -> str | None:
+        """One short line under the name in the results list, or ``None``
+        for the derived one (axes and sizes). A measurement says what it
+        measured here; a plain image has nothing to add."""
+        return None
 
     def __init__(
         self,

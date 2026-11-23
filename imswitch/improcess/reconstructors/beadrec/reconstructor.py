@@ -250,6 +250,7 @@ class BeadRecReconstructor(Reconstructor):
 
     name = "Bead reconstruction"
     id = "beadrec"
+    output_kind = "image"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Raster-reconstruct a recorded bead scan (+ optional fit)"
     default_save_subdir = "beadrec"

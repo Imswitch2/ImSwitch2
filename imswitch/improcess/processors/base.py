@@ -1,12 +1,14 @@
 """Base contract for ImProcess processor plugins."""
 
+import functools
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Callable
 
 from qtpy import QtWidgets
 
-from imswitch.improcess.model.result import ProcessingResult, result_kind
+from imswitch.improcess.model.result import UNKNOWN_KIND, ProcessingResult, result_kind
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,10 @@ class OutputSpec:
 
     ports: tuple[str, ...] | None = ("out",)
     pattern: str | None = None
+    #: What every port carries (a ``PORT_KINDS`` value): declared, so an editor
+    #: can colour a port and a workflow can be checked before it runs.
+    #: ``"unknown"`` when the plugin does not say.
+    kind: str = UNKNOWN_KIND
 
     def matches(self, port: str) -> bool:
         if self.ports is not None and port in self.ports:
@@ -40,6 +46,34 @@ class OutputSpec:
         if self.pattern:
             parts.append(f"/{self.pattern}/")
         return " or ".join(parts) or "(none)"
+
+
+@functools.lru_cache(maxsize=None)
+def _takes_input_specs(method) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "input_specs" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def call_output_spec(plugin, params: dict | None = None, input_specs=None):
+    """``plugin.output_spec(params, input_specs)``, or without ``input_specs``
+    for an override that does not take it.
+
+    The documented signature for a drop-in was ``output_spec(params)``; one
+    written to it must keep working wherever the framework now passes the
+    inputs' kinds -- in ``validate()`` an unexpected argument would raise and
+    take every caller with it.
+    """
+    method = getattr(plugin, "output_spec")
+    function = getattr(method, "__func__", method)
+    if input_specs is not None and _takes_input_specs(function):
+        return method(params, input_specs=input_specs)
+    return method(params)
 
 
 @dataclass(frozen=True)
@@ -175,6 +209,17 @@ class Processor(ABC):
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
     #: a 2D data array is never offered to an image processor.
     kinds: tuple[str, ...] = ("image",)
+    #: The kind of result this processor *produces*, declared (a
+    #: ``PORT_KINDS`` value): ``"image"``, ``"labels"``, ``"table"`` ...;
+    #: ``"any"`` when it depends on the run (the Python step). Every built-in
+    #: declares one (a test checks it against what ``apply`` returns); a plugin
+    #: that does not is ``"unknown"``, and nothing is checked against it.
+    output_kind: str | None = None
+    #: Whether running again on the same inputs with the same parameters gives
+    #: the same result. ``False`` for a step whose output may change from run
+    #: to run (the Python step: user code may draw random numbers); a cache of
+    #: results must then not mix outputs of two different runs.
+    deterministic: bool = True
     #: How many results this processor consumes in one run. The default 1..1
     #: is the ordinary "one result in, one result out" processor.
     #:
@@ -296,9 +341,15 @@ class Processor(ABC):
         One port, ``"out"``, unless the processor says otherwise. A processor
         with several outputs names them (``("signal", "background")``); one
         whose outputs depend on the data gives a ``pattern`` instead. This is
-        what lets a workflow be validated before it runs.
+        what lets a workflow be validated before it runs. The spec's ``kind``
+        is :attr:`output_kind`.
+
+        ``input_specs``, when given, are the inputs' kinds in input order
+        (``None`` when they are not known). Callers go through
+        :func:`call_output_spec`, which leaves it out for an override written
+        to the older ``output_spec(params)`` signature.
         """
-        return OutputSpec(ports=("out",))
+        return OutputSpec(ports=("out",), kind=self.output_kind or UNKNOWN_KIND)
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

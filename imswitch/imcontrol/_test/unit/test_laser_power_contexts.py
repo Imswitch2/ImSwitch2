@@ -227,6 +227,8 @@ def test_coupled_acquisition_state_uses_live_setting_not_dormant_scan_setting():
         'power_control': 'direct',
         'power_device': '488',
         'value': 4.0,
+        'value_units': 'mW',
+        'value_decimals': 1,
         'value_context': 'live',
         'uses_fallback': False,
     }
@@ -303,6 +305,7 @@ def test_acquisition_state_resolves_gate_to_actual_power_device():
     assert state['power_device'] == '561AOTF'
     assert state['power_control'] == 'direct'
     assert state['value'] == 22.0
+    assert state['value_units'] == 'mW'
     assert state['value_context'] == 'scan'
 
 
@@ -712,3 +715,16 @@ def test_contextual_setup_json_roundtrip_shape_is_self_contained():
     assert data["laserPresets"]["Legacy"]["488"]["value"] == 1.0
     assert data["laserPresets"]["Screening"]["context"] == "live"
     assert data["laserPresets"]["pRESOLFT"]["context"] == "scan"
+
+
+def test_live_screening_resolution_expands_gate_power_device_without_other_devices():
+    ctrl = _controller()
+    ctrl._setupInfo.lasers = {
+        'gate': SimpleNamespace(powerDevice='488'),
+        '488': SimpleNamespace(powerDevice=None),
+        'other': SimpleNamespace(powerDevice=None),
+    }
+
+    assert ctrl.resolveLiveIlluminationLasers(['gate', 'Camera', 'gate']) == (
+        'gate', '488'
+    )

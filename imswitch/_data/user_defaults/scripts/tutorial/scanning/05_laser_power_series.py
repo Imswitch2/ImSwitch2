@@ -1,8 +1,9 @@
 """Tutorial scanning 05 -- A laser power series in one recording.
 
 You will learn
-  * the laser API: ``getLaserNames()``, ``setLaserActive()``,
-    ``setLaserValue()``
+  * the laser API: ``getLaserNames()``, ``getLaserInfo()``,
+    ``setLaserActive()`` / ``isLaserActive()``, ``setLaserValue()`` /
+    ``getLaserValue()``
   * to run several scans into one until-stop recording, changing a
     setting between them
   * to leave the lasers off and the recording stopped whatever happens
@@ -20,9 +21,7 @@ Setup
                 the Laser widget shows). A value set on an on/off laser is
                 ignored.
 
-Next: measurement/01_polarisation_map.py -- instruments and measurement
-      runs. The workflows folder has complete acquisitions for real
-      microscopes.
+Next: 06_scan_into_memory.py (on a different mock setup)
 """
 
 import glob
@@ -38,6 +37,11 @@ NAME = 'tutorial_power_series'
 log = getLogger()
 signals = api.imcontrol.signals()
 print('Lasers:', api.imcontrol.getLaserNames())
+# What a laser takes: its value's units and range, or on/off only.
+for name in api.imcontrol.getLaserNames():
+    info = api.imcontrol.getLaserInfo(name)
+    print(f'  {name}: ' + ('on/off only' if info['binary'] else
+          f'{info["min"]}-{info["max"]} {info["units"]} in steps of {info["step"]}'))
 
 backup = os.path.join(tempfile.gettempdir(), 'imswitch_tutorial_scan_backup.json')
 api.imcontrol.saveScanParamsToFile(backup)
@@ -52,10 +56,11 @@ try:
     callAndWaitForSignal(signals.recordingStarted, api.imcontrol.startRecording,
                          timeout=30)
     api.imcontrol.setLaserActive(LASER, True)      # switch the laser on
+    assert api.imcontrol.isLaserActive(LASER)
     for power in POWERS:
         api.imcontrol.setLaserValue(LASER, power)  # then set its power
         runScanAndWait(timeout=600)                # one scan = one image
-        log.info(f'scan at {power} done')
+        log.info(f'scan at {api.imcontrol.getLaserValue(LASER)} V done')
 finally:
     # Lasers first: whatever went wrong, the sample should not stay lit.
     api.imcontrol.setLaserValue(LASER, 0)

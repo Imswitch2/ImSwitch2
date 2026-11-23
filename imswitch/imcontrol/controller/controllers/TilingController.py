@@ -528,6 +528,9 @@ class TilingController(ImConWidgetController):
 
     @APIExport(runOnUIThread=True)
     def startTiling(self) -> None:
+        """ Starts a tiling run with the Tiling widget's settings. Does
+        nothing on a setup without a ``tiling`` section, or while a run or
+        cell targeting is busy. """
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return
@@ -611,6 +614,7 @@ class TilingController(ImConWidgetController):
 
     @APIExport()
     def stopTiling(self) -> None:
+        """ Asks the running tiling run, or cell targeting, to stop. """
         self._stopRequested = True
         self._cellCancelEvent().set()
 
@@ -671,6 +675,7 @@ class TilingController(ImConWidgetController):
 
     @APIExport(runOnUIThread=True)
     def setTileLabel(self, label: str) -> None:
+        """ Sets the label the Tiling widget puts into the tiles' names. """
         self._widget.setLabel(label)
 
     @APIExport()
@@ -681,6 +686,8 @@ class TilingController(ImConWidgetController):
 
     @APIExport()
     def getStitchedImage(self) -> Optional[np.ndarray]:
+        """ Returns the stitched overview of the tiling run as an array, or
+        None before the first run. """
         if self._stitcher is None:
             return None
         return self._stitcher.get_overview()

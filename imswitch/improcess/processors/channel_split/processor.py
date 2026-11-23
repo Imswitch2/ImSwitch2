@@ -29,6 +29,7 @@ class ChannelSplitProcessor(Processor):
     # on one measures the same features on the other.
     preserves_grid = True
     kinds = ("image", "composite")
+    output_kind = "image"
 
     @classmethod
     def default_params(cls) -> dict:
@@ -77,7 +78,7 @@ class ChannelSplitProcessor(Processor):
         """One port per channel, ``C0, C1, …``; how many depends on the data."""
         from imswitch.improcess.processors.base import OutputSpec
 
-        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+")
+        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+", kind=self.output_kind)
 
     @staticmethod
     def _has_channel_axis(result: ProcessingResult) -> bool:

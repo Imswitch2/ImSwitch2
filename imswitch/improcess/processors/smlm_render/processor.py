@@ -22,6 +22,7 @@ class SmlmRenderProcessor(Processor):
     id = "smlm-render"
     category = "SMLM"
     kinds = ("localization",)
+    output_kind = "image"
 
     @classmethod
     def default_params(cls) -> dict:

@@ -19,6 +19,7 @@ class SegmentationProcessor(Processor):
 
     name = "Segmentation"
     id = "segmentation"
+    output_kind = "labels"
     category = "Segmentation"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.

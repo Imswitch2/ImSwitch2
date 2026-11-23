@@ -14,11 +14,6 @@ from imswitch.improcess.model.runtime_tools import (
     runtime_analysis_panel_shortcuts,
 )
 from imswitch.improcess.model.luts import IMAGE_LUTS
-from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
-    DEFAULT_FOOTPRINT_NUM_RECTS,
-    DEFAULT_GAUSSIAN_SIGMA_PX,
-    DEFAULT_PINHOLE_RADIUS_SIGMA,
-)
 from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
@@ -220,60 +215,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         file.addAction(saveCoeffsAllAction)
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
-        file.addSeparator()
-        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
-        workflowEditorAction.setToolTip(
-            'Build, edit, validate and run ImProcess workflow files; every installed '
-            'reconstructor and processor is offered with its parameters'
-        )
-        workflowEditorAction.triggered.connect(
-            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
-        )
-        file.addAction(workflowEditorAction)
-        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
-        editWorkflowAction.setToolTip(
-            'Open the steps that made the current result in the workflow editor, '
-            'to change them and run them again'
-        )
-        editWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
-        )
-        file.addAction(editWorkflowAction)
-        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
-        exportWorkflowAction.setToolTip(
-            'Write the steps that made the current result as a workflow file '
-            '(YAML) that can be run again headlessly or on other data'
-        )
-        exportWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigExportWorkflowRequested.emit()
-        )
-        file.addAction(exportWorkflowAction)
-        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
-        runWorkflowAction.setToolTip(
-            'Run a workflow file; its results are added to the reconstruction list'
-        )
-        runWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowRequested.emit()
-        )
-        file.addAction(runWorkflowAction)
-        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
-        runOnResultsAction.setToolTip(
-            'Apply the processing steps of a workflow file to every selected result: '
-            'its reconstruction step is replaced by each result in turn'
-        )
-        runOnResultsAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
-        )
-        file.addAction(runOnResultsAction)
-        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
-        runOverFilesAction.setToolTip(
-            'Run a workflow file once per chosen recording; every result is added '
-            'to the reconstruction list'
-        )
-        runOverFilesAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
-        )
-        file.addAction(runOverFilesAction)
 
         # Toolbars split along the result-unification invariant: Image holds
         # display-only actions (never publish a result), Image operations
@@ -284,6 +225,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageMenu = menuBar.addMenu('&Image')
         self._imageOpsMenu = menuBar.addMenu('&Operations')
         self._analysisMenu = menuBar.addMenu('&Tools')
+        self._workflowsMenu = menuBar.addMenu('&Workflows')
+        self._buildWorkflowsMenu(self._workflowsMenu)
         self._pluginsMenu = menuBar.addMenu('&Plugins')
         self._imageToolbar = self.addToolBar('Image')
         self._imageToolbar.setObjectName('ImProcessImageDisplayToolbar')
@@ -632,6 +575,65 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
+
+    def _buildWorkflowsMenu(self, menu: QtWidgets.QMenu) -> None:
+        """The workflow commands, in a menu of their own: the editor, the
+        workflow of the current result, and the runs that publish results."""
+        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
+        workflowEditorAction.setToolTip(
+            'Build, edit, validate and run ImProcess workflow files; every installed '
+            'reconstructor and processor is offered with its parameters'
+        )
+        workflowEditorAction.triggered.connect(
+            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
+        )
+        menu.addAction(workflowEditorAction)
+        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
+        editWorkflowAction.setToolTip(
+            'Open the steps that made the current result in the workflow editor, '
+            'to change them and run them again'
+        )
+        editWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
+        )
+        menu.addAction(editWorkflowAction)
+        menu.addSeparator()
+        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
+        exportWorkflowAction.setToolTip(
+            'Write the steps that made the current result as a workflow file '
+            '(YAML) that can be run again headlessly or on other data'
+        )
+        exportWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigExportWorkflowRequested.emit()
+        )
+        menu.addAction(exportWorkflowAction)
+        menu.addSeparator()
+        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
+        runWorkflowAction.setToolTip(
+            'Run a workflow file; its results are added to the reconstruction list'
+        )
+        runWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowRequested.emit()
+        )
+        menu.addAction(runWorkflowAction)
+        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
+        runOnResultsAction.setToolTip(
+            'Apply the processing steps of a workflow file to every selected result: '
+            'its reconstruction step is replaced by each result in turn'
+        )
+        runOnResultsAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
+        )
+        menu.addAction(runOnResultsAction)
+        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
+        runOverFilesAction.setToolTip(
+            'Run a workflow file once per chosen recording; every result is added '
+            'to the reconstruction list'
+        )
+        runOverFilesAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
+        )
+        menu.addAction(runOverFilesAction)
 
     def _buildPreferencesMenu(self, menuBar) -> None:
         """Add Preferences, last of ImProcess's own menus: settings of this
@@ -1692,6 +1694,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._setDockVisible(dock, show)
         self._syncDockVisibilityActions()
 
+    def setUpdateReconstructionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is None or not hasattr(btnFrame, 'updateBtn'):
+            return
+        btnFrame.updateBtn.setEnabled(bool(enabled))
+        btnFrame.updateBtn.setToolTip(str(tooltip or ""))
+
     def setReconstructionActionsVisible(
         self,
         reconstruct_current: bool = True,
@@ -2241,25 +2250,6 @@ class ReconParTree(ParameterTree):
                 {'name': 'BG modelling', 'type': 'list',
                  'values': ['Constant', 'Gaussian', 'No background'], 'children': [
                     {'name': 'BG Gaussian size', 'type': 'float', 'value': 500, 'suffix': 'nm'}]}]},
-            {'name': 'Fast Gauss options', 'type': 'group', 'children': [
-                {'name': 'Footprint mode', 'type': 'list',
-                 'value': 'Rectangular shells',
-                 'values': ['Rectangular shells', 'Circular pinhole'],
-                 'tip': ('Rectangular shells keeps the Mini_Recon footprint. '
-                         'Circular pinhole uses the Pinhole radius value.')},
-                {'name': 'Footprint rectangles', 'type': 'int',
-                 'value': DEFAULT_FOOTPRINT_NUM_RECTS, 'limits': (1, 99),
-                 'tip': ('Concentric rectangular shells sampled around each focus '
-                         '(used in Rectangular shells mode).')},
-                {'name': 'Gaussian sigma', 'type': 'float',
-                 'value': DEFAULT_GAUSSIAN_SIGMA_PX, 'limits': (0.01, 9999),
-                 'suffix': 'px',
-                 'tip': 'Gaussian sigma for the footprint fit, in pixels.'},
-                {'name': 'Pinhole radius', 'type': 'float',
-                 'value': DEFAULT_PINHOLE_RADIUS_SIGMA, 'limits': (0.01, 99),
-                 'suffix': '×σ',
-                 'tip': ('Circular detection pinhole radius as a multiple of the '
-                         'Gaussian sigma. Used only in Circular pinhole mode.')}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -2281,7 +2271,6 @@ class ReconParTree(ParameterTree):
         pattern_pars = self.p.param('Pattern')
         recon_opts = self.p.param('Reconstruction options')
         bg_modelling = recon_opts.param('BG modelling')
-        fast_gauss_opts = self.p.param('Fast Gauss options')
 
         return {
             'pixel_size_nm': self.p.param('Pixel size').value(),
@@ -2294,14 +2283,6 @@ class ReconParTree(ParameterTree):
             'psf_fwhm_nm': recon_opts.param('PSF FWHM').value(),
             'bg_modelling': bg_modelling.value(),
             'bg_gaussian_size_nm': bg_modelling.param('BG Gaussian size').value(),
-            'fast_gauss_footprint_mode': fast_gauss_opts.param(
-                'Footprint mode').value(),
-            'fast_gauss_footprint_num_rects': fast_gauss_opts.param(
-                'Footprint rectangles').value(),
-            'fast_gauss_gaussian_sigma_px': fast_gauss_opts.param(
-                'Gaussian sigma').value(),
-            'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
-                'Pinhole radius').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
             'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }

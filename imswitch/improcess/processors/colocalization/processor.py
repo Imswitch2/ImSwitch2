@@ -21,6 +21,7 @@ class ColocalizationProcessor(Processor):
     id = "colocalization"
     category = "Measurement"
     kinds = ("image", "composite")
+    output_kind = "table"
 
     @classmethod
     def default_params(cls) -> dict:

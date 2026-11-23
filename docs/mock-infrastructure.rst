@@ -90,10 +90,24 @@ Detectors
 
 APD synthetic data is modeled as a monotonic cumulative counter that
 reconstructs to bounded non-negative integer photon counts
-(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). PMT
+(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). With
+``mockSample`` the mean follows a synthetic sample (cells and beads) at the
+position the scan waveforms put the beam at each sample, so images follow the
+scanners (``_mock_sample.py``; see :doc:`devices/detectors`). PMT
 synthetic data is bounded ``float32`` voltage samples averaged per pixel
 (``mockVoltageMin``/``mockVoltageMax``/``mockVoltageMean``/``mockVoltageNoiseStd``,
 default range ``-5.0..5.0`` V).
+
+A mock ``HamamatsuManager`` camera takes the same ``mockSample`` block for
+MoNaLISA: each triggered frame shows a square foci lattice fixed on the camera
+(``latticePeriodUm``, optional ``latticeAngleDeg``, ``spotSigmaUm``,
+``peakCounts``, ``offsetCounts``), each focus as bright as the synthetic sample
+under it, with the sample moved by the stage position the scan waveforms give
+at that frame's camera TTL (``_mock_lattice.py``). A scan over one lattice
+period therefore holds the whole sample. Only X and Y are scanned; Z and the
+ON/OFF switching steps do not change the frames. The mock's
+``timing_readout_time`` is in seconds and follows the ROI height (10 ms for the
+full 2048 rows).
 
 Positioners / stages
 ~~~~~~~~~~~~~~~~~~~~~
@@ -239,6 +253,17 @@ Setup templates
 Ready-to-use hardware-free setup files, all under
 ``imswitch/_data/user_defaults/imcontrol_setups/``:
 
+* ``simple_mock_setup.json`` — mock camera (``AVManager``) for live widefield and one simulated
+  APD imaging the synthetic sample (``mockSample``) through the
+  SimplePointScan panel; galvos reaching 100 µm, three gated lasers,
+  ``nidaq.simulation: true``.
+* ``galvo_apd_simple_mock_scan_setup.json`` — the same panel with two APDs
+  and no camera, for the panel's reference-detector choice and its tests.
+* ``simple_monalisa_mock_scan_setup.json`` — the SimpleMoNaLISA panel on a
+  mock Hamamatsu camera (Live switches it to the internal trigger, an
+  acquisition to the external frame trigger) whose frames show the synthetic
+  sample under a 0.72 µm foci lattice (``mockSample``), so a recording
+  reconstructs to cells and beads; simulated NI-DAQ axes and lasers.
 * ``example_mock.json`` — minimal mock camera (``AVManager``) + mock XY
   stage, general-purpose GUI smoke setup.
 * ``example_no_hardware.json`` — the baseline profile for

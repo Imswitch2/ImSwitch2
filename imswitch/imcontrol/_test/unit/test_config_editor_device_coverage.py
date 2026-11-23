@@ -219,7 +219,9 @@ def test_section_dialog_without_custom_fields_is_unchanged(_qapp):
     dlg = editor.SectionEditorDialog("lasers", editor.CATEGORY_SCHEMAS["lasers"], {"x": 1}, {})
     assert dlg.add_custom_field("y", 2) != ""
     dlg._try_apply()
-    assert dlg.result_data == {"powerMode": "coupled"}
+    # No custom properties are offered; a key the form does not show is
+    # kept as it was, as every section form keeps it.
+    assert dlg.result_data == {"powerMode": "coupled", "x": 1}
 
 
 def test_parse_freeform_value():

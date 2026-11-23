@@ -18,9 +18,10 @@ _CONFIG_MODULE = _REPO / "imswitch" / "improcess" / "model" / "processing_config
 _SECTION = (_REPO / "imswitch" / "imcontrol" / "view" / "configeditor"
             / "builtin_templates" / "sections" / "processing.json")
 
-#: Keys the editor offers that are not simple flags — plugin id lists, which
-#: are read through their own helper rather than ``processing_config.get``.
-_NON_FLAG_FIELDS = {"reconstructors", "processors"}
+#: Non-boolean configuration fields do not use the processing_config.get()
+#: panel-flag readers: plugin lists have their own helper, while MoNaLISA
+#: calibration is consumed by reconstructors/monalisa/setup_defaults.py.
+_NON_FLAG_FIELDS = {"reconstructors", "processors", "monalisa"}
 
 
 def _flags_read_by_improcess() -> set[str]:
@@ -67,3 +68,11 @@ def test_processing_flags_all_default_to_booleans():
             continue
         assert field["type"] == "bool", f"{key} should be a checkbox"
         assert isinstance(field["default"], bool), f"{key} has a non-bool default"
+
+
+def test_monalisa_defaults_are_a_structured_processing_setting():
+    """Reconstruction calibration is a JSON mapping, not a panel checkbox."""
+    field = _fields_offered_by_editor()["monalisa"]
+    assert field["type"] == "json"
+    assert field["default"] == {}
+    assert field["req"] is False

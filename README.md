@@ -244,7 +244,7 @@ Documents\ImSwitchConfig\          (Windows)
 **Updates to the shipped files.**  The example setups, the mock setups, the scripting tutorials and `config/modules.json` are copied into `~/ImSwitchConfig/` from the Imswitch2 package.  At every start, a copy you have not edited that is an older shipped version is updated to the current one, and an untouched script Imswitch2 no longer ships is moved to the trash.  Files you edited are never changed or removed; the log names the ones that differ from the current version -- delete one and restart to get the current version.
 
 A GUI editor is included for building setup files without writing JSON by hand.
-Open it from a running ImSwitch under **Tools > Edit hardware configuration...**,
+Open it from a running ImSwitch under **Hardware > Edit hardware configuration...**,
 or standalone without starting the microscope:
 
 ```bash

@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
 from imswitch.improcess.model import result_kind  # noqa: E402
 from imswitch.improcess.model.curve_result import CurveResult  # noqa: E402
-from imswitch.improcess.model.snippets import parse_snippet  # noqa: E402
+from imswitch.improcess.model.snippets import parse_snippet, snippet_curves  # noqa: E402
 from imswitch.improcess.processors.python_step.context import parse_ports, run_script  # noqa: E402
 from imswitch.improcess.workflows import Workflow, bootstrap_registry, run, validate  # noqa: E402
 
@@ -365,7 +365,7 @@ def _synthetic(tmp_path, frames):
 ])
 def test_each_workflow_validates_and_runs_on_the_synthetic_recording(registry, tmp_path, name, shapes):
     tool = _tool()
-    curves = set(tool.CURVE_PORTS.get(name, ()))
+    curves = set(snippet_curves((SNIPPETS / f"{name}.py").read_text(encoding="utf-8")))
     recording = _synthetic(tmp_path, tool.TRY_FRAMES.get(name, tool.DEFAULT_TRY_FRAMES))
     workflow = Workflow.load(EXAMPLES / f"python_step_{name}.yaml")
     assert validate(workflow, registry) == []
@@ -375,8 +375,8 @@ def test_each_workflow_validates_and_runs_on_the_synthetic_recording(registry, t
             produced = report.result(f"script.{port}")
             if shape is not None:
                 assert produced.data.shape == shape, port
-            # the tool saves exactly the curve ports as CSV: if the script's idea of what is a
-            # curve and the tool's drift apart, a curve would be saved as a TIFF and fail
+            # the tool saves exactly the ports the snippet's '# curves:' line names as CSV: if
+            # that line and what the script returns drift apart, a curve would be saved as a TIFF
             assert (result_kind(produced) == "curve") == (port in curves), port
         written = [receipt.primary.name for receipt in report.receipts]
     assert len(written) == len(shapes) and all((tmp_path / "out" / file).exists() for file in written)
@@ -419,3 +419,15 @@ def test_every_recipe_is_in_the_docs_and_in_the_examples_readme():
     for name in RECIPES:
         assert f"improcess_snippets/{name}.py" in docs, f"{name} is not shown in docs/improcess.rst"
         assert f"python_step_{name}.yaml" in readme, f"{name} has no row in the examples README"
+
+
+def test_a_snippet_names_its_curve_ports_in_a_comment_line():
+    assert snippet_curves("# ports: out, sharpness\n# curves: sharpness\n# Pick...\nx = 1\n") == ("sharpness",)
+    assert snippet_curves("# curves: level , area\nout = data") == ("level", "area")     # code, ports line removed
+    assert snippet_curves("# ports: out\n# no curves here\nout = data\n# curves: late\n") == ()
+    assert snippet_curves("") == ()
+    # the shipped recipes that return curves say so, and only those
+    named = {name: snippet_curves((SNIPPETS / f"{name}.py").read_text(encoding="utf-8")) for name in RECIPES}
+    assert {name: curves for name, curves in named.items() if curves} == {
+        "best_focus": ("sharpness",), "signal_trace": ("level", "area"),
+    }

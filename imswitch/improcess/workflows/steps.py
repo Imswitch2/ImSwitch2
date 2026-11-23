@@ -340,8 +340,10 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
         processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
         if processor is None:
             return True, "?"
+        from imswitch.improcess.processors.base import call_output_spec
+
         params = {**_defaults(processor), **step.params}
-        spec = processor.output_spec(params)
+        spec = call_output_spec(processor, params)
         if port is None:
             return (spec.ports is not None and len(spec.ports) >= 1) or spec.pattern is not None, spec.describe()
         if spec.matches(port):
@@ -356,6 +358,63 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
                 return True, spec.describe()
         return False, spec.describe()
     return False, "(no ports)"
+
+
+def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
+    """What each step produces, as declared (step id -> a ``PORT_KINDS`` value).
+
+    A Source produces a recording; a reconstruction or a processor what it
+    declares (a processor's ``output_spec`` is told its inputs' kinds); an
+    unknown plugin, or one that declares nothing, ``"unknown"``. Save steps
+    produce nothing and are left out. Never raises: a plugin whose
+    ``output_spec`` fails counts as ``"unknown"``.
+    """
+    from imswitch.improcess.model.result import RECORDING_KIND, UNKNOWN_KIND
+    from imswitch.improcess.processors.base import call_output_spec
+
+    kinds: dict[str, str] = {}
+    for step in workflow.steps:
+        if isinstance(step, Save):
+            continue
+        if isinstance(step, Source):
+            kinds[step.id] = RECORDING_KIND
+            continue
+        kind = UNKNOWN_KIND
+        if registry is not None and isinstance(step, (Reconstruct, Consolidate)):
+            plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
+            kind = getattr(plugin, "output_kind", None) or UNKNOWN_KIND
+        elif registry is not None and isinstance(step, Process):
+            plugin = registry.get_processor(step.processor, raise_on_missing=False)
+            if plugin is not None:
+                inputs = tuple(kinds.get(ref.step, UNKNOWN_KIND) for ref in step.inputs)
+                try:
+                    kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
+                except Exception:
+                    kind = UNKNOWN_KIND
+        kinds[step.id] = str(kind or UNKNOWN_KIND)
+    return kinds
+
+
+def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
+    """An input whose *declared* kind the processor does not accept.
+
+    Only a declared result kind counts: "any" (the Python step), "unknown"
+    (a plugin that declares nothing) and a raw recording are never refused
+    here, so a workflow that runs today is not refused on a guess.
+    """
+    from imswitch.improcess.model.result import RESULT_KINDS
+
+    accepted = tuple(getattr(processor, "kinds", ()) or ())
+    issues = []
+    for ref in step.inputs:
+        kind = kinds.get(ref.step)
+        if accepted and kind in RESULT_KINDS and kind not in accepted:
+            issues.append(Issue(
+                step.id,
+                f"{step.processor!r} does not accept {kind} results, which {ref.step!r} produces "
+                f"(it takes {', '.join(accepted)})",
+            ))
+    return issues
 
 
 def _defaults(plugin) -> dict:
@@ -403,6 +462,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
     """
     issues: list[Issue] = []
     by_id: dict[str, Any] = {}
+    kinds = declared_kinds(workflow, registry) if registry else {}
     for step in workflow.steps:
         if isinstance(step, Source):
             by_id[step.id] = step
@@ -464,6 +524,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                     elif count < low or (high is not None and count > high):
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
                     issues.extend(_unknown_params(step, processor))
+                    issues.extend(_kind_issues(step, processor, kinds))
         elif isinstance(step, Save):
             from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 
