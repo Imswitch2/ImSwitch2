@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -153,6 +154,10 @@ class TimeTaggerManager(SignalInterface):
         self._overflowTotal = 0
         self._healthOverflowSeen = 0
         self._finalized = False
+        #: The card's I/O thread (``submit``), created on first use.
+        self._io: Optional[ThreadPoolExecutor] = None
+        self._ioLock = threading.Lock()
+        self._ioClosed = False
 
         self._samplerThread: Optional[threading.Thread] = None
         self._samplerStop = threading.Event()
@@ -527,6 +532,17 @@ class TimeTaggerManager(SignalInterface):
                 f"({self._calibrationOwner}) owns the card's conditioning."
             )
 
+    def assertWritable(self, what: str = "trigger level",
+                       owner: Optional[str] = None) -> None:
+        """Raise ``TimeTaggerBusyError`` now if a conditioning write would
+        be refused (a scan hold, another calibration) -- no card call, so a
+        GUI slot can refuse at once and queue only a write that can land.
+
+        Advisory and lock-free: it must not wait behind a write in flight on
+        the I/O thread (which holds the lock across the card call); the
+        write itself checks again under the lock."""
+        self._checkWritable(what, owner)
+
     def setTriggerLevel(self, role: str, voltage: float, *,
                         owner: Optional[str] = None) -> None:
         with self._lock:
@@ -537,6 +553,106 @@ class TimeTaggerManager(SignalInterface):
                 info.role, info.channel, float(voltage),
                 info.deadtime_ps, info.delay_ps,
             )
+
+    # ------------------------------------------------------------------ #
+    # Inputs: a role or a bare channel                                     #
+    # ------------------------------------------------------------------ #
+
+    def resolveInput(self, input) -> Tuple[int, Optional[str]]:
+        """``(signed channel, role or None)`` for a role name or a channel.
+
+        Level finding and the level warnings work per input: a configured
+        role is a label and a source of hints, not a requirement. A channel
+        number that is a role's input (either edge) resolves to that role.
+        """
+        if isinstance(input, str):
+            info = self.channelInfo(input)
+            return info.channel, info.role
+        channel = int(input)
+        if channel == 0:
+            raise TimeTaggerError("Time Tagger inputs are numbered from 1 (negative = falling edge)")
+        for info in self._channels.values():
+            if abs(info.channel) == abs(channel):
+                return info.channel, info.role
+        return channel, None
+
+    def triggerLevelOf(self, input) -> float:
+        """The trigger level an input carries: the role's, or the card's."""
+        channel, role = self.resolveInput(input)
+        if role is not None:
+            return self.channelInfo(role).trigger_v
+        return float(self.tagger.getTriggerLevel(channel))
+
+    def setInputTriggerLevel(self, input, voltage: float, *,
+                             owner: Optional[str] = None) -> None:
+        """``setTriggerLevel`` for any input; a role's input updates the role."""
+        channel, role = self.resolveInput(input)
+        if role is not None:
+            self.setTriggerLevel(role, voltage, owner=owner)
+            return
+        with self._lock:
+            self._checkWritable("trigger level", owner)
+            self.tagger.setTriggerLevel(channel, float(voltage))
+
+    # ------------------------------------------------------------------ #
+    # Card calls off the caller's thread                                   #
+    # ------------------------------------------------------------------ #
+
+    #: How long ``finalize`` waits for queued card calls before freeing it.
+    IO_DRAIN_S = 5.0
+
+    def submit(self, function, *args, **kwargs) -> Future:
+        """Run ``function`` on the card's own I/O thread; returns a Future.
+
+        One thread, in submission order: a GUI slot hands it a conditioning
+        write or the release of a measurement object and returns at once,
+        and two writes can never overtake each other. ``finalize`` drains it
+        before the card is freed.
+        """
+        with self._ioLock:
+            if self._ioClosed:
+                raise TimeTaggerError("TimeTaggerManager has been finalized")
+            if self._io is None:
+                self._io = ThreadPoolExecutor(max_workers=1, thread_name_prefix="TimeTaggerIO")
+            return self._io.submit(function, *args, **kwargs)
+
+    def setTriggerLevelAsync(self, role: str, voltage: float, *,
+                             owner: Optional[str] = None) -> Future:
+        """``setTriggerLevel`` on the I/O thread (``setInputTriggerLevel``
+        semantics: a role or a channel). Refusals (busy, not connected)
+        arrive as the Future's exception."""
+        return self.submit(self.setInputTriggerLevel, role, voltage, owner=owner)
+
+    def releaseLater(self, box: list) -> None:
+        """Drop the measurement objects in ``box`` on the I/O thread.
+
+        A vendor ``Flim`` frees hundreds of megabytes and unregisters from
+        the card when its last reference goes; the caller hands over its
+        only references in a list (``releaseLater([old])`` after setting its
+        own attribute to ``None``) so that happens here, not on the GUI
+        thread. Falls back to dropping them in place after ``finalize``.
+        """
+        try:
+            self.submit(box.clear)
+        except Exception:
+            box.clear()
+
+    def _drainIo(self, timeout_s: float) -> bool:
+        if "_ioLock" not in self.__dict__:   # built without __init__ (tests)
+            return True
+        with self._ioLock:
+            self._ioClosed = True
+            executor, self._io = self._io, None
+        if executor is None:
+            return True
+        try:
+            done = executor.submit(lambda: None)
+            done.result(timeout=max(0.0, float(timeout_s)))
+            drained = True
+        except Exception:
+            drained = False
+        executor.shutdown(wait=False)
+        return drained
 
     def setTestSignal(self, roles, enabled: bool, *,
                       owner: Optional[str] = None) -> None:
@@ -800,10 +916,14 @@ class TimeTaggerManager(SignalInterface):
     def finalize(self) -> bool:
         """Free the card. Idempotent; a failure is logged and reported.
 
-        The health sampler is stopped first: nothing may still be reading
-        the card when it is freed."""
+        The health sampler is stopped and the I/O thread drained first:
+        nothing may still be reading the card, or holding a measurement
+        object on it, when it is freed."""
         if not self.stopHealthSampling():
             self.__logger.error("Health sampler did not stop; not freeing the card")
+            return False
+        if not self._drainIo(self.IO_DRAIN_S):
+            self.__logger.error("Queued Time Tagger calls did not finish; not freeing the card")
             return False
         with self._lock:
             self._finalized = True
