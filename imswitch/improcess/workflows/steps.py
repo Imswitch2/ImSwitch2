@@ -90,7 +90,8 @@ class Source:
 
 @dataclass
 class Reconstruct:
-    """Run a reconstructor over one source. Its single port is ``out``."""
+    """Run a reconstructor over one input -- a source, or any step that
+    produces an image. Its single port is ``out``."""
 
     id: str
     reconstructor: str
@@ -180,10 +181,234 @@ class Save:
                 "path_template": self.path_template}
 
 
-Step = Source | Reconstruct | Consolidate | Process | Save
+#: How a ``map``/``fold`` body names the slice of the current index (and, in
+#: a fold, the carried value). Written ``$item`` in a file; held as a
+#: reference to a reserved step id inside, so every reference check works on
+#: it unchanged.
+ITEM_REF = "$item"
+CARRY_REF = "$carry"
+ITEM_STEP = "_item"
+CARRY_STEP = "_carry"
+_RESERVED_BODY_IDS = (ITEM_STEP, CARRY_STEP)
+
+
+def _body_ref_in(text):
+    text = str(text)
+    if text == ITEM_REF or text.startswith(ITEM_REF + "."):
+        return ITEM_STEP + text[len(ITEM_REF):]
+    if text == CARRY_REF or text.startswith(CARRY_REF + "."):
+        return CARRY_STEP + text[len(CARRY_REF):]
+    return text
+
+
+def _body_ref_out(ref: Ref) -> str:
+    if ref.step == ITEM_STEP:
+        return ITEM_REF + (f".{ref.port}" if ref.port else "")
+    if ref.step == CARRY_STEP:
+        return CARRY_REF + (f".{ref.port}" if ref.port else "")
+    return str(ref)
+
+
+def _body_refs(step) -> list[Ref]:
+    if isinstance(step, Save):
+        return [step.input]
+    return list(getattr(step, "inputs", None) or [])
+
+
+def _parse_body(owner: str, body) -> list:
+    if not isinstance(body, list) or not body:
+        raise WorkflowError(f"step {owner!r}: a body must be a non-empty list of steps")
+    steps = []
+    for item in body:
+        if isinstance(item, dict):
+            item = dict(item)
+            if "inputs" in item and isinstance(item["inputs"], list):
+                item["inputs"] = [_body_ref_in(ref) for ref in item["inputs"]]
+            if "input" in item:
+                item["input"] = _body_ref_in(item["input"])
+            step = step_from_dict(item)
+        else:
+            step = item
+        if step.id in _RESERVED_BODY_IDS:
+            raise WorkflowError(f"step {owner!r}: {step.id!r} is reserved inside a body")
+        steps.append(step)
+    seen = set()
+    for step in steps:
+        if step.id in seen:
+            raise WorkflowError(f"step {owner!r}: duplicate body step id {step.id!r}")
+        seen.add(step.id)
+    return steps
+
+
+def _body_to_dicts(body) -> list[dict]:
+    out = []
+    for step in body:
+        payload = step.to_dict()
+        if "inputs" in payload:
+            payload["inputs"] = [_body_ref_out(ref) for ref in _body_refs(step)]
+        if "input" in payload and isinstance(step, Save):
+            payload["input"] = _body_ref_out(step.input)
+        out.append(payload)
+    return out
+
+
+@dataclass
+class Map:
+    """Run a sub-workflow (``body``) once per index of the ``over`` axis of
+    ``input``, and stack its ``output`` along that axis. Port ``out``.
+
+    For what auto-indexing cannot express: a *group* of steps per index
+    (deskew, crop, reconstruct, frame by frame), where only the stacked end
+    result is wanted. The body names the slice of the current index
+    ``$item``; it may also read any earlier step of the workflow (that result
+    is handed unchanged to every index). Save is not allowed inside a body.
+    The provenance records the body once, with ``iterated_over``.
+    """
+
+    id: str
+    input: Ref
+    over: str
+    body: list = field(default_factory=list)
+    output: Ref | None = None
+
+    kind = "map"
+    ports = (DEFAULT_PORT,)
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        # An editor may leave a map without its input for a moment (its
+        # input step deleted); that loads, and validate() reports it.
+        self.input = parse_ref(self.input) if self.input not in (None, "") else None
+        self.over = str(self.over or "")
+        self.body = _parse_body(self.id, self.body)
+        if self.output is None:
+            self.output = Ref(self.body[-1].id)
+        self.output = parse_ref(self.output)
+
+    @property
+    def body_ids(self) -> set[str]:
+        return {step.id for step in self.body}
+
+    def outer_refs(self) -> list[Ref]:
+        """References from the body to steps of the enclosing workflow, in order, once each."""
+        inner = self.body_ids | set(_RESERVED_BODY_IDS)
+        seen, found = set(), []
+        for step in self.body:
+            for ref in _body_refs(step):
+                if ref.step not in inner and str(ref) not in seen:
+                    seen.add(str(ref))
+                    found.append(ref)
+        return found
+
+    @property
+    def inputs(self) -> list[Ref]:
+        """What this step reads from the enclosing workflow: ``input`` first,
+        then whatever the body broadcasts. Read by every graph walk."""
+        head = [self.input] if self.input is not None else []
+        return [*head, *[ref for ref in self.outer_refs() if self.input is None or str(ref) != str(self.input)]]
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        # The editor rewires the cable into the step; the body's own
+        # references to the enclosing workflow are the body's, except that
+        # a broadcast read the editor dropped is dropped from the body too.
+        refs = [parse_ref(ref) for ref in (refs or [])]
+        kept = {str(ref) for ref in refs}
+        gone = {ref.step for ref in self.outer_refs() if str(ref) not in kept}
+        if self.input is not None and str(self.input) not in kept:
+            gone.discard(self.input.step)
+        if gone:
+            self.drop_outer(gone)
+        self.input = refs[0] if refs else None
+
+    def drop_outer(self, step_ids) -> None:
+        """Forget the body's reads of the outer steps ``step_ids`` (deleted ones)."""
+        step_ids = set(step_ids)
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            refs = _body_refs(step)
+            kept = [ref for ref in refs if ref.step not in step_ids]
+            if len(kept) != len(refs):
+                step.inputs = kept
+
+    def rename_outer(self, mapping: dict[str, Ref]) -> None:
+        """Point the body's references to outer steps at new ids (``old id -> Ref``)."""
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            step.inputs = [
+                (Ref(mapping[ref.step].step, ref.port if ref.port is not None else mapping[ref.step].port)
+                 if ref.step in mapping else ref)
+                for ref in _body_refs(step)
+            ]
+
+    def _payload(self) -> dict:
+        return {"step": self.kind, "id": self.id, "input": str(self.input) if self.input is not None else None,
+                "over": self.over,
+                "body": _body_to_dicts(self.body), "output": str(self.output)}
+
+    def to_dict(self) -> dict:
+        return self._payload()
+
+
+@dataclass
+class Fold(Map):
+    """Like :class:`Map`, with state carried from one index to the next
+    (LabVIEW's shift register): a drift reference, a crop box chosen on the
+    first frame.
+
+    ``carry`` is ``{"init": ref or null, "next": "body_step.port"}``: the
+    body reads the carried value as ``$carry`` (``init`` at the first index,
+    or nothing when ``init`` is null) and its ``next`` port is what the next
+    index finds there. **Designed, not implemented yet**: a fold validates,
+    loads, saves and round-trips; running one is refused with a clear error.
+    """
+
+    carry: dict = field(default_factory=dict)
+
+    kind = "fold"
+
+    def __init__(self, id, input, over, body=None, output=None, carry=None):
+        self.id = id
+        self.input = input
+        self.over = over
+        self.body = body or []
+        self.output = output
+        self.carry = dict(carry or {})
+        self.__post_init__()
+        if set(self.carry) - {"init", "next"}:
+            raise WorkflowError(f"step {self.id!r}: carry has only 'init' and 'next'")
+        if not self.carry.get("next"):
+            raise WorkflowError(f"step {self.id!r}: carry needs 'next', the body port that is carried on")
+        self.carry["next"] = str(parse_ref(self.carry["next"]))
+        if self.carry.get("init") is not None:
+            self.carry["init"] = str(parse_ref(self.carry["init"]))
+        else:
+            self.carry["init"] = None
+
+    @property
+    def inputs(self) -> list[Ref]:
+        refs = Map.inputs.fget(self)
+        init = self.carry.get("init")
+        if init and init not in {str(ref) for ref in refs}:
+            refs.append(parse_ref(init))
+        return refs
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        Map.inputs.fset(self, refs)
+
+    def to_dict(self) -> dict:
+        payload = self._payload()
+        payload["carry"] = {"init": self.carry.get("init"), "next": self.carry["next"]}
+        return payload
+
+
+Step = Source | Reconstruct | Consolidate | Process | Save | Map | Fold
 
 _STEP_TYPES = {"source": Source, "reconstruct": Reconstruct, "consolidate": Consolidate,
-               "process": Process, "save": Save}
+               "process": Process, "save": Save, "map": Map, "fold": Fold}
 
 
 def step_from_dict(payload: dict) -> Step:
@@ -334,7 +559,7 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
     """Whether ``port`` is one ``step`` can produce (statically)."""
     if isinstance(step, Source):
         return (port in (None, SOURCE_PORT)), SOURCE_PORT
-    if isinstance(step, (Reconstruct, Consolidate)):
+    if isinstance(step, (Reconstruct, Consolidate, Map)):
         return (port in (None, DEFAULT_PORT)), DEFAULT_PORT
     if isinstance(step, Process):
         processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
@@ -391,8 +616,29 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
                     kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
                 except Exception:
                     kind = UNKNOWN_KIND
+        elif registry is not None and isinstance(step, Map):
+            kind = _map_output_kind(workflow, step, registry)
         kinds[step.id] = str(kind or UNKNOWN_KIND)
     return kinds
+
+
+def _map_output_kind(workflow: Workflow, step: "Map", registry) -> str:
+    """What a map produces: what its body's output step declares, the body
+    read as the workflow it runs as. ``unknown`` when that cannot be said."""
+    from imswitch.improcess.model.result import UNKNOWN_KIND
+
+    before = []
+    for item in workflow.steps:
+        if item is step:
+            break
+        if not isinstance(item, Save):
+            before.append(item)
+    placeholders = [Source(ITEM_STEP)] + ([Source(CARRY_STEP)] if isinstance(step, Fold) else [])
+    try:
+        sub = Workflow(f"{step.id}-body", [*before, *placeholders, *step.body])
+        return declared_kinds(sub, registry).get(step.output.step, UNKNOWN_KIND)
+    except Exception:
+        return UNKNOWN_KIND
 
 
 def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
@@ -415,6 +661,47 @@ def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
                 f"(it takes {', '.join(accepted)})",
             ))
     return issues
+
+
+#: What a reconstruction may read: a recording, an image, or a step whose
+#: kind is not declared (a Python step, a plugin that says nothing) -- the run
+#: checks the data itself, so a workflow that may work is not refused on a guess.
+RECONSTRUCTION_INPUT_KINDS = ("recording", "image", "labels", "any", "unknown")
+
+
+def _reconstruction_input_issues(step, by_id: dict, kinds: dict[str, str]) -> list[Issue]:
+    """Whether a reconstruction's one input can be read as image data.
+
+    Decided by what the input *carries*, never by where it came from: a
+    Source, a view-only reconstruction, a Python step's reshape and a deskew
+    are all images to the next reconstructor. Without a registry the kinds are
+    unknown and only the structure is checked.
+    """
+    ref = step.inputs[0]
+    target = by_id.get(ref.step)
+    if target is None or isinstance(target, Source):
+        return []
+    kind = kinds.get(ref.step)
+    if kind is None or kind in RECONSTRUCTION_INPUT_KINDS:
+        return []
+    return [Issue(
+        step.id,
+        f"a reconstruction's input must be a source or produce an image; {ref.step!r} produces {kind} results",
+    )]
+
+
+def _input_contract_issues(step, plugin) -> list[Issue]:
+    """What the plugin's ``check_input`` can say from the parameters alone
+    (``data_obj=None``): the data is not known before the run, which checks
+    it again with the data before any pixel is processed."""
+    check = getattr(plugin, "check_input", None)
+    if not callable(check):
+        return []
+    try:
+        problems = check(None, {**_defaults(plugin), **step.params})
+    except Exception:
+        return []
+    return [Issue(step.id, str(problem)) for problem in problems or []]
 
 
 def _defaults(plugin) -> dict:
@@ -447,11 +734,51 @@ def _unknown_params(step, plugin) -> list[Issue]:
         allowed = None
     if allowed is None:
         return []
-    unknown = sorted(set(step.params) - set(allowed))
+    # ``_iterate`` is the runner's, not the plugin's (auto-indexing on/off).
+    unknown = sorted(set(step.params) - set(allowed) - {"_iterate"})
     if not unknown:
         return []
     plugin_id = getattr(plugin, "id", type(plugin).__name__)
     return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
+
+
+def _body_issues(step: "Map", outer: list, registry) -> list[Issue]:
+    """A map/fold body checked as the workflow it runs as: the enclosing
+    steps before it, ``$item`` (and ``$carry``) as inputs, then the body."""
+    issues: list[Issue] = []
+    what = f"{step.kind} {step.id!r}"
+    if step.input is None:
+        issues.append(Issue(step.id, f"{what} needs an input to iterate over"))
+    if not step.over:
+        issues.append(Issue(step.id, f"{what}: 'over' must name the axis to iterate over"))
+    for inner in step.body:
+        if isinstance(inner, (Save, Map)):
+            issues.append(Issue(step.id, f"{what}: a {inner.kind} step ({inner.id!r}) is not allowed in a body"))
+    outer_ids = {item.id for item in outer}
+    for inner in step.body:
+        if inner.id in outer_ids:
+            issues.append(Issue(step.id, f"{what}: body step {inner.id!r} has the id of a step outside it"))
+    if step.output.step not in step.body_ids:
+        issues.append(Issue(step.id, f"{what}: output {str(step.output)!r} is not a step of its body"))
+    if isinstance(step, Fold):
+        nxt = parse_ref(step.carry["next"])
+        if nxt.step not in step.body_ids:
+            issues.append(Issue(step.id, f"{what}: carry.next {str(nxt)!r} is not a step of its body"))
+    if issues:
+        return issues
+    placeholders = [Source(ITEM_STEP)]
+    if isinstance(step, Fold):
+        placeholders.append(Source(CARRY_STEP))
+    try:
+        sub = Workflow(f"{step.id}-body", [*outer, *placeholders, *step.body])
+    except WorkflowError as exc:
+        return [Issue(step.id, f"{what}: {exc}")]
+    body_ids = step.body_ids
+    for issue in validate(sub, registry):
+        if issue.step in body_ids:
+            text = issue.message.replace(repr(ITEM_STEP), repr(ITEM_REF)).replace(repr(CARRY_STEP), repr(CARRY_REF))
+            issues.append(Issue(step.id, f"in the body, {issue.step}: {text}"))
+    return issues
 
 
 def validate(workflow: Workflow, registry=None) -> list[Issue]:
@@ -482,15 +809,23 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 
         if isinstance(step, Reconstruct):
             if len(step.inputs) != 1:
-                issues.append(Issue(step.id, "a reconstruction takes exactly one source"))
-            elif not isinstance(by_id.get(step.inputs[0].step), Source):
-                issues.append(Issue(step.id, "a reconstruction's input must be a source step"))
+                issues.append(Issue(step.id, "a reconstruction takes exactly one input"))
+            else:
+                issues.extend(_reconstruction_input_issues(step, by_id, kinds))
             if registry:
                 plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
                 if plugin is None:
                     issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
                 else:
                     issues.extend(_unknown_params(step, plugin))
+                    issues.extend(_input_contract_issues(step, plugin))
+                    # A map's ``$item`` is a slice of a result, never a recording.
+                    fed = step.inputs[0].step if len(step.inputs) == 1 else None
+                    if (fed is not None and getattr(plugin, "reads_recording_file", False)
+                            and (fed in _RESERVED_BODY_IDS or not isinstance(by_id.get(fed), Source))):
+                        from imswitch.improcess.reconstructors.base import recording_file_refusal
+
+                        issues.append(Issue(step.id, recording_file_refusal(plugin)))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))
@@ -525,6 +860,8 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
                     issues.extend(_unknown_params(step, processor))
                     issues.extend(_kind_issues(step, processor, kinds))
+        elif isinstance(step, Map):
+            issues.extend(_body_issues(step, list(by_id.values()), registry))
         elif isinstance(step, Save):
             from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 
@@ -539,9 +876,14 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 __all__ = [
     "DEFAULT_PORT",
     "DEFAULT_SAVE_TEMPLATE",
+    "CARRY_REF",
     "Consolidate",
+    "Fold",
+    "ITEM_REF",
     "Issue",
+    "Map",
     "Process",
+    "RECONSTRUCTION_INPUT_KINDS",
     "Reconstruct",
     "Ref",
     "SCHEMA_VERSION",

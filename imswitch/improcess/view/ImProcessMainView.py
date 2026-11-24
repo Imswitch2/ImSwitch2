@@ -94,6 +94,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageLutChanged = QtCore.Signal(str)
     sigImageResetViewRequested = QtCore.Signal()
     sigImageDuplicateRequested = QtCore.Signal()
+    sigImageUseAsDataRequested = QtCore.Signal()
     sigImageCropSubstackRequested = QtCore.Signal()
     sigImageMaxProjectionRequested = QtCore.Signal()
     sigImageSplitStackRequested = QtCore.Signal()
@@ -1146,6 +1147,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Duplicate the selected results',
             improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
+        )
+        self._addImageAction(
+            'use-as-data',
+            'Use as reconstruction input',
+            'Add the selected results to the data list, so a reconstructor can run on them',
+            improcessIcon('duplicate', self),
+            self.sigImageUseAsDataRequested,
             toolbar=self._imageOpsToolbar,
             menu=self._imageOpsMenu,
         )

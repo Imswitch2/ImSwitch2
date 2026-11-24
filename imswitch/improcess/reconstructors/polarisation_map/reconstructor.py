@@ -31,6 +31,7 @@ from imswitch.imcommon.algorithms.polarisation import (
     match_targets,
 )
 from imswitch.imcommon.model.measurement_run import MeasurementRunFile
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.dataset_sources import MEASUREMENT_RUN_SOURCE_KIND
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.points_table_result import PointsTableResult
@@ -145,6 +146,10 @@ class _PolarisationParamsWidget(QtWidgets.QWidget):
 class PolarisationMapReconstructor(Reconstructor):
     name = 'Polarisation map'
     id = 'polarisation-map'
+
+    #: Reads a measurement-run file, not pixels.
+    core_dims_in = WHOLE_INPUT
+    reads_recording_file = True
     output_kind = "table"
     file_extensions = ['h5', 'hdf5']
     description = ('Poincaré-sphere coverage of a waveplate scan, and the settings '

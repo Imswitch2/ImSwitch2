@@ -351,6 +351,14 @@ class Processor(ABC):
         """
         return OutputSpec(ports=("out",), kind=self.output_kind or UNKNOWN_KIND)
 
+    #: The axes one :meth:`apply` consumes, or ``None``; same meaning as
+    #: :attr:`~imswitch.improcess.reconstructors.base.Reconstructor.core_dims_in`.
+    #: A single-input processor that declares them is auto-indexed over the
+    #: input's extra leading axes by the workflow runner.
+    core_dims_in: tuple[str, ...] | None = None
+    #: The axes one :meth:`apply` produces (documentation; see the reconstructor's).
+    core_dims_out: tuple[str, ...] | None = None
+
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.
 

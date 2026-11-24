@@ -1,0 +1,70 @@
+# The same chain as snouty_side_by_side_timelapse.yaml, written as a map: the
+# group deskew -> crop -> MoNaLISA runs once per timepoint, one timepoint at a
+# time, and only the stacked MoNaLISA result is kept. Use this form when the
+# intermediates of the whole time-lapse would not fit in memory, or when only
+# the end result is wanted. The body reads the current timepoint as `$item`.
+#   python -m imswitch.improcess.workflows run snouty_side_by_side_timelapse_map.yaml \
+#       --input lapse.h5 --out results/
+name: snouty-side-by-side-timelapse-map
+schema: 1
+steps:
+  - {step: source, id: raw}
+  - step: reconstruct
+    id: view
+    reconstructor: view-only
+    inputs: [raw]
+  - step: process
+    id: reshape
+    processor: python
+    params:
+      code: |
+        # Timepoints side by side along X -> (T, Z, Y, X), still skewed.
+        t = 2
+        z, y, x = data.shape
+        stack = data.reshape(z, y, t, x // t).transpose(2, 0, 1, 3)
+        out = make_result(stack, axes=["T", "Z", "Y", "X"], attrs={"geometry": "skewed"})
+    inputs: [view]
+  - step: map
+    id: per_t
+    input: reshape
+    over: T
+    body:
+      - step: reconstruct
+        id: deskew
+        reconstructor: snouty
+        params: {device: CPU, c_px: 100.0, alpha_deg: 30.0, dy: 210.0, sample_vx_size: 200.0,
+                 camera_offset: 100.0, n_timepoints: 1}
+        inputs: [$item]
+      - step: process
+        id: crop
+        processor: python
+        params:
+          code: |
+            ny, nx = data.shape[-2:]
+            out = make_result(data[..., : ny // 2, : nx // 2], axes=axes)
+        inputs: [deskew]
+      - step: reconstruct
+        id: mona
+        reconstructor: monalisa
+        params:
+          device: CPU
+          preset: Fast
+          pixel_size_nm: 77.0
+          scan_steps_fast: 4
+          scan_steps_slow: 4
+          scan_step_nm: 35.0
+          localization_mode: Manual
+          manual_offset_x_px: 3.0
+          manual_offset_y_px: 3.0
+          manual_period_x_px: 8.0
+          manual_period_y_px: 8.0
+          scan_params:
+            dimensions: [Up/Down, Right/Left, Back/Forth, Timepoints]
+            directions: [pos, pos, pos]
+            steps: ['4', '4', '1', '1']
+            step_sizes: ['35', '35', '35', '1']
+            n_linesteps: 1
+            unidirectional: true
+        inputs: [crop]
+    output: mona
+  - {step: save, id: out, input: per_t, fmt: tiff, path_template: "{out_dir}/{source_stem}_monalisa_map{ext}"}

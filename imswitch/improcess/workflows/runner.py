@@ -37,6 +37,7 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
+    Map,
     Process,
     Reconstruct,
     Ref,
@@ -292,6 +293,7 @@ def run(
     from imswitch.improcess.processors.run import run_processor
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
     from imswitch.improcess.model.provenance import graph_of, output_of
+    from imswitch.improcess.model.result_source import as_reconstruction_input
 
     def report_done(step_id, keys_before, started, cached=False):
         if on_step_done is None:
@@ -379,10 +381,18 @@ def run(
 
             elif isinstance(step, Reconstruct):
                 plugin = registry.get_reconstructor(step.reconstructor)
-                data_obj = report.result(step.inputs[0])
+                # A source's DataObj as it is; any other image result is
+                # bridged, keeping its axes, attributes and provenance.
+                data_obj = as_reconstruction_input(report.result(step.inputs[0]))
                 params = {**type(plugin).default_params(), **step.params}
                 params = plugin.prepare_params(data_obj, params)
-                run_result = run_reconstruction(plugin, data_obj, params)
+                # Checks the input against the plugin's declared contract
+                # before any pixel is processed, and auto-indexes over the
+                # axes in front of its core dims (model.iteration).
+                run_result = run_reconstruction(
+                    plugin, data_obj, params,
+                    progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                )
                 report.results[f"{step.id}.{DEFAULT_PORT}"] = run_result.result
 
             elif isinstance(step, Consolidate):
@@ -409,7 +419,27 @@ def run(
                             "(its geometry was too large to store); it cannot be replayed"
                         )
                     params[ROI_PARAM] = ROIRestriction.from_provenance(step.restriction)
-                for item in inputs:
+                from imswitch.improcess.model.core_dims import ITERATE_PARAM, CoreDimsError
+                from imswitch.improcess.processors.run import iteration_plan
+
+                requested = dict(params)
+                params.pop(ITERATE_PARAM, None)      # the runner's, never the processor's
+                loops = {}
+                for position, item in enumerate(inputs):
+                    if step.restriction or (len(inputs) > 1 and getattr(plugin, "max_inputs", 1) != 1):
+                        break
+                    try:
+                        match = iteration_plan(plugin, item, requested)
+                    except CoreDimsError as exc:
+                        raise WorkflowError(f"{step.id}: {step.processor!r} {exc}") from exc
+                    if match is not None:
+                        loops[position] = match
+                for position, item in enumerate(inputs):
+                    if position in loops:
+                        from imswitch.improcess.model.iteration import slice_result
+
+                        # Judged on what one call gets: a slice.
+                        item = slice_result(item, loops[position], (0,) * len(loops[position].loop_shape))
                     if not plugin.accepts(item):
                         shape = tuple(getattr(getattr(item, "data", None), "shape", ()) or ())
                         raise WorkflowError(
@@ -427,7 +457,12 @@ def run(
                 # index (signal, background, signal1, background1, ...).
                 groups = [[item] for item in inputs] if fan_out else [inputs]
                 for input_index, group in enumerate(groups):
-                    results, failures = run_processor(plugin, group, params, logger)
+                    # Auto-indexed inside (processors.run.run_batch) when the
+                    # processor declares core dims and the input has more axes.
+                    results, failures = run_processor(
+                        plugin, group, requested, logger,
+                        progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                    )
                     if failures:
                         who, why = failures[0]
                         message = f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}"
@@ -451,6 +486,16 @@ def run(
                         if key in report.results:
                             raise RunError(f"{step.id}: {step.processor!r} produced port {port!r} twice")
                         report.results[key] = result
+
+            elif isinstance(step, Map):
+                # A map (or fold) runs its body once per index through this
+                # same function; see workflows.mapping.
+                from imswitch.improcess.workflows.mapping import run_map
+
+                report.results[f"{step.id}.{DEFAULT_PORT}"] = run_map(
+                    step, report, registry, logger=logger,
+                    progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                )
 
             elif isinstance(step, Save):
                 result = report.result(step.input)
@@ -509,6 +554,17 @@ def is_result_binding(value) -> bool:
     if isinstance(value, Mapping):
         return bool(value) and all(isinstance(port, str) and _is_result(item) for port, item in value.items())
     return _is_result(value)
+
+
+def _index_progress(progress, index: int, total: int, step_id: str):
+    """Per-index progress of an auto-indexed step, as ``step [T=3/120]``."""
+    if progress is None:
+        return None
+
+    def report(_done, _count, where):
+        progress(index, total, f"{step_id} [{where}]")
+
+    return report
 
 
 def _bound_ports(value) -> dict:

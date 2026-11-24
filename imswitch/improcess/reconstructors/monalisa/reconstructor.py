@@ -13,7 +13,12 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import DetectionPreview, StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import (
+    DetectionPreview,
+    StreamInit,
+    StreamingReconstructor,
+    params_from_attrs,
+)
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
     placement_from_layout,
@@ -76,6 +81,11 @@ class MonalisaReconstructor(StreamingReconstructor):
     # nothing to reassemble from a single frame. Independent of being a
     # timelapse -- a camera lapse is many timepoints of one frame each.
     requires_frame_stacks = True
+    #: One reconstruction consumes one scan: ``(frames, rows, cols)``. Extra
+    #: leading axes (T of a deskewed time-lapse, C) are auto-indexed by the
+    #: runner; the frames axis goes by many names, so any label will do.
+    core_dims_in = ("*", "Y", "X")
+    core_dims_out = ("Dataset", "Base", "T", "Z", "Y", "X")
     description = "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices"
     execution_policy = "worker"
     supports_streaming = True
@@ -266,7 +276,9 @@ class MonalisaReconstructor(StreamingReconstructor):
     extra_param_keys = ("scan_params",)
 
     def prepare_params(self, data_obj, params: dict | None) -> dict:
-        """Fill ``scan_params`` from the acquisition attributes when absent.
+        """Fill ``scan_params`` from the acquisition attributes when absent,
+        and a default ``pixel_size_nm`` from the input's attributes (a
+        deskewed volume declares its voxel size there).
 
         The GUI derives the scan geometry from the file the moment it is
         opened and hands it to ``process`` inside ``params``; a headless run
@@ -274,7 +286,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         """
         from .scan_params import DEFAULT_LABELS, default_scan_params, scan_params_for_source
 
-        params = dict(params or {})
+        params = params_from_attrs(self, data_obj, params, ('pixel_size_nm',))
         if params.get('scan_params') is None:
             params['scan_params'] = scan_params_for_source(
                 default_scan_params(DEFAULT_LABELS), data_obj, DEFAULT_LABELS,

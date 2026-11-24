@@ -9,6 +9,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 
@@ -59,6 +60,10 @@ class WidefieldStarssReconstructor(Reconstructor):
 
     name = "WidefieldSTARSS analysis"
     id = "widefield-starss"
+
+    #: Opens the recording's H/V counterpart file next to it.
+    core_dims_in = WHOLE_INPUT
+    reads_recording_file = True
     output_kind = "image"
     file_extensions = ["tiff", "tif"]
     description = "Polarization demux, anisotropy maps, and per-region WFS metrics"

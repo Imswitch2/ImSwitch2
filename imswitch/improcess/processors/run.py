@@ -111,9 +111,18 @@ def run_restricted(processor, input_result, params: dict, restriction):
     return results
 
 
-def run_batch(processor, inputs, params: dict, logger):
+def run_batch(processor, inputs, params: dict, logger, *, progress=None, cancel=None):
     """One run per input. A failure is reported, not fatal: one bad result
-    part-way through a sweep must not throw away the ones that worked."""
+    part-way through a sweep must not throw away the ones that worked.
+
+    A processor that declares ``core_dims_in`` is auto-indexed over an
+    input's extra leading axes (:func:`run_iterated`), unless the params say
+    ``_iterate: false``; ``progress``/``cancel`` are asked once per index.
+    """
+    from imswitch.improcess.model.core_dims import ITERATE_PARAM, wants_iteration
+
+    requested = dict(params)
+    params = {key: value for key, value in params.items() if key != ITERATE_PARAM}
     results = []
     failures = []
     restriction = restriction_for(processor, params)
@@ -124,10 +133,21 @@ def run_batch(processor, inputs, params: dict, logger):
                     run_restricted(processor, input_result, params, restriction)
                 )
                 continue
+            match = iteration_plan(processor, input_result, requested)
+            if match is not None:
+                results.extend(run_iterated(
+                    processor, input_result, params, match, progress=progress, cancel=cancel,
+                ))
+                continue
             output = processor.apply(input_result, params)
-            results.extend(
-                normalize_processor_output(output, input_result, processor, params)
-            )
+            produced = normalize_processor_output(output, input_result, processor, params)
+            if ITERATE_PARAM in requested and not wants_iteration(requested) and produced:
+                from imswitch.improcess.model.provenance import output_node
+
+                node = output_node(produced[0])
+                if node is not None:
+                    node["iterate"] = False     # so a replay hands it the whole stack again
+            results.extend(produced)
         except Exception as exc:
             logger.exception(
                 "Failed to run processor %s on %s",
@@ -138,15 +158,53 @@ def run_batch(processor, inputs, params: dict, logger):
     return results, failures
 
 
-def run_processor(processor, inputs, params: dict, logger):
+def run_processor(processor, inputs, params: dict, logger, *, progress=None, cancel=None):
     """Dispatch on the processor's arity: one run over all inputs, or one per input.
 
-    Returns ``(results, failures)`` like the two it wraps.
+    Returns ``(results, failures)`` like the two it wraps. A single-input
+    processor with declared core dims is auto-indexed (see :func:`run_batch`).
     """
     inputs = list(inputs) if isinstance(inputs, (list, tuple)) else [inputs]
     if getattr(processor, "max_inputs", 1) != 1:
-        return run_multi(processor, inputs, params, logger)
-    return run_batch(processor, inputs, params, logger)
+        from imswitch.improcess.model.core_dims import without_reserved
+
+        return run_multi(processor, inputs, without_reserved(params), logger)
+    return run_batch(processor, inputs, params, logger, progress=progress, cancel=cancel)
+
+
+def iteration_plan(processor, input_result, params: dict):
+    """The auto-indexing loop for one input of a single-input processor, or
+    ``None`` when it runs once as before (no core dims declared, more than one
+    input per run, an exact-rank input, or ``_iterate: false``)."""
+    from imswitch.improcess.model import iteration
+
+    if not getattr(processor, "core_dims_in", None) or getattr(processor, "max_inputs", 1) != 1:
+        return None
+    data = getattr(input_result, "data", None)
+    shape = tuple(getattr(data, "shape", ()) or ())
+    if not shape:
+        return None
+    match = iteration.plan(processor, getattr(input_result, "axis_labels", None) or [], shape, params)
+    return match if match.iterates else None
+
+
+def run_iterated(processor, input_result, params: dict, match, *, progress=None, cancel=None):
+    """Run a processor once per index of ``match``'s loop over one input;
+    returns the stacked results, one per port, with provenance: one process
+    node for the whole loop, recording ``iterated_over``."""
+    from imswitch.improcess.model import iteration
+    from imswitch.improcess.model.provenance import output_node
+    from imswitch.improcess.processors.base import attach_provenance
+
+    params = iteration.without_reserved(params)
+    stacked, ports = iteration.process_each(processor, input_result, params, match, progress=progress, cancel=cancel)
+    results = list(attach_provenance(stacked, input_result, processor, params, ports=ports))
+    node = output_node(results[0]) if results else None
+    if node is not None:
+        # One node for the loop (shared by every port's result), saying what
+        # was looped over; never a node per index.
+        node["iterated_over"] = iteration.iterated_over(match)
+    return results
 
 
 def summarize(results, failures) -> str:
@@ -163,7 +221,9 @@ def summarize(results, failures) -> str:
 
 
 __all__ = [
+    "iteration_plan",
     "restriction_for",
+    "run_iterated",
     "run_batch",
     "run_multi",
     "run_processor",

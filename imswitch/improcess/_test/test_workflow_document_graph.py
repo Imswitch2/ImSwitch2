@@ -174,7 +174,6 @@ def test_a_save_and_a_reconstruction_always_have_their_input_replaced(catalog):
     ("rec", "raw", "no inputs"),
     ("blur", "blur", "loop"),
     ("blur", "split", "loop"),
-    ("split.C0", "rec2", "reads from a source"),
 ])
 def test_connections_that_cannot_run_are_refused(catalog, source, target, message):
     document = _chain(catalog)
@@ -277,7 +276,6 @@ def test_a_step_dropped_on_a_cable_is_spliced_in(catalog):
     ("rec", "split", "only a processing step"),
     ("split", "out", "loop"),
     ("blur", "blur", "loop"),
-    ("split", "rec", "reads from a source"),
     ("blur", "raw", "no input 0"),
 ])
 def test_splices_that_cannot_run_are_refused(catalog, step_id, target, message):

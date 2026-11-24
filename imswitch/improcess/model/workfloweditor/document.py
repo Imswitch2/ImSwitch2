@@ -39,6 +39,7 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_SAVE_TEMPLATE,
     SOURCE_PORT,
     Consolidate,
+    Map,
     Issue,
     Process,
     Reconstruct,
@@ -244,7 +245,7 @@ class WorkflowDocument:
         for step in self.producers_before(step_id):
             if isinstance(step, Source):
                 options.append(PortOption(step.id, None, f"{step.id} ({SOURCE_PORT})"))
-            elif isinstance(step, (Reconstruct, Consolidate)):
+            elif isinstance(step, (Reconstruct, Consolidate, Map)):
                 options.append(PortOption(step.id, None, f"{step.id} ({DEFAULT_PORT})"))
             elif isinstance(step, Process):
                 entry = self.entry_for(step)
@@ -400,6 +401,10 @@ class WorkflowDocument:
         step = self.step(step_id)
         step.id = new_id
         for later in self.steps:
+            if isinstance(later, Map):
+                # A map's body reads outer steps by id too: rename those
+                # first, so the map's cables already match the new id.
+                later.rename_outer({step_id: Ref(new_id)})
             refs = _refs_of(later)
             if any(ref.step == step_id for ref in refs):
                 _set_refs(later, [Ref(new_id, ref.port) if ref.step == step_id else ref for ref in refs])
@@ -639,7 +644,17 @@ class WorkflowDocument:
         if ref.step == step_id or step_id in ancestors(self.steps, ref.step):
             raise DocumentError(f"connecting {ref} to {step_id!r} would make a loop")
         if isinstance(target, Reconstruct) and not isinstance(producer, Source):
-            raise DocumentError("a reconstruction reads from a source step")
+            from imswitch.improcess.model.workfloweditor.nodes import kinds_of
+            from imswitch.improcess.workflows.steps import RECONSTRUCTION_INPUT_KINDS
+
+            kind = kinds_of(self).get(ref.step)
+            if kind is not None and kind not in RECONSTRUCTION_INPUT_KINDS:
+                raise DocumentError(f"a reconstruction reads an image; {ref.step!r} produces {kind} results")
+            entry = self.entry_for(target)
+            if entry is not None and getattr(entry.plugin, "reads_recording_file", False):
+                from imswitch.improcess.reconstructors.base import recording_file_refusal
+
+                raise DocumentError(recording_file_refusal(entry.plugin))
         refs = _refs_of(target)
         if isinstance(target, (Save, Reconstruct)):
             refs = [ref]
@@ -676,8 +691,6 @@ class WorkflowDocument:
         if not isinstance(inserted, Process):
             raise DocumentError("only a processing step can be put on a cable")
         target = self.step(target_id)
-        if isinstance(target, Reconstruct):
-            raise DocumentError("a reconstruction reads from a source step")
         refs = _refs_of(target)
         if not 0 <= index < len(refs):
             raise DocumentError(f"{target_id!r} has no input {index}")
@@ -702,6 +715,13 @@ class WorkflowDocument:
                               if isinstance(step, Save) and step.input.step == step_id}
         for step in self.steps:
             if step.id in doomed or isinstance(step, (Source, Save)):
+                continue
+            if isinstance(step, Map):
+                # Its input and its body's broadcast reads go separately: a
+                # map whose input is gone keeps its body and is reported.
+                if step.input is not None and step.input.step in doomed:
+                    step.input = None
+                step.drop_outer(doomed)
                 continue
             kept = [ref for ref in step.inputs if ref.step not in doomed]
             if len(kept) != len(step.inputs):

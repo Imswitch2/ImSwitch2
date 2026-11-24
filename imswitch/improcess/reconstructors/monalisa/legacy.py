@@ -71,6 +71,10 @@ class LegacyMonalisaReconstructor(Reconstructor):
 
     name = "MoNaLISA (classic)"
     id = "monalisa-legacy"
+
+    #: As the unified MoNaLISA: one scan of (frames, rows, cols) per call;
+    #: axes in front (T of a deskewed time-lapse, C) are auto-indexed.
+    core_dims_in = ("*", "Y", "X")
     output_kind = "image"
     file_extensions = ["hdf5", "tiff", "zarr"]
     supports_consolidation = True
