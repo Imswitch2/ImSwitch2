@@ -738,14 +738,17 @@ class TimeTaggerInfo:
     card's minimum. Set it to the detector's own dead time to suppress
     ringing and double counts. """
 
-    laserSyncChannel: int = 2
-    """ Input carrying the laser sync (the TCSPC reference). """
+    laserSyncChannel: Optional[int] = 2
+    """ Input carrying the laser sync (the TCSPC reference); ``null`` = no
+    sync cabled (a card used for photon counting only, with no
+    time-resolved detector on it). """
 
     laserSyncTriggerV: float = 0.5
     """ Trigger threshold in volts for the laser sync input. """
 
-    lineClockChannel: int = 3
-    """ Input carrying the scan's line clock (``scan.lineClockLine``). """
+    lineClockChannel: Optional[int] = 3
+    """ Input carrying the scan's line clock (``scan.lineClockLine``);
+    ``null`` = not cabled. """
 
     lineClockTriggerV: float = 0.5
     """ Trigger threshold in volts for the line clock input. An NI DO line
