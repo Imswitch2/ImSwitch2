@@ -1777,17 +1777,27 @@ at startup; if you list ``["view-only", "widefield-starss"]`` under
 Drop-in reconstructors from the plugins folder are always registered, and
 *Tools → Load reconstructor* adds any other built-in for the session.
 
+.. _improcess-beadrec:
+
 Bead-scan reconstruction
 ========================
 
-The ``beadrec`` reconstructor turns a recorded camera frame stream into a 2D
-raster image. Each input frame represents one scan position; the reconstructed
-pixel value is the mean intensity inside the selected camera ROI. It accepts
-HDF5, TIFF/OME-TIFF and Zarr input.
+The ``beadrec`` reconstructor turns a recorded camera frame stream into a
+raster image or volume. Each input frame represents one scan position; the
+reconstructed pixel value is the mean intensity inside the selected camera
+ROI. It accepts HDF5, TIFF/OME-TIFF and Zarr input.
 
 A recording that carries its acquisition layout (see `Data ingest`_)
 defines the raster: its scan size and step sizes are used, and a scan with
 condition loops (line steps, for example) gives one image per condition.
+Any two scan axes give an image -- ``Y, X`` for an XY scan, ``Z, X`` for XZ,
+``Z, Y`` for YZ, with the higher axis down the rows -- and all three a
+``Z, Y, X`` volume. Frames are placed by their recorded coordinates, so the
+order the axes were stepped in does not matter. A scan axis with a single
+step (one Z plane in an XY scan) is dropped rather than kept as a third
+dimension. The Z loop, like X and Y, must record its step: it is the axial
+pixel size, and a coarser Z step is resampled to the lateral pixel size as
+an anisotropic XY scan is.
 Leave **Scan X pixels (0=auto)** and **Scan Y pixels (0=auto)** at ``0`` for
 such a file; a manual size that disagrees with the recorded one is refused
 rather than applied.  For a source without a recorded layout, enter the
@@ -1803,7 +1813,12 @@ the reconstructed image to equal pixel spacing.
 decay), ``sine1d`` (a one-dimensional sine with fitted wavelength, phase and
 angle) and ``sine2d``. A successful fit is stored in the result metadata with
 the model, centre, fitted parameters and :math:`R^2`; a fit failure is
-reported in the metadata without discarding the reconstructed image.
+reported in the metadata without discarding the reconstructed image. The
+fit's ``axes`` name the image's rows and columns: ``x0`` and ``sigma_x``
+follow the columns, ``y0`` and ``sigma_y`` the rows, so an XZ image reports
+its axial width as ``sigma_y``. The models are 2D, so a volume is fitted as
+its XY, XZ and YZ sections through the bead's intensity centroid, stored
+under ``fit_sections`` with the plane each was cut at.
 
 For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
 described in :doc:`tiling`.
