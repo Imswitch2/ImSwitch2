@@ -27,7 +27,13 @@ SA_STATUS = ct.c_ulong()
 SA_INDEX  = ct.c_ulong()
 SA_PACKET_TYPE  = ct.c_ulong()
 
-MCS_lib = ct.cdll.LoadLibrary("MCSControl")
+try:
+    MCS_lib = ct.cdll.LoadLibrary("MCSControl")
+except OSError as error:
+    # The vendor SDK is not installed (or does not load). An ImportError is
+    # the normal "this module is unavailable" signal for the manager loader.
+    raise ImportError(
+        f'SmarACT MCSControl library could not be loaded: {error}') from error
 
 # // defines a data packet for the asynchronous mode
 class SA_packet(ct.Structure):
