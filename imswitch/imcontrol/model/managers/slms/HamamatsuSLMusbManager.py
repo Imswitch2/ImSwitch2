@@ -61,6 +61,7 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
                     
                 dll_path = os.path.join(baseDir, dll_name)
                 self.dll = ctypes.CDLL(dll_path)
+                self.define_dll_prototypes()
             except Exception as e:
                 self.__logger.error(f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode")
                 self.mockermode = True
@@ -71,9 +72,6 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
                     failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
                     mock_active=True,
                 )
-
-        if self.dll is not None:
-            self.define_dll_prototypes()
 
     def finalize(self):
         """Finalize the manager by closing any open connections."""
