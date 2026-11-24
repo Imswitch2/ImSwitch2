@@ -77,7 +77,7 @@ class MultiManager(ABC):
 
     def getFailedDevices(self):
         """ Devices that failed to start, as ``{name: FailedDeviceManager}``. """
-        return dict(getattr(self, '_failedSubManagers', {}))
+        return dict(self.__dict__.get('_failedSubManagers', {}))
 
     @staticmethod
     def _resolveManagerClass(currentPackage, subManagersPackage, kind, managerName):
@@ -267,7 +267,7 @@ class MultiManager(ABC):
         """ Raises an error if the specified device is not managed by this
         manager. """
         if managedDeviceName not in self._subManagers:
-            failed = getattr(self, '_failedSubManagers', {}).get(managedDeviceName)
+            failed = self.__dict__.get('_failedSubManagers', {}).get(managedDeviceName)
             if failed is not None:
                 raise NoSuchSubManagerError(
                     f'Device "{managedDeviceName}" failed to start in this '
