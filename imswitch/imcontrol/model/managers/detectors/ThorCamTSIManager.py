@@ -57,6 +57,7 @@ class ThorCamTSIManager(DetectorManager):
         
         # Initialize camera (with mock fallback)
         self._camera = self._initCamera(serial, dll_location)
+        self._requireBackend()
 
         mode_labels = {
             'software': 'Software',

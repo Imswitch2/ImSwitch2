@@ -40,6 +40,7 @@ class AVManager(DetectorManager):
             use_mock_on_failure=bool(
                 detectorInfo.managerProperties.get('useMockOnFailure', True)),
         )
+        self._requireBackend()
 
         model = self._camera.model
         self._running = False
