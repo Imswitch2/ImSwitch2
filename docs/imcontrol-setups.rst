@@ -7,28 +7,55 @@ usable in a wide variety of microscopy setups.  In order to provide
 this flexibility, hardware configurations are defined in JSON files
 that are loaded when the hardware control module starts.
 
-Setup files are loaded from the ``imcontrol_setups`` directory,
-created inside your user config directory the first time the hardware
-control module starts.  It is pre-populated with example setups.
-The user directory is:
+Setup files are loaded from the *setup folder*, by default the
+``imcontrol_setups`` directory created inside your user config directory the
+first time the hardware control module starts.  The user directory is:
 
 * ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows
 * ``~/ImSwitchConfig/`` on macOS / Linux
 
+Setups may be sorted into subfolders of the setup folder; the setup list
+shows them by their path relative to it, e.g.
+``mock/point_scanning/simple_mock_setup.json``.  The default folder is
+pre-populated with the example setups, sorted the same way:
+
+* ``example_no_hardware.json`` at the top: the default, and the only one there
+* ``mock/<modality>/``: hardware-free setups (``widefield``,
+  ``point_scanning``, ``monalisa``, ``lightsheet``)
+* ``real/<modality>/``: setups of real microscopes to adapt (``widefield``,
+  ``widefieldstarss``, ``monalisa``, ``sted``)
+* ``processing/``: ImProcess on its own, without hardware
+
+To take setups from another folder -- a lab share, a git checkout of your
+rigs' configurations -- use **Preferences → Setup folder…**, in ImSwitch or
+in the Config Studio.  It lists the setups the folder holds and asks which
+one to use; ImSwitch restarts with it (the Config Studio switches its list
+at once, and ImSwitch uses the folder from its next start).  The examples
+stay in the default folder.  If the chosen folder holds no setup when
+ImSwitch starts, for instance a share that is not mounted, the setup picker
+offers the default folder's setups instead.
+
 The first time you start the hardware control module you will be
 prompted to select a setup file; ``example_no_hardware.json`` is
-preselected. ``simple_mock_setup.json`` is a hardware-free point-scanning
-microscope (one mock camera, one simulated APD, the SimplePointScan panel).
-To switch later, use **Hardware → Pick hardware setup…** in the menu bar.
+preselected. ``mock/point_scanning/simple_mock_setup.json`` is a
+hardware-free point-scanning microscope (one mock camera, one simulated APD,
+the SimplePointScan panel).  To switch later, use **Hardware → Pick hardware
+setup…** in the menu bar.
 
 .. image:: ./images/setup-picker.png
    :alt: The dialog that asks which hardware setup file to load
    :align: center
 
 The choice is stored as ``setupFileName`` in
-``ImSwitchConfig/config/imcontrol_options.json``; the prompt appears when
-that file does not exist yet, or when the setup it names is missing.  The same
-file holds the per-computer settings that are not part of any setup:
+``ImSwitchConfig/config/imcontrol_options.json``, relative to the setup
+folder (``/`` separators) or, for a file outside it, as its full path; the
+prompt appears when that file does not exist yet, or when the setup it names
+is missing.  A name whose file has moved into a subfolder is followed there
+when exactly one setup of that file name is in the folder.  The same file
+holds the per-computer settings that are not part of any setup:
+
+* ``setupFolder``: the setup folder, empty for the default one, editable
+  with **Preferences → Setup folder…**
 
 * ``recording.outputFolder`` and ``recording.includeDateInOutputFolder``:
   where recordings are saved, and whether a dated subfolder is added

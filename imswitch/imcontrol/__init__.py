@@ -16,8 +16,19 @@ def getMainViewAndController(moduleCommChannel, *_args,
         import sys
         from imswitch.imcontrol.view.PickSetupDialog import askForSetup
 
-        # Let user pick the setup to use
-        setupFileName = askForSetup(configfiletools.getSetupList(), options.setupFileName)
+        # Let user pick the setup to use. A setup folder that holds no setup
+        # (a share that is not mounted, a mistyped path) must not leave the
+        # operator with an empty list and no way out: offer the default
+        # folder's setups instead.
+        folder = configfiletools.getSetupFilesDir(options)
+        setups = configfiletools.getSetupList(folder)
+        if not setups and getattr(options, 'setupFolder', ''):
+            logger.warning(f'No setup files in the setup folder {folder}; '
+                           f'offering the default setup folder instead')
+            options = dataclasses.replace(options, setupFolder='')
+            folder = configfiletools.getSetupFilesDir(options)
+            setups = configfiletools.getSetupList(folder)
+        setupFileName = askForSetup(setups, options.setupFileName, folder=folder)
         if not setupFileName:
             logger.critical('User did not pick a setup to use')
             sys.exit()

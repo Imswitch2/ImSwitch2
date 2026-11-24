@@ -78,6 +78,8 @@ class ImConMainController(MainController):
         self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
         self.__mainView.sigOpenRecordingFolder.connect(self.openRecordingFolder)
         self.__mainView.recordingFolderDialog.sigSaveRequested.connect(self.saveRecordingFolder)
+        self.__mainView.sigOpenSetupFolder.connect(self.openSetupFolder)
+        self.__mainView.setupFolderDialog.sigSaveRequested.connect(self.saveSetupFolder)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # The Config Studio, while it is open. One window at a time: a second
@@ -456,7 +458,9 @@ class ImConMainController(MainController):
 
         options, _ = configfiletools.loadOptions()
 
-        self.pickSetupController.setSetups(configfiletools.getSetupList())
+        folder = configfiletools.getSetupFilesDir(options)
+        self.pickSetupController.setFolder(folder)
+        self.pickSetupController.setSetups(configfiletools.getSetupList(folder))
         self.pickSetupController.setSelectedSetup(options.setupFileName)
         if not self.__mainView.showPickSetupDialogBlocking():
             return
@@ -675,6 +679,66 @@ class ImConMainController(MainController):
                            f'{" (dated subfolders)" if recording.includeDateInOutputFolder else ""}')
         dialog.setStatus('')
         dialog.accept()
+
+    def openSetupFolder(self):
+        """Show the setup-folder editor, seeded with the folder and setup in use."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.setupFolderDialog
+        dialog.setValues(configfiletools.getSetupFilesDir(options), options.setupFileName)
+        self.__mainView.showSetupFolderDialog()
+
+    def saveSetupFolder(self, values):
+        """Take setups from another folder: save it and the setup chosen from
+        it, then restart, as Pick hardware setup does.
+
+        A restart, not a switch in place: the running session keeps writing
+        laser presets and ROIs into the setup file it loaded, and only a new
+        start makes the new folder's setup the one it runs and writes. A
+        folder that cannot be one, or that holds no setup to start with,
+        keeps the dialog open with the reason.
+        """
+        from imswitch.imcontrol.model import setupfolder
+
+        dialog = self.__mainView.setupFolderDialog
+        try:
+            folder = dirtools.checkedFolderPath(values.get('setupFolder'))
+        except ValueError as e:
+            dialog.setStatus(str(e))
+            return
+        setupFileName = str(values.get('setupFileName') or '')
+        if not setupFileName or not os.path.isfile(setupfolder.setupFilePath(folder, setupFileName)):
+            dialog.setStatus(
+                'This folder holds no setup file for ImSwitch to start with. Put one'
+                ' there first, e.g. with Save As… in the Config Studio (Hardware >'
+                ' Edit hardware configuration…).'
+            )
+            return
+
+        options, _ = configfiletools.loadOptions()
+        setting = setupfolder.setupFolderSetting(folder)
+        if (setting == getattr(options, 'setupFolder', '')
+                and setupFileName == options.setupFileName):
+            dialog.setStatus('')
+            dialog.accept()
+            return
+
+        if not guitools.askYesNoQuestion(
+            self.__mainView, 'Restart ImSwitch?',
+            f'ImSwitch will restart using "{setupFileName}" from {folder}. Continue?'
+        ):
+            return
+        try:
+            configfiletools.saveOptions(dataclasses.replace(
+                options, setupFolder=setting, setupFileName=setupFileName
+            ))
+        except Exception as e:
+            self.__logger.error(f'Could not save the setup folder: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the setup folder: {e}')
+            return
+        self.__logger.info(f'Setup folder set to {folder}, setup {setupFileName}')
+        dialog.setStatus('')
+        dialog.accept()
+        self._restartAfterShutdown()
 
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.

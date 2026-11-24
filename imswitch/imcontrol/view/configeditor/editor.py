@@ -23,10 +23,11 @@ import os
 import re
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import glob
 from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QFont, QPalette, QColor
+from imswitch.imcontrol.model import setupfolder as _setupfolder
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
@@ -138,7 +139,46 @@ def _imswitch_user_root() -> Path:
 
 
 def _default_setup_dir() -> Path:
+    """The setup folder ImSwitch uses when ``setupFolder`` is not set."""
     return _imswitch_user_root() / "imcontrol_setups"
+
+
+def _read_options(options_path) -> dict:
+    """The contents of an ``imcontrol_options.json``; {} when unreadable."""
+    if not options_path:
+        return {}
+    try:
+        with open(options_path, encoding="utf-8") as fh:
+            options = json.load(fh)
+        return options if isinstance(options, dict) else {}
+    except Exception:
+        return {}
+
+
+def _configured_setup_dir(options_path=None) -> Path:
+    """The setup folder ImSwitch takes setups from: ``setupFolder`` of the
+    options file (Preferences > Setup folder…), else the default one. Without
+    ``options_path`` the options file is looked for where ImSwitch keeps it."""
+    if options_path is None:
+        options_path = next(
+            (str(Path(root) / "imcontrol_options.json")
+             for root in MainWindow._OPTIONS_SEARCH_ROOTS
+             if (Path(root) / "imcontrol_options.json").is_file()),
+            "",
+        )
+    setting = str(_read_options(options_path).get("setupFolder") or "").strip()
+    return Path(os.path.expanduser(setting)) if setting else _default_setup_dir()
+
+
+def _is_within(path, folder) -> bool:
+    """Whether ``path`` is ``folder`` or lies anywhere below it."""
+    if not path or not folder:
+        return False
+    try:
+        Path(path).resolve().relative_to(Path(folder).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _default_config_dir() -> Path:
@@ -4554,7 +4594,10 @@ class LeftPanel(QWidget):
 
         open_btn = QPushButton("Folder…")
         open_btn.setFixedHeight(22)
-        open_btn.setToolTip("Choose the folder containing ImSwitch setup JSON files")
+        open_btn.setToolTip(
+            "Browse another folder of setup JSON files. ImSwitch keeps taking its "
+            "setups from its setup folder (Preferences > Setup folder…)."
+        )
         open_btn.clicked.connect(self._open_folder)
         config_hdr.addWidget(open_btn)
 
@@ -4691,9 +4734,19 @@ class LeftPanel(QWidget):
             return ""
         return str(items[0].data(0, Qt.UserRole) or "")
 
+    def _file_items(self):
+        """Every config item of the list, at any depth (folder items, which
+        carry no path, are skipped)."""
+        pending = [self._file_list.topLevelItem(index)
+                   for index in range(self._file_list.topLevelItemCount())]
+        while pending:
+            item = pending.pop(0)
+            if item.data(0, Qt.UserRole):
+                yield item
+            pending[0:0] = [item.child(index) for index in range(item.childCount())]
+
     def select_config_path(self, path: str) -> bool:
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             item_path = str(item.data(0, Qt.UserRole) or "")
             if self._same_path(item_path, path):
                 self._file_list.setCurrentItem(item)
@@ -4723,6 +4776,8 @@ class LeftPanel(QWidget):
 
     def _file_context_menu(self, pos) -> None:
         item = self._file_list.itemAt(pos)
+        if item is not None and not item.data(0, Qt.UserRole):
+            item = None  # a subfolder: offer what empty space offers
         if item is None:
             menu = QMenu(self)
             new_action = menu.addAction("New Config")
@@ -4756,7 +4811,7 @@ class LeftPanel(QWidget):
 
     def _open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Open Config Folder",
-                                             str(_default_setup_dir()))
+                                             str(self._config_dir or _default_setup_dir()))
         if d:
             self._config_dir = d
             count = self._refresh_file_list(d)
@@ -4782,8 +4837,7 @@ class LeftPanel(QWidget):
         self._current_config_path = str(current_path or "")
         self._active_config_path = str(active_path or "")
         self._current_modified = bool(modified)
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             path = str(item.data(0, Qt.UserRole) or "")
             self._decorate_file_item(item, Path(path))
         self._update_config_action_state()
@@ -4804,25 +4858,65 @@ class LeftPanel(QWidget):
         item.setFont(0, font)
 
     def _apply_file_filter(self, text: str = "") -> None:
+        """Hide the configs whose path below the listed folder (subfolder
+        names included, so "mock" finds the mock setups) does not contain the
+        text, and the subfolders left with nothing to show."""
         needle = str(text or "").strip().casefold()
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             path = str(item.data(0, Qt.UserRole) or "")
-            filename = Path(path).name.casefold()
-            item.setHidden(bool(needle) and needle not in filename)
+            shown = str(item.data(0, Qt.UserRole + 1) or Path(path).name).casefold()
+            item.setHidden(bool(needle) and needle not in shown)
+
+        def hide_empty(item) -> bool:
+            if item.data(0, Qt.UserRole):
+                return not item.isHidden()
+            visible = [hide_empty(item.child(i)) for i in range(item.childCount())]
+            item.setHidden(not any(visible))
+            return any(visible)
+
+        for index in range(self._file_list.topLevelItemCount()):
+            hide_empty(self._file_list.topLevelItem(index))
         self._update_config_action_state()
 
+    def _folder_item(self, folders: dict, relative: PurePosixPath):
+        """The tree item of a subfolder (``relative`` to the listed folder),
+        made with its parents on first use; None for the folder itself."""
+        if str(relative) in ("", "."):
+            return None
+        key = relative.as_posix()
+        if key not in folders:
+            parent = self._folder_item(folders, relative.parent)
+            item = QTreeWidgetItem([relative.name])
+            item.setFlags(Qt.ItemIsEnabled)
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+            item.setToolTip(0, key)
+            if parent is None:
+                self._file_list.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            folders[key] = item
+        return folders[key]
+
     def _refresh_file_list(self, folder: str) -> int:
+        """List the configs of ``folder`` and its subfolders as a tree: those
+        at the top first, then one branch per subfolder."""
         selected_before = self.selected_config_path()
         self._file_list.clear()
         count = 0
         preferred_item = None
         current_item = None
-        for p in sorted(Path(folder).glob("*.json")):
+        folders: dict = {}
+        for name in _setupfolder.listSetupFiles(folder):
+            p = Path(folder) / name
             item = QTreeWidgetItem()
             item.setData(0, Qt.UserRole, str(p))
+            item.setData(0, Qt.UserRole + 1, name)
             self._decorate_file_item(item, p)
-            self._file_list.addTopLevelItem(item)
+            parent = self._folder_item(folders, PurePosixPath(name).parent)
+            if parent is None:
+                self._file_list.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
             if selected_before and self._same_path(str(p), selected_before):
                 preferred_item = item
             if self._current_config_path and self._same_path(
@@ -4830,6 +4924,7 @@ class LeftPanel(QWidget):
             ):
                 current_item = item
             count += 1
+        self._file_list.expandAll()
         if preferred_item is not None:
             self._file_list.setCurrentItem(preferred_item)
         elif current_item is not None:
@@ -4845,6 +4940,19 @@ class LeftPanel(QWidget):
     def set_folder(self, folder: str):
         self._config_dir = folder
         self._refresh_file_list(folder)
+
+    def folder_for(self, path: str) -> str:
+        """The folder the list shows once ``path`` is open: the listed one
+        when ``path`` is in it or in one of its subfolders, else the file's
+        own folder."""
+        if self._config_dir and _is_within(path, self._config_dir):
+            return str(self._config_dir)
+        return str(Path(path).parent)
+
+    def show_folder_of(self, path: str) -> None:
+        """Re-list so that ``path`` is shown, keeping the listed folder when
+        ``path`` is anywhere below it."""
+        self.set_folder(self.folder_for(path))
 
     def reload_folder(self):
         if not self._config_dir:
@@ -5227,6 +5335,7 @@ class MainWindow(QMainWindow):
 
         self._adopt_dark_theme()
         self._build_toolbar()
+        self._build_menu()
         self._build_ui()
         self._build_status_bar()
 
@@ -5289,6 +5398,17 @@ class MainWindow(QMainWindow):
 
         self.addAction(self._make_shortcut("Ctrl+S", self._save_active_pane))
         self.addAction(self._make_shortcut("Ctrl+N", self._new_file))
+
+    def _build_menu(self):
+        """Preferences: settings of this computer that ImSwitch reads from
+        ``imcontrol_options.json`` -- the same ones as in ImSwitch's own
+        Preferences menu."""
+        preferences = self.menuBar().addMenu("&Preferences")
+        preferences.setToolTipsVisible(True)
+        self._setup_folder_action = QAction("Setup folder…", self)
+        self._setup_folder_action.triggered.connect(self._open_setup_folder_dialog)
+        preferences.addAction(self._setup_folder_action)
+        self._setup_folder_dialog = None
 
     def _make_shortcut(self, key, slot):
         a = QAction(self)
@@ -5643,7 +5763,8 @@ class MainWindow(QMainWindow):
         if not folder:
             return []
         paths = []
-        for path in sorted(Path(folder).glob("*.json")):
+        for name in _setupfolder.listSetupFiles(folder):
+            path = Path(folder) / name
             if self._path and LeftPanel._same_path(str(path), self._path):
                 continue
             paths.append(str(path))
@@ -5840,7 +5961,7 @@ class MainWindow(QMainWindow):
     def _open_file(self):
         if not self._confirm_discard():
             return
-        start_dir = str(Path(self._path).parent if self._path else _default_setup_dir())
+        start_dir = str(Path(self._path).parent if self._path else self._setup_dir())
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Config", start_dir, "JSON files (*.json)"
         )
@@ -5857,13 +5978,9 @@ class MainWindow(QMainWindow):
     def _load_file(self, path: str):
         compare_conflict = False
         if self._compare_mode and self._compare_path:
-            compare_conflict = LeftPanel._same_path(path, self._compare_path)
-            try:
-                compare_conflict = compare_conflict or (
-                    Path(path).parent.resolve() != Path(self._compare_path).parent.resolve()
-                )
-            except Exception:
-                pass
+            compare_conflict = LeftPanel._same_path(path, self._compare_path) or (
+                not _is_within(self._compare_path, self._left.folder_for(path))
+            )
         if (
             compare_conflict and self._compare_modified
             and not self._confirm_compare_changes("opening this file as the main config")
@@ -5877,7 +5994,7 @@ class MainWindow(QMainWindow):
                 with open(path, encoding="utf-8") as fh:
                     self._data = json.load(fh)
             self._path = path
-            self._left.set_folder(str(Path(path).parent))
+            self._left.show_folder_of(path)
             self._set_modified(False)
             self._left.select_config_path(path)
             self._refresh_canvas()
@@ -5899,8 +6016,7 @@ class MainWindow(QMainWindow):
     def _on_folder_reloaded(self, folder: str, count: int):
         if self._compare_mode:
             compare_outside_folder = (
-                self._compare_path
-                and Path(self._compare_path).parent.resolve() != Path(folder).resolve()
+                self._compare_path and not _is_within(self._compare_path, folder)
             )
             if (
                 compare_outside_folder and self._compare_modified
@@ -5997,7 +6113,7 @@ class MainWindow(QMainWindow):
         try:
             shutil.copy2(source, target)
             self._note_saved(str(target))
-            self._left.set_folder(str(source.parent))
+            self._left.show_folder_of(str(target))
             self._left.select_config_path(str(target))
             self._status.setText(f"Duplicated {source.name} as {target.name}")
         except Exception as exc:
@@ -6024,7 +6140,7 @@ class MainWindow(QMainWindow):
             source.rename(target)
             if was_active:
                 try:
-                    self._write_active_setup_name(target.name)
+                    self._write_active_setup_name(self._setup_name_for(str(target)))
                 except Exception:
                     target.rename(source)
                     raise
@@ -6035,7 +6151,7 @@ class MainWindow(QMainWindow):
             if old_resolved in self._saved_files:
                 self._saved_files.discard(old_resolved)
                 self._saved_files.add(self._resolved_path(target))
-            self._left.set_folder(str(target.parent))
+            self._left.show_folder_of(str(target))
             self._left.select_config_path(str(target))
             if self._compare_mode:
                 self._refresh_compare_choices(auto_load=False)
@@ -6091,13 +6207,13 @@ class MainWindow(QMainWindow):
             if is_current:
                 self._path = ""
                 self._set_modified(False)
-                active_after = self._active_setup_path(str(source.parent))
+                active_after = self._active_setup_path(self._left.config_dir)
                 if active_after:
                     self._load_file(active_after)
                 else:
                     self._new_file()
             else:
-                self._left.set_folder(str(source.parent))
+                self._left.show_folder_of(str(source))
                 if self._compare_mode:
                     self._refresh_compare_choices(auto_load=True)
                 self._update_active_banner()
@@ -6118,7 +6234,7 @@ class MainWindow(QMainWindow):
         self._write_file(self._path)
 
     def _save_as(self):
-        start_path = self._path or str(_default_setup_dir() / "new_setup.json")
+        start_path = self._path or str(self._setup_dir() / "new_setup.json")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Config As", start_path, "JSON files (*.json)"
         )
@@ -6165,7 +6281,7 @@ class MainWindow(QMainWindow):
             # non-UI tests/embedders that intentionally do not construct LeftPanel.
             left = state.get("_left")
             if left is not None:
-                left.set_folder(str(Path(path).parent))
+                left.show_folder_of(path)
             self._set_modified(False)
             if left is not None:
                 left.select_config_path(path)
@@ -6575,6 +6691,16 @@ class MainWindow(QMainWindow):
                 break
         self._update_active_banner()
 
+    def _setup_dir(self) -> Path:
+        """The folder ImSwitch takes its setups from (Preferences > Setup
+        folder…), as the options file found says."""
+        return _configured_setup_dir(self._options_path)
+
+    def _setup_name_for(self, path: str) -> str:
+        """How the options file names the setup at ``path``: relative to the
+        setup folder ('mock/x.json'), or absolute when outside it."""
+        return _setupfolder.setupNameFor(path, self._setup_dir())
+
     def _active_setup_name(self) -> str:
         """The setup file name ``imcontrol_options.json`` marks as active."""
         if not self._options_path:
@@ -6595,17 +6721,23 @@ class MainWindow(QMainWindow):
         name = self._active_setup_name()
         if not name:
             return ""
-        roots = []
         if start_folder:
-            roots.append(Path(start_folder))
-        roots.append(_default_setup_dir())
-        for root in roots:
             try:
-                candidate = Path(root) / name
+                candidate = Path(start_folder) / name
                 if candidate.is_file():
                     return str(candidate)
             except Exception:
-                continue
+                pass
+        # In the setup folder, the name is relative to it (subfolders
+        # included); a bare name ImSwitch has not yet followed into the
+        # subfolder it was sorted into is found there too.
+        try:
+            setup_dir = self._setup_dir()
+            found = _setupfolder.findSetupFile(setup_dir, name)
+            if found is not None:
+                return _setupfolder.setupFilePath(str(setup_dir), found)
+        except Exception:
+            pass
         return ""
 
     def _open_active_config(self, start_folder: str = "") -> None:
@@ -6672,6 +6804,15 @@ class MainWindow(QMainWindow):
             else "Open or save a config file first" if not self._path
             else f"Set {Path(self._path).name} as the active ImSwitch config"
         )
+
+        action = self.__dict__.get("_setup_folder_action")
+        if action is not None:
+            action.setEnabled(bool(self._options_path))
+            action.setToolTip(
+                f"Where ImSwitch takes its setups from: {self._setup_dir()}"
+                if self._options_path else
+                "No imcontrol_options.json was found: start ImSwitch once first"
+            )
 
         # Reset is useful only while the primary editing config has unsaved
         # changes. Keep the normal identity bar uncluttered otherwise.
@@ -6749,12 +6890,16 @@ class MainWindow(QMainWindow):
 
     def _write_active_setup_name(self, name: str) -> None:
         """Persist the active setup name without exposing a half-written options file."""
+        self._write_options({"setupFileName": name})
+
+    def _write_options(self, changes: dict) -> None:
+        """Update keys of the options file without exposing a half-written one."""
         if not self._options_path:
             raise RuntimeError("No imcontrol_options.json was found")
         options_path = Path(self._options_path)
         with open(options_path, encoding="utf-8") as fh:
             opts = json.load(fh)
-        opts["setupFileName"] = name
+        opts.update(changes)
         temp_path = options_path.with_name(options_path.name + ".tmp")
         try:
             with open(temp_path, "w", encoding="utf-8") as fh:
@@ -6774,9 +6919,10 @@ class MainWindow(QMainWindow):
             self._set_as_active_config()
             return
         try:
-            self._write_active_setup_name(Path(path).name)
+            name = self._setup_name_for(path)
+            self._write_active_setup_name(name)
             self._update_active_banner()
-            self._status.setText(f"Active config set to: {Path(path).name}")
+            self._status.setText(f"Active config set to: {name}")
         except Exception as exc:
             QMessageBox.critical(
                 self, "Error", f"Could not update options file:\n{exc}"
@@ -6800,13 +6946,66 @@ class MainWindow(QMainWindow):
                     return
 
         try:
-            self._write_active_setup_name(Path(self._path).name)
+            name = self._setup_name_for(self._path)
+            self._write_active_setup_name(name)
             self._update_active_banner()
-            self._status.setText(
-                f"Active config set to: {Path(self._path).name}"
-            )
+            self._status.setText(f"Active config set to: {name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not update options file:\n{e}")
+
+    # ── Preferences > Setup folder… ───────────────────────────────────────
+    def _open_setup_folder_dialog(self) -> None:
+        """Show the setup-folder editor, seeded from the options file."""
+        if not self._options_path:
+            return
+        if self._setup_folder_dialog is None:
+            from imswitch.imcontrol.view.SetupFolderDialog import SetupFolderDialog
+
+            self._setup_folder_dialog = SetupFolderDialog(
+                self,
+                appliesWhen="ImSwitch uses them from its next start.",
+            )
+            self._setup_folder_dialog.sigSaveRequested.connect(self._save_setup_folder)
+        self._setup_folder_dialog.setValues(str(self._setup_dir()), self._active_setup_name())
+        self._setup_folder_dialog.show()
+        self._setup_folder_dialog.raise_()
+        self._setup_folder_dialog.activateWindow()
+
+    def _save_setup_folder(self, values: dict) -> None:
+        """Write the setup folder and the setup chosen from it to the options
+        file, and list that folder. A running ImSwitch is not switched: it
+        offers a restart when this window closes (active_config_changed)."""
+        from imswitch.imcommon.model import dirtools
+
+        dialog = self._setup_folder_dialog
+        try:
+            folder = dirtools.checkedFolderPath(values.get("setupFolder"))
+        except ValueError as exc:
+            dialog.setStatus(str(exc))
+            return
+        name = str(values.get("setupFileName") or "")
+        if name and not Path(_setupfolder.setupFilePath(folder, name)).is_file():
+            name = ""
+        try:
+            os.makedirs(folder, exist_ok=True)
+            self._write_options({
+                "setupFolder": _setupfolder.setupFolderSetting(folder),
+                **({"setupFileName": name} if name else {}),
+            })
+        except Exception as exc:
+            dialog.setStatus(f"Could not save the setup folder: {exc}")
+            return
+        dialog.setStatus("")
+        dialog.accept()
+        self._left.set_folder(folder)
+        self._update_active_banner()
+        if name:
+            self._status.setText(f"Setup folder set to {folder}; active config: {name}")
+        else:
+            self._status.setText(
+                f"Setup folder set to {folder}. It holds no setup yet: save one there "
+                f"and use Set as Active before ImSwitch starts again."
+            )
 
     # ── What this session changed ─────────────────────────────────────────
     def _note_saved(self, path: str) -> None:
@@ -7167,7 +7366,7 @@ def main():
     if len(sys.argv) > 1:
         folder = sys.argv[1]
     else:
-        _default = _default_setup_dir()
+        _default = _configured_setup_dir()
         folder = str(_default) if _default.is_dir() else ""
     win = MainWindow(start_folder=folder)
     win.show()
