@@ -1,5 +1,5 @@
 {
-  "__comment__": "The default ImSwitch2 setup: a hardware-free point-scanning microscope with one camera and one APD, everything simulated. The camera (AVManager mock) shows a live widefield image; the APD (counter-input detector on a SIMULATED NIDAQ, nidaq.simulation = true) images a synthetic sample of cells and beads from the galvo waveforms (mockSample), driven by the SimplePointScan panel: an overview (Size slider, default 60 um), a region drawn in the viewer, pixel size and dwell sliders, and three gated lasers in channels; the Advanced scan panel is one switch away. X/Y are galvo-like smooth axes reaching 100 um (5 um/V over +-10 V, vel_max 0.1 um/us, acc_max 1e-4 um/us^2); Z is a piezo-like stepped axis. To use real hardware, pick or edit another setup (Pick hardware setup...).",
+  "__comment__": "The default ImSwitch2 setup: a hardware-free point-scanning microscope with one camera and one APD, everything simulated. The camera (AVManager mock) shows a live widefield image; the APD (counter-input detector on a SIMULATED NIDAQ, nidaq.simulation = true) images a synthetic sample of cells (membranes, nuclei, microtubules, vesicles) and beads from the galvo waveforms (mockSample; its excitation block makes each channel's laser TTL light the sample, with a weaker response to 405 and 561 nm than to 488 nm), driven by the SimplePointScan panel: an overview (Size slider, default 60 um), a region drawn in the viewer, pixel size and dwell sliders, and three gated lasers in channels; the Advanced scan panel is one switch away. X/Y are galvo-like smooth axes reaching 100 um (5 um/V over +-10 V, vel_max 0.1 um/us, acc_max 1e-4 um/us^2); Z is a piezo-like stepped axis. To use real hardware, pick or edit another setup (Pick hardware setup...).",
   "detectors": {
     "Camera": {
       "managerName": "AVManager",
@@ -28,7 +28,13 @@
           "axes": {
             "X": 5.0,
             "Y": 5.0
-          }
+          },
+          "excitation": {
+            "405 (ON)": 0.4,
+            "488 (EXC)": 1.0,
+            "561 (EXC)": 0.7
+          },
+          "darkCountRate": 250
         }
       },
       "analogChannel": null,

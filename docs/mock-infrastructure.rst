@@ -90,24 +90,116 @@ Detectors
 
 APD synthetic data is modeled as a monotonic cumulative counter that
 reconstructs to bounded non-negative integer photon counts
-(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). With
-``mockSample`` the mean follows a synthetic sample (cells and beads) at the
-position the scan waveforms put the beam at each sample, so images follow the
-scanners (``_mock_sample.py``; see :doc:`devices/detectors`). PMT
+(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). PMT
 synthetic data is bounded ``float32`` voltage samples averaged per pixel
 (``mockVoltageMin``/``mockVoltageMax``/``mockVoltageMean``/``mockVoltageNoiseStd``,
-default range ``-5.0..5.0`` V).
+default range ``-5.0..5.0`` V). With a ``mockSample`` block both instead
+image the virtual sample below; so does a mock ``HamamatsuManager`` camera,
+for MoNaLISA. The mock camera's ``timing_readout_time`` is in seconds and
+follows the ROI height (10 ms for the full 2048 rows).
 
-A mock ``HamamatsuManager`` camera takes the same ``mockSample`` block for
-MoNaLISA: each triggered frame shows a square foci lattice fixed on the camera
-(``latticePeriodUm``, optional ``latticeAngleDeg``, ``spotSigmaUm``,
-``peakCounts``, ``offsetCounts``), each focus as bright as the synthetic sample
-under it, with the sample moved by the stage position the scan waveforms give
-at that frame's camera TTL (``_mock_lattice.py``). A scan over one lattice
-period therefore holds the whole sample. Only X and Y are scanned; Z and the
-ON/OFF switching steps do not change the frames. The mock's
-``timing_readout_time`` is in seconds and follows the ROI height (10 ms for the
-full 2048 rows).
+The virtual sample
+^^^^^^^^^^^^^^^^^^
+
+A ``mockSample`` block in a detector's ``managerProperties`` (simulated
+NI-DAQ only; ignored against real hardware) makes the detector image one
+synthetic specimen, placed by the scan's own waveforms: the beam position of
+every APD/PMT sample, the stage position of every camera frame. The pieces
+are in ``imcontrol/model/managers/detectors/``: ``_mock_sample.py`` (the
+specimen), ``_mock_optics.py`` (what the scan's signals do to it, and the
+point-scan signal), ``_mock_lattice.py`` (the MoNaLISA camera).
+
+**The specimen** is a map of fluorophores in µm (60 µm across, 25 nm texels),
+drawn from a ``preset``:
+
+* ``cells`` (default) -- cells with membrane, cytoplasm, nucleus and nuclear
+  envelope, microtubules from a centrosome, stress fibres, vesicles below
+  and above the resolution limit; 40, 100 and 200 nm beads between them.
+* ``filaments`` -- microtubule asters, long stiff and short floppy
+  filaments crossing at all angles.
+* ``beads`` -- rows of 40 nm, 100 nm, 200 nm, 500 nm and 1 µm beads, pairs
+  of 40 nm beads 600 nm down to 40 nm apart, and a field of 40 nm beads.
+* ``resolution`` -- a 36-spoke Siemens star (6 µm radius) at the centre,
+  line pairs and bead pairs 600 nm down to 40 nm apart, and gratings of
+  500 nm down to 100 nm period.
+
+``seed`` places the random structures. Each texel also records which
+structure dominates it, so per-structure properties (a lifetime, a
+spectrum) can be added later without redrawing the specimen; none are
+modelled yet, so every laser excites every structure alike.
+
+**The optics** are not baked into the specimen: each detector blurs it by its
+own excitation PSF (cached, a few PSFs per specimen) and reads it with
+bilinear interpolation. The excitation is peak-normalised: a point emitter
+reads the same under any PSF, an extended structure collects more under a
+wider one, and 1 is about the brightest structure under the default PSF
+(235 nm FWHM), on an autofluorescence background of 0.03.
+
+What each detector takes from the scan signals (``signalDict``), and what it
+cannot:
+
+* **Position** -- the x/y scanner waveforms (``axes``, µm per volt); an axis
+  the scan does not drive reads 0 µm.
+* **Defocus** -- with ``zAxis`` (``{"<z device>": <µm per V>}``) the z
+  waveform, less ``focusUm``, widens the PSF over ``rayleighRangeUm``
+  (default 0.4 µm) and lowers its peak; a point detector also loses the
+  out-of-focus light at its pinhole. The live view of the camera keeps the
+  z of the last scan: a z moved outside a scan is not in any scan signal.
+* **Excitation** -- ``excitation`` names the lasers that light the sample,
+  as a list or ``{"<laser>": <efficiency>}``: the sample is lit only while
+  their TTLs (``TTLCycleSignalsDict``) are high. A laser's analog power
+  counts only where the scan carries a power waveform for it (Advanced
+  line-step power) and the entry says what voltage is full power
+  (``{"<laser>": {"efficiency": 1, "fullScaleV": 5}}``); the power a
+  laser was set to outside the scan is not in the scan signals and is not
+  modelled. A laser the scan does not switch counts as on. Without
+  ``excitation`` the sample is always lit.
+* **Photobleaching** -- ``bleachHalfLifeS``: seconds of full excitation
+  that halve the fluorophores, accumulated on a 100 nm grid in the order the
+  scan exposes the sample (per line read for a point detector, per frame
+  for the camera), for the life of the detector. The live view shows the
+  bleached sample but does not bleach it. Off by default.
+
+Point detectors (APD, PMT) add ``psfFwhmUm`` (default 0.235 µm). The APD's
+mean count per sample is ``mockPhotonCountMean`` times the brightness, plus
+``darkCountRate`` (counts per second, default 0) that no light changes. The
+PMT adds ``photonsPerSample`` Poisson photons at brightness 1 (default 20),
+each worth ``signalVolts / photonsPerSample`` volts (default 1 V in all),
+to its voltage noise.
+
+**The MoNaLISA camera** shows a square lattice of foci fixed on the camera
+(``latticePeriodUm``, ``latticeAngleDeg``), the sample moved under it by the
+stage position at each camera TTL edge. Each focus excites the sample
+through a Gaussian excitation PSF (``excitationFwhmUm``, default 0.2 µm);
+its spot on the camera is the light of the emitters it excites, imaged by
+the detection PSF and centred on them rather than on the focus -- the spots
+move with the specimen, as image-scanning microscopy expects.
+``spotSigmaUm`` (default 0.12 µm) keeps its meaning: the spot of the
+confocal readout in focus, as the frames show it; the detection PSF is what
+it leaves after the excitation PSF.
+``switching`` makes the sample reversibly switchable (RESOLFT):
+``{"on": [<lasers>], "off": [<lasers>]}``, with rates ``onPerMs`` (5),
+``offPerMs`` (20) and ``readoutPerMs`` (0.3) per ms of light. From the TTLs
+between two frames the camera reads how long the ON and OFF pulses were
+and from the exposure how long the readout (``excitation``) was lit; the
+OFF pattern has its zeros at the foci, so the effective PSF narrows by
+``sqrt(1 + zeta pi^2 sigma^2 / period^2)``, ``zeta`` the OFF dose. With the
+shipped profile (ON 1 ms, OFF 2 ms) that is about 80 nm FWHM; the confocal
+mode (no OFF step) stays at 200 nm. A cycle with no ON pulse reads what the
+earlier readouts left on. The camera counts Poisson photons
+(``peakCounts`` at brightness 1 for the confocal readout in focus), adds
+``offsetCounts`` (100) and Gaussian ``readNoiseCounts`` (1.5), and seeds
+its noise with the manager's ``mockRandomSeed``.
+
+What this leaves out, to stay at tens of milliseconds per 512 x 512 frame:
+each spot is one Gaussian placed and sized from the first moments of the
+excited emitters, not their full image; a focus sees only its own zero of
+the OFF pattern; the switching state is carried from frame to frame as one
+number at the focus centre, not per emitter; switching fatigue and
+OFF-light bleaching are not modelled; and the camera's live view (no scan)
+shows the confocal readout. ``test_mock_monalisa_reconstruction.py`` runs
+mock scans of both modes through the real ``reconstruct_scan`` and checks
+each recovers the specimen under its own effective PSF.
 
 Positioners / stages
 ~~~~~~~~~~~~~~~~~~~~~
@@ -261,9 +353,11 @@ Ready-to-use hardware-free setup files, all under
   and no camera, for the panel's reference-detector choice and its tests.
 * ``simple_monalisa_mock_scan_setup.json`` — the SimpleMoNaLISA panel on a
   mock Hamamatsu camera (Live switches it to the internal trigger, an
-  acquisition to the external frame trigger) whose frames show the synthetic
+  acquisition to the external frame trigger) whose frames show the virtual
   sample under a 0.72 µm foci lattice (``mockSample``), so a recording
-  reconstructs to cells and beads; simulated NI-DAQ axes and lasers.
+  reconstructs to cells and beads; the sample switches with the profile's
+  ON/OFF/readout TTLs, so the RESOLFT mode reconstructs sharper than the
+  confocal one. Simulated NI-DAQ axes and lasers.
 * ``example_mock.json`` — minimal mock camera (``AVManager``) + mock XY
   stage, general-purpose GUI smoke setup.
 * ``example_no_hardware.json`` — the baseline profile for
@@ -331,13 +425,13 @@ These are current, real gaps — not aspirational — as of 2026-09-25:
   the opposite — that abort only unblocks after the capped duration timer —
   based on a stale note written before this coordinator existed; verified
   against the current code and corrected here.)
-* **Only some mock detectors image a virtual sample.** A simulated APD and a
-  mock Hamamatsu camera with a ``mockSample`` block derive their data from
-  the synthetic sample at the positions the scan waveforms give (see
-  *Detectors* above); a mock MoNaLISA scan reconstructs to that sample
-  through the real ``reconstruct_scan``
+* **Only some mock detectors image a virtual sample.** A simulated APD or
+  PMT and a mock Hamamatsu camera with a ``mockSample`` block derive their
+  data from the virtual sample at the positions the scan waveforms give (see
+  *The virtual sample* above); a mock MoNaLISA scan reconstructs to that
+  sample through the real ``reconstruct_scan``
   (``test_mock_monalisa_reconstruction.py``). Every other mock detector --
-  the PMT, the AV/TIS/other mock cameras, and an APD or Hamamatsu without
+  the AV/TIS/other mock cameras, and an APD, PMT or Hamamatsu without
   ``mockSample`` -- still returns bounded noise tuned by mean/max/seed
   knobs: enough to validate frame counts, dtypes and timing contracts, but
   not to exercise reconstruction or segmentation logic (e.g. BeadRec)
