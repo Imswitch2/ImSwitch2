@@ -63,6 +63,108 @@ too, so a rig never images a missing card as zeros. ``filterSyncByPhotons``
 enables the conditional filter (below). ``mockSample`` and ``mockFaults``
 drive the mock.
 
+Which level for which input
+===========================
+
+Every input is a comparator: it counts an edge when the signal crosses the
+input's *trigger level*. Too close to 0 V it counts electrical noise, above
+the pulses it counts nothing, and with the wrong sign it counts nothing at
+all. Between the two there is a *plateau*: a range of levels that all count
+the same rate, because every pulse clears them and no noise does. A good
+level sits in the middle of the plateau, as far from the noise as from the
+pulses' top, so a drift, a reflection or a weaker pulse does not move the
+count.
+
+All inputs are 50 Ω with a range of ±2.5 V. A source that is specified into
+high impedance delivers about half its open-circuit voltage into 50 Ω. The
+sign of the channel number in the ``timeTagger`` block is the polarity: a
+negative channel triggers on the falling edge and takes a negative level.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 42 40
+
+   * - Signal
+     - Typical into 50 Ω
+     - Level
+   * - Detector pulses (SPAD, hybrid detector, PMT discriminator; any
+       photon input)
+     - NIM: about -0.4 to -0.8 V, a few ns
+     - falling edge (negative channel), about -0.2 to -0.3 V
+   * - Laser sync
+     - either polarity, depending on the laser: NIM negative, a driver's
+       sync +0.5 to +1 V; a photodiode sync can be under 0.1 V
+     - the sign of the pulse, the middle of the plateau; under 0.1 V there
+       is no safe level (amplify, or attenuate less)
+   * - DAQ clocks (the scan's line and frame clocks)
+     - an NI-DAQ line: about +1 to +1.5 V, not 3.3 or 5 V; they fire only
+       while a scan runs
+     - rising edge, about +0.5 V, never above 1 V
+   * - Other TTL / pulse sources (a STED-beam photodiode, a trigger out)
+     - whatever the source drives into 50 Ω
+     - the plateau tells
+
+Finding it
+----------
+
+The Lifetime widget's **Signals** panel has a row per configured input with
+its live rate, its level and a **Find** button; the **check** column says
+what is wrong with the level as it stands (the sign against the channel's
+edge, inside the noise, a clock level above what a DAQ line reaches, an
+input that counts nothing, a sync rate that disagrees with
+``laser_rep_rate_mhz``). **Find** sweeps the input -- the polarity from the
+channel's sign, the other sign probed when nothing but noise counts, a
+coarse sweep from 20 mV to 2.5 V and finer steps around the plateau's edges
+-- and shows the level, the plateau, its width and a verdict. Nothing is
+written until you click **Apply** (until restart) or **Apply and keep in
+setup file**, which writes the level into the ``timeTagger`` block of the
+active setup file; **Copy setup line** copies the line instead. From a
+script it is one call, for a role or any channel number::
+
+   result = tt.find_trigger_level('photons')    # or tt.find_trigger_level(-5)
+   print(result.summary())                      # verdict, level, plateau, what to do
+   result.block_line()                          # '"photonsTriggerV": -0.283'
+
+The level is put back afterwards -- also on an error or a Stop -- unless
+``apply=True`` is passed and the verdict is ``good``. It runs inside a
+calibration transaction, so it is refused while a scan holds the card.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 40 42
+
+   * - Verdict
+     - Means
+     - Do
+   * - ``good``
+     - a plateau at least 0.1 V wide, clear of the noise
+     - apply the level
+   * - ``too_small``
+     - the pulses barely clear the noise: the plateau is narrow or absent
+     - attenuate less, amplify, shorten the cable; the level shown is the
+       best there is, not a safe one
+   * - ``wrong_polarity``
+     - nothing counts with the channel's sign, a plateau with the other
+     - flip the sign of the channel number in the block (and the level
+       with it): the pulses have the other polarity
+   * - ``noise_only``
+     - counts only next to 0 V, falling off without a plateau
+     - nothing usable arrives (nothing cabled, a laser not pulsing) or the
+       pulses are under about 0.1 V; ``rep_rate()`` at a small level tells
+       a real sync (a stable period) from noise
+   * - ``no_signal``
+     - no counts at any level of either sign
+     - check the cable, the input number, that the source is on
+   * - ``needs_scan``
+     - a DAQ clock between scans: it fires only while a scan runs
+     - keep about +0.5 V; to check it, run the scan with the time-resolved
+       detector's ``enabled`` set to ``False`` (the APD images, the card is
+       free) and Repeat on, and Find again -- or tutorial 07
+
+A card that only counts photons needs only its photon input: set
+``laserSyncChannel`` and ``lineClockChannel`` to ``null`` and the Signals
+panel, the pre-flight and the tutorials look at nothing else.
+
 What the card does for ImSwitch2
 ================================
 
@@ -116,6 +218,7 @@ From a script: ``facade.time_tagger``
    tt.count_rates(['photons', 'laser_sync'], duration_s=1.0).rates_hz
    tt.rep_rate(duration_s=2.0)      # RepRateResult: rate_hz, period_ps, jitter_ps, card_limited
    tt.histogram(duration_s=2.0)     # HistogramResult in forward time: t_axis_ns, counts, peak_ns, fwhm_ns
+   tt.find_trigger_level('photons')  # LevelResult: verdict, level_v, plateau_v, block_line()
    tt.trigger_sweep('photons', levels_v, duration_s=0.2)   # SweepResult with plateau_v
    tt.dark_rates(['photons'], duration_s=2.0)
    with tt.test_signal_on(['line_clock']): ...            # owns the card, off again afterwards
@@ -136,8 +239,8 @@ call sleeps in slices that honour the script's Stop button, waits on the
 card in bounded steps (a measurement that does not finish within a few
 seconds of its capture is an error, never a worker blocked for good) and
 stops its measurement object afterwards. ``rep_rate``, ``histogram``,
-``skew``, ``trigger_sweep`` and ``test_signal_on`` run inside a calibration
-transaction and put the card back exactly as they found it (the divider
+``skew``, ``trigger_sweep``, ``find_trigger_level`` and ``test_signal_on``
+run inside a calibration transaction and put the card back exactly as they found it (the divider
 and filter that were set, the input delay, the level), also when the
 script is stopped; ``histogram`` measures with the photon input at the
 block's configured delay, so its peak is the absolute ``t0_ps``. A
@@ -162,8 +265,9 @@ The tutorials
 01
     Meet the card: roles and channels, count rates, the test signal.
 02
-    Trigger levels and dead time: ``trigger_sweep`` and the plateau; 50 Ω
-    inputs; the SPAD's own dead time.
+    Trigger levels and dead time: the plateau, by hand with
+    ``trigger_sweep`` and then for every input with ``find_trigger_level``
+    and its verdicts; 50 Ω inputs; the SPAD's own dead time.
 03
     Dark counts and afterpulsing with the excitation blocked, into the
     detector's ``background_rate_hz``.
@@ -207,7 +311,8 @@ widget for their runs (64 x 64 pixels at 400 us, about 2 s) and put the
 previous settings back. Each measurement prints a suggestion and writes it
 only when the script's ``APPLY`` is True; a written value holds until
 restart, and the printed JSON line goes into the ``timeTagger`` block to
-keep it.
+keep it (for trigger levels, the Signals panel's *Apply and keep in setup
+file* does that for you).
 
 ``scripts/diagnostics/measure_laser_rep_rate.py`` remains for a rig without
 the GUI: it runs the same rep-rate measurement on a bare card.
