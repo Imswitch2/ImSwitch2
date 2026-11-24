@@ -93,7 +93,8 @@ class StandManager(ABC):
         )
 
     def motCorrPos(self, position):
-        self._subManager.motCorrPos(position)
+        if self._subManager is not None:
+            self._subManager.motCorrPos(position)
 
     # Public capability passthroughs — controllers should call these instead of
     # reaching into ``standManager._subManager`` (driver-specific, may be a mock).

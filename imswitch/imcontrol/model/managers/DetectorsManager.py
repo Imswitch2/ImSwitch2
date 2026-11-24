@@ -83,6 +83,8 @@ class DetectorsManager(MultiManager, SignalInterface):
 
         self._currentDetectorName = None
         for detectorName, detectorInfo in detectorInfos.items():
+            if detectorName not in self._subManagers:
+                continue  # failed to start; reported by the device supervisor
             if not self._subManagers[detectorName].forAcquisition:
                 continue
             # Connect signals

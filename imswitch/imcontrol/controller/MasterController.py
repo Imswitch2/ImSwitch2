@@ -37,6 +37,9 @@ class MasterController:
         # Retain the objects themselves (rather than integer ids) so a manager
         # replaced between shutdown retries is never skipped due to id reuse.
         self._shutdownFinalizedManagerObjects = []
+        # Single devices that failed to start (manager attribute -> status
+        # stand-in); the attribute itself stays None. See _startDevice.
+        self.startupFailures = {}
 
         # Init managers
         self.nidaqManager = NidaqManager(self.__setupInfo)
@@ -53,7 +56,8 @@ class MasterController:
             from imswitch.imcontrol.model.managers.pulsegen import (
                 TeensyPulseManager,
             )
-            self.pulseGeneratorManager = TeensyPulseManager(
+            self.pulseGeneratorManager = self._startDevice(
+                'pulseGeneratorManager', TeensyPulseManager,
                 self.__setupInfo.teensyPulse
             )
 
@@ -64,9 +68,13 @@ class MasterController:
             'rs232sManager': self.rs232sManager
         }
 
+        self.triggerScopeManager = None
         if self.__setupInfo.triggerScope:
-            self.triggerScopeManager = TriggerScopeManager(self.__setupInfo, self.rs232sManager)
-            lowLevelManagers['triggerScopeManager'] = self.triggerScopeManager
+            self.triggerScopeManager = self._startDevice(
+                'triggerScopeManager', TriggerScopeManager,
+                self.__setupInfo, self.rs232sManager)
+            if self.triggerScopeManager is not None:
+                lowLevelManagers['triggerScopeManager'] = self.triggerScopeManager
 
         self.detectorsManager = DetectorsManager(self.__setupInfo.detectors, updatePeriod=300,
                                                  **lowLevelManagers)
@@ -103,8 +111,13 @@ class MasterController:
         self.slmsManager = SLMsManager(self.__setupInfo.slms)
 
         if self.__setupInfo.microscopeStand:
-            self.standManager = StandManager(self.__setupInfo.microscopeStand,
-                                             **lowLevelManagers)
+            self.standManager = self._startDevice(
+                'standManager', StandManager, self.__setupInfo.microscopeStand,
+                **lowLevelManagers)
+            if self.standManager is None:
+                # Consumers (stand controllers) get a stand that does nothing,
+                # not None; the supervisor reports the failure.
+                self.standManager = StandManager(None)
 
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:
@@ -163,6 +176,24 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+
+    def _startDevice(self, attrName, factory, *args, **kwargs):
+        """Build one single-instance device manager; on failure log it and
+        return ``None`` so startup continues without it. The failure is kept in
+        ``startupFailures`` for the device supervisor to report as an error."""
+        try:
+            return factory(*args, **kwargs)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except BaseException as error:
+            from imswitch.imcontrol.model.devices.status import FailedDeviceManager
+            label = getattr(factory, '__name__', attrName)
+            self.__logger.error(
+                f'{attrName} ({label}) failed to start and is left out: '
+                f'{type(error).__name__}: {error}', exc_info=error)
+            self.startupFailures[attrName] = FailedDeviceManager(
+                attrName, error, managerName=label)
+            return None
 
     def _cleanupAfterInitializationFailure(self):
         """Best-effort cleanup without masking the startup exception."""

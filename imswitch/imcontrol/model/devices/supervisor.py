@@ -313,9 +313,19 @@ class DeviceSupervisor:
             for name, manager in manager_group:
                 if manager is not None:
                     yield DeviceId(kind=kind, name=str(name)), manager
+            # Devices whose manager could not be built are still reported, as
+            # errors, rather than silently missing from the inventory.
+            failed = getattr(manager_group, "getFailedDevices", None)
+            for name, manager in (failed() if callable(failed) else {}).items():
+                yield DeviceId(kind=kind, name=str(name)), manager
 
         for kind, display_name, attr_name in _SINGLE_MANAGER_SOURCES:
             manager = getattr(self._master, attr_name, None)
+            # A device that failed to start is reported as the error it is,
+            # even where a do-nothing manager stands in for its consumers.
+            failures = getattr(self._master, "startupFailures", None)
+            if isinstance(failures, dict) and attr_name in failures:
+                manager = failures[attr_name]
             if manager is None:
                 continue
 

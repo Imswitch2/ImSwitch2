@@ -50,27 +50,39 @@ class DeviceManagerStatusMixin:
     REAL until a concrete manager records stronger evidence.
     """
 
+    def _statusValue(self, name, default):
+        # A Qt-based manager that records status before QObject.__init__ has
+        # run raises RuntimeError (not AttributeError) on attribute lookup.
+        try:
+            return self.__dict__[name]
+        except KeyError:
+            pass
+        try:
+            return getattr(self, name, default)
+        except RuntimeError:
+            return default
+
     @property
     def connectionState(self) -> DeviceConnectionState:
-        return getattr(
-            self, "_deviceConnectionState", DeviceConnectionState.UNKNOWN
+        return self._statusValue(
+            "_deviceConnectionState", DeviceConnectionState.UNKNOWN
         )
 
     @property
     def runtimeMode(self) -> DeviceRuntimeMode:
-        return getattr(self, "_deviceRuntimeMode", DeviceRuntimeMode.REAL)
+        return self._statusValue("_deviceRuntimeMode", DeviceRuntimeMode.REAL)
 
     @property
     def connectionStatusSummary(self) -> str | None:
-        return getattr(self, "_deviceStatusSummary", None)
+        return self._statusValue("_deviceStatusSummary", None)
 
     @property
     def connectionStatusDetails(self) -> str | None:
-        return getattr(self, "_deviceStatusDetails", None)
+        return self._statusValue("_deviceStatusDetails", None)
 
     @property
     def connectionFailureKind(self) -> DeviceFailureKind | None:
-        return getattr(self, "_deviceFailureKind", None)
+        return self._statusValue("_deviceFailureKind", None)
 
     def _setConnectionState(
         self,
@@ -131,6 +143,21 @@ class DeviceManagerStatusMixin:
                                make_mock=make_mock, **rules)
         self.__dict__["_backendHolder"] = holder
         return holder.open()
+
+    def _requireBackend(self) -> None:
+        """For a manager that cannot finish construction without its backend
+        (a detector reads its sensor size from the camera): raise a clear,
+        device-named error instead of the opaque one the first use of an
+        absent backend would give. The caller that builds managers records it
+        as that device's failure."""
+        holder = self.backendHolder
+        if holder is not None and isinstance(holder.backend, _AbsentBackend):
+            details = self.connectionStatusDetails
+            raise DeviceNotConnectedError(
+                f"{holder.label} could not be started: "
+                f"{self.connectionStatusSummary or 'not connected'}"
+                f"{f' ({details})' if details else ''}. Connect the device, or "
+                f"set useMockOnFailure to run on a mock instead.")
 
     @property
     def backendHolder(self):
@@ -400,6 +427,29 @@ class BackendHolder:
         if self.make_mock is None:
             raise RuntimeError(f"{self.label}: no mock available")
         return self.make_mock()
+
+
+class FailedDeviceManager(DeviceManagerStatusMixin):
+    """Status stand-in for a device whose manager could not be constructed.
+
+    It is never put where controllers look for working devices. It exists so
+    the device supervisor can report the failure (ERROR, with the reason)
+    instead of the device silently vanishing. It has no backend holder, so it
+    offers no reconnect: the manager itself never existed.
+    """
+
+    def __init__(self, name: str, error, *, managerName: str | None = None) -> None:
+        self.name = name
+        self.managerName = managerName
+        kind = (DeviceFailureKind.MISSING_DEPENDENCY
+                if isinstance(error, ImportError)
+                else DeviceFailureKind.INITIALIZATION_ERROR)
+        what = f"{name} ({managerName})" if managerName else name
+        text = (f"{type(error).__name__}: {error}"
+                if isinstance(error, BaseException) else str(error))
+        self._setConnectionError(
+            text, summary=f"{what} failed to start; restart after fixing it",
+            failure_kind=kind)
 
 
 def device_usable(manager) -> bool:
