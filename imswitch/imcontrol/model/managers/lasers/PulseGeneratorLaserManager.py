@@ -70,7 +70,13 @@ class PulseGeneratorLaserManager(LaserManager):
         elif self._pulseGen.connected:
             self._setConnected("Pulse-generator backend connected")
         else:
-            self._setMockActive("Pulse-generator backend is hardware-free")
+            # The pulse generator is not there (absent or failed). Its own
+            # status says why; commands raise DeviceNotConnectedError until it
+            # is reconnected, so this laser records no state of its own.
+            self._logger.warning(
+                'pulse generator is not connected; laser commands are '
+                'refused until it is'
+            )
 
         # If the backend reports it doesn't support analog, treat this
         # laser as binary even if the user configured an analogChannel.
