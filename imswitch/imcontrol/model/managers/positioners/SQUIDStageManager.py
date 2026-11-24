@@ -3,6 +3,29 @@ from .PositionerManager import PositionerManager
 
 
 
+class _MockSquid:
+    """The SQUID board calls this stage makes, accepted and logged; what the
+    mock RS232 driver lacks, so a move on the mock path does not raise."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def _move(self, axis, usteps):
+        self._logger.info(f'Mock SQUID: move {axis} by {usteps} usteps')
+
+    def move_x_usteps(self, usteps):
+        self._move('X', usteps)
+
+    def move_y_usteps(self, usteps):
+        self._move('Y', usteps)
+
+    def move_z_usteps(self, usteps):
+        self._move('Z', usteps)
+
+    def close(self):
+        pass
+
+
 class SQUIDStageManager(PositionerManager):
     PHYS_FACTOR = 1
 
@@ -22,6 +45,7 @@ class SQUIDStageManager(PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            self._rs232manager._squid = _MockSquid(self.__logger)
             self._setConnectionError(
                 e,
                 summary="SQUID RS232 backend unavailable; mock fallback active",
