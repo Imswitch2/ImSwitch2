@@ -25,9 +25,12 @@ def main():
                         help='Scale the entire UI by this factor (e.g. 0.8 for 80%%). '
                              'Overrides the IMSWITCH_UI_SCALE environment variable.')
     parser.add_argument('--setup', default=None, metavar='SETUP',
-                        help='Start with this hardware setup (a file in the '
-                             'imcontrol_setups folder) for this run only; the setup '
+                        help='Start with this hardware setup for this run only; the setup '
                              'ImSwitch normally starts with is left as it is. '
+                             'SETUP is a file in the setup folder, with or without '
+                             '.json: "name", "subfolder/name", or a bare name that '
+                             'exactly one subfolder holds. Anything outside the '
+                             'setup folder is refused. '
                              f'"{_CHOOSE_SETUP}" asks for it in the setup dialog.')
     args, _unused = parser.parse_known_args()
     if args.debug:

@@ -91,10 +91,16 @@ Launch:
 ``--debug`` turns on DEBUG-level logging from every manager, and
 ``--scale 0.8`` draws the whole interface at 80 % (the
 ``IMSWITCH_UI_SCALE`` environment variable does the same; the flag wins).
-``--setup simple_mock_setup.json`` starts with that hardware setup (a file in
-``ImSwitchConfig/imcontrol_setups``; ``.json`` may be left off) for this run
-only: the setup ImSwitch normally starts with stays as it is. ``--setup choose``
-asks for it in the setup dialog instead.
+``--setup simple_mock_setup.json`` starts with that hardware setup for this run
+only: the setup ImSwitch normally starts with stays as it is. The setup is a
+file in the setup folder (``ImSwitchConfig/imcontrol_setups`` unless
+*Preferences > Setup folder...* points elsewhere); ``.json`` may be left off.
+A setup in a subfolder is ``sub/name``, and a bare ``name`` finds the setup of
+that name in the one subfolder that holds it; if several do, ImSwitch refuses
+and lists them (``x/dup``, ``y/dup``). A path to a file inside the setup folder
+works too, but one that leads outside it (``../x``, or a file elsewhere) is
+refused: copy the setup into the folder first. ``--setup choose`` asks for it in
+the setup dialog instead.
 
 On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
