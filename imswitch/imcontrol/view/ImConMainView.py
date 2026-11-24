@@ -15,6 +15,7 @@ from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
+from .ReplaySettingsDialog import ReplaySettingsDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -187,6 +188,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
+        self.replaySettingsDialog = ReplaySettingsDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 

@@ -629,6 +629,17 @@ api.imcontrol
 
       Needs *Rotator* in ``availableWidgets``.
 
+   .. method:: planReplayFromFile(filePath: 'str', dataset: 'Optional[str]' = None) -> 'Dict[str, Any]'
+
+      Describes what loading the settings of the recording ``filePath``
+      (an HDF5 file, or a Zarr store folder) into this setup would do,
+      without applying anything: every device the file names, whether this
+      setup has it, the candidates that could replace it and each stored
+      value checked against the current device's range. ``dataset`` names
+      the detector group when the file holds several.
+
+      Always available.
+
    .. method:: post_json(path: str, payload: dict) -> str
 
       Sends the specified command to the RS232 device and returns a
@@ -695,6 +706,18 @@ api.imcontrol
    .. method:: renameSetupMode(name, newName)
 
       Rename a saved setup mode and return the updated mode.
+
+      Always available.
+
+   .. method:: replaySettingsFromFile(filePath: 'str', dataset: 'Optional[str]' = None, allowMoves: 'bool' = False) -> 'Dict[str, Any]'
+
+      Loads the settings of the recording ``filePath`` (an HDF5 file or
+      a Zarr store folder) into this setup without asking: only devices
+      that match exactly and values inside the current device's range are
+      applied; lasers are never switched on, and stages and rotators move
+      only with ``allowMoves=True``. Returns ``{'plan': ..., 'result':
+      {'applied', 'skipped', 'failed'}}``. ``dataset`` names the detector
+      group when the file holds several.
 
       Always available.
 
@@ -886,9 +909,10 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: setLaserValue(laserName: str, value: Union[int, float]) -> None
+   .. method:: setLaserValue(laserName: str, value: Union[int, float]) -> bool
 
-      Set the live value of a laser (legacy API).
+      Set the live value of a laser (legacy API). Returns False when the
+      laser refused the value (it then keeps its previous value).
 
       Needs *Laser* in ``availableWidgets``.
 
