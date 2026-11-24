@@ -1,3 +1,6 @@
+from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError
+
 from .LaserManager import LaserManager
 
 
@@ -21,7 +24,15 @@ class GRBLLaserManager(LaserManager):
         self.laserval = 0
         self.enabled = False
         super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
-        self._rs232manager._board.set_laser_intensity(self.enabled*self.laserval)
+        try:
+            self._rs232manager._board.set_laser_intensity(self.enabled*self.laserval)
+        except DeviceNotConnectedError as error:
+            # The board is not there (yet). The laser exists; every command
+            # raises the same error until the board is reconnected, so the
+            # laser must not claim to be connected.
+            initLogger(self, instanceName=name).warning(
+                f'GRBL laser {name}: board not connected ({error})')
+            return
         self._setConnected("GRBL laser initialized")
 
     def setEnabled(self, enabled):
