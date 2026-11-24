@@ -5,21 +5,33 @@ by ``MasterController`` from the setup's ``timeTagger`` block, handed to the
 detector managers in ``lowLevelManagers``, and finalized at shutdown. It owns
 
 * the connection (the real vendor library, or the in-process mock);
-* the channel *roles* -- ``photons``, ``laser_sync``, ``line_clock``,
-  ``frame_clock``, ``sted_pulse`` -- each a signed channel number with its
-  trigger level, dead time and delay, so every consumer speaks roles and the
-  cabling is described in one place;
+* the card's *inputs*, by name -- each a signed channel number with its
+  kind, trigger level, dead time and delay -- and the *roles* (``photons``,
+  ``laser_sync``, ``line_clock``, ``frame_clock``, ``sted_pulse``) as
+  aliases of inputs, so every consumer names an input or a role and the
+  cabling is described in one place (``TimeTaggerInfo.resolvedInputs``);
 * the conditioning writes themselves, applied at connect and refused while a
   scan holds the card (a trigger-level change mid-frame corrupts the frame);
+* the *scan session*: what exists once per card per scan -- the pixel
+  markers every detector of the scan counts between, the card hold -- for
+  however many detectors take part (``TimeTaggerScanSession``);
 * a metadata snapshot that every measurement records.
 
-It does not own measurements: Swabian measurement objects run concurrently on
-the card, so the FLIM detector builds its own ``Flim`` through ``api`` and
-``tagger``, and a script's ``Counter`` does not disturb it.
+It does not own the detectors' measurements: Swabian measurement objects run
+concurrently on the card, so each detector builds its own ``Flim`` (or
+counter) through ``api`` and ``tagger`` on the session's markers, and a
+script's ``Counter`` does not disturb them.
+
+Per input: trigger level, dead time, delay (and the ``t0`` a FLIM detector
+adds to its own photon input's delay during its scan). Per card: the
+conditional filter (it gates the syncs on every detector input at once, so
+the TCSPC direction is the card's), the pixel-marker pattern offset, the
+markers themselves, and the hold.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -30,7 +42,12 @@ import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.SetupInfo import TimeTaggerInfo
+from imswitch.imcontrol.model.SetupInfo import (
+    TIME_TAGGER_INPUT_KINDS,
+    TIME_TAGGER_ROLES,
+    TimeTaggerConfigError,
+    TimeTaggerInfo,
+)
 
 try:
     import TimeTagger as _VendorTimeTagger
@@ -40,16 +57,19 @@ except ImportError:  # the vendor installer provides it; pip does not
 
 #: Role id -> (channel field, trigger-level field, dead-time field,
 #: delay field) on ``TimeTaggerInfo``. ``None`` where a role has no such
-#: setting. The order is the order consumers and docs list them in.
+#: setting. The order is the order consumers and docs list them in. These
+#: are the *legacy* fields; a block with an ``inputs`` map keeps an input's
+#: settings in that input (``inputFieldPath``).
 ROLE_FIELDS: Dict[str, Tuple[str, str, Optional[str], Optional[str]]] = {
-    "photons": ("photonsChannel", "photonsTriggerV", "photonsDeadtimePs", None),
-    "laser_sync": ("laserSyncChannel", "laserSyncTriggerV", None, None),
-    "line_clock": ("lineClockChannel", "lineClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs"),
-    "frame_clock": ("frameClockChannel", "frameClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs"),
-    "sted_pulse": ("stedPulseChannel", "stedPulseTriggerV", None, None),
+    role: tuple(spec["fields"]) for role, spec in TIME_TAGGER_ROLES.items()
 }
 
 ROLES = tuple(ROLE_FIELDS)
+
+#: Role -> the kind of input that plays it.
+ROLE_KINDS: Dict[str, str] = {role: spec["kind"] for role, spec in TIME_TAGGER_ROLES.items()}
+
+INPUT_KINDS = TIME_TAGGER_INPUT_KINDS
 
 
 class TimeTaggerError(RuntimeError):
@@ -62,7 +82,14 @@ class TimeTaggerBusyError(TimeTaggerError):
 
 @dataclass(frozen=True)
 class ChannelInfo:
-    """One configured role."""
+    """One input of the card.
+
+    ``role`` is the input's *name*, kept under its old field name: in a
+    block without an ``inputs`` map every input is named by the role it
+    plays, so a name is a role there. ``plays`` is the role the input plays
+    (``None`` for an input that plays none, e.g. the second of two
+    detectors).
+    """
 
     role: str
     channel: int
@@ -70,6 +97,13 @@ class ChannelInfo:
     trigger_v: float
     deadtime_ps: int = 0
     delay_ps: int = 0
+    kind: str = "detector"
+    plays: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        """The input's name (``role`` is the same field)."""
+        return self.role
 
     @property
     def input(self) -> int:
@@ -79,6 +113,114 @@ class ChannelInfo:
     @property
     def edge(self) -> str:
         return "falling" if self.channel < 0 else "rising"
+
+    def conditioning(self) -> Dict[str, Any]:
+        """What a recording keeps about this input."""
+        return {
+            "input": self.role,
+            "channel": int(self.channel),
+            "edge": self.edge,
+            "kind": self.kind,
+            "role": self.plays,
+            "trigger_v": float(self.trigger_v),
+            "deadtime_ps": int(self.deadtime_ps),
+            "delay_ps": int(self.delay_ps),
+        }
+
+
+@dataclass(frozen=True)
+class PixelMarkers:
+    """The pixel markers of one scan: an ``EventGenerator`` pair on the line
+    clock, begin and end of every pixel of a line."""
+
+    key: tuple
+    begin: Any
+    end: Any
+    offset_ps: int
+
+    @property
+    def channels(self) -> Tuple[int, int]:
+        return int(self.begin.getChannel()), int(self.end.getChannel())
+
+
+class TimeTaggerScanSession:
+    """What exists once per card per scan, for every detector of the scan.
+
+    The first detector that prepares a scan opens it; every further
+    detector of the same scan joins it. It owns
+
+    * the *pixel markers* (``pixelMarkers``): one ``EventGenerator`` pair on
+      the line clock, built once for the scan however many detectors count
+      between them -- or kept from the previous scan when that one ended
+      cleanly with the same geometry (every participant's frame closed by
+      the card);
+    * the card *hold*: each participant holds the card from joining until
+      it leaves (its final frame drained, or its scan aborted/stopped), so
+      conditioning stays refused until the *last* one has left;
+    * the *start*: every participant joins and builds its measurement while
+      the scan is prepared, before the NI-DAQ starts the clocks; the markers
+      only fire on line-clock edges, so all measurements start counting on
+      the same first edge. A detector that would join after the clocks
+      started is refused (it would miss lines and image shifted).
+
+    A later measurement that is not a detector (a correlation, a
+    coincidence counter) attaches the same way: join, build on the session's
+    inputs and markers, leave when drained.
+    """
+
+    def __init__(self, manager: "TimeTaggerManager", number: int):
+        self._manager = manager
+        self.number = int(number)
+        self._participants: Dict[str, Dict[str, Any]] = {}
+        self._left: Dict[str, bool] = {}
+        self._markers: Optional[PixelMarkers] = None
+        self._markersReused = False
+        self.started = False
+        self.closed = False
+
+    # -- who takes part -------------------------------------------------- #
+
+    @property
+    def participants(self) -> Tuple[str, ...]:
+        """Who is in the session and has not left."""
+        return tuple(self._participants)
+
+    @property
+    def everyone(self) -> Tuple[str, ...]:
+        """Everyone who joined, in order, including those who left."""
+        return tuple(list(self._left) + [p for p in self._participants if p not in self._left])
+
+    def hasJoined(self, name: str) -> bool:
+        return name in self._participants or name in self._left
+
+    def leftClean(self) -> bool:
+        """Whether every participant left with a frame the card closed."""
+        return bool(self._left) and not self._participants and all(self._left.values())
+
+    # -- the markers ----------------------------------------------------- #
+
+    def pixelMarkers(self, *, line_channel: int, n_x: int, pixel_period_ps: int,
+                     pixel_width_ps: int, offset_ps: int) -> Tuple[PixelMarkers, bool]:
+        """The scan's pixel markers, and whether they were kept from the
+        previous scan. Built on the first call of the scan; every further
+        participant gets the same pair, and a participant asking for
+        another geometry is refused (one scan, one raster)."""
+        return self._manager._sessionMarkers(
+            self, (int(line_channel), int(n_x), int(pixel_period_ps),
+                   int(pixel_width_ps), int(offset_ps)))
+
+    @property
+    def markers(self) -> Optional[PixelMarkers]:
+        return self._markers
+
+    def summary(self) -> Dict[str, Any]:
+        markers = self._markers
+        return {
+            "session": self.number,
+            "participants": list(self.everyone),
+            "pixel_marker_channels": list(markers.channels) if markers is not None else None,
+            "started": bool(self.started),
+        }
 
 
 @dataclass(frozen=True)
@@ -163,18 +305,33 @@ class TimeTaggerManager(SignalInterface):
         self._samplerStop = threading.Event()
         self._lastHealth: Optional[TimeTaggerHealth] = None
 
+        #: The scan session in progress (or the last one), and the markers
+        #: kept for a repeat scan of the same geometry.
+        self._session: Optional[TimeTaggerScanSession] = None
+        self._sessionCount = 0
+        self._scanEpoch = 0
+        self._sessionEpoch = -1
+        self._markerCache: Optional[PixelMarkers] = None
+        self._markerCacheClean = False
+
+        # Raises TimeTaggerConfigError (a ValueError) with what to change.
+        resolved = info.resolvedInputs()
+        #: Input name -> ChannelInfo, in declaration order. Without an
+        #: ``inputs`` map the names are the roles (the older form).
         self._channels: Dict[str, ChannelInfo] = {}
-        for role, (chField, trigField, deadField, delayField) in ROLE_FIELDS.items():
-            channel = getattr(info, chField)
-            if channel is None:
-                continue
-            self._channels[role] = ChannelInfo(
-                role=role,
-                channel=int(channel),
-                trigger_v=float(getattr(info, trigField)),
-                deadtime_ps=int(getattr(info, deadField)) if deadField else 0,
-                delay_ps=int(getattr(info, delayField)) if delayField else 0,
+        for name, spec in resolved.inputs.items():
+            self._channels[name] = ChannelInfo(
+                role=name,
+                channel=int(spec.channel),
+                trigger_v=float(spec.triggerV),
+                deadtime_ps=int(spec.deadtimePs),
+                delay_ps=int(spec.delayPs),
+                kind=str(spec.kind),
+                plays=resolved.role(name),
             )
+        #: Role -> input name, for the roles some input plays.
+        self._roles: Dict[str, str] = dict(resolved.roles)
+        self._fromInputsBlock = bool(resolved.fromInputsBlock)
 
         self.connect()
 
@@ -235,7 +392,8 @@ class TimeTaggerManager(SignalInterface):
             self._tryApplyConditioning()
             self.__logger.info(
                 f"Time Tagger connected: {self.model} ({self.serial})"
-                f"{' [mock]' if self._isMock else ''}; roles "
+                f"{' [mock]' if self._isMock else ''}; "
+                + ("inputs " if self._fromInputsBlock else "roles ")
                 + ", ".join(f"{c.role}={c.channel}" for c in self._channels.values())
             )
             return True
@@ -278,8 +436,15 @@ class TimeTaggerManager(SignalInterface):
     # ------------------------------------------------------------------ #
 
     def _onScanBuilt(self, scanInfoDict, signalDict, _devices=None):
-        """Hand the designed line/frame clocks to the mock card as edge
-        timestamps. A real card sees the real cables; nothing to do."""
+        """A new scan is being prepared: the detectors that prepare it next
+        join a new scan session. On the mock, hand it the designed line and
+        frame clocks as edge timestamps (a real card sees the real cables).
+
+        Connected before any detector's own slot (the detectors are built
+        after the low-level managers), so the epoch moves before the first
+        detector joins."""
+        with self._lock:
+            self._scanEpoch += 1
         if not self._isMock or self._tagger is None:
             return
         loader = getattr(self._tagger, "load_scan_edges", None)
@@ -319,7 +484,11 @@ class TimeTaggerManager(SignalInterface):
 
     def _onScanStarted(self, *_args):
         """The scan's clocks start now: the mock card times its edges from
-        here, so a measurement sees the ones that fall into its window."""
+        here, so a measurement sees the ones that fall into its window.
+        The session's participants are all armed by now; it is started."""
+        with self._lock:
+            if self._session is not None and not self._session.closed:
+                self._session.started = True
         self._mockHook("start_scan")
 
     def _onScanDone(self, *_args):
@@ -425,23 +594,53 @@ class TimeTaggerManager(SignalInterface):
     # ------------------------------------------------------------------ #
 
     def channels(self) -> Dict[str, ChannelInfo]:
+        """Every input, by name, in declaration order (without an ``inputs``
+        map the names are the roles)."""
         return dict(self._channels)
 
-    def hasRole(self, role: str) -> bool:
-        return role in self._channels
+    def inputs(self) -> Tuple[str, ...]:
+        """The input names, in declaration order."""
+        return tuple(self._channels)
 
-    def channelInfo(self, role: str) -> ChannelInfo:
+    def roles(self) -> Dict[str, str]:
+        """Role -> the input that plays it, for the roles some input plays."""
+        return dict(self._roles)
+
+    @property
+    def hasInputsBlock(self) -> bool:
+        """Whether the block declared its inputs in an ``inputs`` map."""
+        return self._fromInputsBlock
+
+    def inputName(self, nameOrRole: str) -> str:
+        """The input a name or a role refers to (an input name wins)."""
+        if nameOrRole in self._channels:
+            return nameOrRole
         try:
-            return self._channels[role]
+            return self._roles[nameOrRole]
         except KeyError:
             configured = ", ".join(self._channels) or "none"
+            roles = ", ".join(f"{r}={n}" for r, n in self._roles.items() if r != n)
             raise TimeTaggerError(
-                f"Time Tagger role {role!r} is not configured "
-                f"(configured roles: {configured})"
+                f"Time Tagger role {nameOrRole!r} is not configured "
+                f"(configured {'inputs' if self._fromInputsBlock else 'roles'}: {configured}"
+                + (f"; roles: {roles}" if roles else "") + ")"
             ) from None
 
+    def hasRole(self, role: str) -> bool:
+        """Whether a role -- or an input of that name -- is configured."""
+        return role in self._channels or role in self._roles
+
+    hasInput = hasRole
+
+    def inputsOfKind(self, kind: str) -> Tuple[str, ...]:
+        return tuple(name for name, c in self._channels.items() if c.kind == kind)
+
+    def channelInfo(self, role: str) -> ChannelInfo:
+        """An input by its name or by the role it plays."""
+        return self._channels[self.inputName(role)]
+
     def channel(self, role: str) -> int:
-        """The signed channel number for a role."""
+        """The signed channel number for an input or a role."""
         return self.channelInfo(role).channel
 
     @property
@@ -486,10 +685,28 @@ class TimeTaggerManager(SignalInterface):
                 tagger.setDeadtime(channel.channel, channel.deadtime_ps)
             tagger.setInputDelay(channel.channel, self._hardwareDelayPs(channel))
         if self._info.filterSyncByPhotons:
-            tagger.setConditionalFilter(
-                trigger=[self.channel("photons")],
-                filtered=[self.channel("laser_sync")],
+            trigger, filtered = self.filterChannels()
+            tagger.setConditionalFilter(trigger=trigger, filtered=filtered)
+
+    def filterChannels(self) -> Tuple[list, list]:
+        """The conditional filter's ``(trigger, filtered)`` channel lists:
+        every detector input lets through the first sync after each of its
+        photons, so every FLIM detector on the card has its sync; the
+        filtered inputs are the laser syncs. Per card: one filter, so the
+        TCSPC direction is the card's, not a detector's.
+
+        Without an ``inputs`` map this is exactly ``[photons]`` and
+        ``[laser_sync]``, as it always was."""
+        if not self._fromInputsBlock:
+            return [self.channel("photons")], [self.channel("laser_sync")]
+        trigger = [c.channel for c in self._channels.values() if c.kind == "detector"]
+        filtered = [c.channel for c in self._channels.values() if c.kind == "laser_sync"]
+        if not trigger or not filtered:
+            raise TimeTaggerError(
+                "filterSyncByPhotons needs at least one detector input and one "
+                "laser_sync input in the timeTagger block"
             )
+        return trigger, filtered
 
     def _hardwareDelayPs(self, channel: ChannelInfo) -> int:
         """The delay the card applies to an input.
@@ -500,7 +717,7 @@ class TimeTaggerManager(SignalInterface):
         one has to be a card delay. The frame clock has no pattern, so it
         always takes the full delay on the card.
         """
-        if channel.role == "line_clock" and channel.delay_ps > 0:
+        if channel.kind == "line_clock" and channel.delay_ps > 0:
             return 0
         return int(channel.delay_ps)
 
@@ -515,8 +732,10 @@ class TimeTaggerManager(SignalInterface):
         delay when the markers hang off the line clock (the frame clock has
         no pattern: its delay is on the card)."""
         offset = int(getattr(self._info, "pixelPatternOffsetPs", 0) or 0)
-        if role == "line_clock" and self.hasRole(role):
-            offset += max(0, int(self.channelInfo(role).delay_ps))
+        if self.hasRole(role):
+            info = self.channelInfo(role)
+            if info.kind == "line_clock":
+                offset += max(0, int(info.delay_ps))
         return offset
 
     def _checkWritable(self, what: str, owner: Optional[str] = None):
@@ -549,10 +768,7 @@ class TimeTaggerManager(SignalInterface):
             self._checkWritable("trigger level", owner)
             info = self.channelInfo(role)
             self.tagger.setTriggerLevel(info.channel, float(voltage))
-            self._channels[role] = ChannelInfo(
-                info.role, info.channel, float(voltage),
-                info.deadtime_ps, info.delay_ps,
-            )
+            self._channels[info.role] = dataclasses.replace(info, trigger_v=float(voltage))
 
     # ------------------------------------------------------------------ #
     # Inputs: a role or a bare channel                                     #
@@ -669,34 +885,37 @@ class TimeTaggerManager(SignalInterface):
 
     def setDelay(self, role: str, delay_ps: int, *,
                  owner: Optional[str] = None) -> None:
-        """Set a role's delay. For ``line_clock`` the frame clock follows
-        (one delay for both DAQ-derived roles), and a positive value is
+        """Set an input's delay. For the line clock the frame clock follows
+        (one delay for both DAQ-derived clocks), and a positive value is
         applied as a pattern offset rather than a card delay."""
         with self._lock:
             self._checkWritable("input delay", owner)
-            roles = [role] + (["frame_clock"] if role == "line_clock" and self.hasRole("frame_clock") else [])
-            for each in roles:
-                info = self.channelInfo(each)
-                updated = ChannelInfo(info.role, info.channel, info.trigger_v,
-                                      info.deadtime_ps, int(delay_ps))
+            for each in self._withFrameClock(role):
+                info = self._channels[each]
+                updated = dataclasses.replace(info, delay_ps=int(delay_ps))
                 self.tagger.setInputDelay(info.channel, self._hardwareDelayPs(updated))
                 self._channels[each] = updated
 
     def setDeadtime(self, role: str, deadtime_ps: int, *,
                     owner: Optional[str] = None) -> None:
-        """Set a role's dead time. For ``line_clock`` the frame clock follows
-        (one dead time for both DAQ-derived clocks, as with the delay: the
-        same driver, the same bounce)."""
+        """Set an input's dead time. For the line clock the frame clock
+        follows (one dead time for both DAQ-derived clocks, as with the
+        delay: the same driver, the same bounce)."""
         with self._lock:
             self._checkWritable("dead time", owner)
-            roles = [role] + (["frame_clock"] if role == "line_clock" and self.hasRole("frame_clock") else [])
-            for each in roles:
-                info = self.channelInfo(each)
+            for each in self._withFrameClock(role):
+                info = self._channels[each]
                 self.tagger.setDeadtime(info.channel, int(deadtime_ps))
-                self._channels[each] = ChannelInfo(
-                    info.role, info.channel, info.trigger_v,
-                    int(deadtime_ps), info.delay_ps,
-                )
+                self._channels[each] = dataclasses.replace(info, deadtime_ps=int(deadtime_ps))
+
+    def _withFrameClock(self, role: str) -> list:
+        """The input ``role`` names, and the frame clock with it when it is
+        the line clock."""
+        name = self.inputName(role)
+        names = [name]
+        if self._channels[name].kind == "line_clock":
+            names += [n for n in self.inputsOfKind("frame_clock") if n != name]
+        return names
 
     # ------------------------------------------------------------------ #
     # Scan hold                                                            #
@@ -727,6 +946,125 @@ class TimeTaggerManager(SignalInterface):
     @property
     def scanHeld(self) -> bool:
         return bool(self._holders)
+
+    # ------------------------------------------------------------------ #
+    # Scan session: what exists once per card per scan                     #
+    # ------------------------------------------------------------------ #
+
+    def joinScanSession(self, participant: str) -> TimeTaggerScanSession:
+        """Take part in the scan being prepared; returns its session.
+
+        The first participant of a scan opens a new session; the others of
+        the same scan join it. A scan is told apart from the next by the
+        NI-DAQ's ``sigScanBuilt`` (the epoch) or, without one, by a
+        participant joining again. Takes the card hold for ``participant``
+        (``beginScanHold``: refused on an unconditioned card or during a
+        calibration); ``leaveScanSession`` gives it back.
+        """
+        name = str(participant)
+        self.beginScanHold(name)
+        with self._lock:
+            session = self._session
+            fresh = (
+                session is None or session.closed
+                or session.hasJoined(name)
+                or self._sessionEpoch != self._scanEpoch
+            )
+            if not fresh and session.started:
+                self._holders.discard(name)
+                raise TimeTaggerError(
+                    f"{name} cannot join the Time Tagger scan session after its clocks "
+                    f"started ({', '.join(session.everyone)} are acquiring): it would "
+                    "miss the first lines"
+                )
+            if fresh:
+                if session is not None and not session.closed:
+                    # The previous scan's participants that never left (a
+                    # detector removed from the scan, a crash) hold nothing
+                    # of the new one; its markers are not known to be clean.
+                    self._closeSession(session, clean=False)
+                self._sessionCount += 1
+                session = TimeTaggerScanSession(self, self._sessionCount)
+                self._session = session
+                self._sessionEpoch = self._scanEpoch
+            session._participants[name] = {"joined": time.monotonic()}
+            return session
+
+    def leaveScanSession(self, participant: str, *, clean: bool = False,
+                         session: Optional[TimeTaggerScanSession] = None) -> None:
+        """``participant`` is done with its scan: its final frame drained
+        (``clean`` when the card closed it), or it was aborted or stopped.
+        Its hold is released; when the last participant has left the
+        session closes, and its markers are kept for a repeat scan only if
+        every participant left clean. Idempotent; a ``session`` other than
+        the current one (a late leave from an old scan) touches nothing of
+        the current one but the hold it never had."""
+        name = str(participant)
+        with self._lock:
+            current = self._session
+            target = session if session is not None else current
+            if target is not None and name in target._participants:
+                del target._participants[name]
+                target._left[name] = bool(clean)
+                if not target._participants and not target.closed:
+                    self._closeSession(target, clean=target.leftClean())
+            # A late leave from an old session must not drop the hold the
+            # same participant took for the current one.
+            stillInCurrent = (current is not None and target is not current
+                              and name in current._participants)
+            if not stillInCurrent:
+                self._holders.discard(name)
+
+    def _closeSession(self, session: TimeTaggerScanSession, *, clean: bool) -> None:
+        """``_lock`` held."""
+        session.closed = True
+        if session._markers is not None and session._markers is self._markerCache:
+            self._markerCacheClean = bool(clean)
+
+    @property
+    def scanSession(self) -> Optional[TimeTaggerScanSession]:
+        """The current (or the last) scan session."""
+        return self._session
+
+    def _sessionMarkers(self, session: TimeTaggerScanSession, key: tuple):
+        """The pixel markers for ``session``: its own if it has them, the
+        cached pair of a clean previous scan of the same geometry, or a new
+        pair (the old one freed on the I/O thread)."""
+        with self._lock:
+            markers = session._markers
+            if markers is not None:
+                if markers.key != key:
+                    raise TimeTaggerError(
+                        "Every detector of one scan counts between the same pixel "
+                        f"markers; this scan's are {markers.key}, asked for {key} "
+                        "(a different line clock, raster or pattern offset)"
+                    )
+                return markers, session._markersReused
+            cache = self._markerCache
+            if cache is not None and cache.key == key and self._markerCacheClean:
+                self._markerCacheClean = False  # in use until this session closes clean
+                session._markers = cache
+                session._markersReused = True
+                return cache, True
+            self._markerCache = None
+            self._markerCacheClean = False
+            if cache is not None:
+                self.releaseLater([cache.begin, cache.end])
+                cache = None
+            line_channel, n_x, period_ps, width_ps, offset_ps = key
+            begin_pattern = (np.int64(offset_ps)
+                             + np.arange(n_x, dtype=np.int64) * np.int64(period_ps))
+            end_pattern = begin_pattern + np.int64(width_ps)
+            api, tagger = self.api, self.tagger
+            # No output channel: the library assigns virtual channel ids that
+            # never collide with a physical input.
+            begin = api.EventGenerator(tagger, int(line_channel), begin_pattern)
+            end = api.EventGenerator(tagger, int(line_channel), end_pattern)
+            markers = PixelMarkers(key=key, begin=begin, end=end, offset_ps=int(offset_ps))
+            self._markerCache = markers
+            session._markers = markers
+            session._markersReused = False
+            return markers, False
 
     @property
     def calibrationOwner(self) -> Optional[str]:
@@ -901,6 +1239,8 @@ class TimeTaggerManager(SignalInterface):
             "conditioning_error": (
                 str(self._conditioningError) if self._conditioningError else None
             ),
+            # By role (the older form's keys; with an inputs map, the roles
+            # some input plays), and by input.
             "roles": {
                 role: {
                     "channel": c.channel,
@@ -909,9 +1249,22 @@ class TimeTaggerManager(SignalInterface):
                     "deadtime_ps": c.deadtime_ps,
                     "delay_ps": c.delay_ps,
                 }
-                for role, c in self._channels.items()
+                for role, c in ((role, self._channels[name]) for role, name in self._roles.items())
             },
+            "inputs": {name: c.conditioning() for name, c in self._channels.items()},
+            "inputs_block": bool(self._fromInputsBlock),
+            "filter_channels": (
+                [list(x) for x in self.filterChannels()]
+                if self._info.filterSyncByPhotons and self._safeFilterChannels() else None
+            ),
         }
+
+    def _safeFilterChannels(self) -> bool:
+        try:
+            self.filterChannels()
+            return True
+        except TimeTaggerError:
+            return False
 
     def finalize(self) -> bool:
         """Free the card. Idempotent; a failure is logged and reported.
@@ -929,6 +1282,8 @@ class TimeTaggerManager(SignalInterface):
             self._finalized = True
             tagger, api = self._tagger, self._api
             self._tagger = None
+            self._markerCache = None
+            self._session = None
             if tagger is None:
                 return True
             try:
@@ -941,10 +1296,15 @@ class TimeTaggerManager(SignalInterface):
 
 __all__ = [
     "ChannelInfo",
+    "INPUT_KINDS",
+    "PixelMarkers",
+    "ROLE_KINDS",
+    "TimeTaggerConfigError",
     "TimeTaggerHealth",
     "ROLES",
     "ROLE_FIELDS",
     "TimeTaggerBusyError",
     "TimeTaggerError",
     "TimeTaggerManager",
+    "TimeTaggerScanSession",
 ]
