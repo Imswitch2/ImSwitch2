@@ -331,12 +331,17 @@ These are current, real gaps — not aspirational — as of 2026-09-25:
   the opposite — that abort only unblocks after the capped duration timer —
   based on a stale note written before this coordinator existed; verified
   against the current code and corrected here.)
-* **Synthetic detector content isn't a "fake specimen."** APD/PMT and camera
-  mock data is bounded noise tuned by mean/max/seed knobs, not derived from
-  a simulated sample. It's enough to validate frame counts, dtypes, and
-  timing contracts, but it won't exercise reconstruction/segmentation logic
-  meaningfully (e.g. BeadRec, live-reconstruction) beyond "did a frame
-  arrive."
+* **Only some mock detectors image a virtual sample.** A simulated APD and a
+  mock Hamamatsu camera with a ``mockSample`` block derive their data from
+  the synthetic sample at the positions the scan waveforms give (see
+  *Detectors* above); a mock MoNaLISA scan reconstructs to that sample
+  through the real ``reconstruct_scan``
+  (``test_mock_monalisa_reconstruction.py``). Every other mock detector --
+  the PMT, the AV/TIS/other mock cameras, and an APD or Hamamatsu without
+  ``mockSample`` -- still returns bounded noise tuned by mean/max/seed
+  knobs: enough to validate frame counts, dtypes and timing contracts, but
+  not to exercise reconstruction or segmentation logic (e.g. BeadRec)
+  beyond "did a frame arrive."
 * **No SLM/rotator simulation of optical effect.** ``mockermode`` and the
   rotator mocks accept commands and hold state, but there's no simulated
   beam/polarization/phase effect behind them.
