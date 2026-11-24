@@ -9,6 +9,16 @@ class GraphController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
+        self._commChannel.sigWorkflowPreview.connect(self.workflowPreview)
+
+    def workflowPreview(self, result, _name="") -> None:
+        """A workflow-editor preview: plot it when it has something to plot."""
+        payloads = getattr(result, "plot_payloads", None)
+        if payloads is None:
+            return
+        plots = list(payloads())
+        if plots:
+            self._widget.setPlotPayloads(plots)
 
     def currentResultChanged(self, result) -> None:
         if result is None:

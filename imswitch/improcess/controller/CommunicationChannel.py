@@ -100,6 +100,17 @@ class CommunicationChannel(SignalInterface):
     Listeners: DataFrameController
     """
 
+    sigDetectionPreviewStyleChanged = Signal(str)
+    """How the detection-preview points are drawn: ``"circle"`` or ``"point"``.
+
+    ``ReconstructorManagerController`` emits the marker the active plugin's
+    preview asks for, just before the points, so ``DataFrameController`` can
+    draw candidates as rings and found foci as dots.
+
+    Emitters: ReconstructorManagerController
+    Listeners: DataFrameController
+    """
+
     sigDetectionPreviewUpdated = Signal(object, object)
     """New focus-detection scatter points. Payload: ``(x, y)`` arrays.
 
@@ -184,7 +195,7 @@ class CommunicationChannel(SignalInterface):
     step does not leave one entry per step behind. A listener that does not
     find ``old`` treats ``new`` as produced.
 
-    Emitters: ResultProcessorController
+    Emitters: ReconstructorManagerController, ResultProcessorController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 
@@ -259,6 +270,19 @@ class CommunicationChannel(SignalInterface):
     Emitters: ReconstructionViewController
     Listeners: ImProcessMainController, PythonConsoleController,
         ResultProcessorController
+    """
+
+    sigWorkflowPreview = Signal(object, str)
+    """Show a result from the workflow editor until the next preview. Payload:
+    ``(result, displayName)``.
+
+    A *temporary* display: the result is not added to the reconstruction
+    list, is never saved, and the next preview -- or selecting a list entry
+    -- replaces it. ``ReconstructionViewController`` draws an image; the
+    ``GraphController`` plots a curve (where its *Push to table* works on it).
+
+    Emitters: WorkflowController
+    Listeners: ReconstructionViewController, GraphController
     """
 
     sigSmlmRenderSettingsChanged = Signal(object, object, object)

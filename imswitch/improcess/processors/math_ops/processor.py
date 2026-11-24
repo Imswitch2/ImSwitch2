@@ -35,6 +35,7 @@ class MathProcessor(Processor):
 
     name = "Math"
     id = "math"
+    output_kind = "image"
     category = "Math"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.

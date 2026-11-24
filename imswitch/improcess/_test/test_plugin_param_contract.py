@@ -120,15 +120,15 @@ def test_keys_a_plugin_reads_are_keys_a_workflow_may_set():
     assert "loop_selection" in SmlmLocalizer.param_keys()
 
 
-def test_the_legacy_monalisa_tree_hands_over_every_declared_key(qapp):
-    """The GUI drives MoNaLISA from ``ReconParTree`` rather than the plugin's
-    own widget (special-cased by id), so that tree is held to the same
-    key set as ``default_params()``."""
+def test_unified_monalisa_uses_its_own_parameter_widget(qapp):
+    """The old generic parameter tree is retained for other workflows, not
+    the independent Local/Joint MoNaLISA parameter contract."""
+    from imswitch.improcess.model.plugin_contract import widget_problems
     from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
-    from imswitch.improcess.view.ImProcessMainView import ReconParTree
 
-    tree = ReconParTree()
-    assert set(tree.get_values()) == set(MonalisaReconstructor.default_params())
+    plugin = MonalisaReconstructor()
+    widget = plugin.make_param_widget(None)
+    assert widget_problems(plugin, widget) == []
 
 
 def test_the_registry_stamps_a_version_from_the_distribution():

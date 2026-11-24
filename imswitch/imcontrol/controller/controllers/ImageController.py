@@ -6,6 +6,7 @@ from ..basecontrollers import (
     StatefulComponentMixin,
 )
 from ..display_transform import apply_display_transform, display_transform_from_properties
+from imswitch.imcontrol.model.scan_frame import DisplayedScanGeometry, frame_geometry_of
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
@@ -24,6 +25,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
 
         self.__logger = initLogger(self, tryInheritParent=True)
         getWidgetStatePersistence().register('Image', self)
+        self._shownScanGeometry = {}   # detector -> DisplayedScanGeometry or None
 
         if hasattr(self._commChannel, 'sigSetVisibleLayers'):
             self._commChannel.sigSetVisibleLayers.connect(self.setVisibleLayers)
@@ -49,6 +51,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
             self._moduleCommChannel.sigLiveReconResult.connect(self.liveReconResultAvailable)
+            self._moduleCommChannel.sigShowImage.connect(self.showImage)
 
     def autoLevels(self, detectorNames=None, im=None):
         """ Set histogram levels automatically with current detector image."""
@@ -76,16 +79,32 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
     def update(self, detectorName, im, init, scale, isCurrentDetector):
         """ Update new image in the viewbox. """
         if np.prod(im.shape)>1:
+            # Read before the display transform: a transformed view carries no
+            # geometry (scan_frame.ScanFrame), and the geometry describes the
+            # untransformed pixels anyway.
+            geometry = frame_geometry_of(im)
+            transform = self._getDisplayTransform(detectorName)
             display_im, display_scale = apply_display_transform(
                 im,
                 scale,
-                self._getDisplayTransform(detectorName),
+                transform,
             )
 
             if not init:
                 self.autoLevels([detectorName], display_im)
 
-            self._widget.setImage(detectorName, display_im, display_scale)
+            shown = (
+                DisplayedScanGeometry(geometry, transform, tuple(im.shape))
+                if geometry is not None else None
+            )
+            self._widget.setImage(
+                detectorName, display_im, display_scale, scanGeometry=shown,
+            )
+            # Told once per change, after the layer shows it: a panel that maps
+            # viewer points to scanner positions re-projects on this.
+            if shown != self._shownScanGeometry.get(detectorName):
+                self._shownScanGeometry[detectorName] = shown
+                self._commChannel.sigScanGeometryShown.emit(detectorName, shown)
 
             # Keep overlay ROIs aligned to the current detector's pixel scale
             # (and orientation, already baked into display_scale by the swap in
@@ -131,6 +150,17 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         """ Adds live reconstruction result to widget. """
         self._widget.addStaticLayer(name, image, scale)
         if self._shouldResetView:
+            self.adjustFrame(image.shape, instantResetView=True)
+
+    def showImage(self, name, image, scale):
+        """ A script's show(): the array in the layer called ``name``,
+        replacing that layer's data when it exists. """
+        try:
+            isNew = self._widget.setStaticLayer(name, image, scale)
+        except Exception:
+            self.__logger.error(f'Could not show {name!r}', exc_info=True)
+            return
+        if isNew and self._shouldResetView:
             self.adjustFrame(image.shape, instantResetView=True)
 
     def setExposure(self, exp):

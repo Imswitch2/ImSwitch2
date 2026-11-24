@@ -52,7 +52,7 @@ def main(argv=None) -> int:
 
         input_dir, out_dir = root / "recordings", root / "results"
         for index in range(3):
-            write_synthetic_recording(input_dir / f"cell_{index}.h5", seed=index)
+            write_synthetic_recording(input_dir / f"cell_{index}.h5", seed=index, axes="CYX")
         print(f"synthetic recordings in {input_dir}")
 
     workflow = build_workflow()

@@ -42,6 +42,7 @@ class TableToLocalizationsProcessor(Processor):
     id = "table-to-localizations"
     category = "SMLM"
     kinds = ("table",)
+    output_kind = "localization"
     preserves_grid = False
 
     @classmethod

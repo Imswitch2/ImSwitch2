@@ -258,11 +258,22 @@ class _GraphCoolLedChannel(DeviceManagerStatusMixin):
 
 
 class _FakeNidaq:
-    def __init__(self, *, configured=(), detected=(), error=None, simulating=False):
+    def __init__(
+        self,
+        *,
+        configured=(),
+        detected=(),
+        error=None,
+        simulating=False,
+        backend_available=True,
+        backend_error=None,
+    ):
         self.configuredDeviceNames = tuple(configured)
         self.detectedDeviceNames = tuple(detected)
         self.deviceEnumerationError = error
         self.simulating = simulating
+        self.backendAvailable = backend_available
+        self.backendError = backend_error
 
 
 class _SetupDeviceInfo:
@@ -355,6 +366,31 @@ def test_failed_nidaq_control_backend_does_not_become_laser_connection_failure()
     assert len(laser_status.dependencies) == 1
     assert laser_status.dependencies[0].kind is DeviceRelationKind.USES_CONTROL_BACKEND
     assert laser_status.dependencies[0].status.connection is DeviceConnectionState.ERROR
+
+
+def test_missing_nidaqmx_is_reported_as_missing_backend_dependency():
+    from imswitch.imcontrol.model.devices import (
+        DeviceConnectionState,
+        DeviceFailureKind,
+        DeviceRuntimeMode,
+    )
+
+    backend_error = ImportError("nidaqmx is not installed")
+    nidaq = _FakeNidaq(
+        configured=("Dev1",),
+        backend_available=False,
+        backend_error=backend_error,
+    )
+    supervisor = DeviceSupervisor(_empty_master(nidaqManager=nidaq))
+
+    status = supervisor.getInfrastructureStatuses()[0]
+
+    assert status.name == "NI-DAQ Dev1"
+    assert status.connection is DeviceConnectionState.ERROR
+    assert status.mode is DeviceRuntimeMode.REAL
+    assert status.failure_kind is DeviceFailureKind.MISSING_DEPENDENCY
+    assert status.summary == "NI-DAQmx backend unavailable"
+    assert "nidaqmx is not installed" in status.details
 
 
 def test_detected_nidaq_board_is_reported_as_connected_infrastructure():

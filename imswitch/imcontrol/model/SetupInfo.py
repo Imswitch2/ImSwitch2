@@ -486,6 +486,10 @@ class ScanInfo:
     sampleRate: int
     """ Scan sample rate. """
 
+    cloak: Optional[str] = None
+    """ Optional simplified frontend over ``scanWidgetType``. The cloak must
+    declare that it supports the selected scan widget type. """
+
     maxScanTimeMin: Optional[int] = None
     """ Max scan time allowed, in min. ``null``/omitted = no limit. """
 
@@ -503,6 +507,32 @@ class ScanInfo:
     """ Line for frame end clock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
+
+    simplePointScan: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimplePointScan`` panel, all optional:
+    ``objectiveNA``, ``nyquistPixelSizeUm``, ``overviewAxes``,
+    ``overviewFieldUm``, ``overviewMinFieldUm``, ``overviewMinPixels``,
+    ``overviewMaxPixels``, ``overviewFrameTimeS``, ``minSamplesPerPixel``,
+    ``maxDwellMs``. Other scan panels ignore it. """
+
+    simpleMoNaLISA: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimpleMoNaLISA`` cloak. FOV can use
+    ``fovSource`` = ``"detector"`` (with ``fovUm`` as a persisted fallback) or
+    ``"manual"``. Camera readout timing uses ``defaultCameraReadoutTimeMs`` as
+    the setup default; profiles may override it with ``cameraReadoutTimeMs``.
+    The detector-reported readout is diagnostic only and can be copied into a
+    profile explicitly with Auto. ``ulensPeriodPolicy`` is ``"fixed"`` or
+    ``"per_profile"``;
+    fixed setups use the setup-level ``ulensPeriodUm``, while per-profile setups
+    require ``ulensPeriodUm`` in every usable profile. Profiles may also choose
+    ``scanExtentSource`` = ``"ulens"`` or ``"manual"`` (with ``scanExtentUm``),
+    so lateral scan length is not intrinsically the uLens period. ``profiles``
+    define ordered MoNaLISA sequence steps and modes selecting step/device
+    subsets; modes never own uLens geometry. Profiles and these setup options are
+    editable from SimpleMoNaLISA and persist back into the active setup file.
+    An empty or omitted ``profiles`` mapping is valid and starts in a restricted
+    state until the user creates one. Run defaults include ``defaultScanType``,
+    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and ``defaultZStepUm``. """
 
 
 
@@ -552,7 +582,12 @@ class NidaqInfo:
     """ Boolean for start triggering for sync. """
 
     simulation: Optional[bool] = False
-    """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+    """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
+
+    If ``False`` and the NI-DAQmx backend is unavailable, ImControl still
+    starts but NI-DAQ operations remain unavailable rather than silently
+    switching to simulated acquisition.
+    """
 
     def getTimerCounterChannel(self):
         """ :meta private: """
@@ -653,6 +688,16 @@ class SetupInfo:
     detectors: Dict[str, DetectorInfo] = field(default_factory=dict)
     """ Detectors in this setup. This is a map from unique detector names to
     DetectorInfo objects. """
+
+    disabledDevices: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    """ Device definitions parked by the configuration editor.
+
+    The outer key is the normal setup section name (for example ``detectors``
+    or ``positioners``), and the inner mapping keeps the original raw device
+    dictionaries keyed by device name. Disabled entries intentionally do not
+    appear in the active device mappings above/below, so runtime manager
+    construction and controllers continue to see only enabled hardware.
+    """
 
     lasers: Dict[str, LaserInfo] = field(default_factory=dict)
     """ Lasers in this setup. This is a map from unique laser names to

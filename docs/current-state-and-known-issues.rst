@@ -53,6 +53,33 @@ but not to the ``line_clock`` the TimeTagger follows), the linestep
 addressed with narrow no-hardware tests first and physical hardware
 verification before enabling behavior changes.
 
+Two related ``GalvoScanDesigner`` defects were measured on 2026-09-25, by
+comparing the generated waveform at each pixel's read time with the nominal
+pixel grid:
+
+- **Pixel pitch.** The swept fast axis realizes a pitch about 0.6 % (40 µs
+  dwell) to 1 % (20 µs) larger than the requested step. The line is centred
+  correctly, so pixels drift from the nominal grid towards both ends. Images
+  are therefore slightly larger in reality than their recorded OME pixel size
+  says.
+- **Read offset.** For a line length that is not a whole number of steps
+  (10 µm at 0.3 µm), the first pixel is read about 0.7 pixel before the sweep
+  reaches its start, while the mirror is still accelerating.
+
+Both are pinned as strict expected failures in
+``imswitch/imcontrol/_test/unit/test_scan_frame_geometry.py``. Fixing them
+changes the waveforms of every galvo scan, so it is separate work.
+
+**Loading a scan into the Advanced panel merges instead of replacing**
+(found 2026-09-29). ``AdvancedScanParameterSerializer.apply`` sets line-step
+enables and pulse windows only for the TTL devices a scan names, and leaves
+every other device as it was. The Advanced panel's own saved files name only
+the lasers the scan fires. So loading a scan that fires 405 into an Advanced
+panel where 488 is ticked leaves 488 ticked, and the loaded scan fires 488
+too. The SimplePointScan panel's scans name every TTL device (the ones they
+do not fire, switched off), so they load exactly; Advanced's own files and
+the serializer are unchanged, as fixing it changes how Advanced loads.
+
 Communication backbone
 ~~~~~~~~~~~~~~~~~~~~~~
 

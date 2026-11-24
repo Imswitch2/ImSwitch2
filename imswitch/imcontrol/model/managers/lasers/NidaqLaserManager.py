@@ -40,8 +40,8 @@ class NidaqLaserManager(LaserManager):
 
     def setEnabled(self, enabled):
         try:
-            self._nidaqManager.setDigital(self.name, enabled)
-            return True
+            succeeded = self._nidaqManager.setDigital(self.name, enabled)
+            return succeeded is not False
         except Exception as e:
             self.__logger.error(f"Error trying to enable laser: {e}")
             return False
@@ -56,11 +56,11 @@ class NidaqLaserManager(LaserManager):
         if for_scanning and not enabled:
             voltage = 0
         try:
-            self._nidaqManager.setAnalog(
+            succeeded = self._nidaqManager.setAnalog(
                 target=self.name, voltage=voltage,
                 min_val=self.valueRangeMin, max_val=self.valueRangeMax
             )
-            return True
+            return succeeded is not False
         except Exception as e:
             self.__logger.error(f"Error trying to set value to laser: {e}")
             return False

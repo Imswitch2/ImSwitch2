@@ -28,6 +28,7 @@ class MakeCompositeProcessor(Processor):
 
     name = "Make composite"
     id = "make-composite"
+    output_kind = "composite"
     category = "Visualization"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.

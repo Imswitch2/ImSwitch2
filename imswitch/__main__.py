@@ -76,7 +76,22 @@ def main():
             logger.error(f'Failed to initialize module {moduleId}')
             logger.error(traceback.format_exc())
             moduleCommChannel.unregister(modulePkg)
-            multiModuleWindow.addModule(moduleId, moduleName, ModuleLoadErrorView(e))
+            if moduleId == 'imcontrol':
+                # ImControl can fail because the selected hardware setup is not
+                # usable on this machine. Keep setup selection/config editing
+                # reachable even though its normal controller never finished.
+                try:
+                    from imswitch.imcontrol.view.ImControlLoadErrorView import (
+                        ImControlLoadErrorView,
+                    )
+                    errorView = ImControlLoadErrorView(e)
+                except Exception:
+                    logger.error('Failed to initialize ImControl recovery view')
+                    logger.error(traceback.format_exc())
+                    errorView = ModuleLoadErrorView(e)
+            else:
+                errorView = ModuleLoadErrorView(e)
+            multiModuleWindow.addModule(moduleId, moduleName, errorView)
         else:
             # Add module to window
             multiModuleWindow.addModule(moduleId, moduleName, view)

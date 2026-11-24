@@ -136,6 +136,12 @@ Location: `imswitch/_data/user_defaults/imcontrol_setups/example_no_hardware.jso
 - **No RS232 devices:** Serial communication disabled
 - **No physical I/O channels:** All `analogChannel` and `digitalLine` fields are `null`
 
+`simulation: true` is intentional software scan simulation, not just a startup
+fallback. A setup with `simulation: false` can now still open when `nidaqmx` is
+missing, but its NI-DAQ backend is marked unavailable and NI-DAQ scans/writes
+are refused. Hardware-free validation profiles should therefore continue to
+set `simulation: true` when they need simulated scan timing or detector data.
+
 **Example snippet:**
 ```json
 {

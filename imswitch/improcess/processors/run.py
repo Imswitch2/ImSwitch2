@@ -14,6 +14,24 @@ from __future__ import annotations
 from imswitch.improcess.processors.base import normalize_processor_output
 
 
+class Failure(str):
+    """A failure's message that still knows the exception it came from.
+
+    ``(result, message)`` pairs have always carried the message as text, and
+    every caller formats or compares it as text; a ``str`` subclass keeps all of
+    that working while letting a caller that wants details -- a Python step's
+    line, its trimmed traceback, what it printed -- read them from
+    ``.exception`` instead of parsing the message.
+    """
+
+    exception: BaseException | None
+
+    def __new__(cls, exc: BaseException):
+        text = super().__new__(cls, str(exc))
+        text.exception = exc
+        return text
+
+
 def run_multi(processor, inputs, params: dict, logger):
     """One run consuming every input; the arity contract puts them in params."""
     try:
@@ -31,7 +49,7 @@ def run_multi(processor, inputs, params: dict, logger):
             getattr(processor, "id", type(processor).__name__),
             len(inputs),
         )
-        return [], [(inputs[0], str(exc))]
+        return [], [(inputs[0], Failure(exc))]
 
 
 def restriction_for(processor, params: dict):
@@ -116,7 +134,7 @@ def run_batch(processor, inputs, params: dict, logger):
                 getattr(processor, "id", type(processor).__name__),
                 getattr(input_result, "name", type(input_result).__name__),
             )
-            failures.append((input_result, str(exc)))
+            failures.append((input_result, Failure(exc)))
     return results, failures
 
 

@@ -235,6 +235,10 @@ def _hardwareManager(task):
     # Construct in simulation so tests never require an NI driver, then expose
     # the hardware branch with a fully controlled task factory.
     manager._NidaqManager__simulating = False
+    # This helper explicitly exercises the real-hardware transaction branch
+    # with a controlled fake task. CI intentionally has no nidaqmx installed,
+    # so mark the injected backend as available as well as disabling simulation.
+    manager._NidaqManager__backendAvailable = True
     manager._NidaqManager__scanSimulator = None
     manager._NidaqManager__createChanAOTask = (
         lambda *_args, **_kwargs: task
@@ -248,6 +252,9 @@ def _oneShotHardwareManager(task):
     })
     manager = NidaqManager(setup)
     manager._NidaqManager__simulating = False
+    # As above, this is a fake *available hardware* backend, not the
+    # unavailable-backend behavior covered by test_nidaq_simulation_startup.
+    manager._NidaqManager__backendAvailable = True
     manager._NidaqManager__scanSimulator = None
     manager._NidaqManager__createChanAOTask = (
         lambda *_args, **_kwargs: task
@@ -394,6 +401,32 @@ def test_stale_input_completion_cannot_close_new_same_named_task():
 
     assert manager.inputTaskDone("APD", 22) is True
     assert task.closeCalls == 1
+    assert done == [True]
+
+
+def test_a_detector_teardown_closes_its_task_and_completes_the_scan_after():
+    """A detector closing its input task inside its own teardown must not run
+    the scan-done listeners there: the final one releases the detector
+    leases, whose stop waits on that teardown (APD quarantined on the rig)."""
+    simulator = _Simulator()
+    manager = _simulatedManager(simulator=simulator)
+    task = _Task()
+    manager.tasks["APD"] = task
+    manager._taskGenerations["APD"] = 23
+    manager._scanGeneration = 23
+    manager._scanTransactionActive = False
+    manager.signalSent = False
+    manager.busy = True
+    done = []
+    manager.sigScanDone.connect(lambda: done.append(True))
+
+    assert manager.inputTaskDone("APD", 23, completeScan=False) is True
+    assert task.closeCalls == 1
+    assert done == []
+
+    assert manager.completeScanIfIdle() is True
+    assert done == [True]
+    manager.completeScanIfIdle()                 # reported once
     assert done == [True]
 
 

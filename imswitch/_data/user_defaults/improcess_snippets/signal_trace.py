@@ -1,4 +1,5 @@
 # ports: level, area
+# curves: level, area
 # Follow the bright signal through a recording.
 # A frame's background is its median; signal is whatever lies more than k robust
 # standard deviations above it. 'level' is the mean signal above background

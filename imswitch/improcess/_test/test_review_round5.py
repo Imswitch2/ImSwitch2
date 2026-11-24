@@ -374,7 +374,10 @@ def test_a_failed_row_lists_the_files_it_published_before_failing(registry, tmp_
         Source("raw"),
         Reconstruct("rec", "view-only", inputs=["raw"]),
         Save("save", input="rec", fmt="tiff"),
-        Process("bad", "table-to-localizations", inputs=["rec"]),   # refuses an image at run time
+        # fails at run time, after the save: a Python step's output kind is "any",
+        # so validation cannot refuse it beforehand (a declared mismatch, such as
+        # an image into table-to-localizations, is now refused before the run)
+        Process("bad", "python", {"code": "raise ValueError('boom')", "ports": "out"}, inputs=["rec"]),
     ])
     batch = run_over(wf, bindings_for_inputs(wf, [raw]), registry=registry, out_dir=tmp_path / "out")
     row = batch.rows[0]

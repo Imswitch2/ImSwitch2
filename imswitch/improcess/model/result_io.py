@@ -248,14 +248,20 @@ def _json_attributes(result, extra: dict | None = None, document=None) -> dict[s
 # writers
 # --------------------------------------------------------------------------
 
-def _aligned_labels(result, ndim: int) -> list[str]:
-    labels = [str(label) for label in getattr(result, "axis_labels", []) or []]
+def _aligned_labels(result, ndim: int, view=None) -> list[str]:
+    """The labels of the axes being written: the serialization view's when
+    the result has one (its on-disk layout may differ from ``result.axis_labels``),
+    the result's otherwise, padded or cut to ``ndim``."""
+    source = view.axis_labels if view is not None and view.axis_labels else (
+        getattr(result, "axis_labels", []) or []
+    )
+    labels = [str(label) for label in source]
     while len(labels) < ndim:
         labels.insert(0, "Q")
     return labels[-ndim:] if ndim else labels
 
 
-def _plane_delta_t(result, shape, times_s) -> list[float] | None:
+def _plane_delta_t(result, shape, times_s, view=None) -> list[float] | None:
     """Per-plane ``DeltaT`` for OME, from one time per index of the T axis.
 
     OME numbers planes over every axis but the last two; each plane takes the
@@ -265,7 +271,7 @@ def _plane_delta_t(result, shape, times_s) -> list[float] | None:
     """
     if times_s is None or len(shape) < 3:
         return None
-    labels = _aligned_labels(result, len(shape))
+    labels = _aligned_labels(result, len(shape), view)
     if "T" not in labels[:-2]:
         return None
     axis = labels.index("T")
@@ -292,7 +298,7 @@ def _tiff_pages(data, shape):
 
 
 def _save_tiff(result, path: Path, data, meta: OmeImageMeta, extra=None,
-               document=None, times_s=None) -> None:
+               document=None, times_s=None, view=None) -> None:
     import tifffile
 
     shape, dtype = _shape_and_dtype(data)
@@ -325,7 +331,7 @@ def _save_tiff(result, path: Path, data, meta: OmeImageMeta, extra=None,
             f"cannot write {getattr(result, 'name', 'result')!r} as TIFF: a TIFF page needs "
             f"two axes, this result has {len(shape)} (shape {shape})"
         )
-    delta_t = _plane_delta_t(result, shape, times_s)
+    delta_t = _plane_delta_t(result, shape, times_s, view)
     if delta_t is not None:
         plane = dict(metadata.get("Plane") or {})
         plane["DeltaT"] = delta_t
@@ -374,7 +380,7 @@ def _is_rgb(result) -> bool:
 
 
 def _save_hdf5(result, path: Path, data, meta: OmeImageMeta, extra=None,
-               document=None, times_s=None) -> None:
+               document=None, times_s=None, view=None) -> None:
     import h5py
 
     shape, dtype = _shape_and_dtype(data)
@@ -390,11 +396,17 @@ def _save_hdf5(result, path: Path, data, meta: OmeImageMeta, extra=None,
             dataset = handle.create_dataset("data", data=data)
         # Fiji reads element_size_um; everything else reads the OME-XML.
         dataset.attrs["element_size_um"] = meta.element_size_um()
-        dataset.attrs["axis_labels"] = ",".join(
-            str(label) for label in getattr(result, "axis_labels", []) or []
+        labels = _aligned_labels(result, len(shape), view)
+        dataset.attrs["axis_labels"] = ",".join(labels)
+        # What the HDF5 reader reads the labels from (the recording storer's
+        # attribute), so a hyperstack comes back with its axes and its
+        # calibration on the right ones.
+        dataset.attrs["axes"] = labels
+        dataset.attrs["scale_unit"] = str(
+            view.scale_unit if view is not None and view.scale_unit
+            else getattr(result, "scale_unit", "px")
         )
-        dataset.attrs["scale_unit"] = str(getattr(result, "scale_unit", "px"))
-        delta_t = _plane_delta_t(result, shape, times_s)
+        delta_t = _plane_delta_t(result, shape, times_s, view)
         try:
             handle.attrs["ome_xml"] = build_ome_xml(
                 meta, shape,
@@ -422,7 +434,7 @@ def _save_hdf5(result, path: Path, data, meta: OmeImageMeta, extra=None,
 
 
 def _save_zarr(result, path: Path, data, meta: OmeImageMeta, extra=None,
-               document=None, times_s=None) -> None:
+               document=None, times_s=None, view=None) -> None:
     import zarr
 
     shape, dtype = _shape_and_dtype(data)
@@ -504,7 +516,7 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
         meta = ome_meta_for_view(view, name=str(getattr(result, "name", "") or "result"))
     else:
         meta = ome_meta_for_result(result)
-    writer(result, path, data, meta, extra, document, times_s=times_s)
+    writer(result, path, data, meta, extra, document, times_s=times_s, view=view)
     return fmt
 
 

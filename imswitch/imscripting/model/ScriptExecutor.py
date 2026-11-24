@@ -12,6 +12,7 @@ from imswitch.imcommon.model import (
 )
 from .actions import getActionsScope
 from .ScriptRunResult import ScriptRunResult, ScriptRunStatus
+from .ScriptSession import ScriptSession, compileForEditor, editorFileName
 
 #: Seconds a cancelled script gets to run its cleanup (``finally`` blocks)
 #: after cancellation has been delivered, before cancellation re-arms.
@@ -50,11 +51,19 @@ class ScriptExecutor(SignalInterface):
     * :meth:`shutdown` is the only bounded *wait*; it is meant for
       application exit and pumps this thread's events while waiting so that
       queued cleanup calls can still be delivered.
+
+    A run executes either in a fresh namespace (``session=False``, Run all:
+    reproducible) or in :attr:`session`, the namespace that lives on between
+    runs and that the console shares (Run selection, Run cell).
     """
 
     sigOutputAppended = Signal(str)  # (outputText)
-    _sigExecute = Signal(str, str, object)  # (scriptPath, code, result)
+    _sigExecute = Signal(object, str, object, object)  # (scriptPath, code, result, run)
+    #: A run starts executing (also a run that was deferred behind another).
+    sigExecutionStarted = Signal(object)  # (ScriptRunResult)
     sigExecutionFinished = Signal(object)  # (ScriptRunResult)
+    #: The session was reset: every variable forgotten.
+    sigSessionReset = Signal()
 
     def __init__(self, scriptScope, *, cleanupBudgetS=DEFAULT_CLEANUP_BUDGET_S,
                  escalateAfterMs=DEFAULT_ESCALATE_AFTER_MS):
@@ -63,6 +72,7 @@ class ScriptExecutor(SignalInterface):
         self._cleanupBudgetS = float(cleanupBudgetS)
         self._escalateAfterMs = int(escalateAfterMs)
 
+        self.session = ScriptSession(scriptScope)
         self._executionWorker = ExecutionThread(
             scriptScope, cleanupBudgetS=self._cleanupBudgetS
         )
@@ -73,7 +83,7 @@ class ScriptExecutor(SignalInterface):
         self._sigExecute.connect(self._executionWorker.execute)
 
         self._currentResult = None
-        self._pendingRun = None  # (scriptPath, code, result) deferred until the current run ends
+        self._pendingRun = None  # (scriptPath, code, result, run) deferred until the current run ends
         self._leaked = False
         self._cancelRequestedAt = None
         self._escalated = False
@@ -95,19 +105,27 @@ class ScriptExecutor(SignalInterface):
     # ------------------------------------------------------------------ #
     # Running                                                             #
     # ------------------------------------------------------------------ #
-    def execute(self, scriptPath, code):
+    def execute(self, scriptPath, code, *, session=False, firstLine=0):
         """Executes the specified script code. scriptPath is the path to the
         script file if it exists, or None if the script has not been saved to
         a file. Returns the ScriptRunResult object.
+
+        ``session=False`` runs the code in a fresh namespace; ``session=True``
+        runs it in :attr:`session`, where the variables of earlier session
+        runs are, and leaves its own there. ``firstLine`` is the 0-based
+        editor line the code starts at, so that a traceback names the
+        editor's line numbers.
 
         If a script is still running (or still stopping), it is cancelled and
         the new run starts once it has finished; the returned result then
         stays ``RUNNING`` until that moment."""
         result = ScriptRunResult(script_path=scriptPath)
+        result.session = bool(session)
+        run = _Run(self.session if session else None, int(firstLine))
         if self.isExecuting():
             self.cancel()
             replaced = self._pendingRun
-            self._pendingRun = (scriptPath, code, result)
+            self._pendingRun = (scriptPath, code, result, run)
             if replaced is not None:
                 replaced[2].mark_cancelled()
                 self.sigExecutionFinished.emit(replaced[2])
@@ -116,14 +134,25 @@ class ScriptExecutor(SignalInterface):
                 'start as soon as it has ended.'
             )
             return result
-        self._start(scriptPath, code, result)
+        self._start(scriptPath, code, result, run)
         return result
 
-    def _start(self, scriptPath, code, result):
+    def _start(self, scriptPath, code, result, run):
         self._currentResult = result
         result.mark_started()
         self._executionThread.start()
-        self._sigExecute.emit(scriptPath, code, result)
+        self.sigExecutionStarted.emit(result)
+        self._sigExecute.emit(scriptPath, code, result, run)
+
+    def resetSession(self):
+        """Forgets every variable of the session and puts back what ImSwitch
+        installs. Refused (returns False) while a run is busy, which may be
+        using the session."""
+        if self.isBusy():
+            return False
+        self.session.reset()
+        self.sigSessionReset.emit()
+        return True
 
     def _onWorkerFinished(self, result):
         # Delivered on this object's (GUI) thread after the worker's execute
@@ -255,6 +284,15 @@ class ScriptExecutor(SignalInterface):
         one that is still stopping)."""
         return self._executionThread.isRunning() and self._executionWorker.isWorking()
 
+    def isBusy(self):
+        """Whether a run is under way: from the moment :meth:`execute` hands
+        it over -- before the script thread has picked it up, when
+        :meth:`isExecuting` is still False -- until
+        :attr:`sigExecutionFinished` has been delivered for the last one. The
+        session may only be read or reset from the GUI thread while this is
+        False."""
+        return self._currentResult is not None or self.isExecuting()
+
     def isStopping(self):
         """Returns whether the running script has been asked to stop."""
         token = self._executionWorker.currentToken()
@@ -307,11 +345,16 @@ class ExecutionThread(Worker):
             return False
         return interruptThread(ident)
 
-    def execute(self, scriptPath, code, result):
-        """Execute script code with per-run output capture and structured result."""
-        scriptScope = {}
-        scriptScope.update(self._scriptScope)
-        scriptScope.update(getActionsScope(self._scriptScope, scriptPath))
+    def execute(self, scriptPath, code, result, run=None):
+        """Execute script code with per-run output capture and structured
+        result, in a fresh namespace or in ``run.session``'s."""
+        session = run.session if run is not None else None
+        if session is None:
+            scriptScope = {}
+            scriptScope.update(self._scriptScope)
+            scriptScope.update(getActionsScope(self._scriptScope, scriptPath))
+        else:
+            scriptScope = session.prepareRun(scriptPath)
 
         token = CancelToken(cleanupBudgetS=self._cleanupBudgetS)
         self._token = token
@@ -333,7 +376,11 @@ class ExecutionThread(Worker):
 
                 self._inScript = True
                 try:
-                    exec(code, scriptScope)
+                    compiled = compileForEditor(
+                        code, run.firstLine if run is not None else 0,
+                        editorFileName(scriptPath),
+                    )
+                    exec(compiled, scriptScope)
                     result.mark_succeeded()
                 except OperationCancelled:
                     result.mark_cancelled()
@@ -388,6 +435,17 @@ class ExecutionThread(Worker):
 
     def isWorking(self):
         return self._isWorking
+
+
+class _Run:
+    """How a run executes: in ``session`` (None for a fresh namespace), from
+    the 0-based editor line ``firstLine``."""
+
+    __slots__ = ('session', 'firstLine')
+
+    def __init__(self, session, firstLine=0):
+        self.session = session
+        self.firstLine = firstLine
 
     def getCurrentResult(self):
         """Returns the current ScriptRunResult, or None if not executing."""

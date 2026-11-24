@@ -20,6 +20,7 @@ def getMainViewAndController(moduleCommChannel, *_args,
         # Let user pick the setup to use
         pickSetupDialog = PickSetupDialog()
         pickSetupDialog.setSetups(configfiletools.getSetupList())
+        pickSetupDialog.setSelectedSetup(options.setupFileName)
         result = pickSetupDialog.exec_()
         setupFileName = pickSetupDialog.getSelectedSetup()
         if result != QtWidgets.QDialog.Accepted or not setupFileName:

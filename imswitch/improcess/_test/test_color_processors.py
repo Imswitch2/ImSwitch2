@@ -191,17 +191,29 @@ def test_channel_merge_compatibility_tolerates_float_noise_in_scales():
 
 def test_channel_merge_rejects_a_scale_unit_mismatch():
     """Merge shares Stack/Combine's metadata rules; it used to ignore the
-    unit and silently give the output the first input's."""
+    unit and silently give the output the first input's. A unit is
+    converted, not ignored: um and nm merge when they state the same
+    pitch, and the output is in the first input's unit."""
     micrometres = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
     micrometres.scale_unit = "um"
+    micrometres.axis_scales = [1.0, 1.0]
     nanometres = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
     nanometres.scale_unit = "nm"
+    nanometres.axis_scales = [1.0, 1.0]
 
     assert not can_merge_results([micrometres, nanometres])
-    with pytest.raises(ValueError, match="unit"):
+    with pytest.raises(ValueError, match="scale"):
         ChannelMergeProcessor().apply(
             micrometres, {"results": [micrometres, nanometres]}
         )
+
+    nanometres.axis_scales = [1000.0, 1000.0]
+    assert can_merge_results([micrometres, nanometres])
+    merged = ChannelMergeProcessor().apply(
+        micrometres, {"results": [micrometres, nanometres]}
+    )
+    assert merged.scale_unit == "um"
+    assert merged.axis_scales == [1.0, 1.0, 1.0]
 
 
 def test_channel_merge_raises_the_same_reason_the_ui_shows():

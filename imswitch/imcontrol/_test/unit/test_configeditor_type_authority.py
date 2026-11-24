@@ -493,7 +493,9 @@ def test_the_corpus_is_what_the_plan_says():
     # 16: galvo_apd_mock_scan_setup.json joined the shipped setups with the
     # single-axis scan work; 17: mock_scan_monalisa_live.json with the live
     # reconstruction work. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert len(shipped_setups()) == 17
+    # 18: galvo_apd_simple_mock_scan_setup.json with the SimplePointScan panel;
+    # 19: simple_mock_setup.json, the default setup; 20: simple_monalisa_mock_scan_setup.json.
+    assert len(shipped_setups()) == 20
     # 64: plus the mock power meter and mock PAX instruments.
     # 66: plus the Thorlabs PM100 and PAX1000.
     assert len(generated_fixtures()) == 66

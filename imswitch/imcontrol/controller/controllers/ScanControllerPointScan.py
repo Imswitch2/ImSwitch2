@@ -193,15 +193,21 @@ class ScanControllerPointScan(SuperScanController):
         signal.emit(*args)
 
     @APIExport(runOnUIThread=True)
-    def changed3StepDelayPar(self, d3StepDelay): #Simone: Simone added this to allow imscripting
+    def changed3StepDelayPar(self, d3StepDelay):
+        """ Sets the Point scan widget's delay before each step of the third
+        axis. """
         self._widget.setd3StepDelayPar(d3StepDelay)
 
     @APIExport(runOnUIThread=True)
-    def changeScanCenterPos(self, positionerName, positionerScanCenterPos): #Simone added this to allow imscripting
+    def changeScanCenterPos(self, positionerName, positionerScanCenterPos):
+        """ Sets the centre of the scan along a positioner, in µm (the Point
+        scan widget's *Center*). """
         self._widget.setScanCenterPos(positionerName, positionerScanCenterPos)
 
     @APIExport(runOnUIThread=True)
-    def changeScanSize(self, positioner: str, size: float): #Simone added this to allow imscripting
+    def changeScanSize(self, positioner: str, size: float):
+        """ Sets the size of the scan along a positioner, in µm (the Point
+        scan widget's *Size*). """
         self._widget.setScanSize(positioner, size)
 
     # ------------------------------------------------------------------

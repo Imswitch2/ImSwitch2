@@ -1,0 +1,238 @@
+{
+  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The camera is a mock Hamamatsu: it has the 'Trigger source' the cloak switches between Live (internal) and acquisition (external frame trigger), reports a readout time, and takes one frame per camera TTL of the simulated scan. Its mockSample block makes each frame show the synthetic cell/bead sample of the point-scan mock under a 0.72 um square foci lattice (the profile's uLens period; 9.6 px at the 75 nm camera pixel, in the range real MoNaLISA recordings have and the pattern finder looks in), placed from the X/Y scan waveforms at 5 um/V, so a scan over one period reconstructs to the sample. Record, then reconstruct with the monalisa reconstructor.",
+  "detectors": {
+    "Camera": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line4",
+      "managerName": "HamamatsuManager",
+      "managerProperties": {
+        "cameraListIndex": "mock",
+        "cameraPixelSizeUm": 0.075,
+        "hamamatsu": {
+          "exposure_time": 0.001,
+          "trigger_source": 1,
+          "subarray_hpos": 0,
+          "subarray_vpos": 0,
+          "subarray_hsize": 512,
+          "subarray_vsize": 512,
+          "image_width": 512,
+          "image_height": 512
+        },
+        "mockSample": {
+          "axes": {
+            "X": 5.0,
+            "Y": 5.0
+          },
+          "latticePeriodUm": 0.72
+        }
+      },
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "488 (OFF)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line0",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "X"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "Y"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": [
+        "Z"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "Advanced",
+    "cloak": "SimpleMoNaLISA",
+    "scanDesigner": "BetaScanDesigner",
+    "scanDesignerParams": {
+      "return_time": 0.001,
+      "move_time": 0.001,
+      "settle_time": 0.001
+    },
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": null,
+    "frameStartClockLine": null,
+    "frameEndClockLine": null,
+    "simpleMoNaLISA": {
+      "fovSource": "manual",
+      "fovUm": [
+        38.4,
+        38.4
+      ],
+      "ulensPeriodPolicy": "fixed",
+      "ulensPeriodUm": 0.72,
+      "defaultCameraReadoutTimeMs": 6.0,
+      "cameraReadoutSafetyMarginMs": 0.1,
+      "cameraReadoutToleranceMs": 0.1,
+      "cameraReadoutUnoptimizedThresholdMs": 0.3,
+      "interPulseDelayMs": 0.1,
+      "defaultScanType": "XY",
+      "defaultLateralStepUm": 0.04,
+      "defaultZScanLengthUm": 1.0,
+      "defaultZStepUm": 0.15,
+      "defaultProfile": "default",
+      "profiles": {
+        "default": {
+          "label": "Default",
+          "defaultMode": "resolft",
+          "scanExtentSource": "ulens",
+          "steps": [
+            {
+              "id": "on",
+              "label": "ON",
+              "role": "on",
+              "ttlDevices": [
+                "405 (ON)"
+              ],
+              "defaultDurationMs": 1.0
+            },
+            {
+              "id": "off",
+              "label": "OFF",
+              "role": "off",
+              "ttlDevices": [
+                "488 (OFF)"
+              ],
+              "defaultDurationMs": 2.0
+            },
+            {
+              "id": "readout",
+              "label": "Readout",
+              "role": "readout",
+              "ttlDevices": [
+                "488 (EXC)",
+                "Camera"
+              ],
+              "defaultDurationMs": 1.0,
+              "durationEditable": false
+            }
+          ],
+          "modes": {
+            "resolft": {
+              "label": "RESOLFT",
+              "enabledSteps": [
+                "on",
+                "off",
+                "readout"
+              ]
+            },
+            "confocal": {
+              "label": "Confocal",
+              "enabledSteps": [
+                "on",
+                "readout"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Laser",
+    "Positioner",
+    "Scan"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": [
+      "monalisa",
+      "view-only"
+    ],
+    "processors": []
+  }
+}

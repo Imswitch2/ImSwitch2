@@ -24,6 +24,7 @@ class MulticolorApplyProcessor(Processor):
 
     name = "Multicolor Apply"
     id = "multicolor-apply"
+    output_kind = "image"
     category = "Registration"
 
     @classmethod

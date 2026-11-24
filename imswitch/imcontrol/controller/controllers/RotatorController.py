@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -100,10 +100,42 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
         self.updatePosition(name)
 
     @APIExport(runOnUIThread=True)
-    def moveAbs(self, name, pos): #change by Simone: for scriptable, add pos position
-        #pos = self._widget.getAbsPos(name) #commented by Simone because we want it scriptable. Now connected to the widget through line 20
+    def moveAbs(self, name: str, pos: float) -> None:
+        """ Turns the rotator ``name`` to ``pos`` degrees: the older name of
+        setRotatorPosition, kept for existing scripts. """
+        self.setRotatorPosition(name, pos)
+
+    @APIExport()
+    def getRotatorNames(self) -> List[str]:
+        """ Returns the names of all rotators (motorized rotation mounts),
+        as the other rotator functions take them. """
+        return [name for name, _ in self._master.rotatorsManager]
+
+    @APIExport(runOnUIThread=True)
+    def getRotatorPosition(self, name: str) -> float:
+        """ Returns the angle of the rotator ``name`` in degrees, read from
+        the mount, and shows it in the Rotator widget. """
+        self.updatePosition(name)
+        return self._master.rotatorsManager[name].position
+
+    @APIExport(runOnUIThread=True)
+    def setRotatorPosition(self, name: str, degrees: float) -> None:
+        """ Turns the rotator ``name`` to the angle ``degrees`` (the Rotator
+        widget's **Abs**). Returns when the mount's manager does: the
+        shipped managers wait for the move. """
         try:
-            self._master.rotatorsManager[name].move_abs(pos)
+            self._master.rotatorsManager[name].move_abs(degrees)
+        except DeviceNotConnectedError:
+            self._refreshRotatorUsability((name,))
+            raise
+        self.updatePosition(name)
+
+    @APIExport(runOnUIThread=True)
+    def moveRotator(self, name: str, degrees: float) -> None:
+        """ Turns the rotator ``name`` by ``degrees`` from where it is, either
+        way round (the Rotator widget's **+** and **-**, with any step). """
+        try:
+            self._master.rotatorsManager[name].move_rel(degrees)
         except DeviceNotConnectedError:
             self._refreshRotatorUsability((name,))
             raise
