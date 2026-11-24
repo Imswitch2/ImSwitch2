@@ -123,8 +123,39 @@ def test_the_mock_port_never_has_anything_waiting():
     assert manager.readWaiting() == ''
 
 
-def test_the_pyserial_adapter_reads_what_is_waiting():
-    from imswitch.imcontrol.model.interfaces.RS232Driver import _SerialAdapter
+@pytest.fixture
+def rs232DriverModule(monkeypatch):
+    """``RS232Driver`` imports pyvisa at module level, and pyvisa is an
+    optional hardware dependency (CI's ``.[test]`` install has none). These
+    tests only exercise the buffer-reading code, so where pyvisa is missing a
+    minimal stand-in is installed for the import and removed again afterwards;
+    with the real package the real one is used."""
+    import importlib
+    import sys
+    import types
+
+    name = 'imswitch.imcontrol.model.interfaces.RS232Driver'
+    try:
+        import pyvisa  # noqa: F401
+    except ImportError:
+        constants = types.SimpleNamespace(
+            Parity=types.SimpleNamespace(
+                none=0, odd=1, even=2, mark=3, space=4),
+            StopBits=types.SimpleNamespace(
+                one=10, one_and_a_half=15, two=20),
+        )
+        stub = types.ModuleType('pyvisa')
+        stub.constants = constants
+        monkeypatch.setitem(sys.modules, 'pyvisa', stub)
+    sys.modules.pop(name, None)
+    module = importlib.import_module(name)
+    yield module
+    # do not leave a module bound to the stand-in for other tests to import
+    sys.modules.pop(name, None)
+
+
+def test_the_pyserial_adapter_reads_what_is_waiting(rs232DriverModule):
+    _SerialAdapter = rs232DriverModule._SerialAdapter
 
     adapter = _SerialAdapter.__new__(_SerialAdapter)
     adapter._encoding = 'ascii'
@@ -135,8 +166,8 @@ def test_the_pyserial_adapter_reads_what_is_waiting():
     adapter._ser.read.assert_called_once_with(7)
 
 
-def test_the_driver_takes_only_the_bytes_in_the_buffer():
-    from imswitch.imcontrol.model.interfaces.RS232Driver import RS232Driver
+def test_the_driver_takes_only_the_bytes_in_the_buffer(rs232DriverModule):
+    RS232Driver = rs232DriverModule.RS232Driver
 
     driver = RS232Driver('COM99')
     with pytest.raises(OSError):
