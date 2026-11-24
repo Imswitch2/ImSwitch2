@@ -222,6 +222,11 @@ HDF5_STREAM_LIBVER = ('v110', 'v110')
 #: The width now follows the vocabulary it stores.
 COMPLETION_OUTCOME_ATTR_DTYPE = f"S{max(len(value) for value in VALID_COMPLETION_OUTCOMES)}"
 
+#: Attribute categories copied into OME annotations as provenance (see
+#: :func:`annotationsFromAttrs`).
+_PROVENANCE_ANNOTATION_PREFIXES = ('setup:', 'metadata:', 'replay:')
+
+
 def annotationsFromAttrs(detectorAttrs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Pull the OME annotations out of one detector's flat attribute dict.
 
@@ -231,6 +236,12 @@ def annotationsFromAttrs(detectorAttrs: Optional[Dict[str, Any]]) -> Dict[str, A
     OME ``Description``, anything else under ``notes:`` becomes a key/value
     pair. Returns an empty dict when nothing was written, which leaves the
     emitted OME byte-for-byte identical to a recording made without notes.
+
+    The setup identity and replay provenance (``setup:*``, ``metadata:*``,
+    ``replay:*``) are carried the same way, under their full key, because an
+    OME-TIFF has no other place for them and they are what tells a reader
+    which setup -- and, after a replay, which source recording -- its
+    settings came from.
     """
     if not detectorAttrs:
         return {}
@@ -238,6 +249,10 @@ def annotationsFromAttrs(detectorAttrs: Optional[Dict[str, Any]]) -> Dict[str, A
     annotations: Dict[str, Any] = {}
     prefix = f'{NOTES_ATTR_CATEGORY}:'
     for key, value in detectorAttrs.items():
+        if isinstance(key, str) and key.startswith(_PROVENANCE_ANNOTATION_PREFIXES):
+            if value is not None and str(value).strip() != '':
+                annotations[key] = value
+            continue
         if not isinstance(key, str) or not key.startswith(prefix):
             continue
         name = key[len(prefix):]
