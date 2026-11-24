@@ -67,7 +67,9 @@ class LifetimeWidget(Widget):
     sigGateLayersToggled = QtCore.Signal(bool)
     sigRatioToggled = QtCore.Signal(bool)
     sigMeasureStedPulse = QtCore.Signal()
-    sigTriggerSweep = QtCore.Signal(str)  # (role)
+    sigFindLevel = QtCore.Signal(str)  # (role): find a trigger level for its input
+    sigApplyLevel = QtCore.Signal(bool)  # the last found level; True = also keep it in the setup file
+    sigCopyLevel = QtCore.Signal()  # the last found level's setup-file line, to the clipboard
     sigScopeSnapshot = QtCore.Signal()
     sigPreflight = QtCore.Signal()
 
@@ -250,19 +252,22 @@ class LifetimeWidget(Widget):
         # Signals: the card, live.
         signals = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(signals)
-        self.ratesTable = QtWidgets.QTableWidget(0, 3)
-        self.ratesTable.setHorizontalHeaderLabels(['role', 'rate', 'trigger (V)'])
+        self.ratesTable = QtWidgets.QTableWidget(0, 5)
+        self.ratesTable.setHorizontalHeaderLabels(['input', 'rate', 'trigger (V)', '', 'check'])
         self.ratesTable.horizontalHeader().setStretchLastSection(True)
         self.ratesTable.verticalHeader().setVisible(False)
-        self.ratesTable.setMaximumHeight(170)
+        self.ratesTable.setMaximumHeight(190)
         layout.addWidget(self.ratesTable)
         self.signalsInfo = QtWidgets.QLabel('direction: —   filter: —   overflows: —')
         layout.addWidget(self.signalsInfo)
         buttons = QtWidgets.QHBoxLayout()
         self.sweepRoleCombo = QtWidgets.QComboBox()
         buttons.addWidget(self.sweepRoleCombo)
-        self.sweepButton = QtWidgets.QPushButton('Trigger sweep')
-        self.sweepButton.clicked.connect(lambda: self.sigTriggerSweep.emit(self.sweepRoleCombo.currentText()))
+        self.sweepButton = QtWidgets.QPushButton('Find level')
+        self.sweepButton.setToolTip(
+            'Sweep the input\'s trigger level, from the noise to the input\'s range, and '
+            'find the middle of the plateau. Nothing is changed until you apply it.')
+        self.sweepButton.clicked.connect(lambda: self.sigFindLevel.emit(self.sweepRoleCombo.currentText()))
         buttons.addWidget(self.sweepButton)
         self.scopeButton = QtWidgets.QPushButton('Scope snapshot')
         self.scopeButton.clicked.connect(self.sigScopeSnapshot)
@@ -272,6 +277,27 @@ class LifetimeWidget(Widget):
         buttons.addWidget(self.preflightButton)
         buttons.addStretch()
         layout.addLayout(buttons)
+        # The last level found: what it is, and what may be done with it.
+        self.levelResultLabel = QtWidgets.QLabel('')
+        self.levelResultLabel.setWordWrap(True)
+        layout.addWidget(self.levelResultLabel)
+        levelButtons = QtWidgets.QHBoxLayout()
+        self.applyLevelButton = QtWidgets.QPushButton('Apply')
+        self.applyLevelButton.setToolTip('Set the found level on the card (until restart)')
+        self.applyLevelButton.clicked.connect(lambda: self.sigApplyLevel.emit(False))
+        self.keepLevelButton = QtWidgets.QPushButton('Apply and keep in setup file')
+        self.keepLevelButton.setToolTip(
+            'Set the found level on the card and write it into the timeTagger block of '
+            'the active setup file, so it holds after a restart')
+        self.keepLevelButton.clicked.connect(lambda: self.sigApplyLevel.emit(True))
+        self.copyLevelButton = QtWidgets.QPushButton('Copy setup line')
+        self.copyLevelButton.setToolTip('Copy the timeTagger block line for this level')
+        self.copyLevelButton.clicked.connect(self.sigCopyLevel)
+        for button in (self.applyLevelButton, self.keepLevelButton, self.copyLevelButton):
+            button.setEnabled(False)
+            levelButtons.addWidget(button)
+        levelButtons.addStretch()
+        layout.addLayout(levelButtons)
         self.signalsText = QtWidgets.QPlainTextEdit()
         self.signalsText.setReadOnly(True)
         self.signalsText.setPlaceholderText('Sweep, scope and pre-flight results appear here.')
@@ -662,13 +688,17 @@ class LifetimeWidget(Widget):
         self.gateStatusLabel.setText(text)
         self.gateStatusLabel.setStyleSheet('color: #c33;' if error else 'color: grey;')
 
-    def setRoles(self, roles):
+    def setRoles(self, roles, channels=None):
+        """One row per configured input (``roles``), labelled by role;
+        ``channels`` ({role: signed channel}) adds the input number."""
+        channels = dict(channels or {})
         self.sweepRoleCombo.clear()
         self.sweepRoleCombo.addItems(list(roles))
         self.ratesTable.setRowCount(len(roles))
         self._roleRows = {}
         for row, role in enumerate(roles):
-            self.ratesTable.setItem(row, 0, QtWidgets.QTableWidgetItem(role))
+            label = f'{role} ({channels[role]:+d})' if role in channels else role
+            self.ratesTable.setItem(row, 0, QtWidgets.QTableWidgetItem(label))
             self.ratesTable.setItem(row, 1, QtWidgets.QTableWidgetItem('—'))
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(-2.5, 2.5)
@@ -677,7 +707,43 @@ class LifetimeWidget(Widget):
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(lambda v, r=role: self.sigTriggerLevelEdited.emit(r, float(v)))
             self.ratesTable.setCellWidget(row, 2, spin)
+            find = QtWidgets.QPushButton('Find')
+            find.setToolTip(f'Find a trigger level for {label}')
+            find.clicked.connect(lambda _c=False, r=role: self.sigFindLevel.emit(r))
+            self.ratesTable.setCellWidget(row, 3, find)
+            self.ratesTable.setItem(row, 4, QtWidgets.QTableWidgetItem(''))
             self._roleRows[role] = row
+
+    def setLevelWarnings(self, role, warnings):
+        """What is wrong with a role's level (``[]``: nothing), in the row's
+        check column: a short mark, the sentences in the tooltip."""
+        row = self._roleRows.get(role)
+        if row is None:
+            return
+        item = self.ratesTable.item(row, 4)
+        warnings = list(warnings or [])
+        item.setText(('⚠ ' + warnings[0]) if warnings else 'ok')
+        item.setToolTip('\n'.join(warnings))
+        item.setForeground(QtGui.QColor('#c60' if warnings else '#2a2'))
+
+    def levelWarnings(self, role):
+        row = self._roleRows.get(role)
+        if row is None:
+            return []
+        tip = self.ratesTable.item(row, 4).toolTip()
+        return [line for line in tip.split('\n') if line]
+
+    def triggerLevel(self, role):
+        row = self._roleRows.get(role)
+        return None if row is None else float(self.ratesTable.cellWidget(row, 2).value())
+
+    def setLevelResult(self, text, *, can_apply=False, can_keep=False, can_copy=False,
+                       warn=False):
+        self.levelResultLabel.setText(text)
+        self.levelResultLabel.setStyleSheet('color: #c60;' if warn else '')
+        self.applyLevelButton.setEnabled(bool(can_apply))
+        self.keepLevelButton.setEnabled(bool(can_keep))
+        self.copyLevelButton.setEnabled(bool(can_copy))
 
     def setTriggerLevel(self, role, volts):
         row = self._roleRows.get(role)
