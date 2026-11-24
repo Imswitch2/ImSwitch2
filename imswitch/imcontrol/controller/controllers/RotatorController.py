@@ -159,6 +159,13 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
         pos = self._master.rotatorsManager[name].position
         #self.__logger.info(f'{name} pos is {pos}') #debugging simone
         self._widget.updatePosition(name, pos)
+        # Recorded with every snap/recording (Rotator:<name>:Position), so a
+        # recording says which angle it was taken at and replay can offer it.
+        # Nothing listens for this key: writing it never moves the mount.
+        try:
+            self._commChannel.sharedAttrs[(_attrCategory, name, _positionAttr)] = pos
+        except Exception:  # noqa: BLE001 - metadata must not break a move
+            self.__logger.debug(f'Could not publish the position of rotator {name}')
 
     def setSyncInMovement(self, name, pos, rel_shift, enabled):
         self._master.rotatorsManager[name].set_sync_in_set(pos, rel_shift, enabled)
@@ -290,6 +297,10 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
             Empty list (no hazards)
         """
         return []
+
+
+_attrCategory = 'Rotator'
+_positionAttr = 'Position'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

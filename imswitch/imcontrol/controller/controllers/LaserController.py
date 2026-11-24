@@ -119,6 +119,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
             self.setSharedAttr(lName, _enabledAttr, self._widget.isLaserActive(lName))
             self.setSharedAttr(lName, _valueAttr, self._widget.getValue(lName))
+            self._publishLaserValueContext(lName, lManager)
         self._refreshLaserUsability()
 
         # Configure setup-level power policy before populating contextual UI.
@@ -1663,6 +1664,27 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self.settingAttr = False
 
+    def _publishLaserValueContext(self, laserName, lManager):
+        """Record what a laser's ``Value`` means next to it: its units and
+        range (metadata schema 1), so a recording can be replayed onto a laser
+        with a different range without guessing. The optional calibration
+        identity slot is filled only when :meth:`_laserCalibrationIdentity`
+        returns one."""
+        for attr, value in ((_unitsAttr, lManager.valueUnits),
+                            (_rangeMinAttr, lManager.valueRangeMin),
+                            (_rangeMaxAttr, lManager.valueRangeMax)):
+            if value is not None:
+                self.setSharedAttr(laserName, attr, value)
+        calibration = self._laserCalibrationIdentity(laserName)
+        if calibration is not None:
+            self.setSharedAttr(laserName, _calibrationAttr, calibration)
+
+    def _laserCalibrationIdentity(self, laserName):
+        """Slot for the identity of the power calibration behind a laser's
+        value: ``{'id': str, 'contentHash': str, 'driveValue': float}``, or
+        None. Always None for now; the laser calibration work fills it."""
+        return None
+
     def _emitLaserPowerChanged(self, laserName, context, value):
         try:
             self.sigLaserPowerChanged.emit(
@@ -1696,13 +1718,24 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         except (AttributeError, RuntimeError):
             pass
 
-    def _setLaserValue(self, laserName, value):
+    def _setLaserValue(self, laserName, value) -> bool:
+        """Set the Live value; False when the laser refused it.
+
+        A manager that refuses (returns False, or is not connected) leaves
+        the widget, the shared attribute and so the recorded metadata at the
+        value the laser actually has -- recording the refused value would
+        make every later file claim a power that was never set."""
         self._requireLaserEditsAllowed()
         try:
-            self._master.lasersManager[laserName].setValue(value)
+            applied = self._master.lasersManager[laserName].setValue(value)
         except DeviceNotConnectedError as exc:
             self._refuseNotConnected(laserName, exc)
-            return
+            return False
+        if applied is False:
+            self._logger.warning(
+                f'Laser {laserName} refused value {value!r}; keeping the previous value.')
+            self._refreshLaserRow(laserName, updatePrimary=True)
+            return False
         if not hasattr(self, '_livePowerValues'):
             self._livePowerValues = {}
         self._livePowerValues[laserName] = value
@@ -1732,6 +1765,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             and scanUsesLiveFallback
         )
         self._refreshLaserRow(laserName, updatePrimary=updatePrimary)
+        return True
 
     def _setScanPowerValue(self, laserName, value):
         """Store an explicit Scan power without touching hardware or the UI."""
@@ -1821,9 +1855,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setLaserActive(laserName, active)
 
     @APIExport(runOnUIThread=True)
-    def setLaserValue(self, laserName: str, value: Union[int, float]) -> None:
-        """Set the live value of a laser (legacy API)."""
-        self._setLaserValue(laserName, value)
+    def setLaserValue(self, laserName: str, value: Union[int, float]) -> bool:
+        """Set the live value of a laser (legacy API). Returns False when the
+        laser refused the value (it then keeps its previous value)."""
+        return self._setLaserValue(laserName, value)
 
     @APIExport(runOnUIThread=True)
     def getLaserPowerSetting(
@@ -2283,6 +2318,10 @@ _valueAttr = 'Value'
 _freqEnAttr = "ModulationEnabled"
 _freqAttr = "Frequency"
 _dcAttr = "DutyCycle"
+_unitsAttr = 'Units'
+_rangeMinAttr = 'RangeMin'
+_rangeMaxAttr = 'RangeMax'
+_calibrationAttr = 'Calibration'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
