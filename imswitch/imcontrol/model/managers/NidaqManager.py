@@ -10,7 +10,7 @@ try:
     import nidaqmx.constants
     _NIDAQMX_AVAILABLE = True
     _NIDAQMX_IMPORT_ERROR = None
-except ImportError as error:
+except Exception as error:  # ImportError, or the NI driver library failing to load (OSError)
     _NIDAQMX_AVAILABLE = False
     _NIDAQMX_IMPORT_ERROR = error
 
