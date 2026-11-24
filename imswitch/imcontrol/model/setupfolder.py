@@ -99,10 +99,21 @@ def setupFilePath(folder, name) -> str:
     return os.path.normpath(os.path.join(folder, str(name)))
 
 
+def isInside(path, folder) -> bool:
+    """Whether ``path`` really is within ``folder``, once ``..`` and symlinks
+    are resolved and, where the file system ignores case, case is too. The
+    folder itself is not inside itself."""
+    path = os.path.normcase(os.path.realpath(str(path)))
+    root = os.path.normcase(os.path.realpath(str(folder)))
+    return path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def findSetupFile(folder, name):
     """The name under which ``folder`` holds the setup ``name`` refers to.
 
-    ``name`` itself when that file exists. Otherwise, for a bare file name,
+    ``name`` itself when that file exists. A relative ``name`` that leads out
+    of ``folder`` (``../x.json``) is never found; a setup outside the folder
+    is named by its absolute path. Otherwise, for a bare file name,
     the one setup of that file name in a subfolder -- so a setup keeps
     working after it was sorted into a subfolder, by the user or by an
     ImSwitch update that sorted the shipped examples. ``None`` when there is
@@ -111,7 +122,10 @@ def findSetupFile(folder, name):
     name = str(name or '')
     if not name:
         return None
-    if os.path.isfile(setupFilePath(folder, name)):
+    path = setupFilePath(folder, name)
+    if not os.path.isabs(name) and not isInside(path, folder):
+        return None
+    if os.path.isfile(path):
         return name
     if os.path.isabs(name) or PurePosixPath(name.replace('\\', '/')).name != name:
         return None

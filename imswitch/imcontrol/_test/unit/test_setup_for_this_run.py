@@ -325,3 +325,190 @@ def test_the_recovery_page_pick_also_restarts_without_setup(setups, monkeypatch,
     with patch.object(ostools.os, 'execv') as execv:
         ostools.restartSoftware()
     assert '--setup' not in execv.call_args.args[1]
+
+
+# ── Setups in subfolders, and what --setup may name ───────────────────────
+def _touch(path, content='{}'):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return path
+
+
+@pytest.fixture
+def tree(setups):
+    """The setups fixture plus subfolders; the folder above the setup folder
+    is where a file is *outside* it."""
+    setupDir, _ = setups
+    for name in ('mock/a.json', 'real/b.json', 'only/solo.json', 'deep/er/f.json',
+                 'x/dup.json', 'y/dup.json', 'sub/a_scope.json'):
+        _touch(setupDir / name)
+    return setupDir
+
+
+@pytest.mark.parametrize('value, expected', [
+    ('solo', 'only/solo.json'),                  # a bare name one subfolder holds
+    ('solo.json', 'only/solo.json'),
+    ('mock/a', 'mock/a.json'),
+    ('mock/a.json', 'mock/a.json'),
+    ('deep/er/f', 'deep/er/f.json'),
+    ('a_scope', 'a_scope.json'),                 # the top level wins over sub/a_scope
+    ('mock/../real/b', 'real/b.json'),           # ".." that stays inside
+])
+def test_setups_in_subfolders_are_found(tree, value, expected):
+    assert configfiletools.resolveSetupArgument(value) == expected
+
+
+def test_an_absolute_path_inside_the_folder_is_found_with_or_without_extension(tree):
+    path = tree / 'mock' / 'a.json'
+    assert configfiletools.resolveSetupArgument(str(path)) == 'mock/a.json'
+    assert configfiletools.resolveSetupArgument(str(path)[:-5]) == 'mock/a.json'
+
+
+@pytest.mark.parametrize('value', ['../x', '../x.json', 'mock/../../x', '../outside'])
+def test_a_relative_argument_leading_out_of_the_folder_is_refused(tree, value):
+    _touch(tree.parent / 'x.json')
+    _touch(tree.parent / 'outside.json')
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument(value)
+
+
+def test_an_absolute_path_outside_the_folder_is_refused_also_through_dotdot(tree):
+    outside = _touch(tree.parent / 'x.json')
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument(str(tree / 'mock' / '..' / '..' / 'x.json'))
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument(str(outside))
+
+
+def test_a_symlink_leading_out_of_the_folder_is_refused(tree):
+    outside = _touch(tree.parent / 'elsewhere' / 'x.json')
+    try:
+        (tree / 'link').symlink_to(outside.parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not available')
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument('link/x')
+
+
+def test_find_setup_file_does_not_leave_the_folder(tree):
+    """Saved names (options file, moved-setup follow) go through it as well."""
+    outside = _touch(tree.parent / 'x.json')
+    assert setupfolder.findSetupFile(str(tree), '../x.json') is None
+    assert setupfolder.findSetupFile(str(tree), 'mock/../../x.json') is None
+    assert setupfolder.findSetupFile(str(tree), 'mock/../real/b.json') == 'mock/../real/b.json'
+    # A setup outside the folder is still named by its absolute path.
+    assert setupfolder.findSetupFile(str(tree), str(outside)) == str(outside)
+
+
+def test_an_ambiguous_bare_name_is_refused_naming_the_candidates(tree):
+    with pytest.raises(ValueError) as error:
+        configfiletools.resolveSetupArgument('dup')
+    message = str(error.value)
+    assert 'ambiguous' in message and 'x/dup' in message and 'y/dup' in message
+    assert 'There is no setup' not in message
+    assert configfiletools.resolveSetupArgument('x/dup') == 'x/dup.json'
+
+
+def test_a_setup_folder_path_wins_over_a_lookalike_in_the_working_directory(
+        tree, tmp_path, monkeypatch):
+    cwd = tmp_path / 'cwd'
+    _touch(cwd / 'mock' / 'a.json')
+    monkeypatch.chdir(cwd)
+
+    assert configfiletools.resolveSetupArgument('mock/a.json') == 'mock/a.json'
+    assert configfiletools.resolveSetupArgument('mock/a') == 'mock/a.json'
+
+
+def test_a_path_from_the_working_directory_into_the_folder_still_works(tree, monkeypatch):
+    monkeypatch.chdir(tree / 'mock')
+    assert configfiletools.resolveSetupArgument('../real/b.json') == 'real/b.json'
+
+
+def test_a_working_directory_file_outside_the_folder_is_still_refused(tree, tmp_path, monkeypatch):
+    cwd = tmp_path / 'cwd'
+    _touch(cwd / 'elsewhere' / 'c.json')
+    monkeypatch.chdir(cwd)
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument('elsewhere/c.json')
+
+
+def test_an_unknown_setup_lists_the_subfolder_setups_too(tree):
+    with pytest.raises(ValueError, match='Available: a_scope.json, b_scope.json, deep/er/f.json'):
+        configfiletools.resolveSetupArgument('nope/c')
+
+
+# ── --setup with a custom folder, and the options file ────────────────────
+def test_setup_in_a_custom_setup_folder_is_found_and_never_written_to_options(setups, tmp_path):
+    _, optionsPath = setups
+    lab = tmp_path / 'lab'
+    _touch(lab / 'rigs' / 'scope.json')
+    _touch(lab / 'other.json')
+    optionsPath.write_text(json.dumps({'setupFileName': 'other.json', 'setupFolder': str(lab)}))
+
+    assert configfiletools.resolveSetupArgument('scope') == 'rigs/scope.json'
+    assert configfiletools.resolveSetupArgument('rigs/scope.json') == 'rigs/scope.json'
+    with pytest.raises(ValueError, match='not in the setups folder'):
+        configfiletools.resolveSetupArgument('../outside')
+
+    configfiletools.useSetupForThisRun('rigs/scope.json')
+    options, _ = configfiletools.loadOptions()
+    assert options.setupFileName == 'rigs/scope.json' and options.setupFolder == str(lab)
+    configfiletools.saveOptions(options)
+    saved = json.loads(optionsPath.read_text())
+    assert saved['setupFileName'] == 'other.json' and saved['setupFolder'] == str(lab)
+
+
+def test_a_setup_from_a_subfolder_is_loaded_and_saved_in_its_own_file(tree):
+    configfiletools.useSetupForThisRun(configfiletools.resolveSetupArgument('solo'))
+    options, _ = configfiletools.loadOptions()
+    setupInfo = SetupInfo.from_json(json.dumps({'availableWidgets': ['Laser']}),
+                                    infer_missing=True)
+
+    configfiletools.saveSetupInfo(options, setupInfo)
+
+    assert json.loads((tree / 'only' / 'solo.json').read_text())['availableWidgets'] == ['Laser']
+    assert (tree / 'a_scope.json').read_text() == '{}'
+
+
+def test_blank_value_warnings_name_the_subfolder_file(tree, monkeypatch):
+    from imswitch.imcontrol.view.guitools.ViewSetupInfo import ViewSetupInfo
+
+    warnings = []
+    monkeypatch.setattr(configfiletools, '_logger', Mock(warning=warnings.append))
+    _touch(tree / 'mock' / 'blank.json', json.dumps({'teensyPulse': {'port': 'COM7', 'baud': ''}}))
+    configfiletools.useSetupForThisRun(configfiletools.resolveSetupArgument('mock/blank'))
+
+    options, _ = configfiletools.loadOptions()
+    setupInfo = configfiletools.loadSetupInfo(options, ViewSetupInfo)
+
+    assert setupInfo.teensyPulse.baud == 115200
+    assert len(warnings) == 1 and warnings[0].startswith('Setup file mock/blank.json: ')
+
+
+# ── Choosing a setup folder in a run started with --setup ─────────────────
+def test_choosing_a_setup_folder_makes_its_setup_the_default_and_restarts_without_setup(
+        setups, tmp_path, monkeypatch):
+    pytest.importorskip('PyQt5')
+    from imswitch.imcontrol.view import guitools
+
+    _, optionsPath = setups
+    lab = tmp_path / 'lab'
+    _touch(lab / 'rigs' / 'scope.json')
+    configfiletools.useSetupForThisRun('b_scope.json')
+    monkeypatch.setattr(configfiletools.sys, 'argv',
+                        ['imswitch', '--setup', 'b_scope.json', '--debug'])
+    monkeypatch.setattr(guitools, 'askYesNoQuestion', lambda *args: True)
+    dialog = Mock()
+    controller = _controller()
+    controller._ImConMainController__mainView = Mock(setupFolderDialog=dialog)
+
+    controller.saveSetupFolder({'setupFolder': str(lab), 'setupFileName': 'rigs/scope.json'})
+
+    saved = json.loads(optionsPath.read_text())
+    assert saved['setupFolder'] == str(lab)
+    assert saved['setupFileName'] == 'rigs/scope.json'
+    dialog.accept.assert_called_once()
+    with patch.object(ostools.os, 'execv') as execv:
+        ostools.restartSoftware()
+    assert execv.call_args.args[1][-1:] == ['--debug']
+    assert '--setup' not in execv.call_args.args[1]

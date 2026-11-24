@@ -728,9 +728,10 @@ class ImConMainController(MainController):
         ):
             return
         try:
-            configfiletools.saveOptions(dataclasses.replace(
-                options, setupFolder=setting, setupFileName=setupFileName
-            ))
+            configfiletools.saveOptions(dataclasses.replace(options, setupFolder=setting))
+            # Choosing the setup here is choosing it as the one to start with
+            # (a --setup this run was started with must not hold it back).
+            configfiletools.saveSetupChoice(setupFileName)
         except Exception as e:
             self.__logger.error(f'Could not save the setup folder: {e}', exc_info=True)
             dialog.setStatus(f'Could not save the setup folder: {e}')
@@ -738,7 +739,7 @@ class ImConMainController(MainController):
         self.__logger.info(f'Setup folder set to {folder}, setup {setupFileName}')
         dialog.setStatus('')
         dialog.accept()
-        self._restartAfterShutdown()
+        self._restartAfterShutdown(setupChosen=True)
 
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.

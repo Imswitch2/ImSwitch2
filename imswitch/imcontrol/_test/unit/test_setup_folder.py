@@ -228,7 +228,7 @@ def _controller(dialog, restarts):
         _ImConMainController__mainView=SimpleNamespace(setupFolderDialog=dialog),
         _ImConMainController__logger=SimpleNamespace(info=lambda *a: None,
                                                      error=lambda *a, **k: None),
-        _restartAfterShutdown=lambda: restarts.append(True),
+        _restartAfterShutdown=lambda **kwargs: restarts.append(kwargs or True),
     )
     return lambda values: ImConMainController.saveSetupFolder(fake, values)
 
@@ -248,7 +248,7 @@ def test_choosing_another_folder_saves_it_with_its_setup_and_restarts(
     saved = json.loads(options_file.read_text())
     assert saved['setupFolder'] == str(lab)
     assert saved['setupFileName'] == 'rigs/scope.json'
-    assert dialog.accepted and restarts == [True]
+    assert dialog.accepted and restarts == [{'setupChosen': True}]
 
 
 def test_a_folder_without_a_setup_is_refused_and_nothing_is_saved(

@@ -190,32 +190,64 @@ def _writeOptions(options):
 
 
 def resolveSetupArgument(value):
-    """ The setup file ``imswitch --setup <value>`` asks for: ``value`` is the
-    name of a file in the setup folder (or in one of its subfolders, as
-    ``subfolder/name``), with or without ``.json``, or its path. A bare file
-    name that only one subfolder holds finds that one. Raises ValueError,
-    saying what there is to choose from, otherwise. """
+    """ The setup file ``imswitch --setup <value>`` asks for, as the name the
+    options file would hold. ``value`` is, with or without ``.json``:
+
+    - a path relative to the setup folder, ``name`` or ``subfolder/name``
+      (looked up there first, whatever the current directory holds);
+    - a bare file name that exactly one subfolder holds -- several are
+      ambiguous and refused, listing the candidates;
+    - a path, absolute or relative to the current directory, of a file in
+      the setup folder.
+
+    Anything that resolves to a place outside the setup folder (``..``,
+    symlinks, an absolute path) is refused. Raises ValueError, saying what
+    there is to choose from, otherwise. """
     folder = getSetupFilesDir()
+    root = os.path.realpath(folder)
     name = value.strip()
-    if os.path.dirname(name):
-        path = os.path.realpath(name)
-        root = os.path.realpath(folder)
-        if os.path.normcase(path).startswith(os.path.normcase(root) + os.sep):
-            name = setupfolder.setupNameFor(path, root)
-        elif os.path.isabs(name) or os.path.isfile(path):
-            raise ValueError(f'"{value}" is not in the setups folder {folder}; '
-                             f'copy it there first.')
-        # otherwise a name relative to the setup folder, e.g. "mock/rig"
     if not name.lower().endswith('.json'):
         name += '.json'
+    notInFolder = ValueError(f'"{value}" is not in the setups folder {folder}; '
+                             f'copy it there first.')
+
+    outsideFile = None
+    if os.path.isabs(name):
+        if not setupfolder.isInside(name, root):
+            raise notInFolder
+        candidates = [setupfolder.setupNameFor(os.path.realpath(name), root)]
+    else:
+        inFolder = os.path.realpath(os.path.join(folder, name))
+        candidates = []
+        if setupfolder.isInside(inFolder, root):
+            candidates.append(setupfolder.setupNameFor(inFolder, root))
+        # Then a path from the current directory that lands in the folder.
+        fromCwd = os.path.realpath(name)
+        if setupfolder.isInside(fromCwd, root):
+            candidates.append(setupfolder.setupNameFor(fromCwd, root))
+        elif not candidates:
+            raise notInFolder
+        elif os.path.dirname(name) and os.path.isfile(fromCwd):
+            outsideFile = notInFolder  # raised below unless the folder has it
 
     setups = getSetupList(folder)
-    for setup in setups:
-        if os.path.normcase(setup) == os.path.normcase(name):
-            return setup
-    found = setupfolder.findSetupFile(folder, name)
-    if found is not None:
-        return found
+    for candidate in candidates:
+        for setup in setups:
+            if os.path.normcase(setup) == os.path.normcase(candidate):
+                return setup
+    if outsideFile:
+        raise outsideFile
+
+    if not os.path.isabs(name) and '/' not in name and os.sep not in name:
+        matches = [setup for setup in setups
+                   if os.path.normcase(setup.rsplit('/', 1)[-1]) == os.path.normcase(name)]
+        if len(matches) > 1:
+            options = ', '.join(match[:-len('.json')] for match in matches)
+            raise ValueError(f'The setup name "{value}" is ambiguous in {folder}: '
+                             f'it could be {options}. Name the subfolder, e.g. '
+                             f'"{matches[0][:-len(".json")]}".')
+        if matches:
+            return matches[0]
     raise ValueError(f'There is no setup "{name}" in {folder}. '
                      f'Available: {", ".join(setups) or "none"}.')
 
