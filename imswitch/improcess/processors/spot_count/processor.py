@@ -162,7 +162,7 @@ class SpotCountProcessor(Processor):
 
     name = "Spot count"
     id = "spot-count"
-    category = "Measurement"
+    category = "Spots and points"
     run_label = "Count spots"
     kinds = ("image",)
     #: One result: the spots as points, with the image overlay and the count graph.

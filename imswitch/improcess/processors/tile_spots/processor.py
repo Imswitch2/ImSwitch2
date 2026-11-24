@@ -76,7 +76,7 @@ class TileSpotsProcessor(Processor):
 
     name = "Tile spots"
     id = "tile-spots"
-    category = "Measurement"
+    category = "Spots and points"
     run_label = "Find spots per tile"
     kinds = ("image",)
     output_kind = "points"

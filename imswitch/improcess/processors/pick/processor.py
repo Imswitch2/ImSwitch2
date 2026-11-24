@@ -31,7 +31,7 @@ class PickProcessor(Processor):
 
     name = "Pick point"
     id = "pick"
-    category = "Measurement"
+    category = "Spots and points"
     kinds = ("points",)
     output_kind = "points"
 
