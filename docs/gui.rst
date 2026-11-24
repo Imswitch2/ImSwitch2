@@ -160,6 +160,71 @@ with the rest of the widget state, because a note about this morning's
 alignment would be a lie tomorrow.
 
 
+.. _load-settings-from-recording:
+
+Loading settings from a recording
+---------------------------------
+
+**File → Load parameters from saved HDF5 file…** (``Ctrl+P``) and **File →
+Load parameters from saved Zarr store…** (``Ctrl+Alt+P``) take the settings
+stored in a recording or snapshot and offer them for the setup that is
+running now.  Nothing reaches the hardware until **Apply** in the dialog that
+opens; the dialog is shown every time, also for a file recorded on this very
+setup, as the confirmation of what will change.
+
+The dialog lists, by category (lasers, detectors, positioners, scan, TTL
+lines, rotators, flip mirrors, pulse generator), every device the file names
+and every value it stored, with the current value beside it:
+
+* **Match** says whether this setup has the device: *matches*, *same name,
+  different device* (another wavelength, other units, another detector
+  model), *not in this setup*, or *this setup has no such device*.
+* **Use device** picks where the recorded values go: the device itself, a
+  replacement of the same kind, or *Skip*.  A missing laser offers every
+  laser of this setup; one is pre-selected only when it has the recorded
+  wavelength, otherwise the row starts on *Skip*.  A positioner offers every
+  axis of every positioner, so a file recorded with differently named axes
+  can still be mapped.  Recordings made before this metadata existed carry
+  no wavelengths or setup identity; their devices are matched by name only.
+* **Action** per value: values inside the current device's range are applied;
+  a value outside it is highlighted and skipped unless you choose *Clamp to
+  range* (the nearest limit is applied) or *Edit value…* and type a value
+  inside the range.  A value the device cannot take (a binning it does not
+  support, an option it does not have, a value recorded in other units) is
+  never applied.
+* **Move stages and rotators to the recorded positions** is off by default.
+  Without it no stage or rotator moves.
+* Replay **never switches a laser on** (or off): the recorded emission state
+  is shown for information only.  A value change on a laser that is emitting
+  changes its output power, and the dialog says so on that row.
+* Scan parameters are applied all together or not at all.  A file recorded
+  with another scan panel, or whose scan names TTL lines or scan axes this
+  setup does not have, starts on *Skip*; remap the lines and axes to apply it.
+* What describes the acquisition itself (recording mode, frame counts,
+  timestamps, session notes) is listed in the summary line and not replayed.
+
+After **Apply** a summary lists what was applied, skipped and failed, with the
+reason for each.  A value a device refuses is reported as failed and the rest
+still applies.  *Remember my device choices…* stores the replacements you
+picked for recordings from that setup (by its setup hash), so the next file
+from it opens with the same choices pre-selected; the dialog is still shown.
+
+Recordings made afterwards carry where their settings came from:
+``replay:*`` attributes with the source file name, its software version and
+setup, and per device what was applied, substituted or skipped (see
+:doc:`Hdf5datafile`).  Every recording also carries the identity of the setup
+it was made on (``setup:name``, ``setup:hash`` and a device inventory without
+serial numbers, ports or paths), which is what lets a later load tell a
+different setup from the same one.
+
+Scripts load settings without a dialog through
+``api.imcontrol.replaySettingsFromFile(path)``: only devices that match exactly
+and values inside their range are applied, lasers are never switched on, and
+stages and rotators move only with ``allowMoves=True``.  It returns what was
+applied, skipped and failed.  ``api.imcontrol.planReplayFromFile(path)`` returns
+the same plan the dialog shows, without applying anything.
+
+
 BF timelapse widget
 -------------------
 

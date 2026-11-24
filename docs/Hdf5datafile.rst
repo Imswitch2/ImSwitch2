@@ -129,6 +129,12 @@ Lasers
 
     * ``Laser:<LaserName>:Enabled`` (boolean)
     * ``Laser:<LaserName>:Value`` (power)
+    * ``Laser:<LaserName>:Units``, ``:RangeMin`` and ``:RangeMax``: what
+      ``Value`` means on that laser, so a value can be checked against
+      another laser's range when the file is loaded on a different setup
+    * ``Laser:<LaserName>:Calibration`` (reserved, not written yet): the
+      identity of the power calibration behind the value, ``{"id",
+      "contentHash", "driveValue"}``
     * ``Laser:<LaserName>:ModulationEnabled``, ``:Frequency`` and
       ``:DutyCycle`` for lasers that support modulation
 
@@ -136,6 +142,14 @@ Positioners
     Per-axis stage position at acquisition time:
 
     * ``Positioner:<PositionerName>:<Axis>:Position``
+
+Rotators, flip mirrors and the pulse generator
+    * ``Rotator:<RotatorName>:Position`` — angle in degrees
+    * ``FlipMirror:<MirrorName>:State`` — 0 or 1
+    * ``PulseGenerator:<Name>:Backend`` and ``:Connected`` — the pulse
+      generator's backend and whether it was connected (its sequence is
+      programmed by the scan when it runs; its channel map is in the
+      inventory below)
 
 Recording and scanning
     All parameters from the Recording and Scan panels: pulse scheme,
@@ -147,6 +161,43 @@ Recording and scanning
     * ``ScanTTL:Property``
     * ``MS-RESOLFT_Scan:Property`` and ``MS-RESOLFT_Dev:Property`` from
       the TriggerScope and light-sheet multicolor panels
+
+Setup identity (metadata schema 1)
+    Which setup a file was recorded on, without the setup file itself
+    (which holds serial numbers and ports):
+
+    * ``metadata:schema_version`` — ``1``; files without it predate this
+      metadata and are matched by device names only when loaded
+    * ``setup:name`` — the setup file name
+    * ``setup:hash`` — ``sha256:`` of the setup file's canonical JSON
+      (keyboard shortcuts excluded); equal hashes mean the same setup
+    * ``setup:inventory`` — per kind (``lasers``, ``positioners``,
+      ``detectors``, ``rotators``, ``flipMirrors``, ``pulseGenerators``,
+      ``scan``), each device's manager class and what remapping needs:
+      wavelength, value units and range, binary/modulated (lasers); axes and
+      the travel range where the setup declares one (positioners); model,
+      full frame, binnings and the parameters with their units, options and
+      editability (detectors); scan panel type, scan positioners, TTL lines
+      and parameter names (scan); channel map (pulse generator).  Serial
+      numbers, ports, addresses and paths are never written.  A few
+      kilobytes per detector group.
+
+Replay provenance
+    Written once settings have been loaded from a recording
+    (:ref:`load-settings-from-recording`), and carried by every later
+    recording of the session:
+
+    * ``replay:source_file`` (file name only), ``replay:source_dataset``,
+      ``replay:source_format``
+    * ``replay:source_software_version``, ``replay:source_setup_name``,
+      ``replay:source_setup_hash``, ``replay:source_start_time``
+    * ``replay:applied_at``, ``replay:mode`` (``interactive`` or
+      ``unattended``)
+    * ``replay:mapping`` — JSON: per recorded device, the device it was
+      applied to, and which values were applied, skipped or failed and why
+
+    OME-TIFF files carry the ``setup:``, ``metadata:`` and ``replay:`` keys
+    as OME annotations.
 
 Acquisition and notes
     * ``acquisition:software_version``, ``acquisition:start_time`` and
@@ -200,7 +251,9 @@ Reading back
 In ImSwitch2 itself
     **File → Load parameters from saved HDF5 file…** (``*.h5`` /
     ``*.hdf5``) and **File → Load parameters from saved Zarr store…**
-    read the attributes and re-populate every widget.
+    read the attributes and offer them for the running setup in a
+    confirmation dialog, device by device (see
+    :ref:`load-settings-from-recording`).
 
 In ImProcess
     Drop a file onto the main window or open it with **File → Quick load

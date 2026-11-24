@@ -109,8 +109,10 @@ Two menus belong to the window rather than to a module:
 ImControl adds its own menus, each holding one kind of thing:
 
 * **File** — what goes into saved files and what comes back out of them:
-  *Session notes…* (:ref:`session-notes`), loading the parameters stored in
-  a saved HDF5 file or Zarr store back into the widgets, and *Save Widget
+  *Session notes…* (:ref:`session-notes`), loading the settings stored in
+  a saved HDF5 file or Zarr store into the running setup after a
+  confirmation that remaps devices this setup lacks
+  (:ref:`load-settings-from-recording`), and *Save Widget
   States…* / *Load Widget States…* (see below).
 * **Hardware** — which microscope this is: *Pick hardware setup…*
   (:doc:`imcontrol-setups`) and *Edit hardware configuration…* (the config
