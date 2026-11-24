@@ -3,12 +3,15 @@ import json
 import os
 import sys
 
-from imswitch.imcommon.model import dirtools
+from imswitch.imcommon.model import dirtools, initLogger
 from . import setupfolder
 from .Options import Options
+from .setup_file_values import sanitizeSetupData
 
 
 _LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
+
+_logger = initLogger('configfiletools')
 
 
 def getSetupList(folder=None):
@@ -44,8 +47,33 @@ def getSetupFilePath(setupFileName, options=None):
 
 
 def loadSetupInfo(options, setupInfoType):
+    """Decode the active setup file into ``setupInfoType``.
+
+    A blank or unreadable value in a typed field (``"lineClockTriggerV": ""``,
+    ``"simulation": "false"``) does not stop Hardware Control: it is logged
+    with its JSON path and the field's default is used instead (see
+    :mod:`setup_file_values`). The file on disk is left as written.
+    """
     with open(getSetupFilePath(options.setupFileName, options)) as setupFile:
-        return setupInfoType.from_json(setupFile.read(), infer_missing=True)
+        data = json.loads(setupFile.read())
+    data = _tolerateUnreadableValues(data, setupInfoType, options.setupFileName)
+    return setupInfoType.from_dict(data, infer_missing=True)
+
+
+def _tolerateUnreadableValues(data, setupInfoType, setupFileName):
+    try:
+        cleaned, fixes = sanitizeSetupData(data, setupInfoType)
+    except Exception:
+        # The tolerance pass must never make loading worse than decoding the
+        # file as written.
+        _logger.exception(
+            f'Could not check setup file {setupFileName} for unreadable '
+            f'values; decoding it as written'
+        )
+        return data
+    for fix in fixes:
+        _logger.warning(f'Setup file {setupFileName}: {fix}')
+    return cleaned
 
 
 def pruneDefaultSetupInfoFields(setupInfo) -> dict:

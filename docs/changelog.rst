@@ -35,6 +35,15 @@ Unreleased
 
 - SNOUTY deskew results saved as HDF5 reloaded without a voxel size or axis labels — the volume came back as uncalibrated channels (``C, Y, X`` at 1 px), so anything measuring it, such as the PSF panel, analysed the first plane in pixels. The writer now stores ``axes`` and ``element_size_um`` on each volume, and files written before are recognised by their SNOUTY parameters and read as a ``Z, Y, X`` stack at the deskew's output voxel size. Opening a file for viewing and processing also kept losing those labels: the view-only reconstructor replaced every file's own axis labels with ``Frame, Y, X`` whenever the file had no acquisition layout, so a volume that names its axes (an ``axes`` attribute) reached the processors without a ``Z``. Declared labels are now kept; only labels guessed from the array's rank give way to ``Frame``.
 - The PSF resolution panel analysed only the first plane of a stack whose axis was not labelled ``Z``. Such a stack is now searched on its maximum projection and each bead is fitted in its brightest plane.
+- **A blank or unreadable value in the setup file no longer stops Hardware
+  Control.** A typed field the file gets wrong -- ``"lineClockTriggerV": ""``,
+  a word in a channel number, ``NaN`` -- is logged with its path and value and
+  the field's default is used, instead of ImControl refusing to start on
+  ``could not convert string to float``. ``"false"``, ``"no"``, ``"off"`` and
+  ``"0"`` in a true/false field now read as false (they read as true before,
+  so ``"simulation": "false"`` switched simulation *on*); any other text there
+  is logged and the default used. Free-form ``managerProperties`` are left as
+  written, and the file itself is not changed.
 
 v0.4.0 (2026-10-29)
 ===================
