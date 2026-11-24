@@ -6,6 +6,7 @@
       "cameraListIndex": 1,
       "cameraPixelSizeUm": 1.5,
       "hamamatsu": {},
+      "mockRandomSeed": 1,
       "mockSample": {}
     }
   }

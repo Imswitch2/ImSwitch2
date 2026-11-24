@@ -8,7 +8,7 @@ from imswitch.imcontrol.model.devices import (
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
-from ._mock_lattice import MockLattice, MockLatticeFrames, trigger_positions_um
+from ._mock_lattice import MockLattice, MockLatticeFrames, trigger_conditions
 import copy
 import threading
 
@@ -133,8 +133,12 @@ class HamamatsuManager(DetectorManager):
       frames show the synthetic sample under a MoNaLISA foci lattice, placed
       from the scan waveforms. ``{"axes": {"<x device>": <µm per V>,
       "<y device>": <µm per V>}}`` plus optional ``latticePeriodUm``,
-      ``latticeAngleDeg``, ``spotSigmaUm``, ``peakCounts``, ``offsetCounts``
-      and ``seed``; see ``_mock_lattice.py``.
+      ``latticeAngleDeg``, ``spotSigmaUm``, ``excitationFwhmUm``,
+      ``peakCounts``, ``offsetCounts``, ``readNoiseCounts``, ``excitation``,
+      ``switching``, ``zAxis``, ``bleachHalfLifeS``, ``preset`` and ``seed``;
+      see ``_mock_lattice.py``.
+    - ``mockRandomSeed`` -- simulation only: seed of the ``mockSample``
+      frames' camera noise, for reproducible mock recordings.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -211,11 +215,15 @@ class HamamatsuManager(DetectorManager):
         if (mockLattice is not None and nidaqManager is not None
                 and getattr(nidaqManager, 'isSimulated', False)
                 and hasattr(self._camera, 'mock_frame_source')):
-            self._mockFrames = MockLatticeFrames(mockLattice, self.pixelSizeUm[-1])
+            self._mockFrames = MockLatticeFrames(
+                mockLattice, self.pixelSizeUm[-1],
+                seed=detectorInfo.managerProperties.get('mockRandomSeed'),
+            )
             self._camera.mock_frame_source = self._mockFrames
             nidaqManager.sigScanBuilt.connect(self.__onSimScanBuilt)
             # Built once per process (about a second); not on the first frame.
-            threading.Thread(target=mockLattice.sample.texture, daemon=True,
+            threading.Thread(target=mockLattice.sample.view,
+                             args=(mockLattice.excitation_sigma_um,), daemon=True,
                              name='mock-sample').start()
 
     _ADVANCED_RECONNECT_EXCLUDED = frozenset({
@@ -316,14 +324,15 @@ class HamamatsuManager(DetectorManager):
     def mockScanDone(self):
         return True
 
-    def __onSimScanBuilt(self, _scanInfoDict, signalDict, _devices):
-        """Simulation only: the stage position of each camera trigger."""
-        positions = trigger_positions_um(
-            signalDict, self.__name, self._mockFrames.lattice.sample.axes
+    def __onSimScanBuilt(self, scanInfoDict, signalDict, _devices):
+        """Simulation only: where the sample is, and what the lasers did to
+        it, at each camera trigger."""
+        conditions = trigger_conditions(
+            signalDict, self.__name, self._mockFrames.lattice,
+            (scanInfoDict or {}).get('scan_time_step'),
         )
-        if positions is None:
-            positions = []
-        self._mockFrames.setScan(positions, pixel_um=self.pixelSizeUm[-1])
+        self._mockFrames.setScan([], pixel_um=self.pixelSizeUm[-1],
+                                 conditions=conditions or [])
 
     def __onSimScanFrameTrigger(self, detectorName, nFrames):
         """Simulation only: forward a simulated NIDAQ scan's frame triggers to
