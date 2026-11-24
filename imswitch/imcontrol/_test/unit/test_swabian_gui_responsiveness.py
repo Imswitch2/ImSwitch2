@@ -315,10 +315,15 @@ def test_a_new_geometry_builds_a_new_flim_and_frees_the_old_off_the_gui_thread(q
     released = []
     real = card.releaseLater
     card.releaseLater = lambda box: (released.append(list(box)), real(box))
-    det._flimCleanGeneration = det._preparedScanGeneration   # as if it closed cleanly
+    # As if its final frame closed cleanly and drained: the flag, then the
+    # release that follows it (which also leaves the card's scan session, so
+    # the shared pixel markers are kept for the next scan).
+    det._flimCleanGeneration = det._preparedScanGeneration
+    det._releaseCard(det._preparedScanGeneration)
     det.setParameter("n_bins", 200)
     _arm(nidaq, det)
     assert det._scan["flim_reused"] is False
+    assert det._scan["pixel_markers_reused"] is True
     assert len(released) == 1 and released[0][0] is not det._flim
 
 
