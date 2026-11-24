@@ -203,7 +203,7 @@ def resolveSetupArgument(value):
         if os.path.normcase(path).startswith(os.path.normcase(root) + os.sep):
             name = setupfolder.setupNameFor(path, root)
         elif os.path.isabs(name) or os.path.isfile(path):
-            raise ValueError(f'"{value}" is not in the setup folder {folder}; '
+            raise ValueError(f'"{value}" is not in the setups folder {folder}; '
                              f'copy it there first.')
         # otherwise a name relative to the setup folder, e.g. "mock/rig"
     if not name.lower().endswith('.json'):

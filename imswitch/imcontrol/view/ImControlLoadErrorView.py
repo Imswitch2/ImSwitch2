@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 from pathlib import Path
 

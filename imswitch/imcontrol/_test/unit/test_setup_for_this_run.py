@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from imswitch.imcommon.model import ostools
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, setupfolder
 from imswitch.imcontrol.model.Options import MemoryOptions
 from imswitch.imcontrol.model.SetupInfo import SetupInfo
 
@@ -30,7 +30,7 @@ def setups(tmp_path, monkeypatch):
     optionsPath = tmp_path / 'imcontrol_options.json'
     optionsPath.write_text(json.dumps({'setupFileName': 'a_scope.json'}))
 
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(setupDir))
+    monkeypatch.setattr(setupfolder, 'defaultSetupFolder', lambda: str(setupDir))
     monkeypatch.setattr(configfiletools, '_optionsFilePath', str(optionsPath))
     monkeypatch.setattr(configfiletools, '_options', None)
     monkeypatch.setattr(configfiletools, '_setupForThisRun', None)
