@@ -13,7 +13,8 @@ from imswitch.imcontrol.model.devices.lifecycle import (
     DeviceLifecycleResult,
 )
 from imswitch.imcontrol.model.devices.status import (
-    DeviceConnectionState, DeviceFailureKind, DeviceId, DeviceRuntimeMode,
+    DeviceConnectionState, DeviceFailureKind, DeviceId, DeviceNotConnectedError,
+    DeviceRuntimeMode,
 )
 
 
@@ -209,18 +210,31 @@ class CoolLEDLaserManager(LaserManager):
 
     - ``rs232device`` -- configured RS232 communication resource
     - ``channel_index`` -- laser channel (A to H)
+    - ``useMockOnFailure`` -- default ``false``: a controller whose serial port
+      did not open is reported as not connected, its commands are refused, and
+      Hardware status reconnects it (all channels come back OFF). ``true``
+      runs the channels as a reported mock instead.
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
         self._rs232manager = None
         self._rs232Name = laserInfo.managerProperties['rs232device']
+        useMock = laserInfo.managerProperties.get('useMockOnFailure', False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
+        self._useMockOnFailure = bool(useMock)
 
         try:
             self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
             self.__channel_index = laserInfo.managerProperties['channel_index']
             self.__digital_mod = False
         except Exception as exc:
+            if not self._useMockOnFailure:
+                raise RuntimeError(
+                    f'CoolLED {name!r}: RS232 device {self._rs232Name!r} is not '
+                    f'available ({exc}). Define it in rs232devices, or set '
+                    f'useMockOnFailure to true for a mock.') from exc
             self.__logger.warning(
                 f'Failed to initialize CoolLED hardware, running in mock mode: {exc}'
             )
@@ -255,13 +269,27 @@ class CoolLEDLaserManager(LaserManager):
 
     @property
     def _isMock(self):
-        """Dynamic transport mode; reconnect may replace mock with real hardware."""
+        """An explicit mock (``useMockOnFailure``) standing in for the
+        controller; dynamic, so a reconnect can replace it with the real one."""
+        if not self._useMockOnFailure:
+            return False
         if self._rs232manager is None:
             return True
         return self._rs232manager.runtimeMode is DeviceRuntimeMode.MOCK
 
+    def _requireTransport(self, what):
+        """Refuse a command when the serial port did not open: the
+        placeholder port that stands in for it would swallow it silently."""
+        if (self._rs232manager is not None
+                and self._rs232manager.runtimeMode is DeviceRuntimeMode.MOCK):
+            raise DeviceNotConnectedError(
+                f'{self.name}: {what} refused, CoolLED controller not connected '
+                f'({self._rs232manager.connectionStatusSummary or "serial port not open"})')
+
     def _applyControllerProbe(self, result) -> None:
         state, mode, summary, details, failure_kind = result
+        if mode is DeviceRuntimeMode.MOCK and not self._useMockOnFailure:
+            mode = DeviceRuntimeMode.REAL   # a placeholder port is not a configured mock
         self._deviceRuntimeMode = mode
         self._setConnectionState(
             state,
@@ -297,6 +325,7 @@ class CoolLEDLaserManager(LaserManager):
         if self._isMock:
             self.__logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
             return
+        self._requireTransport('switching emission')
 
         value = "N" if enabled else "F"
         cmd = "C" + self.__channel_index + value
@@ -307,6 +336,7 @@ class CoolLEDLaserManager(LaserManager):
         if self._isMock:
             self.__logger.debug(f'Mock mode: setValue({power}) ignored')
             return
+        self._requireTransport('setting power')
 
         cmd = "C" + self.__channel_index + "IX" + "{0:03.0f}".format(power)
         self.__logger.debug(cmd)

@@ -497,8 +497,15 @@ channel (A–H) over RS232.
    * - ``channel_index``
      - str
      - ``"A"``
-     - LED channel letter A–H.  The default ``"A"`` is only used when
-       hardware init fails and the manager falls into mock mode.
+     - LED channel letter A–H.  The default ``"A"`` is only used by the
+       ``useMockOnFailure`` mock.
+   * - ``useMockOnFailure``
+     - bool
+     - Defaults to ``false``: when the serial port did not open the
+       controller is reported **not connected**, commands are refused with
+       the channel's name, and a reconnect from Hardware status brings every
+       channel back OFF. ``true`` runs the channels as a reported mock
+       that silently drops commands.
 
 **LaserInfo fields used**
 
@@ -517,8 +524,9 @@ channel (A–H) over RS232.
 **Vendor library**
 
 None — plain ASCII over RS232.  If the RS232 lookup or
-``managerProperties['channel_index']`` access raises, the manager
-enters its own mock mode and silently drops commands.
+``managerProperties['channel_index']`` access raises, the manager raises
+an error naming the device (reported as failed), unless
+``useMockOnFailure`` is true, which enters a mock mode that drops commands.
 
 **Source**
 

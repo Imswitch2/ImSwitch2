@@ -8,7 +8,7 @@
       ]
     },
     "channel_index": {
-      "description": "LED channel letter A–H.  The default ``\"A\"`` is only used when",
+      "description": "LED channel letter A–H.  The default ``\"A\"`` is only used by the",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -24,6 +24,13 @@
         "example:string"
       ],
       "x-imswitch-widget": "ref"
+    },
+    "useMockOnFailure": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "required": [
