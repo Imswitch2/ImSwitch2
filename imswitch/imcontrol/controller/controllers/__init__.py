@@ -62,6 +62,7 @@ _CONTROLLER_MODULES = {
     "ULensesController": "ULensesController",
     "ViewController": "ViewController",
     "ViewerToolsController": "ViewerToolsController",
+    "ScriptRunnerController": "ScriptRunnerController",
     "WatcherController": "WatcherController",
     "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",

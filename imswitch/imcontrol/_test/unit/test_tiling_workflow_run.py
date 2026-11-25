@@ -19,6 +19,7 @@ from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingRunSettings,
 )
 from imswitch.imcontrol.model.workflows.spiral import SPIRAL
+from imswitch.imcontrol.model.workflows.target import TargetList
 from imswitch.imcontrol.model.workflows.tile_dataset import MANIFEST_NAME
 from imswitch.imcontrol.view.widgets.TilingWidget import (
     MODE_FREE_RUNNING,
@@ -27,8 +28,7 @@ from imswitch.imcontrol.view.widgets.TilingWidget import (
 
 _SIGNALS = (
     'sigOverviewUpdated', 'sigProgressUpdated', 'sigRunningChanged',
-    'sigShowCellMarkers', 'sigHighlightCell', 'sigCellTargetingEnabled',
-    'sigRegistrationSummary',
+    'sigTargetsChanged', 'sigTargetMarkers', 'sigRegistrationSummary',
 )
 
 
@@ -130,7 +130,7 @@ class _Harness:
         ctrl._scanning = False
         ctrl._scanThread = None
         ctrl._closed = False
-        ctrl._cellTargetingRunning = False
+        ctrl._targets = TargetList()
         ctrl._registrationReport = None
         ctrl._orientation = (False, False, False)
         ctrl._lastSaveFolder = None
@@ -210,13 +210,6 @@ def test_refused_while_a_run_is_busy(harness, tmp_path):
     assert result.completed is False
     assert 'already in progress' in result.message
     assert harness.events == []
-
-
-def test_refused_while_cell_targeting_owns_the_stage(harness, tmp_path):
-    harness.ctrl._cellTargetingRunning = True
-    result = harness.run(_settings(), tmp_path / 't0')
-    assert result.completed is False
-    assert 'Cell targeting' in result.message
 
 
 def test_saves_into_the_given_folder_even_without_save_tiles(
@@ -363,5 +356,6 @@ def test_start_tiling_still_runs_the_widget_snapshot_on_a_thread(
         orientation=(True, False, False), save_tiles=True,
         mode=MODE_FREE_RUNNING, scan_source_key='scanA', detector_name='CAM',
     )
-    assert {'setRunning', 'setProgress', 'clearCellMarkers'} <= set(
-        harness.ctrl._widget.calls)
+    assert {'setRunning', 'setProgress'} <= set(harness.ctrl._widget.calls)
+    # The targets are drawn again on the overview the run is about to build.
+    assert 'sigTargetsChanged' in [name for name, _ in harness.emitted]

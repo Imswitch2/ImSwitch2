@@ -130,6 +130,9 @@ PANELS: Dict[str, PanelSpec] = {spec.key: spec for spec in (
     _spec('Timelapse', 'Timelapse', 'Advanced', _L),
     # Runs scans and drives stages from a pipeline file.
     _spec('SmartPipeline', 'Smart Pipeline', 'Advanced', _S, _UNCHECKED),
+    # Runs a script file through the Scripting module (feat/timelapse: loadable
+    # as it is).
+    _spec('ScriptRunner', 'Script Runner', 'Advanced', _L),
     _spec('Tiling', 'Tiling', 'Advanced', _F,
           section='tiling', silentWithoutSection=True),
     _spec('SLMs', 'SLMs', 'Advanced', _S, _HARDWARE),

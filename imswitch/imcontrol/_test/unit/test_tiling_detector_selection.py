@@ -13,10 +13,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from qtpy import QtCore
 
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
+from imswitch.imcontrol.model.workflows.target import TargetList
 from imswitch.imcontrol.view.widgets.TilingWidget import MODE_TRIGGERED
 
 
@@ -38,8 +40,8 @@ class _Widget:
     def __init__(self):
         self.offered = None
         self.selected = None
-        self.cellMarkersCleared = 0
-        self.cellTargetingEnabled = []
+        self.targets = []
+        self.markers = []
 
     def setDetectors(self, names):
         self.offered = list(names)
@@ -50,17 +52,20 @@ class _Widget:
     def getDetector(self):
         return self.selected if (self.offered or []) and len(self.offered) > 1 else None
 
-    def clearCellMarkers(self):
-        self.cellMarkersCleared += 1
+    def setTargets(self, records):
+        self.targets.append(records)
 
-    def setCellTargetingEnabled(self, enabled):
-        self.cellTargetingEnabled.append(enabled)
+    def setTargetMarkers(self, markers):
+        self.markers.append(markers)
 
 
 def _makeController(detectors):
     ctrl = TilingController.__new__(TilingController)
+    QtCore.QObject.__init__(ctrl)
     ctrl._logger = _Logger()
     ctrl._widget = _Widget()
+    ctrl.sigTargetsChanged.connect(ctrl._widget.setTargets)
+    ctrl.sigTargetMarkers.connect(ctrl._widget.setTargetMarkers)
     ctrl._setupInfo = SimpleNamespace(detectors={
         name: SimpleNamespace(forAcquisition=acq)
         for name, acq in detectors.items()
@@ -69,8 +74,7 @@ def _makeController(detectors):
     ctrl._stitcher = None
     ctrl._originXY = None
     ctrl._gridPositions = []
-    ctrl._cellPositionsRC = None
-    ctrl._cellProps = None
+    ctrl._targets = TargetList()
     return ctrl
 
 
@@ -122,8 +126,7 @@ def test_changing_detector_discards_the_overview():
     assert ctrl._stitcher is None
     assert ctrl._originXY is None
     assert ctrl._gridPositions == []
-    assert ctrl._widget.cellMarkersCleared == 1
-    assert ctrl._widget.cellTargetingEnabled == [False]
+    assert ctrl._widget.markers == [{}], 'no overview left to draw targets on'
     assert ctrl._logger.messages
 
 

@@ -4048,6 +4048,7 @@ def _load_widget_registry() -> dict:
         "Tiling": "Advanced",
         "Timelapse": "Advanced",
         "Watcher": "Advanced",
+        "ScriptRunner": "Advanced",
     }
 
     # ── Source 1: hardcoded baseline (always present) ──
@@ -4094,6 +4095,7 @@ def _load_widget_registry() -> dict:
             ("Tiling",     "Spiral tiling scan"),
             ("Timelapse",  "Timelapse of camera frames, scans or tilings"),
             ("Watcher",    "File watcher"),
+            ("ScriptRunner", "Run a script with inputs"),
         ],
     }
 

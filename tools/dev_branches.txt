@@ -72,3 +72,6 @@ feat/runtime-panels                # PR #103 (contains feat/setup-cli-flag #89 a
                                    #    processing/, their test paths follow, shipped-setup globs are recursive; presets found in
                                    #    subfolders; PanelSpecs for Lifetime (was FLIMHist), LiveRecon, SmartPipeline, Timelapse;
                                    #    tiling.json: dev's template; autofocus tests type the update rate dev's form leaves empty)
+feat/timelapse                     # PR #97: Timelapse panel, Script Runner panel, tiling target list (dev had an older timelapse)
+                                   #   (PanelSpec: ScriptRunner loadable, Advanced as the Config Studio groups it; runtime-panels'
+                                   #    save-question test names the first exported function, the target calls come first now)

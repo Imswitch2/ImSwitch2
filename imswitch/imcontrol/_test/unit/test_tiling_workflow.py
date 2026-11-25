@@ -362,34 +362,6 @@ class TestTilingWorkflow:
         s.add_tile(tile, 0, 0)
         return s
 
-    def _controller_with_blob_stitcher(self) -> tuple[object, MagicMock]:
-        """Build a TilingController shell around a stitched overview."""
-        from qtpy import QtCore
-
-        from imswitch.imcontrol.controller.controllers.TilingController import (
-            TilingController,
-        )
-
-        controller = TilingController.__new__(TilingController)
-        QtCore.QObject.__init__(controller)
-        controller._stitcher = self._stitched_with_blob()
-        controller._originXY = (100.0, 200.0)
-        controller._gridPositions = [(0, 0)]
-        controller._lastStepUm = 64.0
-        controller._segParams = {}
-        controller._cellPositionsRC = None
-        controller._cellProps = None
-        controller._cellTargetingRunning = False
-        controller._logger = MagicMock()
-
-        positioner = MagicMock()
-        controller._master = SimpleNamespace(positionersManager={"xy": positioner})
-        controller._setupInfo = SimpleNamespace(
-            tiling=SimpleNamespace(xyPositioner="xy"),
-            positioners={"xy": SimpleNamespace(axes=("x", "y"))},
-        )
-        return controller, positioner
-
     def test_run_cell_targeting_invokes_for_each_feature(self):
         """run_cell_targeting iterates accepted cells through for_each_feature."""
         facade = build_mock_facade()
@@ -429,62 +401,6 @@ class TestTilingWorkflow:
         )
 
         assert found == [0]
-
-    def test_controller_detect_cell_targets_does_not_move_stage(self) -> None:
-        """GUI-safe cell detection should only show/cache markers."""
-        controller, positioner = self._controller_with_blob_stitcher()
-
-        positions = controller.detectCellTargets()
-
-        assert len(positions) >= 1
-        positioner.setPosition.assert_not_called()
-        assert controller._cellPositionsRC is not None
-
-    def test_controller_run_cell_targeting_without_callback_does_not_move(
-        self,
-    ) -> None:
-        """runCellTargeting without an explicit workflow is detection-only."""
-        controller, positioner = self._controller_with_blob_stitcher()
-
-        controller.runCellTargeting()
-
-        positioner.setPosition.assert_not_called()
-        assert controller._cellPositionsRC is not None
-
-    def test_controller_run_cell_targeting_moves_only_when_explicit(
-        self, monkeypatch
-    ) -> None:
-        """Automated controller path moves and invokes the per-cell callback."""
-        import importlib
-
-        module = importlib.import_module(
-            "imswitch.imcontrol.controller.controllers.TilingController"
-        )
-
-        class ImmediateThread:
-            def __init__(
-                self, target: Any, args: tuple = (), daemon: bool | None = None
-            ) -> None:
-                self._target = target
-                self._args = args
-
-            def start(self) -> None:
-                self._target(*self._args)
-
-        monkeypatch.setattr(module.threading, "Thread", ImmediateThread)
-        monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
-        controller, positioner = self._controller_with_blob_stitcher()
-        seen = []
-
-        controller.runCellTargeting(
-            feature_callback=lambda i, props, xy: seen.append((i, props, xy))
-        )
-
-        assert len(seen) >= 1
-        assert positioner.setPosition.call_count >= 2 * len(seen)
-        assert isinstance(seen[0][1], dict)
-        assert len(seen[0][2]) == 2
-
 
     def test_grab_image_hw_fallback_on_timeout(self):
         """Test _grab_image_hw falls back to software on timeout."""
