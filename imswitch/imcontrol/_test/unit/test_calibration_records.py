@@ -201,7 +201,7 @@ def test_tooltip_texts():
                                      rawUnits='arb')
     assert text.splitlines()[0] == '2.5 mW at back focal plane'
     assert 'aligned after fibre change' in text and '561-20261120-abc123' in text
-    assert 'Drive: 500 arb' in text
+    assert 'Drive: 501 arb' in text      # 50 % of 0.01..5 mW
     raw = laser_calibration_tooltip(CalibrationResolution('raw'), 2.0, rawUnits='V',
                                     rawRange=(0, 5))
     assert raw.startswith('Raw units — no calibration') and '0-5 V' in raw
