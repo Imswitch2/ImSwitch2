@@ -230,6 +230,7 @@ def test_supervisor_reports_a_failed_single_device_even_where_a_stand_in_exists(
     # The stand-in does nothing, for every consumer.
     master.standManager.motCorrPos(1.0)
     master.standManager.setFLUO()
+    assert master.standManager.isUsable is False       # present, but not a stand to command
 
 
 def _raise(error):
@@ -376,7 +377,8 @@ def test_squid_stage_on_the_mock_path_can_move():
     from imswitch.imcontrol.model.SetupInfo import PositionerInfo
 
     info = PositionerInfo(managerName="SQUIDStageManager", axes=["X", "Y", "Z"],
-                          managerProperties={"rs232device": "missing"}, forPositioning=True)
+                          managerProperties={"rs232device": "missing", "useMockOnFailure": True},
+                          forPositioning=True)
     stage = SQUIDStageManager(info, "stage", rs232sManager={})
     for axis in "XYZ":
         stage.move(5, axis)
