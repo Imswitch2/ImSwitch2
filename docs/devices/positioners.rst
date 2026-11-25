@@ -370,8 +370,10 @@ cached position.
 **Vendor library**
 
 ``thorlabs_apt_device.devices.kdc101.KDC101`` from
-``thorlabs-apt-device``.  If the package or device is unavailable,
-the manager logs an error and leaves the device disabled.
+``thorlabs-apt-device``.  If the package or device is unavailable the stage
+is left absent: reported not connected, every command refused with its name
+(nothing is silently ignored), and reconnectable from Hardware status. A
+reconnect re-reads the position and never homes or moves.
 
 **Source**
 
