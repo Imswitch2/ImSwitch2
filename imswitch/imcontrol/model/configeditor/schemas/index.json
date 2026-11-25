@@ -2,18 +2,18 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 166,
-    "docs_documented": 166,
-    "keys": 246,
+    "docs_agree": 168,
+    "docs_documented": 168,
+    "keys": 248,
     "managers": 66,
-    "none_default_only": 40,
+    "none_default_only": 44,
     "none_only": 16,
-    "optional": 180,
+    "optional": 182,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
     "typed_by_code": 121,
-    "typed_with_docs": 190,
+    "typed_with_docs": 192,
     "typed_with_examples": 158,
     "uncertain": 0,
     "unresolved_reads": 3,
@@ -77,7 +77,7 @@
         "LaserManager"
       ],
       "overridden": true,
-      "properties": 8,
+      "properties": 9,
       "required": 2
     },
     "APDManager": {
@@ -431,7 +431,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "NidaqPositionerManager": {

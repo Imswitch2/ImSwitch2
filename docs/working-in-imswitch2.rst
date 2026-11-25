@@ -115,8 +115,9 @@ ImControl adds its own menus, each holding one kind of thing:
   (:ref:`load-settings-from-recording`), and *Save Widget
   States…* / *Load Widget States…* (see below).
 * **Hardware** — which microscope this is: *Pick hardware setup…*
-  (:doc:`imcontrol-setups`) and *Edit hardware configuration…* (the config
-  editor, :doc:`imcontrol-setups`).
+  (:doc:`imcontrol-setups`), *Edit hardware configuration…* (the config
+  editor, :doc:`imcontrol-setups`), *Hardware status…* and *Calibrations…*
+  (laser power calibrations, :ref:`calibrations-window`).
 * **View** — *Reset panel layout*, which puts every panel back where the
   hardware setup places it, at the sizes its contents ask for.
 * **Shortcuts** — *Configure Shortcuts…* and the current bindings.

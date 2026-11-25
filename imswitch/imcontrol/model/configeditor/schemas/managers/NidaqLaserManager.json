@@ -3,10 +3,20 @@
   "additionalProperties": true,
   "properties": {
     "calibCsvPath": {
-      "description": "Optional path to a 2-column calibration CSV.  When present, a",
+      "description": "Optional path to a 2-column calibration CSV.  When it loads,",
       "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(in)",
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "calibrationId": {
+      "description": "Optional id of a calibration in the global store; takes precedence",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
         "docs:string"
       ]
     }

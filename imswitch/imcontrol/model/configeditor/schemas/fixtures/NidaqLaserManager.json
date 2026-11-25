@@ -3,7 +3,8 @@
   "device": {
     "managerName": "NidaqLaserManager",
     "managerProperties": {
-      "calibCsvPath": "example"
+      "calibCsvPath": "example",
+      "calibrationId": "example"
     }
   }
 }

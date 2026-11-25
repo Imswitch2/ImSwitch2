@@ -44,6 +44,7 @@ _ALWAYS_LOADED = {
     'SetupModeController': 'imswitch.imcontrol.controller.SetupModeController',
     'WorkflowFacadeController': 'imswitch.imcontrol.controller.controllers.WorkflowFacadeController',
     'ReplayController': 'imswitch.imcontrol.controller.controllers.ReplayController',
+    'CalibrationsController': 'imswitch.imcontrol.controller.controllers.CalibrationsController',
 }
 
 

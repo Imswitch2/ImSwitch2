@@ -88,8 +88,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 242: and on Photometrics, Allied Vision and PiCam. 244: the APD's and the
     # Hamamatsu's mockSample (SimplePointScan / SimpleMoNaLISA mock setups).
     # MoNaLISA reconstruction defaults now belong to processing, not
-    # detector hardware schemas (244 rather than 244 + 18).
-    assert report.keys == 244
+    # detector hardware schemas (244 rather than 244 + 18). 246: calibrationId
+    # on NidaqLaserManager and AAAOTFLaserManager (laser power calibrations).
+    assert report.keys == 246
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 64 after the device-reconnection rebase: CoolLED and MPB read
@@ -97,14 +98,16 @@ def test_the_coverage_the_plan_is_built_on(report):
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
     assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
-    assert report.optional == 178
+    assert report.optional == 180     # 178 + the two calibrationId
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
     # 35: PM100 and PAX1000 read wavelengthNm with .get() (None = keep the
     # instrument's own). 37: MockPAX plate1Rotator / plate2Rotator.
     # 39: the two mockSample blocks (None = no synthetic sample).
-    assert report.none_default_only == 39
+    # 43: NidaqLaserManager and AAAOTFLaserManager read calibCsvPath and
+    # calibrationId with .get() (None = not configured).
+    assert report.none_default_only == 43
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -116,8 +119,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
     # 153: docs/devices/instruments.rst documents the 18 instrument keys.
     # 155: and MockPAX's plate rotators. 159 / 162: the seven useMockOnFailure rows.
-    # 163: the APD's mockSample row; 164: the Hamamatsu's.
-    assert (report.docs_agree, report.docs_documented) == (164, 164)
+    # 163: the APD's mockSample row; 164: the Hamamatsu's. 166: the two
+    # calibrationId rows.
+    assert (report.docs_agree, report.docs_documented) == (166, 166)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -165,8 +169,12 @@ def test_aaaotf_guarded_reads_are_optional_and_nothing_is_constrained(extraction
     for key in ("calibCsvPath", "ttlToggling", "toggleTrueExternal"):
         assert props[key].required == ex.OPTIONAL, key
     # Base-class reads come first: LaserManager.hasProperty("calibCsvPath") is
-    # an inherited membership check; the manager's own read is the guarded one.
-    assert any(read.guard and read.guard.startswith("try/except") for read in props["calibCsvPath"].reads)
+    # an inherited membership check; the manager's own read is a .get() (it
+    # was a subscript inside try/except KeyError before the shared
+    # calibration loader).
+    assert any(read.guard == "in" for read in props["calibCsvPath"].reads)
+    assert any(read.guard == "get" for read in props["calibCsvPath"].reads)
+    assert props["calibrationId"].required == ex.OPTIONAL
     assert any(read.guard == "in" for read in props["ttlToggling"].reads)
     assert {k for k, p in props.items() if p.required == ex.REQUIRED} == {"channel", "rs232device"}
     assert props["rs232device"].ref_category == "rs232devices"

@@ -486,7 +486,9 @@ class InstrumentsController(ImConWidgetController):
         ``refused``), ``run`` (the run file and its outcomes) and ``result``.
         Runs go to ``folder`` (default ``ImSwitchConfig/measurement_runs``).
         With ``allow_unverified_timing`` (until the meter's timing is checked
-        on hardware) the run is kept but no LUT is written. """
+        on hardware) the run is kept but no LUT is written.
+        ``importLaserCalibration(report.lut_file)`` adds the LUT to the global
+        calibration store, where Hardware → Calibrations… can activate it. """
         if confirm_dark is None:
             raise ValueError(
                 'confirm_dark is required: a function that returns True once the beam '
