@@ -37,8 +37,17 @@
         "example:object"
       ]
     },
+    "mockRandomSeed": {
+      "description": "Simulation only: seed of the ``mockSample`` frames' camera noise, for reproducible mock recordings.  ``None`` draws fresh noise every run.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
     "mockSample": {
-      "description": "Simulation only (mock camera on a simulated NI-DAQ): the frames show the synthetic sample (cells and beads) under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"latticePeriodUm\": 0.72, \"seed\": 0}``; each axis carries its positioner's ``conversionFactor``. Without it the mock frames are uniform noise.",
+      "description": "Simulation only (mock camera on a simulated NI-DAQ): the frames show the virtual sample under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"latticePeriodUm\": 0.72, \"seed\": 0}``; each axis carries its positioner's ``conversionFactor``. Optional: the point-scan keys (``preset``, ``zAxis``, ``bleachHalfLifeS``), ``excitation`` (readout lasers, with ``saturationPower``/``scatterBackground``), ``switching`` (ON/OFF lasers, RESOLFT), ``excitationFwhmUm``, ``spotSigmaUm``, ``peakCounts``, ``offsetCounts`` and ``readNoiseCounts``; see :doc:`../mock-infrastructure`. Without it the mock frames are uniform noise.",
       "x-imswitch-kind": "object",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [

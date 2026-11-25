@@ -23,6 +23,9 @@ from .DetectorManager import (
 from ._live_display import LiveDisplayThrottle
 from ._read_ahead import ReadAhead, raster_samples_consumed, read_ahead_samples
 from imswitch.imcontrol.model.scan_parameters import lag_samples_for
+from ._mock_optics import (
+    Bleaching, LaserStates, PointScanOptics, PointScanSignal, unlit_message,
+)
 from ._mock_sample import MockSample
 from ._visit_order import VisitOrder
 from ._trajectory_measure import (
@@ -149,6 +152,17 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
         self._warned_mock_count_clip = False
         # A synthetic sample imaged from the scan waveforms (simulation only).
         self._mock_sample = MockSample.from_property(manager_props.get("mockSample"))
+        self._mock_optics = PointScanOptics.from_property(manager_props.get("mockSample"))
+        # The lasers' set power and on/off state (read-only); unknown, so
+        # lit, until the master controller attaches the lasers' published
+        # state (attachMockLaserStates).
+        self._mock_laser_states = LaserStates()
+        # Bleaching lasts as long as the detector: a region scanned again
+        # comes back dimmer.
+        self._mock_bleaching = (
+            Bleaching(self._mock_optics.bleach_half_life_s)
+            if self._mock_optics.bleach_half_life_s else None
+        )
 
         self._frameCount = 0
         self._scanWorker = None
@@ -202,7 +216,8 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
         )
         if self._mock_sample is not None and self._simulation_mode:
             # Built once per process (about a second); not on the first scan.
-            threading.Thread(target=self._mock_sample.texture, daemon=True,
+            threading.Thread(target=self._mock_sample.view,
+                             args=(self._mock_optics.psf_sigma_um,), daemon=True,
                              name='mock-sample').start()
 
         # Prepare detector manager parameters and signal connections
@@ -331,6 +346,11 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             self.__logger.exception(
                 'Failed to report APD scan %s failure', stage
             )
+
+    def attachMockLaserStates(self, states):
+        """Simulation only: where the virtual sample reads the lasers' set
+        state (a read-only ``_mock_optics.LaserStates``; see MasterController)."""
+        self._mock_laser_states = states
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.initiateScan(scanInfoDict, signalDict)
@@ -1180,19 +1200,21 @@ class ScanWorker(Worker):
             int(round(self._manager._detection_samplerate * scanInfoDict['scan_time_step'])),
         )
         self._rng = np.random.default_rng(self._manager._mock_random_seed)
-        # Beam position per scan sample (µm, the sample's x and y) when the
-        # simulated detector images a mock sample; None for plain noise.
-        self._mock_positions = None
+        # The mock sample's brightness under the beam at every detector
+        # sample, read from this scan's waveforms, when the simulated
+        # detector images one; None for plain noise.
+        self._mock_signal = None
         sample = self._manager._mock_sample
         if self._manager._simulation_mode and sample is not None:
-            signals = signalDict.get('scanSignalsDict', {}) or {}
-            positions = [
-                None if signals.get(device) is None
-                else np.asarray(signals[device], dtype=float) * umPerVolt
-                for device, umPerVolt in sample.axes
-            ]
-            if any(p is not None for p in positions):
-                self._mock_positions = positions
+            mockSignal = PointScanSignal(
+                sample, self._manager._mock_optics, signalDict,
+                self._frac_scan_det_rate, self._manager._detection_samplerate,
+                self._manager._mock_bleaching, self._manager._mock_laser_states,
+            )
+            if mockSignal.usable:
+                self._mock_signal = mockSignal
+            if mockSignal.unlit:
+                self.__logger.warning(unlit_message(self._manager._mock_optics.excitation))
 
         # extract APD signals from signalDict
         self._seq_signal = None  # set only if ttlmultiplying AND this device found in signalDict
@@ -1645,27 +1667,20 @@ class ScanWorker(Worker):
         frac = max(1, int(self._frac_det_dwell))
         mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
         max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
-        if self._mock_positions is not None:
-            mean_per_sample = mean_per_sample * self._mock_brightness(datalen, start)
+        if self._mock_signal is not None:
+            # Dark counts do not depend on the light. ``start``: the sample
+            # this read begins at (the read-ahead fetches ahead of what the
+            # worker has consumed), so the beam position matches the samples.
+            mean_per_sample = (
+                mean_per_sample * self._mock_signal(
+                    int(self._samples_read if start is None else start), datalen)
+                + self._manager._mock_optics.dark_count_rate
+                / self._manager._detection_samplerate
+            )
         increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
         increments = np.clip(increments, 0, max_per_sample)
         base = self._last_value if base is None else base
         return np.cumsum(increments, dtype=np.int64) + int(base)
-
-    def _mock_brightness(self, datalen, start=None):
-        """The mock sample under the beam for ``datalen`` samples from
-        ``start`` (default: what the worker has consumed)."""
-        start = int(self._samples_read if start is None else start)
-        scan_index = np.arange(start, start + datalen) // self._frac_scan_det_rate
-        coords = []
-        for positions in self._mock_positions:
-            if positions is None or not len(positions):
-                coords.append(np.zeros(datalen))
-            else:
-                coords.append(positions[np.minimum(scan_index, len(positions) - 1)])
-        if len(coords) == 1:
-            coords.append(np.zeros(datalen))
-        return self._manager._mock_sample.brightness(coords[0], coords[1])
 
 class TrajectoryScanWorker(ScanWorker):
     """Reads a trajectory window by window (plan §6, M4): the counts in each

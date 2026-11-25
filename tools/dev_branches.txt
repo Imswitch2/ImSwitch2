@@ -54,3 +54,7 @@ feat/timetagger-usability          # PR #100 (folds #101): Time Tagger GUI-freez
                                    #   (dev retired the detector's private card (5692bee7): the branch's finalize keeps only
                                    #    unregisterDetector, docs say a detector without the block has no card; counts/setups
                                    #    pins are the merged totals)
+feat/virtual-sample                # PR #99: virtual sample with optics and laser-power response for the mock APD/PMT/camera
+                                   #   (APD/PMT: the mock signal is read at the read-ahead's fetch position, not at what the
+                                   #    worker consumed -- dev's chunked reads; PMT's randomInput takes start like the APD's;
+                                   #    its MockSample and the Time Tagger mock's MockSample are separate classes and keys)

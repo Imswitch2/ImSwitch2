@@ -117,7 +117,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 283 with feat/timetagger-usability: the Swabian detector's measurement
     # (flim / counting); its photon_input takes over click_role's key,
     # click_role becoming photon_input's older spelling (alias 10).
-    assert report.keys == 283
+    # 285 with feat/virtual-sample: the PMT's mockSample and the Hamamatsu's
+    # mockRandomSeed.
+    assert report.keys == 285
     assert report.alias_spellings == 10
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -141,7 +143,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # retired Swabian card properties. 218: the device-failure policy's 13
     # useMockOnFailure flags (all optional; required unchanged).
     # 219: the Swabian detector's optional measurement.
-    assert report.optional == 219
+    # 221: the PMT's mockSample and the Hamamatsu's mockRandomSeed.
+    assert report.optional == 221
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -159,7 +162,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # keep the instrument's own), MockPAX plate1Rotator / plate2Rotator, and
     # the Hamamatsu's mockSample block (None = no synthetic sample). 55: the
     # three Swabian legacy channels are retired.
-    assert report.none_default_only == 55
+    # 57 with feat/virtual-sample: the PMT's mockSample and the Hamamatsu's
+    # mockRandomSeed.
+    assert report.none_default_only == 57
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -184,7 +189,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # device-failure policy: its 12 useMockOnFailure rows in docs/devices.
     # 202: the Swabian detector's measurement row (photon_input has
     # click_role's row, click_role being its older spelling).
-    assert (report.docs_agree, report.docs_documented) == (202, 202)
+    # 204: the PMT's mockSample row and the Hamamatsu's mockRandomSeed.
+    assert (report.docs_agree, report.docs_documented) == (204, 204)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

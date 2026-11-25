@@ -1,19 +1,19 @@
 {
   "coverage": {
     "alias_spellings": 10,
-    "constrained": 54,
-    "docs_agree": 205,
-    "docs_documented": 205,
-    "keys": 286,
+    "constrained": 55,
+    "docs_agree": 207,
+    "docs_documented": 207,
+    "keys": 288,
     "managers": 72,
-    "none_default_only": 56,
+    "none_default_only": 58,
     "none_only": 16,
-    "optional": 222,
+    "optional": 224,
     "reads_any": 68,
     "refs": 15,
     "required": 64,
     "typed_by_code": 137,
-    "typed_with_docs": 230,
+    "typed_with_docs": 232,
     "typed_with_examples": 178,
     "uncertain": 0,
     "unresolved_reads": 0,
@@ -267,7 +267,7 @@
         "DetectorManager"
       ],
       "overridden": true,
-      "properties": 4,
+      "properties": 5,
       "required": 2
     },
     "HamamatsuSLMdviManager": {
@@ -500,7 +500,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 13,
+      "properties": 14,
       "required": 0
     },
     "PhotometricsManager": {

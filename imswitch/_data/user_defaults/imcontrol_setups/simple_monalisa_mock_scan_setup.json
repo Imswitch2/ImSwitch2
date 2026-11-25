@@ -1,5 +1,5 @@
 {
-  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The camera is a mock Hamamatsu: it has the 'Trigger source' the cloak switches between Live (internal) and acquisition (external frame trigger), reports a readout time, and takes one frame per camera TTL of the simulated scan. Its mockSample block makes each frame show the synthetic cell/bead sample of the point-scan mock under a 0.72 um square foci lattice (the profile's uLens period; 9.6 px at the 75 nm camera pixel, in the range real MoNaLISA recordings have and the pattern finder looks in), placed from the X/Y scan waveforms at 5 um/V, so a scan over one period reconstructs to the sample. Record, then reconstruct with the monalisa reconstructor.",
+  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The camera is a mock Hamamatsu: it has the 'Trigger source' the cloak switches between Live (internal) and acquisition (external frame trigger), reports a readout time, and takes one frame per camera TTL of the simulated scan. Its mockSample block makes each frame show the synthetic cell/bead sample of the point-scan mock under a 0.72 um square foci lattice (the profile's uLens period; 9.6 px at the 75 nm camera pixel, in the range real MoNaLISA recordings have and the pattern finder looks in), placed from the X/Y scan waveforms at 5 um/V, so a scan over one period reconstructs to the sample. The sample is reversibly switchable: 405 (ON) switches it on, the 488 (OFF) pulses switch it off around the foci and 488 (EXC) reads it out, all from the scan's TTLs, so the RESOLFT mode reconstructs to about 80 nm and the confocal mode (no OFF step) to about 200 nm. Record, then reconstruct with the monalisa reconstructor. The three lasers have simulated analog power lines (0-5 V): an acquisition fires them at the profile's full power, and their power acts on their own step on the Advanced page (OFF power sets the resolution, readout power the signal, which saturates while the background grows). Live shows the sample under 488 (EXC) as set in the Laser widget; it starts off and at 0 V.",
   "detectors": {
     "Camera": {
       "analogChannel": null,
@@ -23,7 +23,18 @@
             "X": 5.0,
             "Y": 5.0
           },
-          "latticePeriodUm": 0.72
+          "latticePeriodUm": 0.72,
+          "excitation": [
+            "488 (EXC)"
+          ],
+          "switching": {
+            "on": [
+              "405 (ON)"
+            ],
+            "off": [
+              "488 (OFF)"
+            ]
+          }
         }
       },
       "forAcquisition": true,
@@ -32,31 +43,31 @@
   },
   "lasers": {
     "488 (OFF)": {
-      "analogChannel": null,
+      "analogChannel": "Dev1/ao3",
       "digitalLine": "Dev1/port0/line0",
       "managerName": "NidaqLaserManager",
       "managerProperties": {},
       "wavelength": 488,
       "valueRangeMin": 0,
-      "valueRangeMax": 200
+      "valueRangeMax": 5
     },
     "405 (ON)": {
-      "analogChannel": null,
+      "analogChannel": "Dev1/ao4",
       "digitalLine": "Dev1/port0/line2",
       "managerName": "NidaqLaserManager",
       "managerProperties": {},
       "wavelength": 405,
       "valueRangeMin": 0,
-      "valueRangeMax": 200
+      "valueRangeMax": 5
     },
     "488 (EXC)": {
-      "analogChannel": null,
+      "analogChannel": "Dev1/ao5",
       "digitalLine": "Dev1/port0/line1",
       "managerName": "NidaqLaserManager",
       "managerProperties": {},
       "wavelength": 488,
       "valueRangeMin": 0,
-      "valueRangeMax": 200
+      "valueRangeMax": 5
     }
   },
   "positioners": {

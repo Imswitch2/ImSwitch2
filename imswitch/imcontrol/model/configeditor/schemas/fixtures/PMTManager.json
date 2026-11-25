@@ -10,6 +10,10 @@
       "deviceName": "example",
       "liveUpdateIntervalMs": 1.5,
       "mockRandomSeed": 1,
+      "mockSample": {
+        "photonsPerSample": 1.5,
+        "signalVolts": 1.5
+      },
       "mockVoltageMax": 1.5,
       "mockVoltageMean": 1.5,
       "mockVoltageMin": 1.5,
