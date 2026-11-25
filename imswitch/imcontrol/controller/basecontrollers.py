@@ -907,7 +907,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _getUnreferencedScanAxes(self):
         unreferenced = []
         for positionerName in self.positioners:
-            manager = self._master.positionersManager[positionerName]
+            # getDevice names a positioner that failed to start and says why.
+            manager = self._master.positionersManager.getDevice(positionerName)
             if not manager.isReferenceActionable:
                 continue
             
@@ -1305,7 +1306,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if not positionerName or positionerName == 'None':
                 positionsBeforeScan.append([])
                 continue
-            manager = self._master.positionersManager[positionerName]
+            manager = self._master.positionersManager.getDevice(positionerName)
             info = self._setupInfo.positioners[positionerName]
             axes = list(getattr(info, 'axes', None) or manager.axes)
             positionsBeforeScan.append([manager.position[axis]for axis in axes])
