@@ -18,11 +18,14 @@ class StandManager(ABC):
                 'useMockOnFailure', False)
             if isinstance(useMock, str):
                 useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
+            # The keyword is passed only for the opt-in, so a resolver that
+            # predates it (a test double, a plugin subclass) keeps working.
+            options = {'useMockOnFailure': True} if useMock else {}
             manager, is_mock = self._resolveStandManagerClass(
                 currentPackage,
                 deviceInfo.managerName,
                 self.__logger,
-                useMockOnFailure=bool(useMock),
+                **options,
             )
             self._subManager = manager(deviceInfo, **lowLevelManagers)
             self.mocker = is_mock

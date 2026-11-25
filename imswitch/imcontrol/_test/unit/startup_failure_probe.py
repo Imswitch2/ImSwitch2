@@ -60,6 +60,31 @@ try:
             positioner["managerName"] = "KinesisStageManager"
             positioner["managerProperties"] = {"snr": "REAL_DOES_NOT_EXIST"}
 
+    if case == "lasers_and_rotators_absent":
+        # Real lasers and rotators that are not there: absent, reported, and
+        # the Laser and Rotator panels are built (greyed), never a mock.
+        data["availableWidgets"] = list(data["availableWidgets"]) + ["Laser"]
+        data["lasers"] = {
+            "L-new": {"analogChannel": None, "digitalLine": None,
+                      "managerName": "Cobolt0601NewLaserManager",
+                      "managerProperties": {"digitalPorts": ["COM_NOT_THERE_1"]},
+                      "wavelength": 488, "valueRangeMin": 0.0, "valueRangeMax": 100.0,
+                      "valueRangeStep": 1.0},
+            "L-old": {"analogChannel": None, "digitalLine": None,
+                      "managerName": "Cobolt0601LaserManager",
+                      "managerProperties": {"digitalPorts": ["COM_NOT_THERE_2"]},
+                      "wavelength": 405, "valueRangeMin": 0.0, "valueRangeMax": 100.0,
+                      "valueRangeStep": 1.0},
+        }
+        data["rotators"] = {
+            name: {"managerName": "ElliptecRotatorManager",
+                   "managerProperties": {"port": "COM_NOT_THERE_3", "address": address,
+                                         "scale": "stage"}}
+            for address, name in enumerate(("HWP", "QWP"))
+        }
+        for instrument in data.get("instruments", {}).values():
+            instrument.pop("rotators", None)
+
     setup = ViewSetupInfo.from_json(json.dumps(data), infer_missing=True)
     options = Options(setupFileName=Path(PROFILE_PATH).name)
     channel = ModuleCommunicationChannel()
@@ -83,6 +108,9 @@ try:
             failed=sorted(detectors.getFailedDevices()),
             detector_states={i.name: i.state for i in issues if i.category == "detector"},
             stage_issues=[i.line for i in issues if i.category == "positioner"],
+            laser_issues=[i.line for i in issues if i.category == "laser"],
+            rotator_issues=[i.line for i in issues if i.category == "rotator"],
+            panel_errors={key: str(error) for key, error in controller.failedPanels.items()},
             notice=(view._hardwareNoticeLabel.text()
                     if view.__dict__.get("_hardwareNoticeLabel") is not None
                     and not view.statusBar().isHidden() else ""),

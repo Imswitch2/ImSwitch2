@@ -300,7 +300,8 @@ def _probe(case):
 
 
 @pytest.mark.parametrize("case", ["no_detector_manager", "detector_absent", "detector_default",
-                                  "stages_absent", "everything_fails"])
+                                  "stages_absent", "everything_fails",
+                                  "lasers_and_rotators_absent"])
 def test_application_starts_when_devices_fail(case):
     result = _probe(case)
     assert result["started"], result.get("error")
@@ -317,3 +318,11 @@ def test_application_starts_when_devices_fail(case):
     if case in ("no_detector_manager", "detector_absent"):
         # Left out and reported; the application still starts without any detector.
         assert result["detectors"] == [] and result["failed"], result
+
+    if case == "lasers_and_rotators_absent":
+        assert not result["panel_errors"], result["panel_errors"]
+        assert {"Laser", "Rotator"} <= set(result["controllers"])
+        assert len(result["laser_issues"]) == 2, result["laser_issues"]
+        assert len(result["rotator_issues"]) == 2, result["rotator_issues"]
+        assert all("not connected" in line for line in
+                   result["laser_issues"] + result["rotator_issues"])   # absent, never a mock

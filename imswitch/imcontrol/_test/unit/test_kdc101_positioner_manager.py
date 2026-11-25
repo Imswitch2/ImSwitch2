@@ -249,3 +249,17 @@ def test_kdc101_rs232_manager_that_cannot_open_is_absent_not_silent(monkeypatch)
     assert manager.device_active is True
     manager.home()
     assert manager._device.calls == ['home']        # only the user's own command
+
+
+def test_kdc101_mock_port_is_a_configured_mock_not_a_failure():
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    manager = KDC101PositionerManager(
+        _positioner_info({'port': 'MOCK_COM15', 'posConvFac': 10, 'velConvFac': 2,
+                          'accConvFac': 4}),
+        'Rotation stage',
+    )
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.NOT_APPLICABLE and manager.isUsable
+    manager.setPosition(12.5, 'R')
+    assert manager.position['R'] == 12.5

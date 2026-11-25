@@ -129,10 +129,13 @@ class ImConMainController(MainController):
             activeSetupPath=self.__activeSetupPath,
         )
         self.__panels.buildStartupControllers()
-        #: Panels whose controller could not start (widgetKey -> error), for
-        #: the hardware notice (fix/startup-device-failures); PanelService
-        #: has left them out and reports them in a message as well.
-        self.failedPanels = dict(self.__panels.startupFailures)
+        #: Panels that could not be built (widgetKey -> error: their widget or
+        #: their controller). One mechanism: PanelService left them out; they
+        #: are named in the startup message (reportStartupProblems, below) and
+        #: in the hardware notice, which the device startup report feeds and
+        #: every Hardware status refresh (reconnects) updates
+        #: (fix/startup-device-failures).
+        self.failedPanels = dict(self.__panels.startupProblems())
         if self.failedPanels:
             self._updateHardwareNotice(
                 self.__masterController.deviceSupervisor.getHardwareStatuses())

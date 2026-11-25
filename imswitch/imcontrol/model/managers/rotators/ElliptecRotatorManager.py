@@ -106,6 +106,7 @@ class ElliptecRotatorManager(RotatorManager):
         self._bus = None
         self._lifecycle = None
         self._useMockOnFailure = False
+        self._configuredMock = False
 
         if rotatorInfo is None:
             return
@@ -113,6 +114,12 @@ class ElliptecRotatorManager(RotatorManager):
         if isinstance(useMock, str):
             useMock = useMock.strip().lower() in ("1", "true", "yes", "on")
         self._useMockOnFailure = bool(useMock)
+        # A ``MOCK_`` port is a configured mock (the shipped no-hardware
+        # setups), not a failure: it runs on virtual positions, as a mock.
+        self._configuredMock = str(
+            rotatorInfo.managerProperties["port"]).upper().startswith("MOCK")
+        if self._configuredMock:
+            self._useMockOnFailure = True
 
         self._port = str(rotatorInfo.managerProperties["port"])
         self._addr = int(rotatorInfo.managerProperties["address"])
@@ -242,6 +249,10 @@ class ElliptecRotatorManager(RotatorManager):
             self._setConnected(
                 f"Elliptec address {self._addr} connected on {self._port}"
             )
+            return
+
+        if self._configuredMock:
+            self._setMockActive(f"Elliptec mock configured on {self._port}")
             return
 
         error = self._bus.error_for(self._addr)
