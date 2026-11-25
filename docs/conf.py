@@ -8,7 +8,13 @@ from sphinx.ext import autodoc
 # installed package: Read the Docs installs only docs/requirements-readthedocs.txt.
 sys.path.insert(0, os.path.abspath('..'))
 
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon']
+# myst_parser only so docs/tutorials.rst can include the tutorial index that
+# ships as Markdown inside the package (one source for the app and the site).
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'myst_parser']
+
+# The Markdown files under docs/ are working notes and plans, not pages.
+source_suffix = {'.rst': 'restructuredtext'}
+exclude_patterns = ['_build', '*.md', '**/*.md']
 
 # Nothing is mocked: the framework layer combines Qt classes with its own
 # metaclass, which Sphinx's mock objects cannot stand in for, so the docs

@@ -28,6 +28,10 @@ data, ImScripting to automate both); the hardware reference for the
 JSON setup files; and extending ImSwitch2 with new devices and
 plugins.
 
+**New here?**  :doc:`essentials` teaches the basics in two minutes, and
+:doc:`first-image` takes you to a live image and a saved recording without
+a microscope.
+
 .. _architecture-at-a-glance:
 
 Architecture at a glance
@@ -123,30 +127,40 @@ start-up, managers, signal buses, the recording path — see
 
 .. toctree::
     :hidden:
-    :caption: General information
+    :caption: Start here
 
     Home <self>
+    essentials
     installation
-    packaging
-    developer-onboarding
-    agent-task-templates
-    changelog
-    contributing
-    current-state-and-known-issues
+    first-image
 
 .. toctree::
     :hidden:
-    :caption: Usage
+    :caption: Use ImControl
 
     working-in-imswitch2
     modules
     imcontrol
-    improcess
-    scripting
 
 .. toctree::
     :hidden:
-    :caption: Hardware reference
+    :caption: Process data
+
+    improcess
+    Hdf5datafile
+
+.. toctree::
+    :glob:
+    :hidden:
+    :caption: Automate
+
+    scripting
+    tutorials
+    api/*
+
+.. toctree::
+    :hidden:
+    :caption: Configure your microscope
 
     imcontrol-setups
     setupinfo-reference
@@ -157,26 +171,29 @@ start-up, managers, signal buses, the recording path — see
     devices/rotators
     devices/stands
     devices/instruments
-    Hdf5datafile
 
 .. toctree::
     :hidden:
-    :caption: Extending ImSwitch2
+    :caption: Develop
 
+    developer-onboarding
     architecture
     state-persistence
-    adding-device-support
     scan-lifecycle
+    adding-device-support
     mock-infrastructure
     no-hardware-validation
+    packaging
+    agent-task-templates
     how-to/wire-teensy
     how-to/add-pulse-generator-backend
     how-to/port-from-third-party
     how-to/auto-screenshots
 
 .. toctree::
-    :glob:
     :hidden:
-    :caption: Scripting API reference
+    :caption: Project
 
-    api/*
+    contributing
+    current-state-and-known-issues
+    changelog
