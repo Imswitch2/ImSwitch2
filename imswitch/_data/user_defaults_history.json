@@ -102,6 +102,12 @@
    "908c1cbaf501946741cd51ad23fa7f60ae34ea68422ea796c3229621bd6b25e7",
    "fa93d2987150bae52455203ac5ff513a57e207af34b658fe0541a738fa0925d9"
   ],
+  "imcontrol_setups/galvo_two_apd_counting_mock_setup.json": [
+   "01114e83798ab50ad3d583f7291761a804eed37c8991e598e14b624352e88ae1"
+  ],
+  "imcontrol_setups/galvo_two_colour_flim_mock_setup.json": [
+   "92358ad109124811dad936fe69413bbc9951a6c091601d6ef6ef7ecc6d82626c"
+  ],
   "imcontrol_setups/general_image_processing.json": [
    "8507f740cd72642444272fe3bfcd626e398ffdc1929e684f497f70ca053b4f99",
    "b2831d5c222bcec6c18d521bfbbaaf013464ab9ce59ca57cc06435d71e8d8a43",

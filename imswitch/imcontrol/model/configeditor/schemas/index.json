@@ -1,20 +1,20 @@
 {
   "coverage": {
-    "alias_spellings": 9,
+    "alias_spellings": 10,
     "constrained": 57,
-    "docs_agree": 198,
+    "docs_agree": 197,
     "docs_documented": 198,
-    "keys": 278,
+    "keys": 279,
     "managers": 72,
     "none_default_only": 59,
     "none_only": 16,
-    "optional": 214,
+    "optional": 215,
     "reads_any": 68,
     "refs": 15,
     "required": 64,
-    "typed_by_code": 126,
-    "typed_with_docs": 222,
-    "typed_with_examples": 167,
+    "typed_by_code": 127,
+    "typed_with_docs": 223,
+    "typed_with_examples": 168,
     "uncertain": 0,
     "unresolved_reads": 0,
     "with_keys": 68,
@@ -697,7 +697,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 21,
+      "properties": 22,
       "required": 0
     },
     "TISManager": {

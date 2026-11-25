@@ -173,6 +173,7 @@ class TimeTaggerScanSession:
         self.number = int(number)
         self._participants: Dict[str, Dict[str, Any]] = {}
         self._left: Dict[str, bool] = {}
+        self._order: list = []
         self._markers: Optional[PixelMarkers] = None
         self._markersReused = False
         self.started = False
@@ -188,7 +189,7 @@ class TimeTaggerScanSession:
     @property
     def everyone(self) -> Tuple[str, ...]:
         """Everyone who joined, in order, including those who left."""
-        return tuple(list(self._left) + [p for p in self._participants if p not in self._left])
+        return tuple(self._order)
 
     def hasJoined(self, name: str) -> bool:
         return name in self._participants or name in self._left
@@ -988,6 +989,7 @@ class TimeTaggerManager(SignalInterface):
                 self._session = session
                 self._sessionEpoch = self._scanEpoch
             session._participants[name] = {"joined": time.monotonic()}
+            session._order.append(name)
             return session
 
     def leaveScanSession(self, participant: str, *, clean: bool = False,

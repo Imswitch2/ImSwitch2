@@ -47,7 +47,7 @@
       ]
     },
     "click_role": {
-      "description": "Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.",
+      "x-imswitch-alias-of": "photon_input",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -149,6 +149,13 @@
         "code:optional(get)"
       ]
     },
+    "measurement": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "min_counts_per_pixel": {
       "description": "Minimum photon count for a pixel's fit to be considered valid; below this the lifetime is treated as NaN.",
       "type": [
@@ -170,6 +177,16 @@
       "x-imswitch-source": [
         "code:optional(get)",
         "docs:integer"
+      ]
+    },
+    "photon_input": {
+      "x-imswitch-aliases": [
+        "click_role"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
       ]
     },
     "start_channel": {
