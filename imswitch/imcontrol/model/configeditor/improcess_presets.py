@@ -89,7 +89,11 @@ def shipped_improcess_presets(directory: Path | str | None = None) -> list[Prese
     presets: list[Preset] = []
     if not folder.is_dir():
         return presets
-    for path in sorted(folder.glob("*.json"), key=lambda p: p.name):
+    # Setups may sit in subfolders (the shipped presets are in processing/);
+    # file names are unique across them, hidden folders and caches are skipped.
+    found = [path for path in folder.rglob("*.json")
+             if not any(part.startswith((".", "__")) for part in path.relative_to(folder).parts)]
+    for path in sorted(found, key=lambda p: p.name):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

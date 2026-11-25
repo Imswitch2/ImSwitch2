@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 from imswitch.imcontrol.model.SetupInfo import (
     SetupInfo,
     TimeTaggerConfigError,
@@ -40,7 +41,7 @@ def _legacy_channels(info):
 
 def _shipped_blocks():
     found = []
-    for path in sorted(SETUPS.glob("*.json")):
+    for path in sorted(SETUPS.rglob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("timeTagger") is not None:
             found.append(path.name)
@@ -49,7 +50,8 @@ def _shipped_blocks():
 
 @pytest.mark.parametrize("name", _shipped_blocks())
 def test_every_shipped_setup_resolves(name):
-    setup = SetupInfo.from_json((SETUPS / name).read_text(encoding="utf-8"), infer_missing=True)
+    setup = SetupInfo.from_json(shippedSetupPath(name).read_text(encoding="utf-8"),
+                                infer_missing=True)
     info = setup.timeTagger
     resolved = info.resolvedInputs()
     if not info.inputs:

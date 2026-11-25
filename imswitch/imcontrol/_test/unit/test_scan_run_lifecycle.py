@@ -43,8 +43,8 @@ from .test_pulse_generator_scan_engine import _resolft
 from .test_scan_engine_conformance import CHANNELS, GRID_NS, SETUP, _raster, _waiting
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-EXPERT_MOCK = SETUPS + 'expert_mock_scan_setup.json'
-STEP_BOARDS = SETUPS + 'expert_step_boards_mock_setup.json'
+EXPERT_MOCK = SETUPS + 'mock/point_scanning/expert_mock_scan_setup.json'
+STEP_BOARDS = SETUPS + 'mock/step_boards/expert_step_boards_mock_setup.json'
 
 
 def _recorder(engine, names=('sigScanStarted', 'sigScanDone', 'sigScanStopped',

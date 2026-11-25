@@ -222,7 +222,7 @@ def test_applying_the_scan_form_keeps_what_it_does_not_show_and_takes_an_expert_
     import json
     from qtpy.QtWidgets import QDialog
     expert = json.load(open(
-        'imswitch/_data/user_defaults/imcontrol_setups/expert_step_boards_mock_setup.json'))
+        'imswitch/_data/user_defaults/imcontrol_setups/mock/step_boards/expert_step_boards_mock_setup.json'))
     assert expert['scan']['engine'] == 'triggerscope'
     panel = editor.PropertyEditor()
     qtbot.addWidget(panel)

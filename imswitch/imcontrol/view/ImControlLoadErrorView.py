@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 from pathlib import Path
 
@@ -131,7 +132,14 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
         """Choose a setup without requiring the failed ImControl controller."""
         try:
             options, _ = configfiletools.loadOptions()
-            setups = configfiletools.getSetupList()
+            folder = configfiletools.getSetupFilesDir(options)
+            setups = configfiletools.getSetupList(folder)
+            if not setups and getattr(options, 'setupFolder', ''):
+                # The setup folder is gone or empty (a share not mounted):
+                # offer the default folder's setups rather than an empty list.
+                options = dataclasses.replace(options, setupFolder='')
+                folder = configfiletools.getSetupFilesDir(options)
+                setups = configfiletools.getSetupList(folder)
         except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 self,
@@ -141,6 +149,7 @@ class ImControlLoadErrorView(ModuleLoadErrorView):
             return
 
         dialog = PickSetupDialog(self)
+        dialog.setFolder(folder)
         dialog.setSetups(setups)
         dialog.setSelectedSetup(options.setupFileName)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:

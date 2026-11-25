@@ -168,7 +168,7 @@ def test_a_schema_that_is_not_a_section_still_writes_every_field(qapp):
 
 def _shipped_processing_blocks():
     out = []
-    for path in sorted(SHIPPED_SETUPS.glob("*.json")):
+    for path in sorted(SHIPPED_SETUPS.rglob("*.json")):
         block = json.loads(path.read_text(encoding="utf-8")).get("processing")
         if isinstance(block, dict) and block:
             out.append(pytest.param(block, id=path.stem))

@@ -27,7 +27,7 @@ from imswitch.imcontrol.view.widgets.RecordingWidget import RecordingWidget
 
 from .test_beadrec_frame_alignment import CAMERA, IndexFrames
 
-SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/galvo_flim_mock_scan_setup.json'
+SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/mock/time_tagger/galvo_flim_mock_scan_setup.json'
 NX, NY = 4, 3
 
 

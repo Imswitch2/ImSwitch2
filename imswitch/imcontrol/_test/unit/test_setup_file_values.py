@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 import pytest
 from dataclasses_json import dataclass_json
 
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, setupfolder
 from imswitch.imcontrol.model.Options import Options
 from imswitch.imcontrol.model.SetupInfo import SetupInfo
 from imswitch.imcontrol.model.setup_file_values import sanitizeSetupData
@@ -288,7 +288,7 @@ def test_non_object_top_level_is_passed_through():
 
 def _shippedSetups():
     root = Path(configfiletools.__file__).resolve().parents[2] / '_data' / 'user_defaults' / 'imcontrol_setups'
-    return sorted(root.glob('*.json'))
+    return sorted(root.rglob('*.json'))
 
 
 @pytest.mark.parametrize('path', _shippedSetups(), ids=lambda path: path.name)
@@ -321,7 +321,7 @@ class _RecordingLogger:
 
 @pytest.fixture
 def setupDir(tmp_path, monkeypatch):
-    monkeypatch.setattr(configfiletools, '_setupFilesDir', str(tmp_path))
+    monkeypatch.setattr(setupfolder, 'defaultSetupFolder', lambda: str(tmp_path))
     logger = _RecordingLogger()
     monkeypatch.setattr(configfiletools, '_logger', logger)
     return tmp_path, logger

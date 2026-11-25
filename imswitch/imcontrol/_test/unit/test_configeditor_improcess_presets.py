@@ -104,7 +104,7 @@ def test_every_preset_loads_through_the_real_setup_loader_without_warnings():
 
     from imswitch.imcontrol.model.SetupInfo import SetupInfo
 
-    for path in sorted(shipped_setups_directory().glob("*.json")):
+    for path in sorted(shipped_setups_directory().rglob("*.json")):
         raw = path.read_text(encoding="utf-8")
         if path.stem not in EXPECTED_PRESETS:
             continue

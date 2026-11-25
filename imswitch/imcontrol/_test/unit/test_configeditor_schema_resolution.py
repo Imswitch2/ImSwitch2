@@ -193,7 +193,7 @@ class TestValidation:
         rules alike: the 13 shipped mock scanners get no diagnostic at all.
         """
         offending = {}
-        for path in sorted(SETUPS_DIR.glob("*.json")):
+        for path in sorted(SETUPS_DIR.rglob("*.json")):
             report = validate_setup_data(json.loads(path.read_text(encoding="utf-8")), registry)
             bad = [d for d in report.diagnostics
                    if d.code in ("manager.schema", "manager.alias-conflict") or d.code.startswith(("kind.", "role."))]

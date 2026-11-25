@@ -25,7 +25,7 @@ from imswitch.imcontrol.view import ViewSetupInfo
 from .test_simple_point_scan_controller import Rig
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-SIMPLE_MOCK = SETUPS + 'simple_mock_setup.json'
+SIMPLE_MOCK = SETUPS + 'mock/point_scanning/simple_mock_setup.json'
 
 
 def _setup_dict(**changes):

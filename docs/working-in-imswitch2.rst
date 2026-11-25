@@ -120,8 +120,10 @@ ImControl adds its own menus, each holding one kind of thing:
   scan engine of the setup and what it can do (:doc:`devices/scan_engines`),
   *Hardware status…* and *Calibrations…* (laser power calibrations,
   :ref:`calibrations-window`).
-* **View** — *Reset panel layout*, which puts every panel back where the
-  hardware setup places it, at the sizes its contents ask for.
+* **View** — *Add panel…*, which adds a panel to the running session
+  (:ref:`adding-panels`), *Log*, and *Reset panel layout*, which puts every
+  panel back where the hardware setup places it, at the sizes its contents
+  ask for.
 * **Shortcuts** — *Configure Shortcuts…* and the current bindings.
 * **Preferences** — settings of this computer, stored in
   ``imcontrol_options.json`` and applied as soon as they are saved:

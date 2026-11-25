@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 from imswitch.imcontrol.model.interfaces import timetagger_mock as mock
 from imswitch.imcontrol.model.managers._scan_execution import PARTICIPANTS_KEY
 
@@ -221,7 +222,7 @@ def record(setup_name: str = "galvo_flim_mock_scan_setup.json", *, reverse: bool
         SwabianTimeTaggerManager,
     )
 
-    setup = _load_setup(SETUPS / setup_name)
+    setup = _load_setup(shippedSetupPath(setup_name))
     info = setup.timeTagger
     if reverse:
         info = dataclasses.replace(info, filterSyncByPhotons=True)

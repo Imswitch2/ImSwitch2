@@ -58,7 +58,7 @@ def test_numeric_strings_and_nulls_are_not_reported():
     assert found == []
 
 
-@pytest.mark.parametrize('path', sorted(SETUPS.glob('*.json')), ids=lambda p: p.name)
+@pytest.mark.parametrize('path', sorted(SETUPS.rglob('*.json')), ids=lambda p: p.name)
 def test_shipped_setups_have_no_unreadable_values(path):
     found, _ = _values(json.loads(path.read_text(encoding='utf-8')))
     assert found == [], [d.message for d in found]

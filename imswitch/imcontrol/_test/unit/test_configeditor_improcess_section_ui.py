@@ -36,7 +36,7 @@ def _fresh_dropin_session(monkeypatch):
 def _setups() -> dict:
     return {
         path.stem: json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(SHIPPED_SETUPS.glob("*.json"))
+        for path in sorted(SHIPPED_SETUPS.rglob("*.json"))
     }
 
 

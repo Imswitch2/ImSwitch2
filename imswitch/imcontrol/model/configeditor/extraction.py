@@ -1606,7 +1606,7 @@ def example_kinds_from_setups(setups_dir: Path) -> dict[tuple[str, str], set[str
     and it never becomes a validation constraint.
     """
     kinds: dict[tuple[str, str], set[str]] = {}
-    for path in sorted(Path(setups_dir).glob("*.json")):
+    for path in sorted(Path(setups_dir).rglob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, UnicodeDecodeError):

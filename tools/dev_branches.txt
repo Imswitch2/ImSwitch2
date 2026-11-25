@@ -64,3 +64,11 @@ feat/replay-settings               # PR #98 (folds #102): safe replay of a recor
                                    #    NaN; StepBoardLaserManager resolves calibCsvPath through the shared table; replay: a mock
                                    #    standing in for a failed device is unavailable; one getLaserActive; Hardware menu has
                                    #    both "What this setup can scan…" and "Calibrations…"; e2e driver sets its own laser ranges)
+feat/runtime-panels                # PR #103 (contains feat/setup-cli-flag #89 at b529520a): View > Add panel…, PanelService,
+                                   #   setup folder with subfolders, the config editor's section form in section_form.py
+                                   #   (dev's FieldWidget/choice list/section dialog moved there, editor re-exports them; the
+                                   #    PanelService resolves classes with resolve_controller and feeds #96's failedPanels notice;
+                                   #    dev-only setups sorted into mock/point_scanning, mock/time_tagger, mock/step_boards and
+                                   #    processing/, their test paths follow, shipped-setup globs are recursive; presets found in
+                                   #    subfolders; PanelSpecs for Lifetime (was FLIMHist), LiveRecon, SmartPipeline, Timelapse;
+                                   #    tiling.json: dev's template; autofocus tests type the update rate dev's form leaves empty)

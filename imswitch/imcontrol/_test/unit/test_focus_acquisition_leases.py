@@ -54,12 +54,10 @@ def test_focus_controller_takes_a_lease_instead_of_bypassing_the_manager(
     """Source-level contract: constructing the full controller needs the whole
     widget/factory stack, so guard the ownership rule where the bug lived —
     the sub-manager bypass must not come back."""
-    if controllerClass is FocusLockController:
-        # FocusLock can now stop/restart its camera from the widget, so lease
-        # acquisition lives in the explicit start path rather than __init__.
-        source = inspect.getsource(controllerClass._startFocusCameraAcquisition)
-    else:
-        source = inspect.getsource(controllerClass.__init__)
+    # FocusLock can stop/restart its camera from the widget, and Autofocus
+    # takes its camera only for the length of a search, so in both the lease
+    # is acquired in an explicit start path rather than in __init__.
+    source = inspect.getsource(controllerClass._startFocusCameraAcquisition)
 
     assert 'detectorsManager.acquire(' in source
     assert 'LeasePurpose.FOCUS' in source

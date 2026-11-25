@@ -134,6 +134,54 @@
    "6d89817110c58bcb4a80039cd2711f102ea600716500d21ee26baa58bd1f3a70",
    "e3385e22358b59d10510e3f05b1010255af97c1e556a0dd287af84b571eac6ad"
   ],
+  "imcontrol_setups/mock/lightsheet/example_snouty_smart_modes.json": [
+   "c903149922b096197a1b1e88afdb150b2ea2750e1e39ba68dfd9774a990eca37"
+  ],
+  "imcontrol_setups/mock/monalisa/hamamatsu_mock_scan_setup.json": [
+   "a195d52e370c5b6f9aa7f963ac8b2507f42b0c7cdc88cf5b031f81653e056d2c"
+  ],
+  "imcontrol_setups/mock/monalisa/mock_scan_monalisa_live.json": [
+   "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
+   "6a7cea0e399966edc325631530b301dfde706b4fa71f78c8907b7c6d1a1135d6"
+  ],
+  "imcontrol_setups/mock/monalisa/mock_scan_setup.json": [
+   "89d279b13fe6cde4beaf0f547194e111bfc9b97aadaa57553197f9256e9a7241"
+  ],
+  "imcontrol_setups/mock/monalisa/simple_monalisa_mock_scan_setup.json": [
+   "3cbca1eef41665e1a3ed648cb0273c0477bf233d74ed14b7781e29b2b1e96316",
+   "dca3a4500cf569310c5461d9817afae0e20f3221f0e24a20e6a6f0641d1a8179"
+  ],
+  "imcontrol_setups/mock/point_scanning/expert_mock_scan_setup.json": [
+   "30117eef466eaf573f4d2f7dc4b9606c7a0e7f26ffa72436a0fefdd17824120b"
+  ],
+  "imcontrol_setups/mock/point_scanning/galvo_apd_mock_scan_setup.json": [
+   "6d986cc5ad0da3a80be3ce1156f7b592679e26094dba0e93a169e2c428926b52"
+  ],
+  "imcontrol_setups/mock/point_scanning/galvo_apd_simple_mock_scan_setup.json": [
+   "0dac8316cc82676f091b3f11296d700c3bd97c8dc377aa22dcac81730b3e0ce3"
+  ],
+  "imcontrol_setups/mock/point_scanning/mixed_hamamatsu_apd_mock_scan_setup.json": [
+   "6d89817110c58bcb4a80039cd2711f102ea600716500d21ee26baa58bd1f3a70"
+  ],
+  "imcontrol_setups/mock/point_scanning/simple_mock_setup.json": [
+   "1af0cd8a9fe6b39265ff5551c89781c78b4640b6807aa15c0836b57c3b87d238",
+   "648d0141c316e3421faed896ef3861717571573368a395d83514402270febece"
+  ],
+  "imcontrol_setups/mock/step_boards/expert_step_boards_mock_setup.json": [
+   "cb584a9f1c6425dd795adc6a587d13d185fbd53e672bef2c19c4ee61af82f330"
+  ],
+  "imcontrol_setups/mock/time_tagger/galvo_flim_mock_scan_setup.json": [
+   "908c1cbaf501946741cd51ad23fa7f60ae34ea68422ea796c3229621bd6b25e7"
+  ],
+  "imcontrol_setups/mock/time_tagger/galvo_two_apd_counting_mock_setup.json": [
+   "01114e83798ab50ad3d583f7291761a804eed37c8991e598e14b624352e88ae1"
+  ],
+  "imcontrol_setups/mock/time_tagger/galvo_two_colour_flim_mock_setup.json": [
+   "92358ad109124811dad936fe69413bbc9951a6c091601d6ef6ef7ecc6d82626c"
+  ],
+  "imcontrol_setups/mock/widefield/example_mock.json": [
+   "5771cf8e7e604d0cb7147199a8a1757634888bff6fb0ce86cbdce53c0277650a"
+  ],
   "imcontrol_setups/mock_scan_monalisa_live.json": [
    "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
    "6a7cea0e399966edc325631530b301dfde706b4fa71f78c8907b7c6d1a1135d6",
@@ -150,6 +198,53 @@
    "b94e7a38fc41ed1320c38331c2f55a0c7be75f702c3fa418dbf8b20316eb5ce1",
    "d4ea1f7890f4ce4a910c2b989dcb551f3f110fda0f04274a9f5888638372f209",
    "ee7668f38f2f097ee9f5f14d65e193d210e63e6754e6b59df7a0d0cc6fe4b151"
+  ],
+  "imcontrol_setups/processing/bead_psf_processor.json": [
+   "3b6e309534e83cb40f49d753de90022ae433d9d95eedc88a561f57e877b917b8"
+  ],
+  "imcontrol_setups/processing/fiji_processor.json": [
+   "479cfe624ccea39700e06e766a6ebda8b3e2826e568f5e3211fcc84a597656c5",
+   "480a20433a5225b63362b8bb113e122342df2fa52eef2358021795da4ae2c31d"
+  ],
+  "imcontrol_setups/processing/general_image_processing.json": [
+   "b6b5d5ccab8b7c74d0dcf5055f737d8dfa44440651ce34256bee636427c72e04",
+   "c9011b21e7e8ea8e5ec46221d6eb7f0ed058d71aaa31e57e2006253d62f6779a"
+  ],
+  "imcontrol_setups/processing/monalisa_processor.json": [
+   "19895733ea5aabedcf0bc68237e6ac86da621e867f6b5ddac6b2e14f78bf4e60",
+   "ee7668f38f2f097ee9f5f14d65e193d210e63e6754e6b59df7a0d0cc6fe4b151"
+  ],
+  "imcontrol_setups/processing/restoration_processor.json": [
+   "56639c6d6132169f3c6c1945170aa475b38d0fa7d7746d772a8f31e4b3e4fe99"
+  ],
+  "imcontrol_setups/processing/smlm_processor.json": [
+   "83cd0ddf8f7ccb4a3436c5bf7539d342828ff2875422f618a08cefdbe4096c24"
+  ],
+  "imcontrol_setups/processing/snouty_processor.json": [
+   "d7f2386f4a0d50e21cc577b5da8d89f953bfffdab5660267671e98ca00258265",
+   "ec57fc264a956eadc472a4ced9856e93a58e6620e6ad7c812c5b39bae7b55598"
+  ],
+  "imcontrol_setups/processing/tiling_mosaic_processor.json": [
+   "23107a102ef61aa28b2b65d13ed31db59d88772ae8a26b252e93ae5dc02dec6b"
+  ],
+  "imcontrol_setups/processing/timelapse_processor.json": [
+   "a7787ae023fb9006a54641a2f801298fc7a2c1552ad6c63d14712d2470caea54"
+  ],
+  "imcontrol_setups/processing/widefieldstarss_processor.json": [
+   "afe6b83b9e40c1c59b48c13aeae139a3d11cc809f1dcae57ad7ce2e4a60a865f",
+   "eb1f52c73ca0a0fc0dbe1adcb144175397c675c4c3d666cf622d127c78d1f7f5"
+  ],
+  "imcontrol_setups/real/monalisa/example_monalisa.json": [
+   "bad464d960a72602739ca52f3e481a39e223e5f6c230632afa76d561fe39db12"
+  ],
+  "imcontrol_setups/real/sted/example_sted.json": [
+   "1dae5ce50373fcf42c5c9c2d34ef88110d47ce51a55429cfb769ba4c023f7ca6"
+  ],
+  "imcontrol_setups/real/widefield/example_coolLED.json": [
+   "70d0ad1db5a278ce18c07ead262c74f5fb4a4ad6335c49cd4c007b5f2ef1f7e3"
+  ],
+  "imcontrol_setups/real/widefieldstarss/example_kiralux_teensy.json": [
+   "dcbc440cebe532c901dbeb7128b4e89685e564b9519fa3dd5d6b570dd39da35e"
   ],
   "imcontrol_setups/restoration_processor.json": [
    "56639c6d6132169f3c6c1945170aa475b38d0fa7d7746d772a8f31e4b3e4fe99"

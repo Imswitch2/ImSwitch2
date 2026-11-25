@@ -30,7 +30,7 @@ SECTIONS = sorted(k for k, s in editor.SECTION_SCHEMAS.items() if k != "processi
 
 def _shipped_blocks():
     out = []
-    for path in sorted(SHIPPED_SETUPS.glob("*.json")):
+    for path in sorted(SHIPPED_SETUPS.rglob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         for key in SECTIONS:
             block = data.get(key)

@@ -40,7 +40,9 @@ sys.excepthook = lambda *exc: _excepthookCalls.append(''.join(traceback.format_e
 
 
 def loadSetup(name):
-    with open(os.path.join(SETUPS, name + '.json')) as f:
+    # The shipped setups sit in subfolders; a bare file name finds them.
+    from imswitch.imcontrol.model.setupfolder import shippedSetupPath
+    with open(shippedSetupPath(name + '.json')) as f:
         return json.load(f)
 
 
