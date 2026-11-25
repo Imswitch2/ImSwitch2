@@ -322,18 +322,15 @@ Deep dive: [`docs/architecture.rst`](docs/architecture.rst).
 
 ## AI agent workflow
 
-Imswitch2 uses AI agents as development assistants under strict human oversight:
+Imswitch2 is developed with AI coding agents under human review: every pull
+request is reviewed by a maintainer, who tests it on their own microscope
+before it merges.
 
-```
-GitHub Issue → Agent plans → Isolated branch/worktree → Tests → PR → Human review → Merge
-```
-
-- All agent code changes require human review — **no automatic merges**.
-- Red-zone files (hardware timing, laser control, DAQ) require explicit maintainer approval.
-- Agents work in isolated branches or worktrees; parallel agents don't share state.
-- Every claim in the docs is grounded in source code — agents are explicitly forbidden from inventing fields, defaults, or vendor library calls.
-
-See [developer onboarding](docs/developer-onboarding.rst) and [agent task templates](docs/agent-task-templates.rst) for the full rules and templates.
+Agents start at [`AGENTS.md`](AGENTS.md): where to find what, the red zone
+(hardware timing, lasers, scanning, DAQ, stage motion) as concrete paths,
+the files and guard tests for each kind of change, test commands and
+pitfalls. Prompt templates are in
+[agent task templates](docs/agent-task-templates.rst).
 
 ---
 
