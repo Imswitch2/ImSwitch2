@@ -394,6 +394,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     # Saved-state features this controller can run beyond the common scan
     # dicts; see _unsupportedStateFeatureRefusal.
     supportedStateFeatures = frozenset()
+    #: Which lifecycle signal BeadRec may take as "every frame from here on
+    #: belongs to this scan". NI-DAQ scans emit ``sigScanBuilt`` after the
+    #: detectors are leased and before the first output sample; their
+    #: ``sigScanStarted`` follows the task starts, by when the first frame can
+    #: already be in the camera.
+    beadRecBoundary = 'built'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

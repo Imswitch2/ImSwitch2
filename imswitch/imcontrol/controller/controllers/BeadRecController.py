@@ -155,8 +155,11 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # free-running/trigger-driven and never joins the scan-driven
         # participant snapshot.
         self._commChannel.sigScanStarting.connect(self.onScanStarting)
-        self._commChannel.sigScanStarted.connect(self.updateParameters)
-        self._commChannel.sigScanStarted.connect(self.onNewScan)
+        # The frame boundary: sigScanBuilt for NI-DAQ scans (before the first
+        # output sample), sigScanStarted for sources that say so (TriggerScope)
+        # and as the fallback; see onScanBuilt.
+        self._commChannel.sigScanBuilt.connect(self.onScanBuilt)
+        self._commChannel.sigScanStarted.connect(self.onScanStarted)
         self._commChannel.sigScanStarted.connect(self.OngoingScanStatus)
         self._commChannel.sigScanEnded.connect(self.onEndedScan)
         self._commChannel.beadRecWorkflow.on_query_center_coord(self.centerCoordQuery)
@@ -330,8 +333,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             for signalName, slot in (
                 ('sigUpdateImage', self._onLiveImage),
                 ('sigScanStarting', self.onScanStarting),
-                ('sigScanStarted', self.updateParameters),
-                ('sigScanStarted', self.onNewScan),
+                ('sigScanBuilt', self.onScanBuilt),
+                ('sigScanStarted', self.onScanStarted),
                 ('sigScanStarted', self.OngoingScanStatus),
                 ('sigScanEnded', self.onEndedScan),
                 ('sigQueryCenterCoord', self.centerCoordQuery),
@@ -495,6 +498,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             return
         self._cancelScanEndDrain()
         self._scanArmed = False
+        self._scanDiag = {'t_starting': time.monotonic()}
+        self._builtBoundaryPending = False
         self._releaseBeadDetectorResources()
         with self._resourceLock():
             generation = self.__dict__.get('_scanGeneration', 0) + 1
@@ -642,6 +647,17 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         with self._resourceLock():
             self._chunkConsumerDetectorName = detectorName
             self._chunkConsumerGeneration = generation
+        try:
+            excluded = self._master.detectorsManager.execOn(
+                detectorName,
+                lambda c: getattr(c, 'chunkBoundaryExcluded',
+                                  lambda key: None)(self._CHUNK_CONSUMER),
+            )
+        except Exception:
+            excluded = None
+        diag = self.__dict__.setdefault('_scanDiag', {})
+        diag['t_boundary'] = time.monotonic()
+        diag['boundary_excluded'] = excluded
         return True
 
     def _cancelScanEndDrain(self) -> None:
@@ -688,7 +704,11 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self.listRecs.pop(index)
 
     def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:
-        return BeadAcquisitionConfig.from_scan_dims(self.dims, frames_per_pixel=self.framesPerPixel)
+        # A scan is exactly dims[0]*dims[1] frames. wrap=False: frames beyond
+        # that are counted and reported, never written onto pixel 0.
+        return BeadAcquisitionConfig.from_scan_dims(
+            self.dims, frames_per_pixel=self.framesPerPixel, wrap=False
+        )
 
     def _updateProgress(self, current: int, total: int) -> None:
         if self.__dict__.get('_shutdownComplete', False):
@@ -1129,6 +1149,56 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             pass
         self._logger.warning(message)
 
+    def _scanBoundarySignal(self) -> str:
+        """Which lifecycle signal sets this scan's frame boundary.
+
+        ``'built'``: the source emits sigScanBuilt after the detectors are
+        leased and before its first trigger, so the camera cannot hold a scan
+        frame yet. ``'started'``: sigScanBuilt is too early for the source (the
+        TriggerScope uploads parameters for about a second after it), or the
+        source is unknown; the boundary stays at sigScanStarted.
+        """
+        try:
+            source = self._commChannel.getActiveScanSource()
+        except Exception:
+            return 'started'
+        return getattr(source, 'beadRecBoundary', 'started')
+
+    def onScanBuilt(self, *_args):
+        """Set the frame boundary before the first trigger can fire.
+
+        Drains whatever the detector already holds (frames from before the
+        scan: live view, a previous scan, a snap), starts BeadRec's consumer
+        and resets the reconstruction. Frames from here on are the scan's.
+        """
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        if not self._widget.runButton.isChecked():
+            return
+        if self._scanBoundarySignal() != 'built':
+            return
+        self.updateParameters()
+        self._scanDiag = {
+            't_starting': self.__dict__.get('_scanDiag', {}).get('t_starting'),
+            't_built': time.monotonic(),
+        }
+        self.onNewScan()
+        # sigScanStarted must not move the boundary again.
+        self._builtBoundaryPending = bool(self._scanArmed)
+
+    def onScanStarted(self, *_args):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        diag = self.__dict__.setdefault('_scanDiag', {})
+        diag['t_started'] = time.monotonic()
+        if self.__dict__.get('_builtBoundaryPending', False):
+            # The boundary was set at sigScanBuilt; geometry and counters are
+            # already those of this scan.
+            self._builtBoundaryPending = False
+            return
+        self.updateParameters()
+        self.onNewScan()
+
     def onNewScan(self):
         if self.__dict__.get('_shutdownComplete', False):
             return
@@ -1195,6 +1265,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         if self.__dict__.get('_shutdownComplete', False):
             return
         self.ongoingScan=False
+        diag = self.__dict__.setdefault('_scanDiag', {})
+        diag['t_ended'] = time.monotonic()
+        diag['frames_at_end'] = self._receivedScanFrames()
         # If self.framesReceivedThisScan == 0 after the short drain below,
         # _completeEndedScan reports "0 detector frames received" loudly.
         should_drain = (
@@ -1260,6 +1333,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # Stop consuming: frames the free-running camera keeps producing after
         # the scan ends must not bleed into the finished reconstruction.
         self._scanArmed = False
+        self._builtBoundaryPending = False
         self._releaseBeadDetectorResources(generation)
         received = self._receivedScanFrames()
         if self.running and received == 0:
@@ -1268,31 +1342,77 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                    'never pulsed).')
             self._logger.warning(msg)
             self._widget.setStatusText(msg)
+            self._logScanDiagnostics(0, self._expectedScanPixels(), 0, 0, msg)
             return
         if self.recIm is None:
             self._widget.setStatusText("Scan ended without bead reconstruction data")
             return
-        # Diagnostic: kept frames vs expected pixels. A surplus means frames
-        # leaked in (e.g. pre-scan buffer not flushed) or the camera produced
-        # more triggers than the grid expects; a deficit means dropped triggers.
-        if self.dims is not None:
-            expected = self.dims[0] * self.dims[1]
-            if received != expected:
-                self._logger.warning(
-                    'BeadRec frame-count mismatch: received %d kept frames, '
-                    'expected %d (%dx%d). Surplus -> pre-scan/extra frames; '
-                    'deficit -> dropped triggers.',
-                    received, expected, self.dims[0], self.dims[1]
-                )
-            else:
-                self._logger.info(
-                    'BeadRec received %d frames, matching the expected %dx%d grid.',
-                    received, self.dims[0], self.dims[1]
-                )
+        if self.dims is None:
+            return
+        expected = self.dims[0] * self.dims[1]
+        worker = getattr(self.beadWorker, 'diagnostics', dict)()
+        filled = min(received, expected)
+        surplus = int(worker.get('surplus', 0) or 0)
+        late = self._lateFrames()
         self.currentRunImgs[self.axialName] = reconstruction_image(self.recIm, self.dims) # we always store unscaled img
-        self._widget.setStatusText("Bead reconstruction scan complete")
-        self._widget.updateProgress(self.recIm.size, self.recIm.size)
-    
+        text = self._completionText(filled, expected, surplus, late)
+        self._widget.setStatusText(text)
+        self._widget.updateProgress(filled, expected)
+        self._logScanDiagnostics(filled, expected, surplus, late, text)
+
+    @staticmethod
+    def _completionText(filled: int, expected: int, surplus: int, late: int) -> str:
+        """What the widget says when a scan ends: only a matching count is
+        "complete"."""
+        if filled < expected:
+            text = f'Bead reconstruction incomplete: {filled} of {expected} frames'
+        elif surplus:
+            text = (f'Bead reconstruction: {filled} of {expected} frames, '
+                    f'{surplus} extra frame(s) ignored')
+        else:
+            text = 'Bead reconstruction scan complete'
+        if late:
+            text += f' ({late} arrived after the scan ended)'
+        return text
+
+    def _lateFrames(self) -> int:
+        """Frames written to the image after sigScanEnded (end-of-scan drain)."""
+        atEnd = (self.__dict__.get('_scanDiag') or {}).get('frames_at_end')
+        if atEnd is None:
+            return 0
+        return max(0, self._workerFilledPixels() - int(atEnd))
+
+    def _logScanDiagnostics(self, filled, expected, surplus, late, text) -> None:
+        """One line per scan; WARNING when anything is off.
+
+        ``boundary``: the signal that set the frame boundary (built/started).
+        ``dropped at boundary``: frames already in the detector at that moment
+        and so NOT counted -- frames from before the scan, which is right for a
+        boundary before the first trigger.
+        ``late``: frames taken after sigScanEnded; ``extra``: frames beyond the
+        grid, ignored. ``first frame vs sigScanStarted``: negative means the
+        first frame existed before sigScanStarted, i.e. the boundary used to
+        sit too late and would have lost it.
+        """
+        try:
+            diag = self.__dict__.get('_scanDiag') or {}
+            worker = self.beadWorker.diagnostics()
+            first, started = worker.get('first_frame_t'), diag.get('t_started')
+            vs = ('n/a' if first is None or started is None
+                  else f'{(first - started) * 1e3:+.1f} ms')
+            boundary = 'built' if diag.get('t_built') else 'started'
+            message = (
+                f'BeadRec scan: boundary={boundary}, '
+                f'filled {filled} of {expected}, extra ignored={surplus}, '
+                f'late (after sigScanEnded)={late}, '
+                f'dropped at boundary={diag.get("boundary_excluded")}, '
+                f'first frame vs sigScanStarted={vs}; {text}'
+            )
+            off = expected is None or filled != expected or surplus or late
+            (self._logger.warning if off else self._logger.info)(message)
+        except Exception:
+            pass
+
     def onAutoAxialToggled(self,state:bool = False):
         if self.__dict__.get('_shutdownComplete', False):
             return
@@ -1737,6 +1857,21 @@ class BeadWorker(Worker):
         self._filledPixels = 0
         self._resetRequested = False
         self._lineStepPhase = 0
+        self._framesSeen = 0
+        self._surplusFrames = 0
+        self._firstFrameT = None
+        self._lastFrameT = None
+
+    def diagnostics(self) -> dict:
+        with self._lock:
+            return {'frames_seen': self._framesSeen,
+                    'surplus': self._surplusFrames,
+                    'first_frame_t': self._firstFrameT,
+                    'last_frame_t': self._lastFrameT}
+
+    def _countSurplus(self, n: int) -> None:
+        with self._lock:
+            self._surplusFrames += int(n)
 
     def start(self, config: BeadAcquisitionConfig) -> None:
         self.configure(config)
@@ -1754,6 +1889,10 @@ class BeadWorker(Worker):
             self._lineStepPhase = 0
             self._filledPixels = 0
             self._nextIndex = 0
+            self._framesSeen = 0
+            self._surplusFrames = 0
+            self._firstFrameT = None
+            self._lastFrameT = None
 
     def _isRunning(self) -> bool:
         with self._lock:
@@ -1788,6 +1927,12 @@ class BeadWorker(Worker):
         with self._lock:
             if self._recIm is not sourceBuffer:
                 return None
+            if update.frames_written:
+                now = time.monotonic()
+                if self._firstFrameT is None:
+                    self._firstFrameT = now
+                self._lastFrameT = now
+                self._framesSeen += update.frames_written
             self._recIm = update.buffer
             self._nextIndex = update.next_index
             if update.wrapped:
@@ -1831,7 +1976,10 @@ class BeadWorker(Worker):
                     else:
                         keptFrames = newImages
                     
-                    if len(keptFrames) > 0:
+                    if len(keptFrames) > 0 and not config.wrap and nextIndex >= recIm.size:
+                        # The image is full: the frames are extra, not pixels.
+                        self._countSurplus(len(keptFrames))
+                    elif len(keptFrames) > 0:
                         try:
                             roi = normalize_roi_bounds(self._getRoiBounds(), keptFrames[0].shape)
                             update = append_roi_means(
@@ -1847,6 +1995,10 @@ class BeadWorker(Worker):
 
                         workerUpdate = self._storeUpdate(recIm, update)
                         if workerUpdate is not None:
+                            if not config.wrap:
+                                self._countSurplus(
+                                    len(keptFrames) - update.frames_written
+                                )
                             self.sigNewChunk.emit(workerUpdate)
                             self.sigProgress.emit(workerUpdate.filled_pixels, workerUpdate.total_pixels)
 

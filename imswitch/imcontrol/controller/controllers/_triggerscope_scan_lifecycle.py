@@ -28,6 +28,13 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
     devices, firmware parameters and scan type.
     """
 
+    #: BeadRec's frame boundary for this source. ``sigScanBuilt`` is emitted
+    #: before the parameter upload, about a second before the scan command, so
+    #: a free-running camera would pour that second into the reconstruction;
+    #: ``sigScanStarted`` is emitted just before the command, while the
+    #: firmware is still idle (see ScanManagerTriggerScope._startFirmwareScan).
+    beadRecBoundary = 'started'
+
     #: How long the board may take to accept a scan's parameters and command
     #: before the start is given up. A raster scan needs about a second.
     _triggerScopeUploadTimeoutS = 30.0
