@@ -211,6 +211,8 @@ def proposeSection(key: str, setupInfo, master, base: Optional[dict] = None
 # --------------------------------------------------------------------------
 
 def _number(data, field, errors, *, minimum=None, integer=False, label=None):
+    if field not in data:
+        return  # the loader's default applies
     value = data.get(field)
     label = label or field
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -281,8 +283,7 @@ def validateSection(key: str, data: dict, setupInfo, master,
             errors.append(f'Mode must be one of {", ".join(_TILING_MODES)}.')
         if data.get('saveFormat', 'TIFF') not in _TILING_FORMATS:
             errors.append(f'Save format must be one of {", ".join(_TILING_FORMATS)}.')
-        if 'settleTimeMs' in data:
-            _number(data, 'settleTimeMs', errors, minimum=0, label='Settle time')
+        _number(data, 'settleTimeMs', errors, minimum=0, label='Settle time')
         if not isinstance(data.get('detectorTransforms', {}), dict):
             errors.append('Detector transforms must be a JSON object, e.g. {"APD1": "identity"}.')
     elif key == 'Autofocus':

@@ -35,8 +35,8 @@ class NotConfiguredPanel(QtWidgets.QWidget):
         self.key = spec.key
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        title = QtWidgets.QLabel(f'<b>{spec.displayName} is not configured</b>')
-        layout.addWidget(title)
+        self.title = QtWidgets.QLabel(f'<b>{spec.displayName} is not configured</b>')
+        layout.addWidget(self.title)
         if spec.runtimeLoadable:
             text = (f'This setup lists the {spec.displayName} panel but has no '
                     f'<code>{spec.section}</code> section, so the panel would do '
@@ -149,6 +149,22 @@ def _insertIntoState(state, anchorName: Optional[str], newName: str, position: s
 
     if not isinstance(state, dict) or not state.get('main'):
         return None
+    if anchorName is None:
+        # Docked against the whole area, as DockArea.addDock(dock, position)
+        # does: beside (or above/below) everything that is there.
+        main = state['main']
+        if orientation == 'tab':
+            orientation = 'vertical'
+        if main[0] == orientation:
+            children = list(main[1]) + [new] if after else [new] + list(main[1])
+            options = dict(main[2])
+            if 'sizes' in options:
+                sizes = list(options['sizes'])
+                share = max(1, sum(sizes) // max(1, len(sizes)))
+                options['sizes'] = sizes + [share] if after else [share] + sizes
+            return {**state, 'main': (orientation, children, options)}
+        children = [main, new] if after else [new, main]
+        return {**state, 'main': (orientation, children, {'sizes': [100, 100]})}
     main, found = visit(state['main'])
     if not found:
         return None

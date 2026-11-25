@@ -763,6 +763,9 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.showPanel(widgetKey)
             return self.widgets.get(widgetKey)
         layoutBefore = getattr(self, '_defaultDockState', None)
+        # removePanel() puts the default layout back if the panel is undone.
+        self._layoutBeforePanel = {**getattr(self, '_layoutBeforePanel', {}),
+                                   widgetKey: layoutBefore}
         try:
             widget = self._createPanelWidget(widgetKey)
             if widgetKey not in self.widgets:
@@ -772,7 +775,6 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.applyContentAwareDockSizing()
         except Exception:
             self.removePanel(widgetKey)
-            self._defaultDockState = layoutBefore
             raise
         return widget
 
@@ -791,6 +793,9 @@ class ImConMainView(QtWidgets.QMainWindow):
             panel_docks.removePanelDock(self, widgetKey)
             self.panelPlaceholders.pop(widgetKey, None)
             self._forgetAvailableWidget(widgetKey)
+            undo = getattr(self, '_layoutBeforePanel', {})
+            if widgetKey in undo:
+                self._defaultDockState = undo.pop(widgetKey)
         if widget is not None:
             widget.deleteLater()
 
