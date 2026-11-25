@@ -120,14 +120,23 @@ and ``interfaces/`` (vendor drivers and their mocks).
 **View.**  ``imcontrol/view/widgets`` holds the widgets.  They derive from
 ``Widget`` or ``NapariHybridWidget`` (``basewidgets.py``) and are passive:
 they render and emit signals.  ``widgets/__init__.py`` exports them lazily by
-name, and ``ImConMainView`` instantiates ``<Key>Widget`` for every key in the
-setup's ``availableWidgets``.  The scan widget is the one exception to the
-naming rule: its class is ``ScanWidget<scanWidgetType>``.
+name (``_WIDGET_MODULES``).  ``ImConMainView`` builds a dock with a
+``<Key>Widget`` for every key of the setup's ``availableWidgets`` that has a
+place in the layout: the setup's ``widgetLayout``, or else the default tables
+``_DEFAULT_RIGHT_DOCK_INFOS`` and ``_DEFAULT_LEFT_DOCK_INFOS`` in
+``ImConMainView.py``; ``_DOCK_DISPLAY_NAMES`` there gives the dock titles and
+is also what the config editor offers.  A key with no place is not built.
+``Image`` (the napari viewer) and ``Log`` are built explicitly, the
+Instruments panel is added whenever the setup has instruments, and the
+hardware status window exists whatever the setup says.  The scan panel is
+the one exception to the naming rule: its class is ``ScanWidget`` plus
+``resolve_scan_info(scan).frontend_type``, which is the cloak when
+``scan.cloak`` is set and ``scanWidgetType`` otherwise (see `Scan cloaks`_).
 
 **Controller.**  ``imcontrol/controller/controllers`` holds one controller per
 widget, named ``<Key>Controller``.  ``ImConMainController`` loops over the
 widgets that exist, looks up the class by that name (again
-``ScanController<scanWidgetType>`` for the scan) and creates it through
+``ScanController`` plus the frontend type for the scan) and creates it through
 ``ImConWidgetControllerFactory``, which passes every controller the same four
 things: ``setupInfo``, the ``MasterController``, the ``CommunicationChannel``
 and the ``ModuleCommunicationChannel``.  A few controllers have no widget
@@ -183,6 +192,41 @@ plugins should make that choice visible).  The abstract base classes per family
 ``imcontrol/model/managers/<family>/``.  To add a device see
 :doc:`adding-device-support`; the low-level manager keys are listed under
 :ref:`available-low-level-managers`.
+
+
+Device status and absent devices
+================================
+
+Every device manager can report a passive status through
+``DeviceManagerStatusMixin`` (``imcontrol/model/devices/status.py``):
+connection state, runtime mode (``real``, ``mock`` or ``absent``) and a
+summary.  Reading it never touches the hardware; managers record what they
+learn (``_setConnected``, ``_setMockActive``, ``_setAbsent``,
+``_setConnectionError``).  ``DeviceSupervisor`` (``devices/supervisor.py``)
+builds the read-only device graph and status behind **Hardware > Hardware
+status…**.
+
+Managers written against the current contract open their hardware with
+``_installBackend``, which gives them a ``BackendHolder``:
+
+* a device configured as a mock gets the mock;
+* a *transient* device starts
+  *absent* until it is connected from the status window;
+* a real device that cannot be opened gets an *absent* backend: ImSwitch2
+  still starts, the device shows as not connected, and every command to it
+  raises ``DeviceNotConnectedError`` instead of reaching a simulation.  Only a
+  manager whose setup sets ``useMockOnFailure`` falls back to a mock, and
+  the failure is still recorded.
+
+``DeviceLifecycleService`` (``devices/lifecycle_service.py``) connects,
+disconnects and reconnects devices one physical device at a time, putting
+each in its safe state first (``_lifecycleSafeState``) and re-applying its
+settings afterwards (``_lifecycleReinitialise``).  ``AcquisitionGate``
+(``devices/acquisition_gate.py``) keeps a reconnect and an acquisition apart:
+every scan and recording holds a ticket until it has physically ended, and a
+reconnect is refused while one is held.  Panels grey out a device that is not
+usable (``device_usable``).  Older managers that do not use the holder still
+choose their own fallback and report it in the log; see :doc:`mock-infrastructure`.
 
 
 Device plugins
@@ -285,6 +329,55 @@ detector-lease coordination that decides which detectors take part is in
 ``managers/_scan_execution.py``.  The lifecycle, abort and recording coupling
 are in :doc:`scan-lifecycle`; the advanced geometry is in
 :doc:`advanced-scanning`.
+
+
+Scan leases and the end-of-scan barrier
+=======================================
+
+Only ``ScanExecutionCoordinator`` (``managers/_scan_execution.py``, one per
+NI-DAQ manager, reached through ``getSharedScanExecutionCoordinator``) starts
+an NI-DAQ scan; autonomous backends such as TriggerScope arm through its
+``armWithStarter``.  It reserves a *run* for the whole user-visible scan,
+takes a ``SCAN`` *lease* on the participating detectors for each *iteration*
+(``managers/_acquisition_leases.py`` keeps the per-detector counts and
+quarantines a detector whose stop failed), and at the end waits for every
+participant's ``finishScan`` acknowledgement, with a deadline, before it
+releases the lease and publishes ``scanDone``.  What must not break: a new
+scan entry point arms through the coordinator instead of calling ``runScan``
+itself; completion runs exactly once per iteration on every path (refusal,
+build failure, arm exception, normal end, abort); the barrier never blocks
+the GUI thread.  The sequence and the contract for new scan controllers are
+in :doc:`scan-lifecycle`.
+
+
+Scan cloaks
+===========
+
+A *cloak* is a simpler frontend over a full scan panel, for users who think
+in a few terms (a region, a pixel size, the lasers) rather than in
+waveforms.  The setup always names the real panel in ``scan.scanWidgetType``
+(the *backend*, which also selects the scan manager); ``scan.cloak``
+optionally puts a cloak over it.  ``resolve_scan_info``
+(``imcontrol/model/scan_cloak.py``) returns both, and the scan dock and
+controller classes are named after its ``frontend_type``.  A setup that still
+names a cloak directly as ``scanWidgetType`` is read as that cloak over its
+single compatible backend.
+
+* ``SCAN_CLOAKS`` registers each cloak with the backends it can drive
+  (``SimplePointScan`` and ``SimpleMoNaLISA``, both over ``Advanced``).  It is
+  Qt-free.
+* The model is a ``ScanCloak`` subclass that translates its plan to the
+  backend's parameter dictionaries and back, and refuses a backend state it
+  cannot show with ``PlanNotRepresentable``.
+* The dock is a ``ScanCloakPanel`` (``view/widgets/ScanCloakPanel.py``)
+  holding the simple page and the backend's own, unchanged widget, with a
+  switch between them; the controller mixes ``ScanCloakController``
+  (``controller/controllers/_scan_cloak.py``) into the backend's controller,
+  so every scan runs through the backend's code path.
+
+``imcontrol/_test/unit/test_scan_cloak_contract.py`` runs one contract over
+every registered cloak on its shipped mock setup; a new cloak adds its rows
+there.
 
 
 .. _pulse-generator-subsystem:
@@ -427,6 +520,41 @@ cancellation, and routes ``stdout`` and ``stderr`` to the output view.  Because
 a script can reach controllers, shutdown first closes the API gate and drains
 the script thread before ImControl finalizes hardware.  The user-level
 description is in :doc:`scripting`.
+
+
+.. _threading:
+
+Threading
+=========
+
+The GUI thread only draws and reacts.  Each of these froze the window when it
+ran there, and now runs elsewhere: designing the waveforms of a large scan,
+waiting for a recording to drain to disk, and running ImProcess processors.
+Keep off the GUI thread anything that can block or take long: device I/O,
+waveform design, disk writes, reconstructions.
+
+* **Workers.**  Long-running work uses the framework shim: a ``Worker``
+  subclass moved to a ``Thread`` with ``moveToThread``, fed and read through
+  signals (``FFTController``, ``RecordingManager`` and the scanning detector
+  managers are examples).  ImProcess runs processors through
+  ``ProcessorRunner`` (``improcess/controller/processor_runner.py``), which
+  adds Cancel and publishes the results back on the GUI thread.
+* **Qt objects belong to the GUI thread.**  Scripts run on a worker thread,
+  so an ``@APIExport`` method that touches widgets is declared
+  ``@APIExport(runOnUIThread=True)``; it is then marshalled to the GUI thread
+  and returns its result or re-raises its exception.
+* **Cancellation is cooperative.**  Long loops call ``checkpoint()`` or
+  ``cancellableSleep`` (``imcommon/model/cancellation.py``);
+  ``OperationCancelled`` derives from ``BaseException`` so that a broad
+  ``except Exception`` does not swallow a Stop.
+* **Cross-thread state.**  Status that other threads read is published in one
+  assignment (see ``DeviceManagerStatusMixin._setConnectionState``), and a
+  manager that is also a ``QObject`` must not read its own attributes before
+  ``QObject.__init__`` has run.
+* **Exceptions in slots.**  The application installs an exception hook
+  (``installExceptHook``), which logs an exception that escapes a slot.
+  Without one, as under pytest, PyQt aborts the process instead, so tests of
+  signal-driven code should not let slots raise.
 
 
 Configuration

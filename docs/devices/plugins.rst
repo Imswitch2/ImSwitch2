@@ -35,9 +35,9 @@ manager class in this order:
 If neither resolves a registry-backed device kind, ImSwitch2 raises an actionable
 error listing the installed managers for that kind.
 
-The seven device kinds loaded through ``MultiManager`` are
+The eight device kinds loaded through ``MultiManager`` are
 ``detector``, ``laser``, ``positioner``, ``rotator``, ``rs232``,
-``flip_mirror`` and ``slm``. ``stand`` (the ``microscopeStand`` section) has a
+``flip_mirror``, ``instrument`` and ``slm``. ``stand`` (the ``microscopeStand`` section) has a
 loader of its own that resolves through the registry in the same order; see
 :doc:`stands`. ``pulse_generator`` is not plugin-resolved yet: a manifest that
 declares that kind is rejected.

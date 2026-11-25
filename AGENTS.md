@@ -217,6 +217,8 @@ new directory runs in CI only once a lane lists it):
 
 ## Threading
 
+Prose and rationale: `docs/architecture.rst` (Threading; Device status and absent devices).
+
 - Never on the GUI thread: device I/O that can block, waveform design of large
   scans, disk drains, processor/reconstructor runs. Freezes shipped from each:
   88efbe8b (scan design), 21016c91 (recording stop), 5a0b3769 (processors).
