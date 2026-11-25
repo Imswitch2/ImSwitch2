@@ -5,8 +5,9 @@
     "calibCsvPath": {
       "description": "The power calibration (optional): volts and the power they give, one",
       "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(in)",
+        "code:optional(get)",
         "docs:string"
       ]
     }

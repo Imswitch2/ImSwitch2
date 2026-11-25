@@ -191,12 +191,31 @@ class ImConMainController(MainController):
                 widget=None,  # API-only, no widget
             )
 
+        # Replay: loads the settings stored in a recording into this setup
+        # (File menu and API), and publishes the setup identity recordings carry.
+        self.replayController = self.__factory.createController(
+            resolve_controller('ReplayController'),
+            getattr(self.__mainView, 'replaySettingsDialog', None),
+        )
+        self.replayController.setControllers(self.controllers)
+        self.replayController.setSetupName(getattr(options, 'setupFileName', None))
+        self.replayController.publishSetupMetadata()
+
+        # Calibrations window (Hardware → Calibrations…): swaps go through the
+        # Laser panel's controller, which owns the swap rules.
+        self.calibrationsController = self.__factory.createController(
+            resolve_controller('CalibrationsController'), self.__mainView.calibrationsWidget,
+            laserController=self.controllers.get('Laser'),
+        )
+
         # Generate API
         self.__api = None
         apiObjs = (
             list(self.controllers.values())
             + [self.setupModeController, self.__commChannel,
-               self.workflowFacadeController, self.reservationController]
+               self.workflowFacadeController, self.reservationController,
+               self.replayController,
+               self.calibrationsController]
             + ([self.instrumentsController]
                if self.instrumentsController not in self.controllers.values() else [])
         )
@@ -424,67 +443,71 @@ class ImConMainController(MainController):
         self.__mainView.setHardwareNotice(text, detail)
 
     def loadParamsFromHDF5(self):
-        """ Set detector, positioner, laser etc. params from values saved in a
-        user-picked HDF5 snap/recording. """
+        """ Load the settings stored in a user-picked HDF5 snap/recording into
+        this setup, after the user confirmed (and if needed remapped) them in
+        the replay dialog. Nothing is applied before Apply; lasers are never
+        switched on and stages move only on request. """
 
         filePath = guitools.askForFilePath(
             self.__mainView, 'Open HDF5 file', nameFilter='HDF5 files (*.h5 *.hdf5)'
         )
         if not filePath:
             return
-
-        with h5py.File(filePath) as file:
-            datasetsInFile = file.keys()
-            if len(datasetsInFile) < 1:
-                # File does not contain any datasets
-                return
-            elif len(datasetsInFile) == 1:
-                datasetToLoad = list(datasetsInFile)[0]
-            else:
-                # File contains multiple datasets
-                self.pickDatasetsController.setDatasets(filePath, datasetsInFile)
-                if not self.__mainView.showPickDatasetsDialogBlocking():
+        try:
+            with h5py.File(filePath, 'r') as file:
+                datasetToLoad = self._pickDatasetToLoad(filePath, list(file.keys()))
+                if datasetToLoad is None:
                     return
-
-                datasetsSelected = self.pickDatasetsController.getSelectedDatasets()
-                if len(datasetsSelected) != 1:
-                    return
-
-                datasetToLoad = datasetsSelected[0]
-
-            attrs = SharedAttributes.fromHDF5File(file, datasetToLoad)
-            self.__commChannel.sharedAttrs.update(attrs)
+                attrs = SharedAttributes.fromHDF5File(file, datasetToLoad)
+            parsed = self.replayController.parse(
+                attrs, sourceFile=filePath, dataset=datasetToLoad, sourceFormat='HDF5')
+        except Exception as exc:  # noqa: BLE001 - a menu slot must not raise
+            self._reportLoadParamsFailure(filePath, exc)
+            return
+        self.replayController.replayInteractive(parsed)
 
     def loadParamsFromZarr(self):
-        """ Set detector, positioner, laser etc. params from values saved in a
-        user-picked Zarr snap/recording store. Twin of loadParamsFromHDF5 for
-        the Zarr recording layout (a store is a directory, not a single file). """
+        """ Twin of loadParamsFromHDF5 for the Zarr recording layout (a store
+        is a directory, not a single file). """
 
         folderPath = guitools.askForFolderPath(self.__mainView, 'Open Zarr store')
         if not folderPath:
             return
-
-        root = zarr.open(folderPath, mode='r')
-        datasetsInStore = list(root.keys())
-        if len(datasetsInStore) < 1:
-            # Store does not contain any datasets
+        try:
+            root = zarr.open(folderPath, mode='r')
+            datasetToLoad = self._pickDatasetToLoad(folderPath, list(root.keys()))
+            if datasetToLoad is None:
+                return
+            attrs = SharedAttributes.fromZarrStore(root, datasetToLoad)
+            parsed = self.replayController.parse(
+                attrs, sourceFile=folderPath, dataset=datasetToLoad, sourceFormat='ZARR')
+        except Exception as exc:  # noqa: BLE001 - a menu slot must not raise
+            self._reportLoadParamsFailure(folderPath, exc)
             return
-        elif len(datasetsInStore) == 1:
-            datasetToLoad = datasetsInStore[0]
-        else:
-            # Store contains multiple datasets
-            self.pickDatasetsController.setDatasets(folderPath, datasetsInStore)
-            if not self.__mainView.showPickDatasetsDialogBlocking():
-                return
+        self.replayController.replayInteractive(parsed)
 
-            datasetsSelected = self.pickDatasetsController.getSelectedDatasets()
-            if len(datasetsSelected) != 1:
-                return
+    def _pickDatasetToLoad(self, path, datasets):
+        """ The one dataset (detector group) to load settings from, or None. """
+        if len(datasets) < 1:
+            return None
+        if len(datasets) == 1:
+            return datasets[0]
+        self.pickDatasetsController.setDatasets(path, datasets)
+        if not self.__mainView.showPickDatasetsDialogBlocking():
+            return None
+        selected = self.pickDatasetsController.getSelectedDatasets()
+        if len(selected) != 1:
+            return None
+        return selected[0]
 
-            datasetToLoad = datasetsSelected[0]
-
-        attrs = SharedAttributes.fromZarrStore(root, datasetToLoad)
-        self.__commChannel.sharedAttrs.update(attrs)
+    def _reportLoadParamsFailure(self, path, exc):
+        self.__logger.error(f'Could not read settings from {path}', exc_info=True)
+        try:
+            guitools.showWarning(
+                self.__mainView, 'Load parameters',
+                f'Could not read the settings stored in {os.path.basename(path)}: {exc}')
+        except Exception:  # noqa: BLE001
+            pass
 
     def pickSetup(self):
         """ Let the user change which setup is used. """

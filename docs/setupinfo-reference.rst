@@ -128,7 +128,12 @@ Each laser requires (these have no default):
 
 Optional:
 
-* ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
+* ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted.
+  For ``NidaqLaserManager`` and ``AAAOTFLaserManager`` this includes the power
+  calibration: ``calibrationId`` (a calibration in the global store
+  ``ImSwitchConfig/calibrations``, or ``"raw"``) takes precedence over
+  ``calibCsvPath`` (a file, used as it is); see *Power calibrations* in
+  :doc:`devices/lasers`
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
 * ``ttlActiveLevel`` (``"high"`` or ``"low"``, default ``"high"``): the
   level of the ``digitalLine`` that means *on*. ``"low"`` is for an inverted

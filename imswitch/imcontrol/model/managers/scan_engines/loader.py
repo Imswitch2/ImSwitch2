@@ -136,8 +136,9 @@ def build_scan_engines(setupInfo, *, nidaqManager, lowLevelManagers: Mapping = N
     declared = getattr(setupInfo, 'scanEngines', None)
     declared = dict(declared) if isinstance(declared, Mapping) else {}
     if NIDAQ not in declared:
-        engines[NIDAQ] = NidaqScanEngine(None, NIDAQ, nidaqManager=nidaqManager,
-                                         setupInfo=setupInfo)
+        engines[NIDAQ] = NidaqScanEngine(
+            None, NIDAQ, nidaqManager=nidaqManager, setupInfo=setupInfo,
+            laserPowerCalibration=lowLevel.get('laserPowerCalibration'))
     for name, info in declared.items():
         engines[name] = _engine_class(info.managerName, registry)(info, name, **lowLevel)
 

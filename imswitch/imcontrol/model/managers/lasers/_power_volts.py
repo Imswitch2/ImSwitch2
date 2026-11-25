@@ -2,75 +2,112 @@
 manager and for every scan engine that plays a power level inside a step
 (docs/design/plans/scan-engines-and-expert-scan.md §7.8).
 
-With a calibration (``managerProperties.calibCsvPath``: volts in the first
-column, the power they give in the second) a value is a percentage of the
-calibrated range; without one the value IS the voltage. That is how
-``NidaqLaserManager`` sets a laser by hand, so a scan drives it the same way.
+With a power calibration in force on the laser (a ``LaserPowerTable``,
+``imswitch.imcontrol.model.calibrations``) a value is a percentage, 0-100 %,
+converted by that table exactly as the laser's manager converts it by hand;
+without one the value IS the voltage. The calibration is the manager's
+(``powerCalibration``: ``calibrationId`` or ``calibCsvPath``, whatever loaded,
+and a swap made in the Calibrations window), handed in by the caller; only a
+caller that has no laser managers (an engine built on its own, in tests)
+resolves the setup's reference itself, through the same resolver.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 import numpy as np
-from scipy.interpolate import interp1d
 
-#: Percent: the calibrated power is scaled to 0..100.
-_PERCENT = 100.0
+from imswitch.imcontrol.model.calibrations import (
+    CalibrationRangeError,
+    LaserPowerTable,
+    resolve_laser_calibration,
+)
+
+#: The range of a value under a calibration.
+_PERCENT = (0.0, 100.0)
 
 
 @dataclass(frozen=True)
 class PowerVolts:
     """``volts(value)``; ``unit`` of the value; ``source`` of the conversion.
-    A value outside the calibration gives NaN."""
+    Under a calibration ``volts`` raises ``CalibrationRangeError`` for a value
+    outside it (it never returns NaN or a clamped drive)."""
     volts: Callable
     unit: str
     source: str
+    calibration: Optional[LaserPowerTable] = None
 
 
-def calibration_lut(calib_csv_path) -> Callable:
-    """Percent of the calibrated power range to volts, from a calibration
-    file (volts, power per row); NaN outside it."""
-    data = np.loadtxt(calib_csv_path)
-    data[:, 1] -= data[:, 1].min()
-    data[:, 1] /= data[:, 1].max() / _PERCENT
-    return interp1d(data[:, 1], data[:, 0], bounds_error=False)
-
-
-def power_volts(name, laserInfo) -> PowerVolts:
+def setup_calibration(name, laserInfo) -> Optional[LaserPowerTable]:
+    """The calibration the setup's ``calibrationId`` / ``calibCsvPath`` names,
+    resolved as a laser manager resolves it; None (volts) when there is none
+    or it cannot be used. For callers without the laser's manager."""
     props = getattr(laserInfo, 'managerProperties', None) or {}
-    path = props.get('calibCsvPath')
-    if path:
-        lut = calibration_lut(path)
-        return PowerVolts(lambda value: np.asarray(lut(value), dtype=float), '%',
-                          f'{name}.calibCsvPath')
+    resolution = resolve_laser_calibration(
+        laser_name=name, drive_unit='V',
+        calibration_id=props.get('calibrationId'),
+        calib_csv_path=props.get('calibCsvPath'),
+        wavelength_nm=getattr(laserInfo, 'wavelength', None))
+    return resolution.table
+
+
+_FROM_SETUP = object()
+
+
+def power_volts(name, laserInfo, calibration=_FROM_SETUP) -> PowerVolts:
+    """The conversion for laser ``name``. ``calibration``: the table in force
+    on its manager (``None``: it runs on volts); left out, the setup's
+    reference is resolved here (:func:`setup_calibration`)."""
+    if calibration is _FROM_SETUP:
+        calibration = setup_calibration(name, laserInfo)
+    if calibration is not None:
+        def volts(value):
+            values = np.asarray(value, dtype=float)
+            return np.asarray(calibration.drive_for_percent_array(np.atleast_1d(values)),
+                              dtype=float).reshape(values.shape)
+        return PowerVolts(volts, '%', f'{name}: calibration {calibration.id}', calibration)
     return PowerVolts(lambda value: np.asarray(value, dtype=float), 'V',
                       f'{name}: no calibration, so the value is the voltage')
 
 
-def level_volts(name, laserInfo, values):
+def level_volts(name, laserInfo, values, calibration=_FROM_SETUP):
     """``(volts, refusal)`` for power ``values`` of laser ``name`` inside a
-    scan: refused, with the numbers, when one is outside the laser's value
-    range or its calibration."""
+    scan: refused, with the numbers, when one is outside the laser's range
+    (0-100 % under a calibration, its value range in volts otherwise) or its
+    calibration."""
     values = np.asarray(values, dtype=float)
-    low = getattr(laserInfo, 'valueRangeMin', None)
-    high = getattr(laserInfo, 'valueRangeMax', None)
-    conversion = power_volts(name, laserInfo)
+    conversion = power_volts(name, laserInfo, calibration)
+    if conversion.calibration is not None:
+        low, high = _PERCENT
+    else:
+        low = getattr(laserInfo, 'valueRangeMin', None)
+        high = getattr(laserInfo, 'valueRangeMax', None)
     if values.size and ((low is not None and float(values.min()) < float(low))
                         or (high is not None and float(values.max()) > float(high))):
         bounds = (f'{"-inf" if low is None else f"{float(low):g}"} to '
                   f'{"inf" if high is None else f"{float(high):g}"}')
         return None, (f'{name} takes {bounds} {conversion.unit}; the scan asks '
                       f'{float(values.min()):g} to {float(values.max()):g}.')
-    volts = conversion.volts(values)
-    if np.isnan(volts).any():
+    try:
+        volts = conversion.volts(values)
+    except CalibrationRangeError as error:
         return None, (f'{name}: a power the scan asks is outside its calibration '
-                      f'({conversion.source}).')
+                      f'({conversion.source}: {error}).')
+    if np.isnan(volts).any():
+        return None, f'{name}: a power the scan asks gives no voltage ({conversion.source}).'
     return volts, ''
 
 
-__all__ = ['PowerVolts', 'calibration_lut', 'level_volts', 'power_volts']
+def laser_calibration_kwargs(lookup, name) -> dict:
+    """``{'calibration': lookup(name)}`` for :func:`level_volts`, or ``{}``
+    when the caller has no lookup (the setup's reference is then resolved)."""
+    return {} if not callable(lookup) else {'calibration': lookup(name)}
+
+
+__all__ = ['PowerVolts', 'laser_calibration_kwargs', 'level_volts', 'power_volts',
+           'setup_calibration']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

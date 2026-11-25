@@ -45,26 +45,85 @@ the generic ``DeviceInfo`` with laser-specific fields:
 Which of these a manager actually consumes depends on the manager —
 each section below lists its "LaserInfo fields used".
 
-Power calibration file
-----------------------
+Power calibrations
+------------------
 
-Every laser manager accepts ``calibCsvPath`` in its ``managerProperties``
-(the base class reads it through ``hasProperty``).  When the key is
-present the laser widget becomes a 0–100 % setpoint instead of the raw
-``valueRangeMin``–``valueRangeMax`` range: ``LaserController`` asks
-``usesCalibrationLookup()``, which is true whenever the key is set.
-``AAAOTFLaserManager`` and ``NidaqLaserManager`` read the file itself
-with ``numpy.loadtxt``: two columns, raw value then measured power, one
-pair per line, separated by **whitespace** (a comma-separated file does not
-load; lines starting with ``#`` are ignored).  The measured column is
-rescaled so that its minimum is 0 % and its maximum 100 %, and the
-percentage is mapped onto the raw range through it.  A manager that does
-not read the file still switches its widget to percent when the key is
-set, so only set it for a manager that implements the lookup.
+A power calibration maps a laser's raw drive (volts, AOTF amplitude, ...)
+to the optical power it gives.  With one **in force** the laser's control
+is a 0–100 % setpoint; without one, the control shows the manager's own
+unit and range (``valueRangeMin``–``valueRangeMax``) — running on raw units
+is a normal state, not an error.  The control shows percent *only* while a
+calibration is actually in force: a calibration that is named but does not
+load leaves the laser on raw units, flags the row with *calibration not
+loaded* and says why in its tooltip (and in the log).
+
+**Which managers apply one.**  ``NidaqLaserManager`` and
+``AAAOTFLaserManager`` convert the percent setpoint into their drive.  Every
+other laser manager runs on its own units; a ``calibCsvPath`` its setup
+names is reported as *not applied* instead of turning the control into
+percent over raw units, as it used to.
+
+**Where calibrations live.**  Calibrations are global, one file per
+calibration in ``ImSwitchConfig/calibrations`` (created on the first
+import), shared by every setup on the computer.  Several can exist for one
+laser — measured at the back focal plane and at the sample, with and
+without an ND filter — and each records where it was measured and a short
+comment.  Which one a laser uses is a fact of the setup:
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Key (``managerProperties``)
+     - Meaning
+   * - ``calibrationId``
+     - The id of a calibration in the global store.  Takes precedence over
+       ``calibCsvPath``.  ``"raw"`` runs the laser on raw units even when
+       ``calibCsvPath`` is set.  Written by *Save selection to setup file*
+       in :ref:`Hardware → Calibrations… <calibrations-window>`.
+   * - ``calibCsvPath``
+     - A calibration file used as it is, exactly as before: a relative
+       path resolves against ImSwitch's working directory.  The
+       Calibrations window shows the resolved path, and can import the
+       file into the store (the file and the setup stay as they are).
+
+A calibration file is two or more whitespace-separated columns — raw drive,
+then measured power (further columns are kept, not used) — with ``#``
+comment lines; a comma-separated file does not load.  The measured power is
+rescaled so its minimum is 0 % and its maximum 100 %, and a percentage maps
+onto the drive through the curve — the same arithmetic as always, so saved
+percentages keep their meaning.  A request outside 0–100 % (or the measured
+drive range) is refused, never clamped.  A file is refused, and the laser
+runs on raw units, when it has fewer than two rows, a constant power, a
+power that falls as the drive rises, a repeated drive value, non-numbers,
+or a drive unit different from the laser's.
+
+The header fields that ``measureLaserPowerLut`` and
+``utility_scripts/aa_aotf_calibration.py`` write are read (laser,
+wavelength, setting unit, power unit — W for the former, mW for the latter
+— plane, meter, creation time, source run, notes).  When a file states no
+power unit, none is assumed: the laser still works in percent, but no
+absolute power is shown.  When it states no drive unit, it is assumed to be
+in the laser's own unit, and that assumption is recorded.
+
+With a power unit, the setpoint's tooltip shows the power the curve
+predicts at the current value ("12.4 mW at back focal plane"), the drive
+behind it, the comment and the calibration's id.  Recordings and saved
+states record which calibration a value was set under
+(``Laser:<name>:Calibration`` = ``{id, contentHash, driveValue}``); a saved
+value applied under a different calibration is never reinterpreted: the
+recorded drive is applied (converted into the current scale) or, when that
+is impossible, the value is skipped — with a warning either way.  Loading the
+settings of a recording follows the same rule (see *Loading settings from a
+recording* in :doc:`/gui`).
 
 .. code-block:: json
 
     "managerProperties": { "calibCsvPath": "C:/calib/561_aotf.csv" }
+
+.. code-block:: json
+
+    "managerProperties": { "calibrationId": "561aotf-20261120-3fa9c2" }
 
 .. code-block:: json
 
@@ -172,10 +231,15 @@ filter, controlled over RS232.
    * - ``calibCsvPath``
      - str
      - *(unset)*
-     - Optional path to a 2-column CSV (raw, measured).  If present, a
-       LUT is built and ``valueUnits`` switches from ``"arb"`` to ``"%"``.
-       The columns are whitespace-separated; see *Power calibration file*
-       above.
+     - Optional path to a 2-column CSV (raw, measured).  When it loads,
+       ``valueUnits`` switches from ``"arb"`` to ``"%"``; see *Power
+       calibrations* above.
+   * - ``calibrationId``
+     - str
+     - *(unset)*
+     - Optional id of a calibration in the global store; takes precedence
+       over ``calibCsvPath``.  ``"raw"`` runs the channel on amplitude units.
+       See *Power calibrations* above.
    * - ``useMockOnFailure``
      - bool
      - ``false``
@@ -835,13 +899,17 @@ Lasers controlled by an NI-DAQ board's analog and/or digital outputs.
    * - ``calibCsvPath``
      - str
      - *(unset)*
-     - Optional path to a 2-column calibration CSV.  When present, a
-       LUT is built and ``valueUnits`` switches from ``"V"`` to ``"%"``.
-       The columns are whitespace-separated; see *Power calibration file*
-       above.
+     - Optional path to a 2-column calibration CSV.  When it loads,
+       ``valueUnits`` switches from ``"V"`` to ``"%"``; see *Power
+       calibrations* above.
+   * - ``calibrationId``
+     - str
+     - *(unset)*
+     - Optional id of a calibration in the global store; takes precedence
+       over ``calibCsvPath``.  ``"raw"`` runs the laser on volts.  See
+       *Power calibrations* above.
 
-Otherwise the manager takes **no managerProperties** — the class
-docstring explicitly says "Manager properties: None".  Wiring comes
+Otherwise the manager takes **no managerProperties**.  Wiring comes
 from ``analogChannel`` / ``digitalLine`` on the ``LaserInfo``.
 
 **LaserInfo fields used**

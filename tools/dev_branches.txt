@@ -58,3 +58,9 @@ feat/virtual-sample                # PR #99: virtual sample with optics and lase
                                    #   (APD/PMT: the mock signal is read at the read-ahead's fetch position, not at what the
                                    #    worker consumed -- dev's chunked reads; PMT's randomInput takes start like the APD's;
                                    #    its MockSample and the Time Tagger mock's MockSample are separate classes and keys)
+feat/replay-settings               # PR #98 (folds #102): safe replay of a recording's settings, managed laser calibrations
+                                   #   (_power_volts: a scan plays a laser's level through its manager's calibration in force
+                                   #    (MasterController._laserPowerCalibration -> engines), 0-100 % under it, refusal instead of
+                                   #    NaN; StepBoardLaserManager resolves calibCsvPath through the shared table; replay: a mock
+                                   #    standing in for a failed device is unavailable; one getLaserActive; Hardware menu has
+                                   #    both "What this setup can scan…" and "Calibrations…"; e2e driver sets its own laser ranges)

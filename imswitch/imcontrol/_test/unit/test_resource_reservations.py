@@ -262,9 +262,13 @@ def test_raw_drive_control_reports_failure_as_a_result(registry):
 
 
 def test_raw_drive_bypasses_a_loaded_lut():
+    from imswitch.imcontrol.model.calibrations import LaserPowerTable, parse_legacy_csv
+
     laser = _nidaq_laser(_Nidaq())
-    laser._lut = lambda value: 99.0       # what setValue would send
-    laser.applyRawDrive(1.25)
+    laser.setPowerCalibration(LaserPowerTable(parse_legacy_csv('0 0\n4 1\n'), drive_unit='V'))
+    laser.setValue(50)                    # through the calibration: 2 V
+    assert laser._nidaqManager.calls[-1]['voltage'] == 2.0
+    laser.applyRawDrive(1.25)             # bypasses it
     assert laser._nidaqManager.calls[-1]['voltage'] == 1.25
 
 

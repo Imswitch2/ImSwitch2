@@ -160,6 +160,88 @@ with the rest of the widget state, because a note about this morning's
 alignment would be a lie tomorrow.
 
 
+.. _load-settings-from-recording:
+
+Loading settings from a recording
+---------------------------------
+
+**File → Load parameters from saved HDF5 file…** (``Ctrl+P``) and **File →
+Load parameters from saved Zarr store…** (``Ctrl+Alt+P``) take the settings
+stored in a recording or snapshot and offer them for the setup that is
+running now.  Nothing reaches the hardware until **Apply** in the dialog that
+opens; the dialog is shown every time, also for a file recorded on this very
+setup, as the confirmation of what will change.
+
+The dialog lists, by category (lasers, detectors, positioners, scan, TTL
+lines, rotators, flip mirrors, pulse generator), every device the file names
+and every value it stored, with the current value beside it:
+
+* **Match** says whether this setup has the device: *matches*, *same name,
+  different device* (another wavelength, other units, another detector
+  model), *not in this setup*, or *this setup has no such device*.
+* **Use device** picks where the recorded values go: the device itself, a
+  replacement of the same kind, or *Skip*.  A missing laser offers every
+  laser of this setup; one is pre-selected only when it has the recorded
+  wavelength, otherwise the row starts on *Skip*.  A positioner offers every
+  axis of every positioner, so a file recorded with differently named axes
+  can still be mapped.  Recordings made before this metadata existed carry
+  no wavelengths or setup identity; their devices are matched by name only.
+* **Action** per value: values inside the current device's range are applied;
+  a value outside it is highlighted and skipped unless you choose *Clamp to
+  range* (the nearest limit is applied) or *Edit value…* and type a value
+  inside the range.  A value the device cannot take (a binning it does not
+  support, an option it does not have, a value recorded in other units) is
+  never applied.
+* **Move stages and rotators to the recorded positions** is off by default.
+  Without it no stage or rotator moves.
+* Replay **never switches a laser on** (or off): the recorded emission state
+  is shown for information only.  A value change on a laser that is emitting
+  changes its output power, and the dialog says so on that row.
+* **Laser power calibrations.**  A laser value records which power
+  calibration it was set under (:ref:`calibrations-window`).  When that is the
+  calibration in force on the laser now, the value applies as recorded.  When
+  it differs ("recorded under calibration X; Y is in force now"), the
+  recorded percentage is never re-read through the new calibration: the
+  recorded *drive* is applied, converted into the current scale (*Will
+  apply* shows the converted value) — the output the recording was made with
+  — and if that drive lies outside the current calibration or range the value
+  is skipped.  On a different laser (a remapped row) the same drive does not
+  give the same output, so that value starts on *Skip* and is applied only if
+  you choose *Apply*.  Values are never converted between drive units (volts,
+  AOTF amplitude, mW).  A recording made before calibrations were recorded
+  applies as before, with a note when the laser now has a calibration in
+  force.  Presets, setup modes and restored widget states follow the same
+  rule.
+* Scan parameters are applied all together or not at all.  A file recorded
+  with another scan panel, or whose scan names TTL lines or scan axes this
+  setup does not have, starts on *Skip*; remap the lines and axes to apply it.
+* What describes the acquisition itself (recording mode, frame counts,
+  timestamps, session notes) is listed in the summary line and not replayed.
+
+After **Apply** a summary lists what was applied, skipped and failed, with the
+reason for each.  A value a device refuses is reported as failed and the rest
+still applies.  *Remember my device choices…* stores the replacements you
+picked for recordings from that setup (by its setup hash), so the next file
+from it opens with the same choices pre-selected; the dialog is still shown.
+
+Recordings made afterwards carry where their settings came from:
+``replay:*`` attributes with the source file name, its software version and
+setup, and per device what was applied, substituted or skipped (see
+:doc:`Hdf5datafile`).  Every recording also carries the identity of the setup
+it was made on (``setup:name``, ``setup:hash`` and a device inventory without
+serial numbers, ports or paths), which is what lets a later load tell a
+different setup from the same one.
+
+Scripts load settings without a dialog through
+``api.imcontrol.replaySettingsFromFile(path)``: only devices that match exactly
+and values inside their range are applied, lasers are never switched on, and
+stages and rotators move only with ``allowMoves=True``.  A laser value
+recorded under a different calibration is applied by its recorded drive or
+skipped, as above, and the returned note says which.  It returns what was
+applied, skipped and failed.  ``api.imcontrol.planReplayFromFile(path)`` returns
+the same plan the dialog shows, without applying anything.
+
+
 BF timelapse widget
 -------------------
 
@@ -459,6 +541,81 @@ do not.
 .. image:: ./images/auto/LaserWidget.png
    :align: center
    :width: 561px
+
+**Units and power calibrations.**  A laser's setpoint is a 0–100 % value
+while a power calibration is in force for it, and otherwise the laser's own
+unit and range (volts, AOTF amplitude, mW, ...) — the unit is always in the
+*Setpoint [...]* label.  Hovering the setpoint shows what it means: with a
+calibration, the optical power the curve predicts at the current value and
+where that was measured ("7.44 mW at back focal plane"), the drive behind
+it, the calibration's comment, id and date; without one, "Raw units — no
+calibration".  A laser whose setup names a calibration that did not load
+runs on raw units and shows a red *calibration not loaded* badge; the
+tooltip gives the reason.  See :doc:`devices/lasers` (Power calibrations).
+
+.. image:: ./images/laser-calibration-tooltip.png
+   :alt: Three laser rows: 488 in percent under a calibration, 561 in volts
+         with a red "calibration not loaded" badge, and a Cobolt in mW; below,
+         the tooltip of the 488 setpoint with the predicted power, drive,
+         comment and calibration id.
+   :align: center
+   :width: 561px
+
+.. _calibrations-window:
+
+Calibrations window
+~~~~~~~~~~~~~~~~~~~
+
+**Hardware → Calibrations…** shows, for each laser of the setup, the power
+calibrations in the global store (``ImSwitchConfig/calibrations``) that
+match it — same laser name, wavelength and drive unit — and which one is
+active (or the ``calibCsvPath`` file in use, or raw units).  Calibrations
+made for other devices are listed apart and not offered by default.
+Selecting one shows what it maps and in which units, its range and number
+of points, the power span, when and with which meter it was measured,
+where, its comment, the file it came from, and its curve.
+
+* **Activate for <laser>** puts the selected calibration in force for this
+  session.  It is refused while the laser is on (switch it off first: a new
+  calibration changes the drive a percentage means) or a scan runs; the
+  setpoint then goes to 0 % — the lowest measured power — exactly as at
+  startup.  A calibration made for a differently named laser asks for
+  confirmation ("made for '488 (EXC)', applying to 'Ex488'"); one measured
+  at another wavelength or on another kind of device warns more strongly;
+  one with a different drive unit cannot be used.  Activating one changes
+  what a saved percentage means; saved states, setup modes, presets and
+  recordings loaded later are checked against it (see
+  :ref:`load-settings-from-recording`).
+* **Run <laser> on raw units** drops the calibration for this session.
+* **Save selection to setup file** writes, for each laser whose selection
+  differs from the setup file, ``managerProperties.calibrationId`` — and
+  nothing else — into the current setup file, so the choice survives a
+  restart.  A banner says when this session's selection differs from the
+  file.
+* **Import CSV…** adds a calibration file (the two-column format with a
+  ``#`` header, e.g. the ``lut_file`` of ``measureLaserPowerLut``) to the
+  store; when the file does not name its laser, you are asked which one.
+  A file whose power is not monotonic in the drive (measurement noise) is
+  refused with the reason; the import offers to fit a monotonic curve (the
+  isotonic fit ``measureLaserPowerLut`` uses), shows the largest correction
+  first, and records "fitted on import".
+  **Import referenced file into store** does that for the ``calibCsvPath``
+  file the selected laser uses — the file and the setup stay as they are.
+* **Export CSV…** writes the selected calibration back as such a file, with
+  its header — the way to take calibrations to another computer, since they
+  do not travel with a setup file.
+* **Measured at** and **Comment** are editable; saving them does not change
+  the calibration's content hash, so values saved under it still match.
+
+A laser that is not connected, or whose manager does not apply calibrations,
+offers no actions that would touch it; the files can still be imported,
+exported and annotated.
+
+.. image:: ./images/calibrations-window.png
+   :alt: The Calibrations window: lasers with their calibrations on the
+         left, details, curve, location and comment on the right.
+   :align: center
+   :width: 700px
 
 
 SLM widget

@@ -1,5 +1,5 @@
 from imswitch.imcommon.model import initLogger
-from ._power_volts import power_volts
+from imswitch.imcontrol.model.calibrations import CalibrationRangeError
 from .LaserManager import LaserManager
 
 
@@ -13,8 +13,9 @@ class StepBoardLaserManager(LaserManager):
     runs.
 
     On and off follow ``ttlActiveLevel``. The power is converted to volts as
-    a scan converts it: through ``calibCsvPath`` (a percentage of the
-    calibrated range) or, without one, the value is the voltage.
+    a scan converts it: through the calibration ``calibCsvPath`` names (a
+    percentage, through the same calibration table the NI-DAQ lasers use) or,
+    without one, the value is the voltage.
 
     Manager properties:
 
@@ -28,9 +29,17 @@ class StepBoardLaserManager(LaserManager):
         self._line = laserInfo.getDigitalLine()
         self._analog = laserInfo.getAnalogChannel()
         self._level = laserInfo.ttlLevel if laserInfo.ttlActiveLevel else (lambda on: on)
-        self._power = power_volts(name, laserInfo)
+        # The calibration in force is this manager's (the scan engines play
+        # its power levels through it, MasterController._laserPowerCalibration);
+        # one that does not load leaves the laser on volts, and says so.
+        self._resolvePowerCalibration(
+            name, 'V',
+            calibCsvPath=(laserInfo.managerProperties or {}).get('calibCsvPath'),
+            wavelength=getattr(laserInfo, 'wavelength', None),
+            logger=self.__logger,
+        )
         super().__init__(laserInfo, name, isBinary=self._analog is None,
-                         valueUnits=self._power.unit, valueDecimals=2)
+                         valueUnits='V', valueDecimals=2)
 
     def _set(self, channel, value):
         engineName = str(channel).split('/', 1)[0]
@@ -50,10 +59,16 @@ class StepBoardLaserManager(LaserManager):
     def setValue(self, value, enabled=True, for_scanning=False):
         if self.isBinary:
             return
-        volts = float(self._power.volts(value))
-        if volts != volts:      # NaN: outside the calibration
-            self.__logger.error(f'{self.name}: {value:g} is outside its calibration.')
-            return
+        calibration = self.powerCalibration
+        if calibration is None:
+            volts = float(value)
+        else:
+            try:
+                volts = calibration.drive_for_percent(value)
+            except CalibrationRangeError as error:
+                # Refused, not passed on (see NidaqLaserManager.setValue).
+                self.__logger.error(f'{self.name}: {error}; nothing sent.')
+                return False
         self._set(self._analog, volts)
 
 

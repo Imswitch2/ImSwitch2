@@ -111,6 +111,10 @@ class MasterController:
             # which is built after the devices: looked up when it is used.
             'scanEngineNamed': self._scanEngineNamed,
             'timeTaggerManager': self.timeTaggerManager,
+            # A scan engine plays a laser's power level through the
+            # calibration in force on the laser's manager (built after this
+            # dict; looked up when a scan is compiled).
+            'laserPowerCalibration': self._laserPowerCalibration,
         }
 
         self.triggerScopeManager = None
@@ -332,6 +336,21 @@ class MasterController:
         )
         if not any(candidate is manager for candidate in completed):
             completed.append(manager)
+
+    def _laserPowerCalibration(self, name):
+        """The power calibration in force on laser ``name`` (a
+        ``LaserPowerTable``), or ``None``: it runs on raw units, or there is
+        no such laser manager (it failed at startup)."""
+        from imswitch.imcontrol.model.calibrations import power_table_of
+
+        lasers = getattr(self, 'lasersManager', None)
+        if lasers is None:
+            return None
+        try:
+            manager = lasers[name]
+        except Exception:
+            return None
+        return power_table_of(manager)
 
     def _scanEngineNamed(self, name):
         """The setup's scan engine ``name`` (not the composite it may lead),

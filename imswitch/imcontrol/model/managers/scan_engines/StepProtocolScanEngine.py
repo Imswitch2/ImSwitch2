@@ -52,7 +52,9 @@ from imswitch.imcontrol.model.scan_program.engine import (
     AnalogOut, EngineCapabilities, FeatureVerdict, IMPOSSIBLE, NATIVE, UNKNOWN,
     ScanEngineRefused,
 )
-from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
+from imswitch.imcontrol.model.managers.lasers._power_volts import (
+    laser_calibration_kwargs, level_volts,
+)
 from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
     scan_voltage_range_refusal,
 )
@@ -173,11 +175,13 @@ class StepProtocolScanEngine(StepEngineBase):
     _capsSource = '*CAPS?'
 
     def __init__(self, engineInfo, name='StepProtocolScanEngine', setupInfo=None,
-                 transport=None, **_lowLevelManagers):
+                 transport=None, laserPowerCalibration=None, **_lowLevelManagers):
         super().__init__(name)
         self.__logger = initLogger(self, instanceName=name)
         props = dict(getattr(engineInfo, 'managerProperties', None) or {})
         self._setupInfo = setupInfo
+        #: The calibration in force on a laser's manager (see NidaqScanEngine).
+        self._laserPowerCalibration = laserPowerCalibration
         self._open = None
         self._transport = transport
         if transport is None:
@@ -434,7 +438,9 @@ class StepProtocolScanEngine(StepEngineBase):
                     refusals.append(f'{name} carries {carriers[name]} and {e["device"]}.')
                     continue
                 volts, refusal = level_volts(e['device'], lasers.get(e['device']),
-                                             [float(e['value']), 0.0])
+                                             [float(e['value']), 0.0],
+                                             **laser_calibration_kwargs(
+                                                 self._laserPowerCalibration, e['device']))
                 if refusal:
                     refusals.append(refusal)
                     continue

@@ -186,7 +186,8 @@ def test_each_menu_holds_one_kind_of_thing(mainView):
                               'Load parameters from saved Zarr store…',
                               'Save Widget States…', 'Load Widget States…']
     assert menus['&Hardware'] == ['Pick hardware setup…', 'Edit hardware configuration…',
-                                  'What this setup can scan…', 'Hardware status…']
+                                  'What this setup can scan…', 'Hardware status…',
+                                  'Calibrations…']
     assert menus['&View'] == ['Log', 'Reset panel layout']
     assert menus['&Preferences'] == ['Recordings folder…', 'Memory limits…']
 

@@ -398,15 +398,27 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
         try:
             state = self._manager[name].get_state()
             self._widget.setState(name, state)
+            self._publishState(name, state)
             return state
         except Exception as e:
             self.__logger.error(f"Failed to read flip mirror {name}: {e}")
             return None
 
+    def _publishState(self, name, state):
+        """Record the mirror position with every recording
+        (FlipMirror:<name>:State). Nothing listens for the key: writing it
+        never moves a mirror, and replay shows it without applying it."""
+        try:
+            self._commChannel.sharedAttrs[('FlipMirror', name, 'State')] = (
+                None if state is None else int(state))
+        except Exception:  # noqa: BLE001 - metadata must not break a move
+            pass
+
     def _safe_move_one(self, name, state):
         try:
             self._manager[name].move_to(state)
             self._widget.setState(name, state)
+            self._publishState(name, state)
             return True
         except Exception as e:
             self.__logger.error(f"Failed to move flip mirror {name} to {state}: {e}")

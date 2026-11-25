@@ -31,7 +31,9 @@ import numpy as np
 from imswitch.imcontrol.model.managers.NidaqManager import (
     SCAN_CLOCK_RATE_HZ, nidaq_drives_line, nidaq_raw_line,
 )
-from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
+from imswitch.imcontrol.model.managers.lasers._power_volts import (
+    laser_calibration_kwargs, level_volts,
+)
 from imswitch.imcontrol.model.scan_program.densify import densify
 from imswitch.imcontrol.model.scan_program.engine import (
     AnalogOut, EMULATED, EngineCapabilities, FeasibilityReport, FeatureVerdict, IMPOSSIBLE,
@@ -117,10 +119,14 @@ class CompiledWaveforms:
 
 class NidaqScanEngine(ScanEngine):
     def __init__(self, engineInfo=None, name='nidaq', *, nidaqManager, setupInfo=None,
-                 **_lowLevelManagers):
+                 laserPowerCalibration=None, **_lowLevelManagers):
         self.name = name
         self._nidaq = nidaqManager
         self._setupInfo = setupInfo
+        #: ``laser name -> LaserPowerTable or None``: the calibration in force
+        #: on the laser's manager; None here (an engine without managers) has
+        #: the setup's reference resolved instead (_power_volts).
+        self._laserPowerCalibration = laserPowerCalibration
 
     # The manager's own signals: relaying them through the engine changes
     # nothing about when or how often anyone hears them.
@@ -345,7 +351,9 @@ class NidaqScanEngine(ScanEngine):
                 report.add(f'level {laser}', IMPOSSIBLE,
                            f'A ramped power level of {laser} is not played; hold it.')
                 continue
-            volts, refusal = level_volts(laser, lasers.get(laser), values)
+            volts, refusal = level_volts(laser, lasers.get(laser), values,
+                                         **laser_calibration_kwargs(
+                                             self._laserPowerCalibration, laser))
             if refusal:
                 report.add(f'level {laser}', IMPOSSIBLE, refusal)
                 continue

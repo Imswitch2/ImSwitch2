@@ -16,6 +16,7 @@ from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
 from .ScanCapabilitiesDialog import ScanCapabilitiesDialog
+from .ReplaySettingsDialog import ReplaySettingsDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -190,6 +191,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
         self.scanCapabilitiesDialog = ScanCapabilitiesDialog(self)
+        self.replaySettingsDialog = ReplaySettingsDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -297,6 +299,17 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.hardwareStatusAction.triggered.connect(self.showHardwareStatus)
         hardware.addAction(self.hardwareStatusAction)
+
+        from .widgets.CalibrationsWidget import CalibrationsWidget
+        self.calibrationsWidget = self.factory.createWidget(CalibrationsWidget)
+        self.calibrationsWidget.hide()
+        self.calibrationsAction = QtWidgets.QAction('Calibrations…', self)
+        self.calibrationsAction.setToolTip(
+            'Laser power calibrations: which one each laser uses, their details,'
+            ' swapping, import and export.'
+        )
+        self.calibrationsAction.triggered.connect(self.showCalibrations)
+        hardware.addAction(self.calibrationsAction)
 
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
@@ -647,6 +660,13 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.hardwareStatusWidget.show()
         self.hardwareStatusWidget.raise_()
         self.hardwareStatusWidget.activateWindow()
+
+    def showCalibrations(self):
+        """Show and raise the Calibrations window."""
+        self.calibrationsWidget.sigRefreshRequested.emit()
+        self.calibrationsWidget.show()
+        self.calibrationsWidget.raise_()
+        self.calibrationsWidget.activateWindow()
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()

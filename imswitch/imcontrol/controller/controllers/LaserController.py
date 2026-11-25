@@ -25,9 +25,10 @@ from ..basecontrollers import (
     SetupModeApplyPriority,
     StatefulComponentMixin,
 )
+from ._laser_calibration import LaserCalibrationMixin
 
 
-class LaserController(ImConWidgetController, StatefulComponentMixin):
+class LaserController(LaserCalibrationMixin, ImConWidgetController, StatefulComponentMixin):
     """ Linked to LaserWidget."""
 
     # Semantic laser-state events. Context is emitted as the stable string
@@ -36,6 +37,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
     sigLaserPowerChanged = Signal(str, str, object)
     sigLaserPresetListChanged = Signal(str)
     sigLaserPresetLoaded = Signal(str, str)
+    #: A laser's power calibration was swapped (laser name).
+    sigLaserCalibrationChanged = Signal(str)
 
     # StatefulComponentMixin attributes
     componentName = 'Laser'
@@ -86,18 +89,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
-            if lManager.usesCalibrationLookup():
-                valueRangeMin = 0
-                valueRangeMax = 100
-                valueUnits = "%"
-                valueDecimals = 1
-                valueRangeStep = 0.5 if lManager.valueRangeStep is not None else None
-            else:
-                valueRangeMin = lManager.valueRangeMin
-                valueRangeMax = lManager.valueRangeMax
-                valueUnits = lManager.valueUnits
-                valueDecimals = lManager.valueDecimals
-                valueRangeStep = lManager.valueRangeStep
+            # Percent only while a calibration is actually in force; a missing
+            # or failed one leaves the manager's raw unit and range.
+            (valueRangeMin, valueRangeMax, valueUnits, valueDecimals,
+             valueRangeStep) = self._laserScale(lManager)
 
             self._laserDisplayMeta[lName] = (valueUnits, valueDecimals)
             self._widget.addLaser(
@@ -119,6 +114,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
             self.setSharedAttr(lName, _enabledAttr, self._widget.isLaserActive(lName))
             self.setSharedAttr(lName, _valueAttr, self._widget.getValue(lName))
+            self._publishLaserValueContext(lName, lManager)
+            self._afterLaserValueChanged(lName)
         self._refreshLaserUsability()
 
         # Configure setup-level power policy before populating contextual UI.
@@ -360,7 +357,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 normalized[str(laserName)] = info
                 continue
             if isinstance(info, dict) and 'value' in info:
-                normalized[str(laserName)] = guitools.LaserPresetInfo(value=info['value'])
+                normalized[str(laserName)] = guitools.LaserPresetInfo(
+                    value=info['value'], calibration=info.get('calibration'),
+                    calibrationRecorded='calibration' in info)
         return normalized
 
     def _presetDefinition(self, name):
@@ -387,6 +386,12 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         for laserName, info in dict(powers or {}).items():
             value = info.value if hasattr(info, 'value') else info.get('value')
             result[str(laserName)] = {'value': value}
+            # Which calibration the value was saved under (only once recorded:
+            # historical entries stay byte-identical).
+            if getattr(info, 'calibrationRecorded', False):
+                result[str(laserName)]['calibration'] = info.calibration
+            elif isinstance(info, dict) and 'calibration' in info:
+                result[str(laserName)]['calibration'] = info['calibration']
         return result
 
     def _writePresetDefinition(self, name, powers, context):
@@ -492,6 +497,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         """Combo selection immediately loads the selected global preset."""
         if presetName:
             self.loadLaserPreset(presetName, self._currentPowerContext)
+            self._showPresetCalibrationWarnings(presetName)
 
     def loadPreset(self):
         presetToLoad = self._selectedPresetName(self._currentPowerContext)
@@ -604,7 +610,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             targetContext = context
         else:
             targetContext = LaserPowerContext.LIVE
-        self.applyPreset(preset, context=targetContext)
+        self._presetCalibrationWarnings = self.applyPreset(preset, context=targetContext) or []
         self._setSelectedPresetName(targetContext, name)
         self._emitLaserPresetLoaded(targetContext, name)
         return True
@@ -681,16 +687,25 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def makePreset(self, context=LaserPowerContext.LIVE):
         context = normalizeLaserPowerContext(context)
-        return {
-            lName: guitools.LaserPresetInfo(value=self.getLaserPowerSetting(lName, context))
-            for lName, lManager in self._master.lasersManager if not lManager.isBinary
-        }
+        preset = {}
+        for lName, lManager in self._master.lasersManager:
+            if lManager.isBinary:
+                continue
+            value = self.getLaserPowerSetting(lName, context)
+            recorded = LaserCalibrationMixin._recordsCalibration(lManager)
+            preset[lName] = guitools.LaserPresetInfo(
+                value=value,
+                calibration=(LaserCalibrationMixin._calibrationIdentityFor(self, lName, value)
+                             if recorded else None),
+                calibrationRecorded=recorded)
+        return preset
 
     def applyPreset(self, laserPreset, context=LaserPowerContext.LIVE):
         context = normalizeLaserPowerContext(context)
         if not self._isSeparatedPowerMode():
             context = LaserPowerContext.LIVE
         knownLasers = {lName for lName, _ in self._master.lasersManager}
+        calibrationWarnings = []
         for laserName, laserPresetInfo in dict(laserPreset or {}).items():
             if laserName not in knownLasers:
                 self._logger.warning(
@@ -707,7 +722,16 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                     f'Laser preset entry for "{laserName}" has no value; skipped.'
                 )
                 continue
-            self.setLaserPowerSetting(laserName, laserPresetInfo.value, context)
+            saved = ({'calibration': laserPresetInfo.calibration}
+                     if getattr(laserPresetInfo, 'calibrationRecorded', False) else {})
+            value, warning = LaserCalibrationMixin._calibrationAdjustedValue(
+                self, laserName, laserPresetInfo.value, saved, what='Laser preset')
+            if warning is not None:
+                calibrationWarnings.append(warning)
+                self._logger.warning(warning)
+            if value is not None:
+                self.setLaserPowerSetting(laserName, value, context)
+        return calibrationWarnings
 
     _AO_TOOLTIP = (
         'Power controlled through analog output by the scan configuration. '
@@ -1663,6 +1687,22 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self.settingAttr = False
 
+    def _publishLaserValueContext(self, laserName, lManager):
+        """Record what a laser's ``Value`` means next to it: its units and
+        range (metadata schema 1), so a recording can be replayed onto a laser
+        with a different range without guessing. They are the scale the Laser
+        panel shows -- 0-100 % while a power calibration is in force, the
+        manager's own unit and range otherwise -- and are published again
+        after a calibration swap. The calibration identity next to them
+        (``Calibration``) is published by ``_publishLaserCalibration``."""
+        rangeMin, rangeMax, units, _decimals, _step = self._laserScale(lManager)
+        for attr, value in ((_unitsAttr, units),
+                            (_rangeMinAttr, rangeMin),
+                            (_rangeMaxAttr, rangeMax)):
+            if value is not None:
+                self.setSharedAttr(laserName, attr, value)
+        self._publishLaserCalibration(laserName)
+
     def _emitLaserPowerChanged(self, laserName, context, value):
         try:
             self.sigLaserPowerChanged.emit(
@@ -1696,19 +1736,31 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         except (AttributeError, RuntimeError):
             pass
 
-    def _setLaserValue(self, laserName, value):
+    def _setLaserValue(self, laserName, value) -> bool:
+        """Set the Live value; False when the laser refused it.
+
+        A manager that refuses (returns False, or is not connected) leaves
+        the widget, the shared attribute and so the recorded metadata at the
+        value the laser actually has -- recording the refused value would
+        make every later file claim a power that was never set."""
         self._requireLaserEditsAllowed()
         try:
-            self._master.lasersManager[laserName].setValue(value)
+            applied = self._master.lasersManager[laserName].setValue(value)
         except DeviceNotConnectedError as exc:
             self._refuseNotConnected(laserName, exc)
-            return
+            return False
+        if applied is False:
+            self._logger.warning(
+                f'Laser {laserName} refused value {value!r}; keeping the previous value.')
+            self._refreshLaserRow(laserName, updatePrimary=True)
+            return False
         if not hasattr(self, '_livePowerValues'):
             self._livePowerValues = {}
         self._livePowerValues[laserName] = value
         if getattr(self, '_currentPowerContext', LaserPowerContext.LIVE) is LaserPowerContext.LIVE:
             self._widget.setValue(laserName, value, emitSignal=False)
         self.setSharedAttr(laserName, _valueAttr, value)
+        self._afterLaserValueChanged(laserName)
         try:
             numericValue = float(value)
         except (TypeError, ValueError):
@@ -1732,6 +1784,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             and scanUsesLiveFallback
         )
         self._refreshLaserRow(laserName, updatePrimary=updatePrimary)
+        return True
 
     def _setScanPowerValue(self, laserName, value):
         """Store an explicit Scan power without touching hardware or the UI."""
@@ -1757,7 +1810,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport()
     def getLaserActive(self, laserName: str) -> bool:
-        """ Whether the specified laser's emission is switched on. """
+        """ Whether the specified laser's emission is switched on: the state the
+        controller last applied (the ``Enabled`` shared attribute), which the
+        laser power LUT procedure records and restores. ``isLaserActive`` reads
+        the Laser widget's toggle instead. """
         return bool(self._commChannel.sharedAttrs[(_attrCategory, laserName, _enabledAttr)])
 
     @APIExport()
@@ -1792,11 +1848,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         return tuple(resolved)
 
     @APIExport(runOnUIThread=True)
-    def getLaserActive(self, laserName: str) -> bool:
-        """Return the current Live ON/OFF state for ``laserName``."""
-        return bool(self._widget.isLaserActive(laserName))
-
-    @APIExport(runOnUIThread=True)
     def isLaserActive(self, laserName: str) -> bool:
         """ Whether the laser is switched on. """
         return bool(self._widget.isLaserActive(laserName))
@@ -1821,9 +1872,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setLaserActive(laserName, active)
 
     @APIExport(runOnUIThread=True)
-    def setLaserValue(self, laserName: str, value: Union[int, float]) -> None:
-        """Set the live value of a laser (legacy API)."""
-        self._setLaserValue(laserName, value)
+    def setLaserValue(self, laserName: str, value: Union[int, float]) -> bool:
+        """Set the live value of a laser (legacy API). Returns False when the
+        laser refused the value (it then keeps its previous value)."""
+        return self._setLaserValue(laserName, value)
 
     @APIExport(runOnUIThread=True)
     def getLaserPowerSetting(
@@ -1958,12 +2010,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         
         for lName, lManager in self._master.lasersManager:
             state['laserOrder'].append(lName)
+            value = (self.getLaserPowerSetting(lName, LaserPowerContext.LIVE)
+                     if not lManager.isBinary else None)
             state['lasers'][lName] = {
                 'enabled': self._widget.isLaserActive(lName),
-                'value': self.getLaserPowerSetting(lName, LaserPowerContext.LIVE) if not lManager.isBinary else None,
+                'value': value,
                 'isBinary': lManager.isBinary,
                 'valueUnits': lManager.valueUnits
             }
+            if not lManager.isBinary and LaserCalibrationMixin._recordsCalibration(lManager):
+                # {id, contentHash, driveValue} or None (raw units): what the
+                # value meant when saved, checked when it is applied again.
+                state['lasers'][lName]['calibration'] = (
+                    LaserCalibrationMixin._calibrationIdentityFor(self, lName, value))
             
             module = self._widget.laserModules.get(lName)
             if lManager.isModulated and module is not None:
@@ -2031,6 +2090,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             # Set power value for non-binary lasers
             if not laserState.get('isBinary', False):
                 value = laserState.get('value')
+                if value is not None:
+                    value, calibrationWarning = LaserCalibrationMixin._calibrationAdjustedValue(
+                        self, lName, value, laserState, what='Saved value')
+                    if calibrationWarning is not None:
+                        warnings.append(calibrationWarning)
                 if value is not None:
                     try:
                         self.setLaserValue(lName, value)
@@ -2283,6 +2347,10 @@ _valueAttr = 'Value'
 _freqEnAttr = "ModulationEnabled"
 _freqAttr = "Frequency"
 _dcAttr = "DutyCycle"
+_unitsAttr = 'Units'
+_rangeMinAttr = 'RangeMin'
+_rangeMaxAttr = 'RangeMax'
+_calibrationAttr = 'Calibration'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

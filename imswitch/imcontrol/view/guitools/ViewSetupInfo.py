@@ -24,6 +24,14 @@ class LaserPresetInfo:
     value: float
     """ Laser value. """
 
+    calibration: Optional[Dict[str, Any]] = None
+    """ ``{id, contentHash, driveValue}`` of the power calibration the value
+    was saved under; None on raw units. """
+
+    calibrationRecorded: bool = False
+    """ Whether ``calibration`` was recorded at all (False for presets saved
+    before calibration provenance existed). """
+
 
 @dataclass
 class WidgetLayoutInfo:
