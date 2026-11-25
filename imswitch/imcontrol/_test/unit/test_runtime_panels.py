@@ -98,8 +98,22 @@ def setupFolder(tmp_path, monkeypatch):
     ostools.cancelRestart()
 
 
+def _classesNotModules(monkeypatch):
+    """Other tests import controller submodules directly, which binds the
+    module onto the lazy package under the class's name (other tests patch
+    through that binding). ImConMainController reads e.g.
+    ``controllers.HardwareStatusController``; point such names back at the
+    class for this test."""
+    import types
+    from imswitch.imcontrol.controller.controllers import _CONTROLLER_MODULES
+    for name in _CONTROLLER_MODULES:
+        found = controllerTable.__dict__.get(name)
+        if isinstance(found, types.ModuleType):
+            monkeypatch.setattr(controllerTable, name, getattr(found, name))
+
+
 @pytest.fixture
-def imcontrolApp(setupFolder, qapp):
+def imcontrolApp(setupFolder, qapp, monkeypatch):
     folder, optionsPath, warnings = setupFolder
     made = []
 
@@ -116,6 +130,7 @@ def imcontrolApp(setupFolder, qapp):
         path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
         options, _ = configfiletools.loadOptions()
         setup = configfiletools.loadSetupInfo(options, ViewSetupInfo)
+        _classesNotModules(monkeypatch)
         channel = ModuleCommunicationChannel()
         channel.register(imcontrol)
         view = ImConMainView(options, setup)

@@ -210,17 +210,21 @@ def proposeSection(key: str, setupInfo, master, base: Optional[dict] = None
 # Validation and the typed section
 # --------------------------------------------------------------------------
 
-def _number(data, field, errors, *, minimum=None, integer=False, label=None):
+def _number(data, field, errors, *, minimum=None, positive=False, integer=False,
+            label=None):
     if field not in data:
         return  # the loader's default applies
     value = data.get(field)
     label = label or field
-    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+    if (value is None or isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value)):
         errors.append(f'{label} must be a number.')
         return
     if integer and int(value) != value:
         errors.append(f'{label} must be a whole number.')
-    elif not math.isfinite(value) or (minimum is not None and value < minimum):
+    elif positive and value <= 0:
+        errors.append(f'{label} must be more than 0.')
+    elif minimum is not None and value < minimum:
         errors.append(f'{label} must be at least {minimum:g}.')
 
 
@@ -274,7 +278,7 @@ def validateSection(key: str, data: dict, setupInfo, master,
                               f'({", ".join(axes) or "none"}); tiling moves two.')
         stage('zPositioner', label='Z positioner', need=False)
         detector('camera', label='Detector to align on', need=False, acquiring=True)
-        _number(data, 'defaultTileStepUm', errors, minimum=1e-9, label='Default tile step')
+        _number(data, 'defaultTileStepUm', errors, positive=True, label='Default tile step')
         _number(data, 'defaultTilesX', errors, minimum=1, integer=True, label='Default tiles X')
         _number(data, 'defaultTilesY', errors, minimum=1, integer=True, label='Default tiles Y')
         if data.get('defaultPattern', 'spiral') not in _TILING_PATTERNS:

@@ -28,6 +28,7 @@ at startup. The save question says so.
 
 import dataclasses
 import os
+from types import ModuleType
 from typing import Callable, Dict, Optional
 
 from imswitch.imcommon.model import initLogger
@@ -40,9 +41,14 @@ from . import controllers
 
 
 def controllerClassFor(key: str, setupInfo):
-    if key == 'Scan':
-        return getattr(controllers, f'ScanController{resolve_scan_info(setupInfo.scan).frontend_type}')
-    return getattr(controllers, f'{key}Controller')
+    name = (f'ScanController{resolve_scan_info(setupInfo.scan).frontend_type}'
+            if key == 'Scan' else f'{key}Controller')
+    found = getattr(controllers, name)
+    if isinstance(found, ModuleType):
+        # Importing the submodule directly binds it onto the lazy package
+        # under the class's name; the class is in the module.
+        found = getattr(found, name)
+    return found
 
 
 def extraKwargsFor(key: str, viewWidgets: Dict[str, object]) -> dict:
