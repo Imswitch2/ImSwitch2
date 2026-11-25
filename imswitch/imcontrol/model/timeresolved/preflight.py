@@ -157,10 +157,21 @@ def run_device_preflight(tt, detector=None, duration_s: float = 1.0) -> Prefligh
     before = tt.overflows()
     rates = tt.count_rates(duration_s=duration_s)
     overflows = tt.overflows() - before
-    photons = rates.rates_hz.get("photons", 0.0)
-    if "photons" in roles:
+    # Every detector input by name; the one the detector images (or the
+    # photons role) is the one the pile-up check below is about.
+    detector_inputs = (tt.detector_inputs() if hasattr(tt, "detector_inputs")
+                       else [r for r in ("photons",) if r in roles])
+    own = getattr(detector, "photonInput", None) if detector is not None else None
+    if own not in detector_inputs:
+        own = "photons" if "photons" in detector_inputs else (
+            detector_inputs[0] if detector_inputs else None)
+    photons = rates.rates_hz.get(own, 0.0) if own is not None else 0.0
+    single = detector_inputs == ["photons"]
+    for name in detector_inputs:
+        rate = rates.rates_hz.get(name, 0.0)
         items.append(PreflightItem(
-            "photons arriving", "ok" if photons > 0 else "fail", f"{photons:,.0f} Hz",
+            "photons arriving" if single else f"photons arriving on {name}",
+            "ok" if rate > 0 else "fail", f"{rate:,.0f} Hz",
             hint="check the detector cable, polarity and trigger level "
                  "(tutorial 02, find_trigger_level)",
         ))

@@ -330,9 +330,18 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                 detector = manager[name]
             except Exception:
                 continue
-            if hasattr(detector, 'configureTimeResolvedProducts') and hasattr(
-                    detector, 'sigTimeResolvedProducts'):
-                found[name] = detector
+            if not (hasattr(detector, 'configureTimeResolvedProducts') and hasattr(
+                    detector, 'sigTimeResolvedProducts')):
+                continue
+            try:
+                capabilities = detector.timeResolvedCapabilities()
+            except Exception:
+                capabilities = {}
+            if capabilities.get('supports_lifetime_fit') is False:
+                # A counting detector on the card: no time axis, nothing to
+                # show here (its image is in the viewer like any detector's).
+                continue
+            found[name] = detector
         return found
 
     @property
@@ -392,7 +401,8 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         from imswitch.imcontrol.model.workflows.time_tagger_facade import TimeTaggerFacade
         self._card = card
         self._tt = TimeTaggerFacade(card, getattr(self._master, 'detectorsManager', None))
-        roles = self._tt.roles()
+        # Every declared input by name (the roles, without an inputs map).
+        roles = self._tt.inputs()
         channels = self._tt.channels()
         self._widget.setRoles(roles, {role: report.channel for role, report in channels.items()})
         for role, report in channels.items():
@@ -421,7 +431,8 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._refreshLevelWarnings(rates, filter_on=filter_on)
         parts = []
         for role, rate in rates.items():
-            label = 'sync (filtered)' if role == 'laser_sync' and filter_on else role
+            label = ('sync (filtered)' if role == 'laser_sync' else f'{role} (filtered)') \
+                if self._isSync(role) and filter_on else role
             text = ('—' if rate is None else f'{rate / 1e6:.2f} Mcps' if rate >= 1e6
                     else f'{rate / 1e3:.1f} kcps' if rate >= 1e3 else f'{rate:.0f} cps')
             parts.append(f'● {label} {text}')
@@ -1015,14 +1026,14 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             return
         from imswitch.imcontrol.model.timeresolved.preflight import rep_rate_mismatch
         from imswitch.imcontrol.model.workflows.time_tagger_facade import level_warnings
-        for role in self._tt.roles():
+        for role in self._tt.inputs():
             level = self._widget.triggerLevel(role)
             if level is None:
                 continue
             rate = None if rates is None else rates.get(role)
             warnings = level_warnings(self._card, role, level, rate_hz=rate,
                                       scan_running=self._scanRunning)
-            if (role == 'laser_sync' and rate and filter_on is False
+            if (self._isSync(role) and rate and filter_on is False
                     and self.detector is not None):
                 mismatch = rep_rate_mismatch(rate, float(self._widget.getSetting('rep_rate_mhz')))
                 if mismatch:
@@ -1035,7 +1046,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         if self._tt is None or not role:
             return
         from imswitch.imcontrol.model.workflows.time_tagger_facade import signal_kind
-        kind = signal_kind(role)
+        kind = signal_kind(role, self._card)
         if kind.get('scan_only') and getattr(self._card, 'scanHeld', False):
             self._widget.setLevelResult(
                 f'{role} fires only during a scan, and this scan holds the card (the '
@@ -1070,24 +1081,42 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setTriggerLevel(result.role, result.level_v)
         self._writeLevel(result.role, result.level_v, keep=keep)
 
+    def _isSync(self, name) -> bool:
+        """Whether an input carries a laser sync."""
+        try:
+            return self._card.channelInfo(name).kind == 'laser_sync'
+        except Exception:
+            return name == 'laser_sync'
+
     def _keepLevel(self, role, volts) -> str:
         """Write an applied level into the active setup file's timeTagger
-        block, with the mechanism the laser presets and the shortcut editor
-        use (``configfiletools.saveSetupInfo`` of the in-memory setup)."""
+        block -- into the input's entry of the ``inputs`` map, or its role
+        field -- with the mechanism the laser presets and the shortcut
+        editor use (``configfiletools.saveSetupInfo`` of the in-memory
+        setup)."""
         from imswitch.imcontrol.model import configfiletools
         from imswitch.imcontrol.model.managers.TimeTaggerManager import ROLE_FIELDS
         info = getattr(self._setupInfo, 'timeTagger', None)
+        inputs = dict(getattr(info, 'inputs', None) or {})
         fields = ROLE_FIELDS.get(role)
-        if info is None or fields is None:
+        if info is None or (role not in inputs and fields is None):
             return '; not kept: this setup has no timeTagger block to keep it in'
+        level = round(float(volts), 3)
+        if role in inputs:
+            name = f'inputs.{role}.triggerV'
+            inputs[role] = replace(inputs[role], triggerV=level)
+            updated = replace(info, inputs=inputs)
+        else:
+            name = fields[1]
+            updated = replace(info, **{fields[1]: level})
         try:
             # The block is a frozen dataclass: the setup gets an updated copy.
-            self._setupInfo.timeTagger = replace(info, **{fields[1]: round(float(volts), 3)})
+            self._setupInfo.timeTagger = updated
             configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
         except Exception as error:
-            self._logger.warning(f'Could not keep {fields[1]} in the setup file: {error}')
+            self._logger.warning(f'Could not keep {name} in the setup file: {error}')
             return f'; NOT kept in the setup file ({error}): copy the setup line instead'
-        return f'; kept in the setup file ("{fields[1]}": {float(volts):.3f})'
+        return f'; kept in the setup file ({name} = {float(volts):.3f})'
 
     def _onCopyLevel(self):
         result = self._levelResult

@@ -300,8 +300,30 @@ LEVEL_VERDICTS: Dict[str, str] = {
 }
 
 
-def signal_kind(role: Optional[str]) -> Dict[str, Any]:
-    """The hints for the input a role is configured on (generic without)."""
+#: The hints for an input that plays no role, by its kind.
+KIND_HINTS: Dict[str, Dict[str, Any]] = {
+    "detector": SIGNAL_KINDS["photons"],
+    "laser_sync": SIGNAL_KINDS["laser_sync"],
+    "line_clock": SIGNAL_KINDS["line_clock"],
+    "frame_clock": SIGNAL_KINDS["frame_clock"],
+    "marker": GENERIC_KIND,
+}
+
+
+def signal_kind(role: Optional[str], manager=None) -> Dict[str, Any]:
+    """The hints for an input: by the role it plays, else -- with the card
+    ``manager`` -- by its kind (a second detector input gets the detector
+    hints), else generic."""
+    if manager is not None and role:
+        try:
+            info = manager.channelInfo(role)
+        except Exception:
+            info = None
+        if info is not None:
+            plays = getattr(info, "plays", None)
+            if plays in SIGNAL_KINDS:
+                return SIGNAL_KINDS[plays]
+            return KIND_HINTS.get(getattr(info, "kind", ""), GENERIC_KIND)
     return SIGNAL_KINDS.get(role or "", GENERIC_KIND)
 
 
@@ -336,6 +358,9 @@ class LevelResult:
     rates_hz: List[float] = field(default_factory=list)
     reason: str = ""
     """ Why this verdict, in words; ``action`` says what to do. """
+    in_inputs_map: bool = False
+    """ Whether the input is declared in the block's ``inputs`` map (its
+    level is kept there), else by a role field. """
 
     @property
     def action(self) -> str:
@@ -343,17 +368,24 @@ class LevelResult:
 
     @property
     def field_name(self) -> Optional[str]:
-        """The ``timeTagger`` block field that keeps this level, if any."""
+        """The ``timeTagger`` block field that keeps this level, if any:
+        ``photonsTriggerV``, or ``inputs.apd_b.triggerV`` for an input of
+        the ``inputs`` map."""
+        if self.in_inputs_map:
+            return f"inputs.{self.role}.triggerV" if self.role else None
         fields = ROLE_FIELDS.get(self.role or "")
         return fields[1] if fields else None
 
     def block_line(self) -> Optional[str]:
         """The exact line for the setup file's ``timeTagger`` block, e.g.
-        ``"photonsTriggerV": -0.27`` (``None`` for an input without a role
-        or without a level)."""
+        ``"photonsTriggerV": -0.27``, or for an input of the ``inputs`` map
+        the line inside its entry, ``"triggerV": -0.27`` (``None`` for an
+        input the block does not declare, or without a level)."""
         name = self.field_name
         if name is None or self.level_v is None:
             return None
+        if self.in_inputs_map:
+            return f'"triggerV": {self.level_v:.3f}'
         return f'"{name}": {self.level_v:.3f}'
 
     def summary(self) -> str:
@@ -424,7 +456,7 @@ def level_warnings(manager, input, level_v: float, *, rate_hz: Optional[float] =
     known; a scan clock's 0 Hz is flagged only when ``scan_running``.
     """
     channel, role = manager.resolveInput(input)
-    kind = signal_kind(role)
+    kind = signal_kind(role, manager)
     level = float(level_v)
     out: List[str] = []
     if abs(level) > INPUT_RANGE_V:
@@ -452,11 +484,15 @@ def level_warnings(manager, input, level_v: float, *, rate_hz: Optional[float] =
 @dataclass
 class ChannelReport:
     role: str
+    """ The input's name (a role, in a block without an ``inputs`` map). """
     channel: int
     edge: str
     trigger_v: float
     deadtime_ps: int
     delay_ps: int
+    kind: str = "detector"
+    plays: Optional[str] = None
+    """ The role the input plays, if any. """
 
 
 # --------------------------------------------------------------------------- #
@@ -501,12 +537,27 @@ class TimeTaggerFacade:
         return self._manager.tcspcDirection
 
     def roles(self) -> List[str]:
+        """The roles some input plays, in the roles' order."""
         return [role for role in ROLES if self._manager.hasRole(role)]
 
+    def inputs(self) -> List[str]:
+        """Every declared input by name, in the block's order -- what the
+        Signals panel, the level checks and the pre-flight list. Without an
+        ``inputs`` map these are the roles."""
+        inputs = getattr(self._manager, "inputs", None)
+        return list(inputs()) if inputs is not None else self.roles()
+
+    def detector_inputs(self) -> List[str]:
+        """The inputs that carry detector pulses."""
+        return [name for name, info in self._manager.channels().items()
+                if getattr(info, "kind", "detector") == "detector"]
+
     def channels(self) -> Dict[str, ChannelReport]:
+        """Every input by name (the roles, without an ``inputs`` map)."""
         return {
             role: ChannelReport(role, info.channel, info.edge, info.trigger_v,
-                                info.deadtime_ps, info.delay_ps)
+                                info.deadtime_ps, info.delay_ps,
+                                getattr(info, "kind", "detector"), getattr(info, "plays", role))
             for role, info in self._manager.channels().items()
         }
 
@@ -615,9 +666,10 @@ class TimeTaggerFacade:
 
     def count_rates(self, roles: Optional[Sequence[str]] = None,
                     duration_s: float = 1.0) -> RatesResult:
-        """Counts per second per role -- or per input: an entry may also be a
-        channel number (any input, configured as a role or not)."""
-        roles = list(roles) if roles is not None else self.roles()
+        """Counts per second per input or role (default: every declared
+        input) -- an entry may also be a channel number (any input,
+        declared or not)."""
+        roles = list(roles) if roles is not None else self.inputs()
         manager = self._manager
         channels = [manager.resolveInput(r)[0] for r in roles]
         rate = manager.api.Countrate(manager.tagger, channels)
@@ -901,12 +953,18 @@ class TimeTaggerFacade:
 
     # -- mock-only hooks (no-ops on a real card) ---------------------------- #
 
-    def mock_truth(self, ny: int, nx: int):
+    def mock_truth(self, ny: int, nx: int, input: Optional[str] = None):
         """The *mock* sample's ``(rate_map_hz, lifetime_map_ns)`` on an
         ``ny`` x ``nx`` grid, or ``None`` on a real card (whose truth is the
-        APD image)."""
+        APD image). ``input``: as the detector on that input sees it (each
+        detector input of the mock images its own sample); default the
+        first detector's."""
         hook = getattr(self._manager._tagger, "sample_truth", None) if self.is_mock else None
-        return hook(ny, nx) if hook is not None else None
+        if hook is None:
+            return None
+        if input is None:
+            return hook(ny, nx)
+        return hook(ny, nx, channel=self._manager.resolveInput(input)[0])
 
     def set_mock_fault(self, name: str, value) -> None:
         """Inject (or clear, with ``None``) a *mock* fault at run time, for
@@ -978,7 +1036,7 @@ class TimeTaggerFacade:
         """
         manager = self._manager
         channel, role = manager.resolveInput(input)
-        kind = signal_kind(role)
+        kind = signal_kind(role, manager)
         sign = -1.0 if channel < 0 else 1.0
         duration = max(0.001, float(duration_s))
         owner = "find_trigger_level"
@@ -1036,6 +1094,8 @@ class TimeTaggerFacade:
                 if not applied:
                     manager.setInputTriggerLevel(channel, original, owner=owner)
         result.applied = applied
+        info = getattr(manager, "info", None)
+        result.in_inputs_map = bool(role) and role in (getattr(info, "inputs", None) or {})
         result.levels_v = sorted(measured)
         result.rates_hz = [measured[v] for v in result.levels_v]
         return result
