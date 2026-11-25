@@ -35,6 +35,14 @@ from imswitch.imcommon.model import APIExport, dirtools, initLogger
 # working while the canonical definition lives in the model layer.
 
 
+def _positionerNamed(master, name):
+    """The positioner manager called ``name``. One that failed to start is
+    named with its reason (``getDevice``) instead of a bare KeyError."""
+    positioners = master.positionersManager
+    getDevice = getattr(positioners, 'getDevice', None)
+    return getDevice(name) if callable(getDevice) else positioners[name]
+
+
 class ImConWidgetControllerFactory(WidgetControllerFactory):
     """ Factory class for creating a ImConWidgetController object. """
 
@@ -907,8 +915,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _getUnreferencedScanAxes(self):
         unreferenced = []
         for positionerName in self.positioners:
-            # getDevice names a positioner that failed to start and says why.
-            manager = self._master.positionersManager.getDevice(positionerName)
+            manager = _positionerNamed(self._master, positionerName)
             if not manager.isReferenceActionable:
                 continue
             
@@ -1306,7 +1313,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if not positionerName or positionerName == 'None':
                 positionsBeforeScan.append([])
                 continue
-            manager = self._master.positionersManager.getDevice(positionerName)
+            manager = _positionerNamed(self._master, positionerName)
             info = self._setupInfo.positioners[positionerName]
             axes = list(getattr(info, 'axes', None) or manager.axes)
             positionsBeforeScan.append([manager.position[axis]for axis in axes])
