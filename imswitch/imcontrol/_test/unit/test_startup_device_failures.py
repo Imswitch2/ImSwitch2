@@ -463,19 +463,76 @@ def test_camera_without_mock_opt_in_fails_with_a_device_named_error(managerName,
 
 
 # -------------------------------------------------------- Hamamatsu SLM USB
-def test_hamamatsu_usb_prototype_failure_falls_to_mock_instead_of_raising(monkeypatch):
+def _hamamatsu_usb(monkeypatch, dll_factory, **properties):
     import ctypes
 
     from imswitch.imcontrol.model.managers.slms import HamamatsuSLMusbManager as module
 
-    class _Dll:
-        def __getattr__(self, name):
-            raise AttributeError(name)  # symbol missing from the DLL
-
-    monkeypatch.setattr(ctypes, "CDLL", lambda path: _Dll())
+    monkeypatch.setattr(ctypes, "CDLL", dll_factory)
     info = SimpleNamespace(serial_number="123", width=4, height=4, pixelSize=1.0,
-                           managerProperties={"dll": "x.dll"})
-    manager = module.HamamatsuSLMusbManager(info, "slm")
-    assert manager.mockermode is True
+                           managerProperties={"dll": "x.dll", **properties})
+    return module.HamamatsuSLMusbManager(info, "slm")
+
+
+class _BrokenDll:
+    def __getattr__(self, name):
+        raise AttributeError(name)  # symbol missing from the DLL
+
+
+def test_hamamatsu_usb_prototype_failure_leaves_the_slm_not_connected_by_default(monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError, DeviceRuntimeMode
+
+    manager = _hamamatsu_usb(monkeypatch, lambda path: _BrokenDll())
+    assert manager.mockermode is False                  # not a silent mock
     assert manager.dll is None
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert "not connected" in manager.connectionStatusSummary
+    with pytest.raises(DeviceNotConnectedError, match="slm: upload refused"):
+        manager.upload_pattern(__import__("numpy").zeros((4, 4), dtype="uint8"))
+
+
+def test_hamamatsu_usb_connect_retries_the_dll_and_never_uploads(monkeypatch):
+    import ctypes
+
+    state = {"works": False}
+    calls = []
+
+    class Dll:
+        """A DLL that, once loadable, reports no USB device."""
+
+        def __init__(self):
+            for name in ("Open_Dev", "Close_Dev", "Check_HeadSerial", "Write_FMemBMPPath",
+                         "Change_DispSlot", "Write_FMemArray"):
+                setattr(self, name, _Func(name, calls))
+
+    class _Func:
+        def __init__(self, name, calls):
+            self.name, self.calls = name, calls
+            self.argtypes = self.restype = None
+
+        def __call__(self, *args):
+            self.calls.append(self.name)
+            return 0                                     # Open_Dev: no devices
+
+    def factory(path):
+        if not state["works"]:
+            raise OSError("MCS dll missing")
+        return Dll()
+
+    manager = _hamamatsu_usb(monkeypatch, factory)
+    assert manager.dll is None
+    state["works"] = True
+    ok, _ = manager.connect_to_device()
+    assert ok is False and manager.dll is not None       # the DLL loaded now; no SLM on USB
+    assert "No USB SLM detected" in manager.connectionStatusSummary
+    assert "Write_FMemArray" not in calls                # nothing was pushed
+
+
+def test_hamamatsu_usb_mock_is_an_explicit_reported_opt_in(monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceRuntimeMode
+
+    manager = _hamamatsu_usb(monkeypatch, lambda path: _BrokenDll(), useMockOnFailure=True)
+    assert manager.mockermode is True and manager.dll is None
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
