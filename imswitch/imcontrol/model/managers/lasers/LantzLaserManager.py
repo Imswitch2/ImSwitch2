@@ -14,6 +14,9 @@ class LantzLaserManager(LaserManager):
 
     - ``digitalPorts`` -- a string array containing the COM ports to connect
       to, e.g. ``["COM4"]``
+    - ``useMockOnFailure`` -- default ``false``: a laser that cannot be opened
+      is left absent (reported, commands refused, reconnectable from
+      Hardware status). ``true`` runs a reported mock instead.
     """
 
     def __init__(self, laserInfo, name, isBinary, valueUnits, valueDecimals, driver,
@@ -23,13 +26,36 @@ class LantzLaserManager(LaserManager):
         self._ports = normalise_ports(laserInfo.managerProperties['digitalPorts'])
         self._driver = driver
 
-        # Open linked lasers atomically. A failed real port causes the complete
-        # logical laser to use mocks rather than creating a real/mock mixture.
-        result = openLantzLaser(driver, self._ports, allowMockFallback=True)
+        # Open linked lasers atomically. A failed real port makes the complete
+        # logical laser absent (or, as an explicit opt-in, a mock) rather than
+        # a real/mock mixture.
+        useMock = laserInfo.managerProperties.get('useMockOnFailure', False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
+        self._useMockOnFailure = bool(useMock)
+        self._numLasers = len(self._ports)
+        self._absent = False
+        self._label = f'laser {name!r} on {", ".join(map(str, self._ports))}'
+        try:
+            result = openLantzLaser(driver, self._ports,
+                                    allowMockFallback=self._useMockOnFailure)
+        except Exception as exc:
+            from imswitch.imcontrol.model.devices.status import _AbsentBackend
+
+            self.__logger.warning(
+                f'Could not open {self._label}: {exc}. The laser is left absent; '
+                f'reconnect it from Hardware status (useMockOnFailure true for a mock).')
+            self._laser = _AbsentBackend(self, self._label)
+            self._backendIsMock = False
+            self._backendOpenError = exc
+            self._absent = True
+            self._setConnectionError(exc, summary=f'{self._label} not connected')
+            super().__init__(laserInfo, name, isBinary=isBinary, valueUnits=valueUnits,
+                             valueDecimals=valueDecimals)
+            return
         self._laser = result.laser
         self._backendIsMock = bool(result.is_mock)
         self._backendOpenError = result.error
-        self._numLasers = len(self._ports)
 
         if self._backendIsMock:
             self._setConnectionError(
@@ -50,8 +76,16 @@ class LantzLaserManager(LaserManager):
         super().__init__(laserInfo, name, isBinary=isBinary, valueUnits=valueUnits,
                          valueDecimals=valueDecimals)
 
+    def _requireNotAbsent(self, what):
+        if self.__dict__.get('_absent', False):
+            from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError
+            raise DeviceNotConnectedError(
+                f"{getattr(self, 'name', 'laser')}: {what} refused, "
+                f"{self.connectionStatusSummary or 'not connected'}")
+
     def finalize(self):
-        self._laser.finalize()
+        if not self.__dict__.get('_absent', False):
+            self._laser.finalize()
         self._setFinalizedStatus()
 
 

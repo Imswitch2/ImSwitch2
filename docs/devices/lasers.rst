@@ -250,6 +250,12 @@ from ``LantzLaserManager``.  Uses digital modulation mode for scans.
        multiple lasers behind one manager; ``setValue`` divides power
        by the port count.  **Required** (inherited from
        ``LantzLaserManager``).
+   * - ``useMockOnFailure``
+     - bool
+     - Defaults to ``false``. When a port cannot be opened the laser is
+       left **not connected**: the error shows in Hardware status, commands
+       are refused with the laser's name, and a reconnect there brings it
+       back dark. ``true`` runs a mock laser instead, reported as a mock.
 
 **LaserInfo fields used**
 
@@ -427,6 +433,11 @@ Inherited verbatim from ``Cobolt0601LaserManager``:
    * - ``digitalPorts``
      - list[str]
      - COM ports to connect to.  Several ports gang several lasers behind one manager, as for ``Cobolt0601LaserManager``.  **Required**.
+   * - ``useMockOnFailure``
+     - bool
+     - Defaults to ``false``: a port that cannot be opened leaves the laser
+       **not connected** (reported, commands refused, reconnectable from
+       Hardware status). ``true`` runs a reported mock instead.
 
 **LaserInfo fields used**
 
@@ -650,6 +661,11 @@ Use a concrete subclass such as ``Cobolt0601LaserManager``.
      - One or more COM ports.  Accepted forms are normalised by
        ``normalise_ports``: a JSON array, a Python-repr list, a
        comma-separated string, or a bare string.  **Required**.
+   * - ``useMockOnFailure``
+     - bool
+     - Defaults to ``false``: a port that cannot be opened leaves the laser
+       **not connected** (reported, commands refused, reconnectable from
+       Hardware status). ``true`` runs a reported mock instead.
 
 Note: the ``driver`` argument is supplied by subclasses in code, not by
 JSON.

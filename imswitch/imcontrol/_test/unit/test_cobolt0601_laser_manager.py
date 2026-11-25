@@ -129,8 +129,10 @@ class FakeLifecycleCobolt:
 
 
 class FakeLaserInfo:
-    def __init__(self, ports=('COM1',)):
+    def __init__(self, ports=('COM1',), useMockOnFailure=None):
         self.managerProperties = {'digitalPorts': list(ports)}
+        if useMockOnFailure is not None:
+            self.managerProperties['useMockOnFailure'] = useMockOnFailure
         self.wavelength = 488
         self.valueRangeMin = 0
         self.valueRangeMax = 100
@@ -155,7 +157,9 @@ def _patch_openers(
 
     def opener(driver, ports, allowMockFallback=True):
         calls.append((tuple(ports), allowMockFallback))
-        if allowMockFallback:
+        if len(calls) == 1:                    # the startup open
+            if isinstance(startup, Exception):
+                raise startup
             return LantzLaserOpenResult(
                 startup, startup_is_mock, startup_error
             )
@@ -206,7 +210,7 @@ def test_startup_mock_fallback_can_reconnect_to_real(monkeypatch):
         startup_error=OSError('COM1 unavailable'),
     )
 
-    manager = Cobolt0601LaserManager(FakeLaserInfo(), '488')
+    manager = Cobolt0601LaserManager(FakeLaserInfo(useMockOnFailure=True), '488')
     assert manager.runtimeMode.value == 'mock'
     assert manager.connectionState.value == 'error'
 
@@ -230,7 +234,7 @@ def test_lifecycle_failed_reconnect_uses_mock_and_reports_unknown_beam(monkeypat
         reconnect_error=OSError('port unavailable'),
     )
 
-    manager = Cobolt0601LaserManager(FakeLaserInfo(), '488')
+    manager = Cobolt0601LaserManager(FakeLaserInfo(useMockOnFailure=True), '488')
     manager.setValue(33)
 
     result = manager.getDeviceLifecycle().reconnect()
@@ -245,13 +249,54 @@ def test_lifecycle_failed_reconnect_uses_mock_and_reports_unknown_beam(monkeypat
 
 
 @pytest.mark.nohardware
+def test_a_laser_that_cannot_be_opened_is_absent_not_a_mock(monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
+    _patch_openers(monkeypatch, OSError('COM1 unavailable'))
+    manager = Cobolt0601LaserManager(FakeLaserInfo(), '488')
+
+    assert manager._absent is True and manager._backendIsMock is False
+    assert manager.runtimeMode.value == 'real' and manager.connectionState.value == 'error'
+    assert not manager.isUsable and 'COM1' in manager.connectionStatusDetails
+    for command in (lambda: manager.setEnabled(True), lambda: manager.setValue(5),
+                    lambda: manager.setScanModeActive(True)):
+        with pytest.raises(DeviceNotConnectedError, match='488.*refused'):
+            command()
+    assert manager.getDeviceLifecycle().probe().success is False
+    manager.finalize()
+
+
+@pytest.mark.nohardware
+def test_an_absent_laser_reconnects_dark_and_a_failed_reconnect_stays_absent(monkeypatch):
+    reconnect = FakeLifecycleCobolt('SERIAL-A')
+    _patch_openers(monkeypatch, OSError('COM1 unavailable'), reconnect=reconnect)
+    manager = Cobolt0601LaserManager(FakeLaserInfo(), '488')
+    manager._setpoint_mw = 60.0                    # a setpoint the user chose earlier
+
+    result = manager.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert manager._laser is reconnect and manager._absent is False
+    assert manager.isUsable and manager.runtimeMode.value == 'real'
+    assert reconnect.enabled is False              # dark
+    assert manager._setpoint_mw == 60.0 and reconnect.power_sp == 0.0   # not applied
+
+    # Another failure leaves it absent, not mocked.
+    _patch_openers(monkeypatch, OSError('x'), reconnect_error=OSError('gone again'))
+    other = Cobolt0601LaserManager(FakeLaserInfo(), '561')
+    result = other.getDeviceLifecycle().reconnect()
+    assert result.success is False and 'not connected' in result.summary
+    assert other._absent is True and other._backendIsMock is False
+
+
+@pytest.mark.nohardware
 def test_lifecycle_rejects_changed_known_serial_before_safe_init(monkeypatch):
     startup = FakeLifecycleCobolt('SERIAL-A')
     reconnect = FakeLifecycleCobolt('SERIAL-B')
     mock = FakeLifecycleCobolt('MOCK')
     _patch_openers(monkeypatch, startup, reconnect=reconnect, mock=mock)
 
-    manager = Cobolt0601LaserManager(FakeLaserInfo(), '488')
+    manager = Cobolt0601LaserManager(FakeLaserInfo(useMockOnFailure=True), '488')
     reconnect.mutations.clear()
     reconnect.queries.clear()
 

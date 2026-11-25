@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 170,
-    "docs_documented": 170,
-    "keys": 250,
+    "docs_agree": 173,
+    "docs_documented": 173,
+    "keys": 253,
     "managers": 66,
     "none_default_only": 40,
     "none_only": 16,
-    "optional": 184,
+    "optional": 187,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 125,
-    "typed_with_docs": 194,
-    "typed_with_examples": 162,
+    "typed_by_code": 128,
+    "typed_with_docs": 197,
+    "typed_with_examples": 165,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -118,7 +118,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "Cobolt0601NewLaserManager": {
@@ -140,7 +140,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "CoolLEDLaserManager": {
@@ -343,7 +343,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "LeicaDMIStandManager": {
