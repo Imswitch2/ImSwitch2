@@ -198,7 +198,8 @@ def test_an_apd_counts_the_sample_and_its_dark_counts(brightest):
     lit = _apd_pixels(apd, _parked(bright, 400, np.ones(400, bool)))
     unlit = _apd_pixels(apd, _parked(bright, 400, np.zeros(400, bool)))
     background = _apd_pixels(apd, _parked(dark, 400, np.ones(400, bool)))
-    assert lit.mean() > 20 * background.mean()
+    # Scatter background grows with the light; the bead still stands out.
+    assert lit.mean() > 5 * background.mean()
     # No light: dark counts alone, 0.2 per microsecond sample.
     dwell = 10
     assert unlit.mean() == pytest.approx(0.2 * dwell, rel=0.3)

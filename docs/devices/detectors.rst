@@ -164,7 +164,7 @@ scan driven by ``NidaqManager``.
    * - ``mockSample``
      - object or null
      - ``None``
-     - Simulation only: image a virtual sample instead of uniform noise. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "seed": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm. Optional: ``preset`` (``cells``, ``filaments``, ``beads``, ``resolution``), ``psfFwhmUm``, ``zAxis``/``focusUm``/``rayleighRangeUm`` (defocus), ``excitation`` (lasers whose scan TTLs light the sample), ``bleachHalfLifeS`` and ``darkCountRate``; see :doc:`../mock-infrastructure`.
+     - Simulation only: image a virtual sample instead of uniform noise. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "seed": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm. Optional: ``preset`` (``cells``, ``filaments``, ``beads``, ``resolution``), ``psfFwhmUm``, ``zAxis``/``focusUm``/``rayleighRangeUm`` (defocus), ``excitation`` (lasers whose TTL or on/off state and power light the sample), ``saturationPower``/``scatterBackground`` (how the fluorophores and background answer the power), ``bleachHalfLifeS`` and ``darkCountRate``; see :doc:`../mock-infrastructure`.
 
 **Low-level dependencies**
 
@@ -294,7 +294,7 @@ Hamamatsu sCMOS cameras driven through the DCAM API.
      - Dictionary of DCAM API property name → value pairs applied via ``setPropertyValue`` at startup.
    * - ``mockSample``
      - object or null
-     - Simulation only (mock camera on a simulated NI-DAQ): the frames show the virtual sample under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "latticePeriodUm": 0.72, "seed": 0}``; each axis carries its positioner's ``conversionFactor``. Optional: the point-scan keys (``preset``, ``zAxis``, ``bleachHalfLifeS``), ``excitation`` (readout lasers), ``switching`` (ON/OFF lasers, RESOLFT), ``excitationFwhmUm``, ``spotSigmaUm``, ``peakCounts``, ``offsetCounts`` and ``readNoiseCounts``; see :doc:`../mock-infrastructure`. Without it the mock frames are uniform noise.
+     - Simulation only (mock camera on a simulated NI-DAQ): the frames show the virtual sample under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "latticePeriodUm": 0.72, "seed": 0}``; each axis carries its positioner's ``conversionFactor``. Optional: the point-scan keys (``preset``, ``zAxis``, ``bleachHalfLifeS``), ``excitation`` (readout lasers, with ``saturationPower``/``scatterBackground``), ``switching`` (ON/OFF lasers, RESOLFT), ``excitationFwhmUm``, ``spotSigmaUm``, ``peakCounts``, ``offsetCounts`` and ``readNoiseCounts``; see :doc:`../mock-infrastructure`. Without it the mock frames are uniform noise.
    * - ``mockRandomSeed``
      - int or null
      - Simulation only: seed of the ``mockSample`` frames' camera noise, for reproducible mock recordings.  ``None`` draws fresh noise every run.

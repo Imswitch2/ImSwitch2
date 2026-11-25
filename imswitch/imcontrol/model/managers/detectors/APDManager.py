@@ -21,7 +21,9 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
-from ._mock_optics import Bleaching, PointScanOptics, PointScanSignal
+from ._mock_optics import (
+    Bleaching, LaserStates, PointScanOptics, PointScanSignal, unlit_message,
+)
 from ._mock_sample import MockSample
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
@@ -145,6 +147,9 @@ class APDManager(DetectorManager):
         # A synthetic sample imaged from the scan waveforms (simulation only).
         self._mock_sample = MockSample.from_property(manager_props.get("mockSample"))
         self._mock_optics = PointScanOptics.from_property(manager_props.get("mockSample"))
+        # The lasers' set power and on/off state, as the simulated NI-DAQ
+        # last wrote them (read-only).
+        self._mock_laser_states = LaserStates(nidaqManager)
         # Bleaching lasts as long as the detector: a region scanned again
         # comes back dimmer.
         self._mock_bleaching = (
@@ -1156,10 +1161,12 @@ class ScanWorker(Worker):
             mockSignal = PointScanSignal(
                 sample, self._manager._mock_optics, signalDict,
                 self._frac_scan_det_rate, self._manager._detection_samplerate,
-                self._manager._mock_bleaching,
+                self._manager._mock_bleaching, self._manager._mock_laser_states,
             )
             if mockSignal.usable:
                 self._mock_signal = mockSignal
+            if mockSignal.unlit:
+                self.__logger.warning(unlit_message(self._manager._mock_optics.excitation))
 
         # extract APD signals from signalDict
         self._seq_signal = None  # set only if ttlmultiplying AND this device found in signalDict

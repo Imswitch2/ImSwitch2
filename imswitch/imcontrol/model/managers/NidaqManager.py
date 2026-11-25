@@ -109,6 +109,11 @@ class NidaqManager(SignalInterface):
         self.__backendAvailable = bool(_NIDAQMX_AVAILABLE)
         self.__backendError = None
         self.__warnedRuntimeErrors = set()
+        # Simulation only: the level each device's lines were last set to by
+        # setDigital/setAnalog, for the mock detectors' virtual sample (see
+        # simulatedOutput). Never written or read against hardware.
+        self._simulatedOutputs = {}
+        self._simulatedOutputsLock = threading.Lock()
         self._configuredDeviceNames = self._extractConfiguredDeviceNames(setupInfo)
         self._detectedDeviceNames = ()
         self._deviceEnumerationError = None
@@ -416,6 +421,30 @@ class NidaqManager(SignalInterface):
     def isSimulated(self):
         """Whether this NI-DAQ runs in simulation (no hardware) mode."""
         return self.__simulating
+
+    def simulatedOutput(self, target):
+        """Simulation only: what ``target``'s lines were last set to.
+
+        A copy of ``{"enabled": bool}`` (its digital line) and/or
+        ``{"value": float, "range": (low, high)}`` (its analog line, with
+        the range the writer gave), as the last setDigital/setAnalog left
+        them; empty when never set, and always empty on hardware. Read-only:
+        the mock detectors read a laser's static state here.
+        """
+        lock = self.__dict__.get('_simulatedOutputsLock')
+        if lock is None:
+            return {}
+        with lock:
+            return dict(self._simulatedOutputs.get(target, {}))
+
+    def _recordSimulatedOutput(self, target, **levels):
+        if ('_simulatedOutputsLock' not in self.__dict__
+                or not self.__dict__.get('_NidaqManager__simulating')):
+            return
+        with self._simulatedOutputsLock:
+            entry = dict(self._simulatedOutputs.get(target, {}))
+            entry.update(levels)
+            self._simulatedOutputs[target] = entry
 
     def _warnRuntimeErrorOnce(self, key, message):
         if key in self.__warnedRuntimeErrors:
@@ -1254,6 +1283,7 @@ class NidaqManager(SignalInterface):
                 ),
                 enable * np.ones(tasklen, dtype=bool),
             )
+            self._recordSimulatedOutput(target, enabled=bool(enable))
             return True
         except (
             nidaqmx._lib.DaqNotFoundError,
@@ -1315,6 +1345,9 @@ class NidaqManager(SignalInterface):
                     False,
                 ),
                 voltage * np.ones(tasklen, dtype=float),
+            )
+            self._recordSimulatedOutput(
+                target, value=float(voltage), range=(float(min_val), float(max_val))
             )
             return True
         except (

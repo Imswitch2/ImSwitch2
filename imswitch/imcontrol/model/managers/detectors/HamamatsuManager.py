@@ -9,6 +9,7 @@ from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
 from ._mock_lattice import MockLattice, MockLatticeFrames, trigger_conditions
+from ._mock_optics import LaserStates, unlit_message
 import copy
 import threading
 
@@ -215,9 +216,12 @@ class HamamatsuManager(DetectorManager):
         if (mockLattice is not None and nidaqManager is not None
                 and getattr(nidaqManager, 'isSimulated', False)
                 and hasattr(self._camera, 'mock_frame_source')):
+            # The lasers' set state comes from the simulated NI-DAQ that
+            # switches them (read-only), for the live view and the scans.
             self._mockFrames = MockLatticeFrames(
                 mockLattice, self.pixelSizeUm[-1],
                 seed=detectorInfo.managerProperties.get('mockRandomSeed'),
+                states=LaserStates(nidaqManager),
             )
             self._camera.mock_frame_source = self._mockFrames
             nidaqManager.sigScanBuilt.connect(self.__onSimScanBuilt)
@@ -330,7 +334,11 @@ class HamamatsuManager(DetectorManager):
         conditions = trigger_conditions(
             signalDict, self.__name, self._mockFrames.lattice,
             (scanInfoDict or {}).get('scan_time_step'),
+            states=self._mockFrames.states,
         )
+        lattice = self._mockFrames.lattice
+        if conditions and lattice.excitation and not any(c.readout > 0 for c in conditions):
+            self.__logger.warning(unlit_message(lattice.excitation))
         self._mockFrames.setScan([], pixel_um=self.pixelSizeUm[-1],
                                  conditions=conditions or [])
 

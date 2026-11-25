@@ -276,7 +276,9 @@ def test_the_off_pulse_sets_the_resolution_of_the_frame():
     assert confocal[0].zeta == 0.0
     sharp, _ = lattice.effective_sigma_um(resolft[0])
     wide, _ = lattice.effective_sigma_um(confocal[0])
-    assert wide == pytest.approx(lattice.excitation_sigma_um)
+    # Full readout power saturates the fluorophores: the confocal focus widens.
+    assert wide == pytest.approx(
+        lattice.excitation_sigma_um * float(lattice.physics.widening(1.0)))
     # 2 ms of OFF light: about 80 nm FWHM from 200 nm.
     assert 2.3548 * sharp == pytest.approx(0.08, abs=0.01)
     # The ON pulse switches (almost) all on; the readout switches some off.

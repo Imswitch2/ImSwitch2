@@ -1,19 +1,31 @@
 """What the simulated detectors see of the virtual sample during a scan.
 
 :mod:`._mock_sample` is the specimen; this module is the experiment around
-it, read from the scan's own signals (``signalDict``) where they carry it:
+it:
 
 * where the specimen is -- the x/y scanner waveforms (``scanSignalsDict``),
   and, with a ``zAxis``, how far out of focus (defocus widens the PSF and
   lowers its peak, and a confocal pinhole rejects out-of-focus light);
-* whether it is lit -- the TTL of each exciting laser
-  (``TTLCycleSignalsDict``), times the laser's analog power when the scan
-  carries a power waveform for it (Advanced line-step power) and the setup
-  says what voltage is full power. The power a laser was set to outside the
-  scan is not in the scan signals, so it is not modelled: a laser without a
-  TTL in the scan counts as on at full power;
+* how strongly it is lit -- for each laser named in ``excitation``: its TTL
+  in the scan (``TTLCycleSignalsDict``) or, without one, whether it is
+  switched on; times its power, from the scan's analog power waveform when
+  the scan has one (Advanced line-step power) or else the power it is set
+  to. The set state comes from the simulated NI-DAQ, which keeps the last
+  level each laser's lines were set to (:class:`LaserStates`);
+* how the fluorophores answer -- they saturate (:class:`Photophysics`):
+  emission per fluorophore goes as I / (I + I_sat), a saturated focus is
+  wider, and a background (scatter, autofluorescence) grows with the light
+  without saturating. With dark counts, camera offset and read noise, and
+  Poisson noise on all of it, image quality has an optimum power;
 * what the light did to it -- photobleaching, accumulated over the scan in
-  the order the scan exposes the sample.
+  the order the scan exposes the sample, in proportion to the light the
+  fluorophores emitted.
+
+Power is a fraction of the laser's configured range (``valueRangeMin`` to
+``valueRangeMax``) times its ``efficiency``: there is no power calibration
+yet. :meth:`Laser.intensity` is the one place a laser's setting becomes
+excitation intensity, for a calibration (power in physical units) to
+replace.
 
 :class:`PointScanSignal` turns that into the relative brightness under the
 beam at every detector sample of a point scan (APD, PMT). The MoNaLISA mock
@@ -43,8 +55,19 @@ class Laser:
     name: str
     efficiency: float = 1.0
     #: Volts of the laser's analog power waveform that mean full power; None
-    #: ignores a power waveform (TTL gating only).
+    #: reads a waveform against the range the laser was last set with, and
+    #: ignores it when that is not known either.
     full_scale_v: Optional[float] = None
+
+    def intensity(self, fraction):
+        """Excitation intensity of this laser at ``fraction`` of its range.
+
+        Relative: 1 is a laser of efficiency 1 at the top of its range. This
+        is the seam for a power calibration: a laser whose power is known in
+        physical units would return it here, and ``saturationPower`` would
+        be given in the same units.
+        """
+        return self.efficiency * fraction
 
 
 def parse_lasers(value, key) -> Tuple[Laser, ...]:
@@ -68,6 +91,46 @@ def parse_lasers(value, key) -> Tuple[Laser, ...]:
     raise ValueError(f'mockSample "{key}" is a list of laser names or {{"<laser>": <efficiency>}}')
 
 
+@dataclass(frozen=True)
+class LaserState:
+    """A laser's set state, as far as it is known (None: not known)."""
+
+    enabled: Optional[bool] = None
+    #: Set power as a fraction of the laser's range, 0 to 1.
+    fraction: Optional[float] = None
+    #: The range its analog line was set with, (low, high).
+    range: Optional[Tuple[float, float]] = None
+
+
+class LaserStates:
+    """Read-only view of the lasers' set state, from the simulated NI-DAQ.
+
+    A laser's manager switches it and sets its power through the NI-DAQ
+    (``setDigital``, ``setAnalog``); in simulation the NI-DAQ manager keeps
+    the last level of each (``simulatedOutput``), which this reads under the
+    NI-DAQ's lock. Nothing here knows a laser manager class, and nothing is
+    written. A laser the NI-DAQ never set (another driver, or the power of a
+    binary laser) is unknown: on, at full power, where that matters.
+    """
+
+    def __init__(self, source=None):
+        self._read = getattr(source, 'simulatedOutput', None)
+
+    def get(self, name) -> LaserState:
+        if not callable(self._read):
+            return LaserState()
+        try:
+            output = self._read(name) or {}
+        except Exception:
+            return LaserState()
+        enabled, value, span = output.get('enabled'), output.get('value'), output.get('range')
+        fraction = None
+        if value is not None and span is not None and span[1] > span[0]:
+            fraction = min(max((value - span[0]) / (span[1] - span[0]), 0.0), 1.0)
+        return LaserState(None if enabled is None else bool(enabled), fraction,
+                          None if span is None else (float(span[0]), float(span[1])))
+
+
 def _resample(signal, n):
     """A scan signal on ``n`` samples (TTL and analog share the scan clock)."""
     signal = np.asarray(signal).ravel()
@@ -76,31 +139,110 @@ def _resample(signal, n):
     return signal[np.minimum((np.arange(n) * signal.size) // n, signal.size - 1)]
 
 
-def laser_light(signalDict, lasers, n, unswitched_on=True) -> Optional[np.ndarray]:
-    """Relative light of ``lasers`` on the sample at each of ``n`` scan samples.
+def laser_light(signalDict, lasers, n, unswitched_on=True,
+                states: Optional[LaserStates] = None) -> Optional[np.ndarray]:
+    """Excitation intensity of ``lasers`` at each of ``n`` scan samples.
 
-    The sum over the lasers of efficiency x TTL x analog power fraction. A
-    laser the scan does not switch counts as on (left on by hand), or with
-    ``unswitched_on=False`` as off (a pulse the scan did not fire). None
+    The sum over the lasers of :meth:`Laser.intensity` while each is on. On
+    is its TTL in the scan; without one, its set state (``states``); not
+    known either, on (left on by hand) or, with ``unswitched_on=False``, off
+    (a pulse the scan did not fire). Its power is the scan's analog power
+    waveform where there is one and its scale is known (``fullScaleV``, or
+    the range the laser was set with), else its set power, else full. None
     when no lasers are named (the caller's "always lit").
     """
     if not lasers:
         return None
     ttls = (signalDict or {}).get('TTLCycleSignalsDict') or {}
     analog = (signalDict or {}).get('scanSignalsDict') or {}
-    light = np.zeros(int(n), dtype=np.float32)
+    states = states or LaserStates()
+    n = int(n)
+    light = np.zeros(n, dtype=np.float32)
     for laser in lasers:
-        on = ttls.get(laser.name)
-        if on is None and not unswitched_on:
-            continue
-        part = (np.ones(int(n), dtype=np.float32) if on is None
-                else _resample(on, n).astype(np.float32))
+        state = states.get(laser.name)
+        ttl = ttls.get(laser.name)
+        if ttl is None:
+            if not (state.enabled if state.enabled is not None else unswitched_on):
+                continue
+            part = np.ones(n, dtype=np.float32)
+        else:
+            part = _resample(ttl, n).astype(np.float32)
         power = analog.get(laser.name)
-        if power is not None and laser.full_scale_v:
-            fraction = _resample(np.asarray(power, dtype=float), n) / laser.full_scale_v
-            part = part * np.clip(fraction, 0.0, None).astype(np.float32)
-        light += np.float32(laser.efficiency) * part
+        low, high = ((0.0, laser.full_scale_v) if laser.full_scale_v
+                     else (state.range or (0.0, 0.0)))
+        if power is not None and high > low:
+            fraction = (_resample(np.asarray(power, dtype=float), n) - low) / (high - low)
+            part = part * np.clip(fraction, 0.0, 1.0).astype(np.float32)
+        elif state.fraction is not None:
+            part = part * np.float32(state.fraction)
+        light += np.asarray(laser.intensity(part), dtype=np.float32)
     return light
+
+
+@dataclass(frozen=True)
+class Photophysics:
+    """How the fluorophores and the background answer the excitation.
+
+    In force when ``excitation`` names lasers; without it the sample is lit
+    at a fixed level as before. ``saturationPower`` (I_sat; default 0.2 for
+    a point scan, 0.3 for the camera, whose readout light is spread) is
+    the intensity, in :meth:`Laser.intensity` units (1: a laser of
+    efficiency 1 at the top of its range), at which a fluorophore emits half
+    its most; null turns saturation off. ``scatterBackground`` (default
+    0.12) is the background the light adds at intensity 1, relative to the
+    brightest structure, on top of the sample's autofluorescence
+    (:data:`BACKGROUND`); background does not saturate. Emission is scaled to
+    1 at intensity 1, so a laser at the top of its range shows the sample at
+    its nominal brightness. ``saturationPower: null, scatterBackground: 0``
+    is the linear response of the plain ``excitation`` gating.
+    """
+
+    saturation: Optional[float] = 0.2
+    scatter: float = 0.12
+
+    @classmethod
+    def from_property(cls, value, saturation=None) -> Optional['Photophysics']:
+        if not isinstance(value, Mapping) or not value.get('excitation'):
+            return None
+        if saturation is None:
+            saturation = cls.saturation
+        saturation = value.get('saturationPower', saturation)
+        physics = cls(saturation=None if saturation is None else float(saturation),
+                      scatter=float(value.get('scatterBackground', cls.scatter)))
+        if (physics.saturation is not None and physics.saturation <= 0) or physics.scatter < 0:
+            raise ValueError('mockSample "saturationPower" must be positive and '
+                             '"scatterBackground" not negative')
+        return physics
+
+    def emission(self, intensity):
+        """Emission per fluorophore at the focus centre; 1 at intensity 1."""
+        intensity = np.maximum(np.asarray(intensity, dtype=float), 0.0)
+        if self.saturation is None:
+            return intensity
+        x = intensity / self.saturation
+        full = 1.0 / self.saturation
+        return (x / (1.0 + x)) * ((1.0 + full) / full)
+
+    def widening(self, intensity):
+        """Factor on the excitation PSF sigma that saturation causes.
+
+        A saturated Gaussian focus I g(r) excites s(I g), s(x) = x / (1 + x):
+        flat-topped and wider. The Gaussian of the same peak and the same
+        volume has its sigma^2 times (1 + x) ln(1 + x) / x, x = I / I_sat --
+        exact in volume (what a uniform region collects), approximate in
+        shape.
+        """
+        intensity = np.maximum(np.asarray(intensity, dtype=float), 0.0)
+        if self.saturation is None:
+            return np.ones_like(intensity)
+        x = intensity / self.saturation
+        safe = np.where(x > 1e-6, x, 1.0)
+        factor = np.where(x > 1e-6, (1.0 + safe) * np.log1p(safe) / safe, 1.0)
+        return np.sqrt(factor)
+
+    def background(self, intensity):
+        """Background at this intensity: autofluorescence and scatter."""
+        return (BACKGROUND + self.scatter) * np.asarray(intensity, dtype=float)
 
 
 def axis_um(signalDict, axis, n=None) -> Optional[np.ndarray]:
@@ -132,11 +274,13 @@ def defocus(z_um, sigma_um, rayleigh_um):
 class Bleaching:
     """Photobleaching of the sample, accumulated where it was exposed.
 
-    Dose is seconds at full excitation, on a 100 nm grid over the field; the
-    fraction of fluorophores left is 2^(-dose / half life). It is applied to
-    the blurred sample at the exposed position -- a simplification: the dose
-    is not itself spread by the PSF, so this grid is the resolution of the
-    bleaching pattern.
+    Dose is seconds of emission at the nominal brightness (a laser of
+    efficiency 1 at full range, or as much light emitted), on a 100 nm grid
+    over the field; the fraction of fluorophores left is 2^(-dose / half
+    life). More power bleaches faster, as the fluorophores emit more, up to
+    their saturation. It is applied to the blurred sample at the exposed
+    position -- a simplification: the dose is not itself spread by the PSF,
+    so this grid is the resolution of the bleaching pattern.
     """
 
     CELL_UM = 0.1
@@ -189,7 +333,8 @@ class PointScanOptics:
     """The point-scan side of the ``mockSample`` block.
 
     ``psfFwhmUm`` (default 0.235), ``rayleighRangeUm`` (0.4), ``excitation``
-    (lasers that excite the sample; all light when absent),
+    (lasers that excite the sample; all light when absent) with its
+    :class:`Photophysics` (``saturationPower``, ``scatterBackground``),
     ``bleachHalfLifeS`` (none: no bleaching) and ``darkCountRate`` (counts
     per second, APD only; default 0).
     """
@@ -199,6 +344,7 @@ class PointScanOptics:
     excitation: Tuple[Laser, ...] = ()
     bleach_half_life_s: Optional[float] = None
     dark_count_rate: float = 0.0
+    physics: Optional[Photophysics] = None
 
     @classmethod
     def from_property(cls, value) -> 'PointScanOptics':
@@ -211,6 +357,7 @@ class PointScanOptics:
             excitation=parse_lasers(value.get('excitation'), 'excitation'),
             bleach_half_life_s=parse_bleach_half_life(value),
             dark_count_rate=float(value.get('darkCountRate', 0.0)),
+            physics=Photophysics.from_property(value),
         )
         if optics.psf_sigma_um <= 0 or optics.rayleigh_um <= 0 or optics.dark_count_rate < 0:
             raise ValueError('mockSample "psfFwhmUm" and "rayleighRangeUm" must be positive '
@@ -221,16 +368,19 @@ class PointScanOptics:
 class PointScanSignal:
     """Relative brightness under the beam at every detector sample of one scan.
 
-    Built from the scan's signals when the scan is built; called with the
-    detector samples a scan worker reads, in order. 1 is about the brightest
-    structure in focus under full excitation; the background is
-    :data:`BACKGROUND`. ``samples_per_scan_sample`` detector samples share
-    one scan (waveform) sample.
+    Built from the scan's signals (and the lasers' set state, ``states``)
+    when the scan is built; called with the detector samples a scan worker
+    reads, in order. 1 is about the brightest structure in focus at nominal
+    excitation; the background is :data:`BACKGROUND` (plus the scatter of
+    :class:`Photophysics`, in proportion to the light).
+    ``samples_per_scan_sample`` detector samples share one scan (waveform)
+    sample.
     """
 
     def __init__(self, sample: MockSample, optics: PointScanOptics, signalDict,
                  samples_per_scan_sample: int, detector_rate_hz: float,
-                 bleaching: Optional[Bleaching] = None):
+                 bleaching: Optional[Bleaching] = None,
+                 states: Optional[LaserStates] = None):
         self.sample = sample
         self.optics = optics
         self._per = max(1, int(samples_per_scan_sample))
@@ -245,12 +395,18 @@ class PointScanSignal:
         self._z = None if z is None else z - sample.focus_um
         if self._z is not None:
             self._n = max(self._n, self._z.size)
-        self._light = laser_light(signalDict, optics.excitation, self._n) if self._n else None
+        self._light = (laser_light(signalDict, optics.excitation, self._n, states=states)
+                       if self._n else None)
 
     @property
     def usable(self) -> bool:
         """Whether the scan moves the beam over the sample at all."""
         return any(p is not None for p in self._xy)
+
+    @property
+    def unlit(self) -> bool:
+        """Whether no excitation light reaches the sample in this scan."""
+        return self._light is not None and not np.any(self._light > 0)
 
     def __call__(self, start: int, count: int) -> np.ndarray:
         count = int(count)
@@ -262,37 +418,59 @@ class PointScanSignal:
             else:
                 coords.append(positions[np.minimum(index, positions.size - 1)])
         x, y = coords
-        signal = np.empty(count)
-        if self._z is None:
-            signal[:] = self.sample.view(self.optics.psf_sigma_um).sample(x, y)
-            peak = 1.0
-        else:
+        light = None
+        if self._light is not None:
+            light = self._light[np.minimum(index, self._light.size - 1)].astype(float)
+        physics = self.optics.physics if light is not None else None
+
+        sigma = np.full(count, self.optics.psf_sigma_um)
+        peak = 1.0
+        if self._z is not None:
             z = self._z[np.minimum(index, self._z.size - 1)]
             sigma, excitation = defocus(z, self.optics.psf_sigma_um, self.optics.rayleigh_um)
             # The pinhole passes as much less of the defocused light as the
             # excitation peak fell: the confocal peak falls as its square.
             peak = excitation * excitation
-            # One view per distinct defocus (a stepped z: one per plane).
+        if physics is not None:
+            # A saturated focus is wider (lit samples only; unlit read 0).
+            sigma = sigma * physics.widening(light)
+        signal = np.empty(count)
+        if count == 0 or sigma.min() == sigma.max():
+            signal[:] = self.sample.view(float(sigma[0]) if count else 1.0).sample(x, y)
+        else:
+            # One view per distinct PSF (one per plane and power, in practice).
             sigmas, which = np.unique(np.round(sigma, 4), return_inverse=True)
             for k, s in enumerate(sigmas):
                 hit = which == k
                 signal[hit] = self.sample.view(float(s)).sample(x[hit], y[hit])
         if self._bleaching is not None:
             signal *= self._bleaching.survival(x, y)
-        signal = BACKGROUND + peak * signal
-        light = None
-        if self._light is not None:
-            light = self._light[np.minimum(index, self._light.size - 1)]
-            signal *= light
+
+        if physics is not None:
+            emitted = peak * physics.emission(light)
+            signal = emitted * signal + physics.background(light)
+        else:
+            emitted = peak * (1.0 if light is None else light)
+            signal = BACKGROUND + peak * signal
+            if light is not None:
+                signal *= light
         if self._bleaching is not None:
-            dose = self._dt * peak * (1.0 if light is None else light)
-            self._bleaching.expose(x, y, np.broadcast_to(dose, x.shape))
+            self._bleaching.expose(x, y, np.broadcast_to(self._dt * emitted, x.shape))
         return signal
 
 
-__all__ = ['Bleaching', 'Laser', 'PointScanOptics', 'PointScanSignal', 'RAYLEIGH_UM',
-           'parse_bleach_half_life',
-           'axis_um', 'defocus', 'laser_light', 'parse_lasers']
+def unlit_message(lasers) -> str:
+    """What the mock tells a user whose scan lights nothing."""
+    names = ', '.join(f'"{laser.name}"' for laser in lasers)
+    return (f'Mock sample: no excitation light reaches it in this scan -- {names} '
+            f'off or at zero power. Lasers start off and at their lowest power, as '
+            f'on the instrument: raise one in the Laser widget (or the scan\'s '
+            f'channel power) to see the sample.')
+
+
+__all__ = ['Bleaching', 'Laser', 'LaserState', 'LaserStates', 'Photophysics',
+           'PointScanOptics', 'PointScanSignal', 'RAYLEIGH_UM', 'axis_um', 'defocus',
+           'laser_light', 'parse_bleach_half_life', 'parse_lasers', 'unlit_message']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

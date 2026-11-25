@@ -29,8 +29,14 @@ during that frame (:func:`trigger_conditions`):
   excitation PSF narrowed by sqrt(1 + zeta pi^2 sigma^2 / period^2), zeta
   the OFF dose: the RESOLFT mode of a scan reconstructs sharper than its
   confocal mode, from the TTLs alone.
-* ``excitation`` names the readout lasers: a frame is as bright as the
-  fraction of its exposure they are on. A ``zAxis`` defocuses.
+* ``excitation`` names the readout lasers: a frame is as bright as their
+  light over its exposure -- TTL, power and, outside a scan, their set
+  on/off state and power (``_mock_optics.py``). The fluorophores saturate
+  (``saturationPower``): emission levels off, the focus widens, while a
+  scatter background (``scatterBackground``) keeps growing with the light,
+  and the readout switches emitters off as fast as they emit. Each switching
+  laser's power acts on its own step: the ON dose sets how many are on, the
+  OFF dose the resolution. A ``zAxis`` defocuses.
 * Photon (Poisson) noise, then a constant ``offsetCounts`` and Gaussian
   ``readNoiseCounts``, as an sCMOS camera reads; ``bleachHalfLifeS``
   bleaches the sample where the foci expose it, in scan order.
@@ -48,14 +54,14 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Optional, Tuple
 
 import numpy as np
 
 from ._mock_optics import (
-    RAYLEIGH_UM, Bleaching, Laser, axis_um, defocus, laser_light,
-    parse_bleach_half_life, parse_lasers,
+    RAYLEIGH_UM, Bleaching, Laser, LaserStates, Photophysics, axis_um, defocus,
+    laser_light, parse_bleach_half_life, parse_lasers,
 )
 from ._mock_sample import BACKGROUND, FWHM_PER_SIGMA, MockSample
 
@@ -63,6 +69,9 @@ from ._mock_sample import BACKGROUND, FWHM_PER_SIGMA, MockSample
 _STAMP_SIGMAS = 3.0
 #: Scan clock when the scan does not say (``scan_time_step``), Hz.
 _DEFAULT_SCAN_RATE_HZ = 100_000.0
+#: Default saturationPower of the camera's readout: the light of one laser is
+#: spread over thousands of foci, so they saturate later than a point scan's.
+CAMERA_SATURATION = 0.3
 
 
 @dataclass(frozen=True)
@@ -105,14 +114,14 @@ class FrameConditions:
     stage_um: Tuple[float, float] = (0.0, 0.0)
     #: Defocus, µm (0 in focus).
     z_um: float = 0.0
-    #: Readout light over the exposure, relative to full (1).
+    #: Readout intensity over the exposure (1: efficiency 1 at full range).
     readout: float = 1.0
     #: Fraction of the emitters at a focus centre that are ON (and the
     #: readout's own off-switching during the exposure taken out).
     on_fraction: float = 1.0
     #: OFF dose at the OFF pattern's maxima (0: no OFF pulse).
     zeta: float = 0.0
-    #: Seconds of full readout light, for photobleaching.
+    #: Seconds of emission at nominal brightness, for photobleaching.
     readout_s: float = 0.0
 
 
@@ -135,6 +144,7 @@ class MockLattice:
     excitation: Tuple[Laser, ...] = ()
     switching: Optional[Switching] = None
     bleach_half_life_s: Optional[float] = None
+    physics: Optional[Photophysics] = None
     _foci_cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
@@ -145,8 +155,8 @@ class MockLattice:
         ``focusUm``) plus the optional ``latticePeriodUm``,
         ``latticeAngleDeg``, ``spotSigmaUm``, ``excitationFwhmUm``,
         ``rayleighRangeUm``, ``peakCounts``, ``offsetCounts``,
-        ``readNoiseCounts``, ``excitation``, ``switching`` and
-        ``bleachHalfLifeS``.
+        ``readNoiseCounts``, ``excitation`` (with ``saturationPower`` and
+        ``scatterBackground``), ``switching`` and ``bleachHalfLifeS``.
         """
         sample = MockSample.from_property(value)
         if sample is None:
@@ -167,6 +177,7 @@ class MockLattice:
             excitation=parse_lasers(value.get('excitation'), 'excitation'),
             switching=Switching.from_property(value.get('switching')),
             bleach_half_life_s=parse_bleach_half_life(value),
+            physics=Photophysics.from_property(value, saturation=CAMERA_SATURATION),
         )
         if lattice.period_um <= 0 or lattice.spot_sigma_um <= 0:
             raise ValueError('mockSample "latticePeriodUm" and "spotSigmaUm" must be positive')
@@ -215,6 +226,9 @@ class MockLattice:
         """Effective excitation PSF sigma, and the excitation peak, for a frame."""
         sigma, peak = defocus(conditions.z_um, self.excitation_sigma_um, self.rayleigh_um)
         sigma, peak = float(sigma), float(peak)
+        if self.physics is not None:
+            # A saturated focus is wider, before the OFF pattern trims it.
+            sigma *= float(self.physics.widening(conditions.readout))
         if conditions.zeta > 0:
             # ON probability exp(-zeta (sin^2(pi dx/p) + sin^2(pi dy/p)) / 2),
             # Gaussian around a zero of the OFF pattern.
@@ -242,18 +256,25 @@ class MockLattice:
         gx = (view.sample(x_um + h, y_um) - view.sample(x_um - h, y_um)) / (2 * h)
         gy = (view.sample(x_um, y_um + h) - view.sample(x_um, y_um - h)) / (2 * h)
         switchable = peak * conditions.on_fraction
+        if self.physics is not None:
+            switchable = switchable * float(self.physics.emission(conditions.readout))
+            baseline = float(self.physics.background(conditions.readout))
+        else:
+            switchable = switchable * conditions.readout
+            baseline = BACKGROUND * conditions.readout
         if survival is not None:
             switchable = switchable * survival
         emitters = switchable * signal
-        total = BACKGROUND + emitters
+        total = baseline + emitters
         # Centroid of a Gaussian-weighted density: sigma^2 grad(V) / V; the
         # background is uniform and has none.
-        dx = np.clip(sigma ** 2 * switchable * gx / total, -2 * sigma, 2 * sigma)
-        dy = np.clip(sigma ** 2 * switchable * gy / total, -2 * sigma, 2 * sigma)
+        weight = np.maximum(total, 1e-12)
+        dx = np.clip(sigma ** 2 * switchable * gx / weight, -2 * sigma, 2 * sigma)
+        dy = np.clip(sigma ** 2 * switchable * gy / weight, -2 * sigma, 2 * sigma)
         detection = self.detection_sigma_um * math.sqrt(
             1.0 + (conditions.z_um / self.rayleigh_um) ** 2)
         spot = math.hypot(detection, width)
-        return conditions.readout * total, dx, dy, spot
+        return total, dx, dy, spot
 
     def expected_photons(self, shape, pixel_um, conditions: FrameConditions,
                          bleaching: Optional[Bleaching] = None) -> np.ndarray:
@@ -323,11 +344,15 @@ class MockLatticeFrames:
     :class:`FrameConditions`) of every camera trigger of the next scan;
     :meth:`nextFrames` renders the next ones in order, and :meth:`liveFrame`
     renders a frame at the last position (the stage at rest, confocal
-    readout). ``seed`` makes the camera noise reproducible.
+    readout by the readout lasers as they are set now: on or off, at their
+    power, read from ``states`` every frame). ``seed`` makes the camera
+    noise reproducible.
     """
 
-    def __init__(self, lattice: MockLattice, pixel_um: float, seed=None):
+    def __init__(self, lattice: MockLattice, pixel_um: float, seed=None,
+                 states: Optional[LaserStates] = None):
         self.lattice = lattice
+        self.states = states
         self.pixelUm = float(pixel_um)
         self._conditions = []
         self._cursor = 0
@@ -381,14 +406,21 @@ class MockLatticeFrames:
                     self._rest = FrameConditions(stage_um=conditions.stage_um,
                                                  z_um=conditions.z_um)
                 else:
-                    conditions = self._rest
+                    conditions = self._live(self._rest)
             frames.append(self._render(shape, conditions, bleach=scanned))
         return frames
 
     def liveFrame(self, shape) -> np.ndarray:
         with self._lock:
-            conditions = self._rest
+            conditions = self._live(self._rest)
         return self._render(shape, conditions)
+
+    def _live(self, rest: FrameConditions) -> FrameConditions:
+        """The frame at rest: lit by the readout lasers as they are set."""
+        light = laser_light({}, self.lattice.excitation, 1, states=self.states)
+        if light is None:
+            return rest
+        return replace(rest, readout=float(light[0]))
 
 
 def _edges(ttl):
@@ -420,12 +452,18 @@ def trigger_positions_um(signalDict, detectorName, axes):
     return positions
 
 
-def trigger_conditions(signalDict, detectorName, lattice: MockLattice, scan_time_step=None):
+def trigger_conditions(signalDict, detectorName, lattice: MockLattice, scan_time_step=None,
+                       states: Optional[LaserStates] = None):
     """:class:`FrameConditions` of every frame the detector's scan TTL triggers.
 
     Frame k is exposed while its TTL is high; what happens between the end
     of frame k-1 and the start of frame k (the ON and OFF pulses) prepares
-    it. None when the scan has no TTL for the detector.
+    it. Each laser's light is its TTL times its power (``states``: what the
+    lasers are set to, where the scan has no power waveform for them): the
+    ON dose sets the ON fraction, the OFF dose the resolution, the readout
+    the signal and how many emitters it switches off while reading -- as
+    fast as they emit, so it saturates with them. None when the scan has no
+    TTL for the detector.
     """
     positions = trigger_positions_um(signalDict, detectorName, lattice.sample.axes)
     if positions is None:
@@ -439,13 +477,13 @@ def trigger_conditions(signalDict, detectorName, lattice: MockLattice, scan_time
     z = axis_um(signalDict, lattice.sample.z_axis, n)
     if z is not None:
         z = z[rises] - lattice.sample.focus_um
-    readout = laser_light(signalDict, lattice.excitation, n)
+    readout = laser_light(signalDict, lattice.excitation, n, states=states)
     switching = lattice.switching
     on = off = None
     if switching is not None:
         # A switching pulse the scan does not fire did not happen.
-        on = laser_light(signalDict, switching.on, n, unswitched_on=False)
-        off = laser_light(signalDict, switching.off, n, unswitched_on=False)
+        on = laser_light(signalDict, switching.on, n, unswitched_on=False, states=states)
+        off = laser_light(signalDict, switching.off, n, unswitched_on=False, states=states)
 
     conditions = []
     onFraction, zeta = 1.0, 0.0
@@ -456,7 +494,10 @@ def trigger_conditions(signalDict, detectorName, lattice: MockLattice, scan_time
         else:
             window = readout[start:end]
             light = float(window.mean()) if window.size else 0.0
-            lightS = float(window.sum()) * dt_s
+            if lattice.physics is not None:
+                # Emission (and with it switching and bleaching) saturates.
+                window = lattice.physics.emission(window)
+            lightS = float(np.sum(window)) * dt_s
         frameOn = 1.0
         if switching is not None:
             onMs = 0.0
