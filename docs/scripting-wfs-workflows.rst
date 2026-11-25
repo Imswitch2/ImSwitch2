@@ -619,9 +619,9 @@ The composite workflows reuse the singles:
     ``build_stitched_overview=True`` and ``pixel_size_um`` set in
     ``TilingParams``.
 
-    Cell targeting is split by use case. In the main GUI, the tiling widget's
-    ``Detect cells`` action segments the stitched overview and displays target
-    markers only; it does not move the stage. Automated scripts can use
+    Cell targeting is a scripting feature; the tiling widget keeps a list of
+    target positions (``api.imcontrol.getTargets()`` and friends, see
+    :doc:`tiling`) but no longer detects cells itself. Scripts can use
     ``TilingWorkflow.run_cell_targeting(...)`` with a ``for_each_feature``
     callback to move to each detected target and run a per-cell sub-workflow:
 

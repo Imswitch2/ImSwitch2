@@ -30,9 +30,38 @@ Unreleased
   pixel size. The parameters are ``params_version`` 2: a recorded run of the
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
+- **The tiling widget keeps a target list instead of detecting cells.** ``Tune
+  segmentation…`` and ``Detect cells`` are gone: they segmented the full
+  mosaic on the GUI thread, which hung the window for a large run, and their
+  result was an overlay that nothing in the GUI could act on. In their place
+  the overview's ``Click`` chooser can **add a target** (as well as move the
+  stage), and a **Targets** table under the overview lists stage positions
+  with enable/disable, ``Go to``, ``Remove``, ``Clear`` and ``Save…`` /
+  ``Load…`` as JSON. Targets are stage positions, so the list survives a new
+  run or a change of detector and its markers are drawn again on the current
+  overview. Scripts use the same list: ``api.imcontrol.getTargets()``,
+  ``setTargets``, ``addTarget``, ``removeTarget``, ``setTargetEnabled``,
+  ``goToTarget``, ``saveTargets`` and ``loadTargets`` replace
+  ``detectCellTargets()`` and ``runCellTargeting()``. Cell detection stays
+  available to scripts (``detect_cell_targets``,
+  ``TilingWorkflow.run_cell_targeting``) and to ImProcess, whose Segmentation
+  processor runs off the GUI thread; feed its positions to the list with
+  ``setTargets``. See :doc:`tiling`.
 
 **Bug Fixes**
 
+- **Segmentation no longer slows down with the number of objects.** The shared
+  classical segmentation kernel (the ImProcess *Segmentation* processor and
+  panel, WidefieldSTARSS analysis, the scripted tiling ``Segmenter``) measured
+  its regions by comparing the whole label image against each label in turn
+  and running ``regionprops`` on a full-size mask per region, so the work grew
+  with *regions x pixels*: a stitched mosaic with a few thousand cells took
+  minutes, and a segmentation of a busy field was slow for no visible reason.
+  Each region is now measured inside its own bounding window from one pass
+  over the image (``scipy.ndimage.find_objects``, with a NumPy-only fallback),
+  which brings 2000 objects on a 4-megapixel image from minutes to well under
+  a second. The regions, their order, masks, bounds, centroids, intensities
+  and eccentricities are unchanged.
 - **Live tiling: "Intensity correction" no longer tilts the mosaic.** With the correction on, the live overview ran from bright on one side to dark on the other (rig, 2026-11-18) while the offline reconstructor's mosaic of the same tiles was even. Vignetting is fixed to the detector, so wherever two tiles overlap one sees the sample through the bright side of the field and the other through the dim side; each tile was matched to its neighbour as if that difference were sample, and every tile came out darker than the last -- 3.2x across five tiles of a 1.0 to 0.7 falloff. The comparison now divides out the illumination profile estimated from the tiles and then takes out whatever every overlap of one direction still agrees on, which the profile alone could not: its error at the tile border repeats on every overlap and still left a blobby specimen 35 % uneven. Measured over one-sided and off-centre vignetting, fine and blobby specimens and 10 to 20 % overlap, the mosaic stays level within 0.3 %; a single dim tile is still corrected exactly, and illumination fading over a spiral run is brought from 11 % to 2 %. A trend running evenly across the whole mosaic cannot be told from vignetting and is left as captured, as are two tiles with only one overlap between them, which the correction used to match. Gains are solved again at 4 and 9 tiles, on each doubling after that and when the run ends. The profile estimate, ``estimate_shading_profile``, gains ``edges='linear'`` (a local plane fitted at the border instead of the border value held, which flattened a falloff by 6 to 13 % exactly where tiles overlap) and ``samples_per_sigma`` (smoothing on a block-averaged copy: 0.06 s instead of 8.5 s on 2048 px tiles); the offline *Correct vignetting* keeps its defaults. A 36-tile run of 2048 px tiles pauses at most 0.9 s, at its last checkpoint.
 - SNOUTY deskew results saved as HDF5 reloaded without a voxel size or axis labels — the volume came back as uncalibrated channels (``C, Y, X`` at 1 px), so anything measuring it, such as the PSF panel, analysed the first plane in pixels. The writer now stores ``axes`` and ``element_size_um`` on each volume, and files written before are recognised by their SNOUTY parameters and read as a ``Z, Y, X`` stack at the deskew's output voxel size. Opening a file for viewing and processing also kept losing those labels: the view-only reconstructor replaced every file's own axis labels with ``Frame, Y, X`` whenever the file had no acquisition layout, so a volume that names its axes (an ``axes`` attribute) reached the processors without a ``Z``. Declared labels are now kept; only labels guessed from the array's rank give way to ``Frame``.
 - The PSF resolution panel analysed only the first plane of a stack whose axis was not labelled ``Z``. Such a stack is now searched on its maximum projection and each bead is fitted in its brightest plane.

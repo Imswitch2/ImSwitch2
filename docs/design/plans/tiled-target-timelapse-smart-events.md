@@ -21,8 +21,10 @@ Updated 2026-06-21.
 
 - **T1 model foundation implemented:** `Target`, `TargetList`, segmentation
   conversion, JSON serialization, pixel-to-stage target conversion, and optional
-  stitched overview construction in `TilingWorkflow` are in place. Manual
-  target editing in the tiling UI is still pending.
+  stitched overview construction in `TilingWorkflow` are in place. The
+  tiling widget holds the target list (2026-11-03): click-to-add,
+  enable/disable, remove, go-to, save/load, and `getTargets` / `setTargets`
+  / `addTarget` in the scripting API. Its GUI cell detection was removed.
 - **T2 implemented:** `TargetTimelapseWorkflow` visits enabled targets in
   A -> B -> C -> A order, moves/settles/acquires through a callback, and records
   per-target metadata and failure policy behavior.
@@ -35,8 +37,9 @@ Updated 2026-06-21.
   skipped acquisitions, probe-error policy, and event-positive acquisition
   triggering. The real camera/pipeline/recording controller adapters still need
   to be wired.
-- **T5 pending:** operator UI for target lists, manual target editing, workflow
-  controls, and event-gated toggles is not implemented yet.
+- **T5 partly done:** the target-list UI and manual target editing live in
+  the tiling widget; workflow controls and event-gated toggles are not
+  implemented yet.
 
 ## Existing Building Blocks
 
@@ -45,8 +48,8 @@ Updated 2026-06-21.
 Current usable pieces:
 
 - `TilingController` already supports spiral tiling, live stitched overview,
-  click-to-navigate, segmentation, and explicit cell iteration through
-  `runCellTargeting(feature_callback=...)`.
+  click-to-navigate and a persistent target list (`getTargets`, `setTargets`,
+  `addTarget`, `goToTarget`, `saveTargets` / `loadTargets`).
 - `TilingWorkflow` supports model-level spiral tiling and per-tile callbacks.
 - `detect_cell_targets(...)` is model-level segmentation and can run without a
   GUI.
@@ -62,18 +65,14 @@ Important gap:
 
 Segmentation targets are close:
 
-- `TilingController.detectCellTargets()` detects targets and overlays markers
-  without moving hardware.
-- `TilingController.runCellTargeting(...)` can move through targets and call a
-  per-feature callback.
+- the tiling widget's target list takes positions from any source through
+  `setTargets` / `addTarget` and draws them on the overview. Its own GUI cell
+  detection was removed: it segmented the full mosaic on the GUI thread.
 - `TilingWorkflow.run_cell_targeting(...)` can iterate segmented targets when a
   `StitchedImage` and canvas origin are supplied.
 
-Manual targets need a small UI/API addition:
-
-- click-to-navigate currently moves the stage immediately;
-- it does not maintain a persistent target list with labels, stage positions,
-  source metadata, or saved overview coordinates.
+Manual targets: done. The overview's click mode can add a target instead of
+moving, and the list keeps stage position, source and the clicked pixel.
 
 ### Recording And Acquisition
 
@@ -281,9 +280,9 @@ The target scheduler can then decide whether to trigger acquisition.
 - Done: `Target` / `TargetList` model classes.
 - Done: conversion from segmentation output to `TargetList`.
 - Done: target-list JSON serialization.
-- Extend `TilingController` with manual "add target" behavior separate from
-  click-to-navigate.
-- Save overview + target list metadata.
+- Done: manual "add target" click mode in `TilingController`, separate from
+  click-to-navigate; target-list save/load from the widget and the API.
+- Save overview + target list metadata together.
 
 Acceptance:
 
@@ -295,7 +294,8 @@ Status:
 
 - model/test coverage is in place for segmented target conversion, stitched
   overview construction, and target-list serialization;
-- manual UI target editing and end-user metadata save flow remain pending.
+- target editing in the UI is done; saving the overview and target list
+  together remains pending.
 
 ### Phase T2: Target Timelapse Without Modes — Implemented
 
