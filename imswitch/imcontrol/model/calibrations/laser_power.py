@@ -7,9 +7,10 @@ percent → drive map is ``scipy.interpolate.interp1d(percent, drive)`` over
 the rows in their file order -- the arithmetic the two removed copies of
 ``create_lut_from_calib`` (``NidaqLaserManager``, ``AAAOTFLaserManager``)
 performed. A saved "40 %" therefore drives the laser exactly as before. One
-deliberate difference: the top of the scale is pinned to exactly 100 %.
-Before, ``max / (max * 0.01)`` could round to 99.99999999999999 and a request
-for 100 % fell outside the table and was refused.
+deliberate difference: 100 % is always reachable. Before, ``max / (max *
+0.01)`` could round to 99.99999999999999, and a request for 100 % fell
+outside the table and was refused; it now gives the drive at the top of the
+table. Every value the old table accepted converts bit for bit as before.
 
 **Outside the measured range a request is refused** with
 :class:`CalibrationRangeError` -- never NaN, never clamped.
@@ -102,9 +103,13 @@ class LaserPowerTable:
         percent = data[:, 1].copy()
         percent -= percent.min()
         percent /= percent.max() * 0.01
-        # ------------------------------------------------------------------
-        percent[percent == percent.max()] = 100.0
         self._lut = interp1d(percent, data[:, 0], bounds_error=False)
+        # ------------------------------------------------------------------
+        # max / (max * 0.01) can round to 99.99999999999999; the gap up to
+        # 100 % maps to the drive at the top of the table instead of being
+        # refused. Every value the legacy table accepted is untouched.
+        self._percentTop = float(percent.max())
+        self._driveTop = float(self._lut(self._percentTop))
         self._powerMin = float(data[:, 1].min())
         self._powerMax = float(data[:, 1].max())
         order = np.argsort(data[:, 0], kind='stable')
@@ -140,7 +145,7 @@ class LaserPowerTable:
         if not math.isfinite(value) or value < 0.0 or value > 100.0:
             raise CalibrationRangeError(
                 f'{percent!r} % is outside the calibrated range 0-100 %')
-        drive = float(self._lut(value))
+        drive = self._driveTop if value > self._percentTop else float(self._lut(value))
         if not math.isfinite(drive):
             raise CalibrationRangeError(
                 f'{percent!r} % is outside the calibration table ({self.source})')
@@ -156,6 +161,7 @@ class LaserPowerTable:
                 f'requested {float(np.nanmin(values)):g} to {float(np.nanmax(values)):g} %; '
                 f'the calibration covers 0-100 %')
         drives = np.asarray(self._lut(values), dtype=float)
+        drives = np.where(values > self._percentTop, self._driveTop, drives)
         if not np.all(np.isfinite(drives)):
             raise CalibrationRangeError(f'a requested power is outside {self.source}')
         return drives
@@ -168,7 +174,7 @@ class LaserPowerTable:
             return None
         if not math.isfinite(value) or value < self.driveMin or value > self.driveMax:
             return None
-        return float(np.interp(value, self._driveSorted, self._percentByDrive))
+        return min(100.0, float(np.interp(value, self._driveSorted, self._percentByDrive)))
 
     @property
     def hasAbsolutePower(self) -> bool:
