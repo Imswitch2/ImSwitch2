@@ -30,18 +30,21 @@ from typing import Any, Dict, Optional, Tuple
 
 from imswitch.imcommon.model import APIExport, RestoreWarning
 from imswitch.imcontrol.model.calibrations import (
-    DIFFERENT,
-    SAME,
+    SKIP_VALUE,
+    APPLY_UNVERIFIED,
+    APPLY_AS_SAVED,
     CalibrationError,
-    CalibrationResolution,
     LaserPowerTable,
-    compare_calibration_identity,
+    decide_saved_value,
+    laser_value_scale,
+    power_table_of,
+    raw_units_of,
+    resolution_of,
 )
 from imswitch.imcontrol.model.calibrations.display import (
     laser_calibration_tooltip,
 )
 from imswitch.imcontrol.model.devices.status import device_usable, not_connected_reason
-from imswitch.imcontrol.model.managers.lasers.LaserManager import UNSUPPORTED_CALIB_CSV_PATH
 
 #: ``Laser:<name>:Calibration`` -- the key PR #98 reserves.
 CALIBRATION_ATTR = 'Calibration'
@@ -53,29 +56,9 @@ class CalibrationSwapRefused(RuntimeError):
     runs, it is not connected, ...). Nothing was changed."""
 
 
-def powerTableOf(manager) -> Optional[LaserPowerTable]:
-    """The calibration in force on ``manager`` (None: raw units, or a
-    manager that knows nothing of calibrations)."""
-    table = getattr(manager, 'powerCalibration', None)
-    return table if isinstance(table, LaserPowerTable) else None
-
-
-def resolutionOf(manager) -> CalibrationResolution:
-    """What ``manager`` runs on; a ``calibCsvPath`` naming a file on a
-    manager that does not apply calibrations counts as failed (reported)."""
-    resolve = getattr(manager, 'powerCalibrationResolution', None)
-    resolution = resolve() if callable(resolve) else None
-    if not isinstance(resolution, CalibrationResolution):
-        return CalibrationResolution('raw')
-    if resolution.requested == UNSUPPORTED_CALIB_CSV_PATH:
-        path = str(manager.getProperty('calibCsvPath') or '').strip()
-        if not path:
-            return CalibrationResolution('raw')
-        return CalibrationResolution(
-            'failed', requested=f'calibCsvPath {path}',
-            error=f'{type(manager).__name__} does not apply power calibrations; this '
-                  f'laser runs on raw units ({manager.rawValueUnits}).')
-    return resolution
+#: Kept under their earlier names for the controllers that import them.
+powerTableOf = power_table_of
+resolutionOf = resolution_of
 
 
 class LaserCalibrationMixin:
@@ -89,12 +72,7 @@ class LaserCalibrationMixin:
     def _laserScale(manager) -> Tuple[Any, Any, str, int, Optional[float]]:
         """``(min, max, units, decimals, step)`` the control shows: percent
         while a calibration is in force, the manager's raw scale otherwise."""
-        usesCalibration = getattr(manager, 'usesCalibrationLookup', None)
-        if callable(usesCalibration) and usesCalibration():
-            return 0, 100, '%', 1, (0.5 if manager.valueRangeStep is not None else None)
-        return (getattr(manager, 'valueRangeMin', None), getattr(manager, 'valueRangeMax', None),
-                getattr(manager, 'valueUnits', ''), getattr(manager, 'valueDecimals', None),
-                getattr(manager, 'valueRangeStep', None))
+        return laser_value_scale(manager)
 
     # -- provenance ------------------------------------------------------------
 
@@ -243,55 +221,20 @@ class LaserCalibrationMixin:
         calibration failed to load -- then skipped, since a percentage would
         be taken as a raw drive."""
         manager = self._master.lasersManager[laserName]
-        table = powerTableOf(manager)
-        active = table.identity(None) if table is not None else None
-        known = 'calibration' in saved
-        recorded = saved.get('calibration')
-        comparison = compare_calibration_identity(recorded, active, recorded_known=known)
-        if comparison.status == SAME:
+        low, high = getattr(manager, 'valueRangeMin', None), getattr(manager, 'valueRangeMax', None)
+        currentUnits = getattr(manager, 'valueUnits', None)
+        decision = decide_saved_value(
+            value, recorded=saved.get('calibration'), recorded_known='calibration' in saved,
+            table=power_table_of(manager), raw_range=(low, high), raw_units=raw_units_of(manager),
+            current_units=currentUnits if isinstance(currentUnits, str) else '',
+            saved_units=saved.get('valueUnits'),
+            calibration_failed=resolution_of(manager).failed)
+        if decision.outcome in (APPLY_AS_SAVED, APPLY_UNVERIFIED):
+            # An unverified old value applies as before, without a warning
+            # (presets and states saved before calibration provenance).
             return value, None
-        if comparison.status != DIFFERENT:
-            savedUnits = saved.get('valueUnits')
-            currentUnits = getattr(manager, 'valueUnits', None)
-            if isinstance(savedUnits, str) and isinstance(currentUnits, str) \
-                    and savedUnits and currentUnits and savedUnits != currentUnits:
-                return None, RestoreWarning(
-                    f'{what} for laser "{laserName}": saved as {value} {savedUnits}, but the '
-                    f'laser now takes {currentUnits}; not applied.')
-            if resolutionOf(manager).failed and not savedUnits:
-                return None, RestoreWarning(
-                    f'{what} for laser "{laserName}": {value} was saved without a unit and '
-                    f'the laser\'s calibration did not load, so it now takes raw '
-                    f'{manager.rawValueUnits}; not applied.')
-            return value, None
-        drive = recorded.get('driveValue') if isinstance(recorded, dict) else None
-        if recorded is None:
-            drive = value       # saved on raw units: the value was the drive
-        try:
-            drive = None if drive is None else float(drive)
-        except (TypeError, ValueError):
-            drive = None
-        if drive is None:
-            return None, RestoreWarning(
-                f'{what} for laser "{laserName}": {comparison.message} No drive value was '
-                f'recorded, so {value} cannot be applied safely; not applied.')
-        if table is not None:
-            converted = table.percent_for_drive(drive)
-            scaleText = 'the current calibration'
-        else:
-            low, high = manager.valueRangeMin, manager.valueRangeMax
-            inside = ((low is None or drive >= float(low)) and (high is None or drive <= float(high)))
-            converted = drive if inside else None
-            scaleText = f'the laser\'s range ({low}-{high} {manager.rawValueUnits})'
-        if converted is None:
-            return None, RestoreWarning(
-                f'{what} for laser "{laserName}": {comparison.message} The saved drive '
-                f'{drive:g} {manager.rawValueUnits} is outside {scaleText}; not applied.')
-        units = manager.valueUnits
-        return converted, RestoreWarning(
-            f'{what} for laser "{laserName}": {comparison.message} Applied the saved drive '
-            f'{drive:g} {manager.rawValueUnits} (now {converted:.4g} {units}) instead of '
-            f'reinterpreting {value} through the calibration in force.')
+        warning = RestoreWarning(f'{what} for laser "{laserName}": {decision.reason}')
+        return (None if decision.outcome == SKIP_VALUE else decision.value), warning
 
     def _showPresetCalibrationWarnings(self, presetName) -> None:
         warnings = self.__dict__.get('_presetCalibrationWarnings') or []

@@ -40,6 +40,10 @@ from .record import (
     CalibrationRangeError,
 )
 
+#: ``CalibrationResolution.requested`` of a manager that does not apply
+#: calibrations although its setup names a ``calibCsvPath``.
+UNSUPPORTED_CALIB_CSV_PATH = 'calibCsvPath (not applied by this manager)'
+
 _POWER_SCALE_W = {'W': 1.0, 'mW': 1e-3, 'uW': 1e-6, 'nW': 1e-9}
 
 
@@ -285,6 +289,54 @@ def resolve_laser_calibration(*, laser_name: str, drive_unit: str,
         return CalibrationResolution('calibrated', table=table, requested=requested,
                                      resolvedPath=resolved)
     return CalibrationResolution('raw', requested='')
+
+
+# -- reading a laser manager (duck-typed: test doubles and plugins too) --------
+
+def power_table_of(manager) -> Optional[LaserPowerTable]:
+    """The calibration in force on ``manager`` (None: raw units, or a
+    manager that knows nothing of calibrations)."""
+    table = getattr(manager, 'powerCalibration', None)
+    return table if isinstance(table, LaserPowerTable) else None
+
+
+def resolution_of(manager) -> CalibrationResolution:
+    """What ``manager`` runs on; a ``calibCsvPath`` naming a file on a
+    manager that does not apply calibrations counts as failed (reported)."""
+    resolve = getattr(manager, 'powerCalibrationResolution', None)
+    resolution = resolve() if callable(resolve) else None
+    if not isinstance(resolution, CalibrationResolution):
+        return CalibrationResolution('raw')
+    if resolution.requested == UNSUPPORTED_CALIB_CSV_PATH:
+        path = str(manager.getProperty('calibCsvPath') or '').strip()
+        if not path:
+            return CalibrationResolution('raw')
+        return CalibrationResolution(
+            'failed', requested=f'calibCsvPath {path}',
+            error=f'{type(manager).__name__} does not apply power calibrations; this '
+                  f'laser runs on raw units ({manager.rawValueUnits}).')
+    return resolution
+
+
+def laser_value_scale(manager):
+    """``(min, max, units, decimals, step)`` of the value a laser takes now:
+    0-100 % while a calibration is in force, its own range and unit
+    otherwise."""
+    usesCalibration = getattr(manager, 'usesCalibrationLookup', None)
+    if callable(usesCalibration) and usesCalibration():
+        return 0, 100, '%', 1, (0.5 if getattr(manager, 'valueRangeStep', None) is not None
+                                 else None)
+    return (getattr(manager, 'valueRangeMin', None), getattr(manager, 'valueRangeMax', None),
+            getattr(manager, 'valueUnits', ''), getattr(manager, 'valueDecimals', None),
+            getattr(manager, 'valueRangeStep', None))
+
+
+def raw_units_of(manager) -> str:
+    """The unit of a laser's drive whatever is in force."""
+    units = getattr(manager, 'rawValueUnits', None)
+    if not isinstance(units, str):
+        units = getattr(manager, 'valueUnits', '')
+    return units if isinstance(units, str) else ''
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

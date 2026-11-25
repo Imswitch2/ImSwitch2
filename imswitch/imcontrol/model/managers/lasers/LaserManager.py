@@ -7,6 +7,7 @@ from imswitch.imcontrol.model.calibrations import (
     CalibrationInvalid,
     CalibrationRangeError,
     CalibrationResolution,
+    UNSUPPORTED_CALIB_CSV_PATH,
     LaserPowerTable,
     resolve_laser_calibration,
 )
@@ -46,11 +47,6 @@ def normalise_ports(value) -> list:
         pass
     # Comma-separated or bare string
     return [p.strip() for p in s.split(',') if p.strip()]
-
-
-#: ``CalibrationResolution.requested`` of a manager that does not apply
-#: calibrations although its setup names a ``calibCsvPath``.
-UNSUPPORTED_CALIB_CSV_PATH = 'calibCsvPath (not applied by this manager)'
 
 
 class RawDriveError(RuntimeError):
