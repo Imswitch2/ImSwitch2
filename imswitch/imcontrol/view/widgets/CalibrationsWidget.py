@@ -14,6 +14,20 @@ from .basewidgets import Widget
 _ROLE = QtCore.Qt.UserRole
 
 
+_TO_WATTS = {'W': 1.0, 'mW': 1e-3, 'uW': 1e-6, 'nW': 1e-9}
+
+
+def _readablePowerScale(values, unit):
+    """``(factor, unit)`` so the largest power reads between 1 and 1000."""
+    if unit not in _TO_WATTS or not values:
+        return 1.0, unit
+    peak = max(abs(float(v)) for v in values) * _TO_WATTS[unit]
+    for name, size in (('W', 1.0), ('mW', 1e-3), ('µW', 1e-6), ('nW', 1e-9)):
+        if peak >= size or name == 'nW':
+            return _TO_WATTS[unit] / size, name
+    return 1.0, unit
+
+
 class CalibrationsWidget(Widget):
     """Calibrations per laser: view, swap, import, export, annotate."""
 
@@ -41,7 +55,7 @@ class CalibrationsWidget(Widget):
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(['Laser / calibration', 'Status'])
         self.tree.setColumnWidth(0, 300)
-        self.tree.setMinimumWidth(380)
+        self.tree.setMinimumWidth(470)
         self.tree.itemSelectionChanged.connect(self._selectionChanged)
 
         self.detailsText = QtWidgets.QPlainTextEdit()
@@ -55,6 +69,8 @@ class CalibrationsWidget(Widget):
             self.plot = pg.PlotWidget()
             self.plot.setMinimumHeight(160)
             self.plot.showGrid(x=True, y=True, alpha=0.3)
+            for axis in ('left', 'bottom'):
+                self.plot.getAxis(axis).enableAutoSIPrefix(False)
             self._curve = self.plot.plot([], [], pen=pg.mkPen('#1565c0', width=2),
                                          symbol='o', symbolSize=5, symbolBrush='#1565c0')
         except Exception:  # noqa: BLE001 - the details stay usable without a plot
@@ -236,11 +252,12 @@ class CalibrationsWidget(Widget):
             plot = info.get('plot')
             if plot:
                 order = sorted(range(len(plot['drive'])), key=lambda i: plot['drive'][i])
+                scale, unit = _readablePowerScale(plot['power'], plot.get('powerUnit') or '')
                 self._curve.setData([plot['drive'][i] for i in order],
-                                    [plot['power'][i] for i in order])
-                self.plot.setLabel('bottom', 'drive', units=plot.get('driveUnit') or None)
-                self.plot.setLabel('left', 'power', units=None)
-                self.plot.setTitle(f'power [{plot.get("powerUnit") or "relative"}] vs drive')
+                                    [plot['power'][i] * scale for i in order])
+                self.plot.setLabel('bottom', f'drive [{plot.get("driveUnit") or "?"}]')
+                self.plot.setLabel('left', f'power [{unit or "relative"}]')
+                self.plot.setTitle('measured power vs drive')
             else:
                 self._curve.setData([], [])
                 self.plot.setTitle('')

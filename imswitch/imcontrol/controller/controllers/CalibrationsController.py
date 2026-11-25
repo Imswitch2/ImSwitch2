@@ -254,8 +254,9 @@ class CalibrationsController(ImConWidgetController):
                                     else f'raw units ({manager.rawValueUnits})'))
             if resolution.failed:
                 info['lines'].append(f'Calibration NOT loaded: {resolution.error}')
-            if resolution.resolvedPath:
-                info['lines'].append(f'Referenced file resolves to: {resolution.resolvedPath}')
+            if resolution.resolvedPath and resolution.requested.startswith('calibCsvPath'):
+                info['lines'].append(f'calibCsvPath {resolution.requested.split(" ", 1)[1]} '
+                                     f'resolves to: {resolution.resolvedPath}')
             blocked = self._laserActionsAllowed(laser)
             if blocked:
                 info['lines'].append(f'No calibration actions: {blocked}.')
