@@ -47,7 +47,6 @@ from imswitch.improcess.workflows.steps import (
     Workflow,
     WorkflowError,
     step_runner,
-    validate,
 )
 
 MODES = ("run", "replay")
@@ -95,6 +94,10 @@ class RunReport:
     #: exception has them ``line``, ``traceback`` and ``stdout`` (a Python step's
     #: line in the user's code, its trimmed traceback, what it printed).
     failure: dict | None = None
+    #: Schema 2: steps taken out of the run because they are bypassed.
+    bypassed: list[str] = field(default_factory=list)
+    #: Schema 2: every active control's canonical value in this run.
+    controls: dict[str, Any] = field(default_factory=dict)
     _sources: list = field(default_factory=list, repr=False)
     _closed: bool = field(default=False, repr=False)
 
@@ -238,6 +241,7 @@ def run(
     write_saves: bool = True,
     source_stem: str | None = None,
     step_state: dict[str, dict] | None = None,
+    controls: Mapping[str, Any] | None = None,
 ) -> RunReport:
     """Execute ``workflow`` and return its :class:`RunReport`.
 
@@ -276,15 +280,25 @@ def run(
     what it stores there is what it finds on the next run. The key is handed
     to ``apply`` only: the step's params, the provenance the results carry
     and the report never contain it. Without ``step_state`` no such key exists.
+
+    ``workflow`` may be a schema-2 recipe: it is prepared first
+    (:func:`~imswitch.improcess.workflows.prepare.prepare_run`), with
+    ``controls`` as this run's control values (raw ``ControlText`` from a
+    command line, or typed); bypassed steps are taken out and listed in
+    ``report.bypassed``, the values used in ``report.controls``.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
-    issues = validate(workflow, registry)
-    if issues:
-        raise WorkflowError("workflow is invalid:\n  " + "\n  ".join(str(i) for i in issues))
+    from imswitch.improcess.workflows.prepare import prepare_run
+
+    # Validates the recipe and the plain workflow it prepares to; raises
+    # before anything runs.
+    prepared = prepare_run(workflow, registry=registry, values=controls, bindings=bindings)
+    workflow = prepared.workflow
     logger = logger or _log()
     out_dir = (Path(out_dir) if out_dir is not None else Path.cwd()).resolve()
-    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir)
+    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir,
+                       bypassed=list(prepared.bypassed), controls=dict(prepared.values))
     bindings = dict(bindings or {})
     explicit_stem = bool(source_stem)
     source_stem = str(source_stem) if explicit_stem else "result"

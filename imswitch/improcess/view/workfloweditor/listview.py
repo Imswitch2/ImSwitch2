@@ -56,7 +56,7 @@ class CardItem(QtWidgets.QGraphicsItem):
         for i, alpha in enumerate((30, 16, 8)):
             painter.setBrush(QtGui.QColor(0, 0, 0, alpha))
             painter.drawRoundedRect(rect.adjusted(-i, -i + 3, i, i + 5), 9 + i, 9 + i)
-        painter.setOpacity(0.55 if status == "waiting" else 1.0)
+        painter.setOpacity(0.55 if status == "waiting" or info.bypassed else 1.0)
         body = QtGui.QPainterPath()
         body.addRoundedRect(rect, 9, 9)
         painter.fillPath(body, st.colour(st.NODE_BODY))
@@ -64,7 +64,11 @@ class CardItem(QtWidgets.QGraphicsItem):
         bar.addRoundedRect(QtCore.QRectF(0, 0, 14, self.height), 9, 9)
         clip = QtGui.QPainterPath()
         clip.addRect(QtCore.QRectF(0, 0, 7, self.height))
-        painter.fillPath(bar.intersected(clip), st.step_colour(info.step_kind, info.category))
+        bar_colour = st.step_colour(info.step_kind, info.category)
+        if info.bypassed:
+            grey = (bar_colour.red() + bar_colour.green() + bar_colour.blue()) // 3
+            bar_colour = QtGui.QColor(grey, grey, grey)
+        painter.fillPath(bar.intersected(clip), bar_colour)
 
         right = self.width - (THUMB_W + 24 if run is not None and run.thumbnail is not None else 16)
         middle = max(240.0, min(right * 0.5, 360.0))
@@ -119,6 +123,11 @@ class CardItem(QtWidgets.QGraphicsItem):
             painter.setFont(st.font(8.2))
             painter.setPen(st.colour(st.TEXT_DIM))
             painter.drawText(QtCore.QRectF(x, 62, right - x, 15), QtCore.Qt.AlignLeft, "waits for the steps before it")
+        if info.bypassed and (run is None or not run.footer):     # the run's footer says it otherwise
+            painter.setFont(st.font(8.2, bold=True))
+            painter.setPen(QtGui.QColor("#e8ecef"))
+            words = f"bypassed · passes {info.passes} on" if info.passes else "bypassed · writes nothing"
+            painter.drawText(QtCore.QRectF(x, 78, right - x, 15), QtCore.Qt.AlignLeft, _elide(painter, words, right - x))
         if run is not None and run.thumbnail is not None:
             trect = QtCore.QRectF(self.width - THUMB_W - 12, 10, THUMB_W, THUMB_H)
             scaled = run.thumbnail.scaled(trect.size().toSize(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

@@ -15,7 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from . import style as st
 
 #: Run states a box can show; "" is "never run in this session".
-STATES = ("", "done", "outdated", "running", "waiting", "failed", "would-write")
+STATES = ("", "done", "outdated", "running", "waiting", "failed", "would-write", "bypassed")
 _BADGE_GLYPHS = {"done": "✓", "outdated": "↻", "failed": "✕", "waiting": "…", "would-write": "⤓"}
 _BADGE_COLOURS = {"done": st.DONE, "outdated": st.OUTDATED, "failed": st.ERROR, "running": st.RUNNING,
                   "waiting": st.TEXT_DIM, "would-write": st.TEXT_DIM}
@@ -199,6 +199,9 @@ class NodeItem(QtWidgets.QGraphicsItem):
 
     def _tooltip(self) -> str:
         lines = [f"{self.info.title} ({self.info.id})"]
+        if self.info.bypassed:
+            lines.append(f"Bypassed: passes {self.info.passes} on unchanged (B switches it back on)"
+                         if self.info.passes else "Bypassed: writes nothing (B switches it back on)")
         if self.info.description:
             lines.append(self.info.description)
         for issue in self.info.issues:
@@ -215,7 +218,7 @@ class NodeItem(QtWidgets.QGraphicsItem):
         rows = max(len(info.inputs), len(info.outputs), 1)
         ports_bottom = st.PORT_TOP + (rows - 1) * st.PORT_GAP + 14
         summary = self.summary()
-        y = st.HEADER_H + 10
+        y = st.HEADER_H + 10 + (14 if info.bypassed else 0)
         summary_y = y
         y += 17 * len(summary)
         code_rect = None
@@ -307,6 +310,9 @@ class NodeItem(QtWidgets.QGraphicsItem):
         for i, alpha in enumerate((40, 26, 14, 6)):
             painter.setBrush(QtGui.QColor(0, 0, 0, alpha))
             painter.drawRoundedRect(rect.adjusted(-i, -i + 4, i, i + 6), radius + i, radius + i)
+        bypassed = info.bypassed
+        if bypassed:
+            painter.setOpacity(0.55)
         body = QtGui.QPainterPath()
         body.addRoundedRect(rect, radius, radius)
         painter.fillPath(body, st.colour(st.NODE_BODY))
@@ -315,10 +321,18 @@ class NodeItem(QtWidgets.QGraphicsItem):
         clip = QtGui.QPainterPath()
         clip.addRect(QtCore.QRectF(0, 0, st.NODE_W, st.HEADER_H))
         head = st.step_colour(info.step_kind, info.category)
+        if bypassed:
+            grey = (head.red() + head.green() + head.blue()) // 3
+            head = QtGui.QColor(grey, grey, grey).darker(130)
         gradient = QtGui.QLinearGradient(0, 0, st.NODE_W, 0)
         gradient.setColorAt(0, head)
         gradient.setColorAt(1, head.darker(135))
         painter.fillPath(header.intersected(clip), gradient)
+        if bypassed:
+            # Under the text, at full strength: the path the data takes.
+            painter.setOpacity(1.0)
+            self._paint_bypass(painter)
+            painter.setOpacity(0.55)
         badges = 26 + (24 if info.issues else 0)
         painter.setPen(QtGui.QColor("#ffffff"))
         painter.setFont(st.font(9.8, bold=True))
@@ -373,6 +387,8 @@ class NodeItem(QtWidgets.QGraphicsItem):
             painter.drawText(QtCore.QRectF(14, lay["footer_y"], st.NODE_W - 28, 14), QtCore.Qt.AlignLeft,
                              _elide(painter, self.run.footer, st.NODE_W - 28))
 
+        if bypassed:
+            painter.setOpacity(1.0)
         border, pen_width = st.colour(st.NODE_BORDER), 1.2
         if info.issues:
             border, pen_width = QtGui.QColor(st.ERROR).darker(115), 1.6
@@ -408,9 +424,32 @@ class NodeItem(QtWidgets.QGraphicsItem):
             painter.setFont(st.font(8.0))
             painter.drawText(box.adjusted(8, 3, -8, -3), QtCore.Qt.AlignVCenter | QtCore.Qt.TextWordWrap, self.run.error)
 
+    def _paint_bypass(self, painter) -> None:
+        """The "bypassed" strip under the header, and a dashed line from the
+        input to the output it passes on: the path the data takes."""
+        strip = QtCore.QRectF(0, st.HEADER_H, st.NODE_W, 15)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(90, 98, 108, 220))
+        painter.drawRect(strip)
+        painter.setPen(QtGui.QColor("#e8ecef"))
+        painter.setFont(st.font(7.4, bold=True))
+        painter.drawText(strip, QtCore.Qt.AlignCenter, "BYPASSED")
+        if not self.inputs or not self.outputs or not self.info.passes:
+            return
+        start = self.inputs[0].pos()
+        end = self.outputs[0].pos()
+        path = QtGui.QPainterPath(start)
+        middle = (start.x() + end.x()) / 2
+        path.cubicTo(QtCore.QPointF(middle, start.y()), QtCore.QPointF(middle, end.y()), end)
+        pen = QtGui.QPen(st.kind_colour(self.inputs[0].kind), 2.0, QtCore.Qt.DashLine)
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawPath(path)
+
     @staticmethod
     def _paint_badge(painter, centre, status: str) -> None:
-        if not status:
+        if not status or status == "bypassed":
             return
         colour = st.colour(_BADGE_COLOURS.get(status, st.TEXT_DIM))
         painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 90), 1))

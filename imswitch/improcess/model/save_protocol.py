@@ -468,7 +468,8 @@ def _publish(staged: Path, target: Path, published: list[Path]) -> None:
             # ours, and the caller's rollback must know that.
             published.append(target)
             raise
-        if exc.errno not in _NO_HARDLINK_ERRNOS:
+        if (exc.errno not in _NO_HARDLINK_ERRNOS
+                and getattr(exc, "winerror", None) not in _NO_HARDLINK_WINERRORS):
             raise
         # A filesystem without hard links: fall back to the guarded rename.
         if target.exists() or target.is_symlink():
@@ -493,6 +494,11 @@ _NO_HARDLINK_ERRNOS = frozenset(
         getattr(errno, "EMLINK", None), getattr(errno, "EACCES", None),
     ) if code is not None
 )
+
+#: The same on Windows, where a network share or an exFAT/FAT32 drive refuses
+#: hard links with ERROR_INVALID_FUNCTION (1) or ERROR_NOT_SUPPORTED (50).
+#: Python maps both to EINVAL, too broad to match by errno.
+_NO_HARDLINK_WINERRORS = frozenset({1, 50})
 
 
 def _same_file(a: Path, b: Path) -> bool:

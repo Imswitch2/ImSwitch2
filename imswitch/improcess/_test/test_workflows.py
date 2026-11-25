@@ -157,7 +157,8 @@ def test_dynamic_ports_validate_against_the_declared_pattern(registry):
         Process("bad", "filter", inputs=["split.out"]),
     ])
     messages = [str(i) for i in validate(wf, registry)]
-    assert messages == ["bad: port 'out' is not one 'split' produces (/[A-Za-z]+\\d+/)"]
+    # An explicit axis declares only its own label: C0, c1, ... (not Z0).
+    assert messages == ["bad: port 'out' is not one 'split' produces (/(?i:C)\\d+/)"]
 
 
 def test_background_ports_follow_its_params(registry):
