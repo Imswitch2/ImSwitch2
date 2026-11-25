@@ -200,36 +200,82 @@ holds a failed transport is not usable and its refusal names the transport.
 
 #### 4.0.2 Classification (target behaviour per manager)
 
-"Absent + reconnect" = no backend, no mock, panel greyed, reconnect from
-Hardware status. "Mock + reported" = a reported mock that the reconnect
-replaces. "Status" = state after this change.
+"Absent + reconnect" = no backend, no mock, panel greyed, commands refused with
+the device's name, reconnect from Hardware status (and the device comes back
+dark / unmoved: a reconnect never moves a stage, switches a laser on, restores
+a laser power, flips a mirror or pushes an SLM pattern). "Mock + reported" = a
+reported mock that the reconnect replaces. Every manager that has an
+absent default also takes `useMockOnFailure: true` as the explicit opt-in for a
+reported mock; a `MOCK_` serial / port or `simulation: true` is a configured
+mock, as before.
 
-| Manager(s) | After a startup failure (target) | Now |
+| Manager(s) | After a startup failure | Status |
 |---|---|---|
-| AVManager, PiCamManager, PhotometricsManager, ThorCamTSIManager | mock + reported, swapped on reconnect | **done** (holder; `useMockOnFailure: false` leaves the detector out, reported) |
-| TISManager, HamamatsuManager | mock + reported, swapped on reconnect | **done** (own lifecycle; lifecycle tests) |
-| APDManager, PMTManager | NI-DAQ simulation semantics | unchanged (simulation is a setup flag) |
-| SwabianTimeTaggerManager | explicit simulation; unavailable library reported | unchanged; library failure guarded |
-| MPBLaserManager, AAAOTFLaserManager | absent + reconnect | **done** |
-| GRBLLaserManager, ESP32/LED/LightSheet lasers, Oxxius, TriggerScopeLaser | absent + reconnect via the board's transport | transport failure now makes them unusable; GRBL laser returns dark after reconnect; ESP32LEDLaserManager keeps its `_isMock` latch (**remaining**) |
-| PulseGeneratorLaserManager + TeensyPulseManager | absent + reconnect | **done** |
-| Cobolt0601New | absent + reconnect | **remaining**: default `useMockOnFailure: true`, `false` raises (left out, no reconnect) |
-| Cobolt0601, CoolLED, Lantz, PulseStreamerLaser, PyMicroscopeLaser | absent + reconnect | **remaining**: automatic mock fallback (reported as mock) |
-| KinesisStageManager, KinesisRotatorManager, StandaRotatorManager | absent + reconnect | **done** |
-| MHXYStageManager, PiezoconceptZ(2), SQUIDStageManager | absent + reconnect | **done**: a missing `rs232device` is an error (mock only with `useMockOnFailure`) |
-| PIStageManager, LeicaDMIZPositioner, LeicaDMIStandManager, ElliptecRotator | absent + reconnect | **remaining**: automatic mock fallback with its own lifecycle (reported as mock) |
-| ESP32/GRBL/Jena/BSC203/KDC101/SerialDacZ/TriggerScope positioners, SmarACT | absent + reconnect | absent through their transport where it has one; a constructor failure leaves the device out until restart |
-| ThorlabsMFF, instruments | absent + reconnect / connect | **done** (own lifecycles; `transient`) |
-| HamamatsuSLMusb | absent + reconnect | **remaining**: switches itself to mock mode on DLL failure (reported) |
-| StandManager | absent + reconnect | construction failure -> a do-nothing stand + reported error; an unavailable class still loads its mock manager (**remaining**) |
-| RS232Manager | placeholder port, reported, reconnect in place | **done**; dependents are unusable while it is down |
-| ESP32Manager, GRBLManager, SQUIDManager | absent + reconnect in place | **done** (holder) |
-| KDC101Manager, ElliptecManager | reconnect in place | **remaining** (`device_active` flag / own bus) |
-| NidaqManager | simulation is a setup flag | unchanged; unavailable backend reported |
+| AV, PiCam, Photometrics, ThorCam TSI, TIS, Hamamatsu (detectors) | mock + reported, swapped on reconnect | done (`useMockOnFailure: false` leaves the detector out, reported) |
+| APD, PMT, NI-DAQ, Time Tagger | explicit simulation semantics | unchanged; failure reported |
+| MPB, AA AOTF | absent + reconnect | done |
+| Cobolt 06-01 (new and legacy, incl. its Lantz base) | absent + reconnect | done (default flipped; `useMockOnFailure: true` for the mock) |
+| CoolLED | absent + reconnect | done (controller not connected, all channels back OFF) |
+| ESP32 LED, Python Microscope, GRBL, Pulse generator (Teensy) lasers | absent + reconnect | done (no latches; the board's reconnect leaves the laser OFF) |
+| Pulse Streamer laser | not available (reported) | done: no pulseStreamerManager is ever built, so it is an error naming the replacement; mock only with the opt-in |
+| Kinesis stage / rotator, Standa | absent + reconnect | done |
+| MHXY, Piezoconcept (x2), SQUID stage | absent / error naming the rs232 device | done (mock only with the opt-in) |
+| PI stage | absent (last known position, moves refused) + reconnect | done |
+| GRBL stage | absent + reconnect; position unknown after a reconnect until the user references it | done (no automatic re-home) |
+| Leica stand and objective Z | not connected (real mode), commands refused, reconnect closes the shutters | done |
+| StandManager (class cannot be loaded) | reported as failed, a do-nothing stand | done (`_mock` twin only with the opt-in) |
+| KDC101 (positioner and rs232 manager) | absent + reconnect | done (`MOCK_` port = configured mock) |
+| Elliptec rotators and their bus | absent + reconnect (bus reconnect re-reads, never moves or homes) | done (`MOCK_` port = configured mock) |
+| USB SLM | not connected; Connect in the SLM panel retries DLL and USB, never uploads | done (no lifecycle service entry: the SLM panel's Connect is its reconnect) |
+| MFF, instruments | absent + reconnect / connect | done (own lifecycles; `transient`) |
+| RS232Manager | placeholder port, reported, reconnect in place | done; dependents are not usable while it is down |
+| ESP32 / GRBL / SQUID boards | absent + reconnect in place | done (holder) |
+| Any manager whose constructor fails | left out of its group, reported as ERROR | needs a restart: see 4.6 |
+| Detectors and single devices (Teensy, TriggerScope, stand) whose constructor fails | left out, reported | restart only, by design: consumers capture them at construction |
 
-The remaining rows are bespoke managers whose fallback is intertwined with a
-lifecycle class whose tests pin the mock; each is a half-day to a day with a
-rig check, and none crashes startup.
+#### 4.0.3 What a reconnect does and does not do
+
+Audited across every `_lifecycleReinitialise`, `_onTransportReconnected`,
+`_replaceBackend` path and the panels' lifecycle listeners:
+
+- detectors: re-apply the user's own parameters (exposure, gain, ROI, trigger
+  mode); acquisition stays stopped;
+- stages and rotators: re-read the position; nothing moves. GRBL no longer
+  homes after a reconnect (it is the user's Reference action); homing at
+  startup remains the setup's `is_home` choice. KDC101, PI, Elliptec and
+  Kinesis do not home or move;
+- lasers: come back OFF with their cached setpoint kept but not applied (MPB /
+  AA verify OFF; Cobolt, CoolLED, ESP32 LED, GRBL and Python Microscope force
+  OFF and forget a stale "enabled", so a later power change cannot light them);
+- flip mirrors: read the state; the panels' lifecycle listeners only refresh
+  the display;
+- SLMs: Connect never uploads a pattern;
+- Leica: closes the illumination shutters (the safe direction). Not
+  verified: the private Leica hardware class's own initialisation.
+
+### 4.6 Late construction (design only; not built)
+
+A device whose constructor failed has no manager object, so there is nothing
+to reconnect; a retry would have to build one. `MultiManager` could keep a
+retry closure per failed device and offer "Retry" in Hardware status through a
+lifecycle on `FailedDeviceManager`, move the new manager into its group, and
+emit a "device added" signal. What stops it from being more than half a
+feature today:
+
+- the Laser, Positioner and Rotator panels build their rows, presets, shortcuts
+  and scan-participation lists once from the manager dicts at startup;
+  `ImConMainController` registers the positioner jog shortcuts there too. A
+  device that appears later would exist for scripts but have no row;
+- the scripting API object is built once and cannot grow;
+- detectors and single devices (Teensy, TriggerScope, stand) are captured by
+  other managers and controllers at construction.
+
+The right place is the runtime-panels work (PR #103: a `PanelService` that adds
+panels at runtime) plus a `deviceAdded` signal on `MultiManager`; the panel side
+is then a per-device `addLaser` / `addPositioner` / `addRotator` extracted from
+the three controllers' construction loops (the Laser loop is already one clean
+body). Estimate 3 to 4 days after #103 lands, none of it safe to land before.
+Until then Hardware status says "needs a restart" for such a device.
 
 ### 4.1 Backend holder (in `DeviceManagerStatusMixin`, so every manager has it)
 
