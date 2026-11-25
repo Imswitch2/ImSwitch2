@@ -152,13 +152,15 @@ cannot:
   power: the scan's analog power waveform where the scan carries one
   (Advanced line-step power, SimpleMoNaLISA, SimplePointScan channel
   power), else the power set in the Laser widget. The set state reaches the
-  mock detectors through the simulated NI-DAQ, which keeps the level each
-  laser's digital and analog lines were last written to
-  (``NidaqManager.simulatedOutput``, simulation only, read-only for the
-  detectors; ``LaserStates`` in ``_mock_optics.py``). A laser that the
-  NI-DAQ never wrote -- one on another driver, or the power of a binary
-  laser -- counts as on at full power. Without ``excitation`` the sample is
-  always lit, as before.
+  mock detectors through the shared attributes the laser controller
+  already publishes for every laser (``("Laser", <name>, "Enabled")`` and
+  ``"Value"``): the master controller hands each detector with a virtual
+  sample a read-only view of them and of the lasers' configured ranges
+  (``LaserStates`` in ``_mock_optics.py``, ``attachMockLaserStates``). It
+  works for any laser manager, and no driver or hardware path is involved.
+  A laser with no published state -- no Laser widget, or the power of a
+  binary laser -- counts as on at full power. Without ``excitation`` the
+  sample is always lit, as before.
 * **Laser power** is a fraction of the laser's configured range
   (``valueRangeMin`` to ``valueRangeMax``) times its ``efficiency``; there
   is no power calibration yet (``Laser.intensity`` is the seam where one

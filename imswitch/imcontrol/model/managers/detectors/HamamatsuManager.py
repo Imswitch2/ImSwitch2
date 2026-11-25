@@ -216,12 +216,12 @@ class HamamatsuManager(DetectorManager):
         if (mockLattice is not None and nidaqManager is not None
                 and getattr(nidaqManager, 'isSimulated', False)
                 and hasattr(self._camera, 'mock_frame_source')):
-            # The lasers' set state comes from the simulated NI-DAQ that
-            # switches them (read-only), for the live view and the scans.
+            # The lasers' set state, for the live view and the scans:
+            # unknown (lit) until the master controller attaches it.
             self._mockFrames = MockLatticeFrames(
                 mockLattice, self.pixelSizeUm[-1],
                 seed=detectorInfo.managerProperties.get('mockRandomSeed'),
-                states=LaserStates(nidaqManager),
+                states=LaserStates(),
             )
             self._camera.mock_frame_source = self._mockFrames
             nidaqManager.sigScanBuilt.connect(self.__onSimScanBuilt)
@@ -318,6 +318,12 @@ class HamamatsuManager(DetectorManager):
     def mockTrigger(self, n=1):
         if hasattr(self._camera, 'mockTrigger'):
             self._camera.mockTrigger(n)
+
+    def attachMockLaserStates(self, states):
+        """Simulation only: where the mock frames read the lasers' set state
+        (a read-only ``_mock_optics.LaserStates``; see MasterController)."""
+        if self._mockFrames is not None:
+            self._mockFrames.states = states
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.flushBuffers()

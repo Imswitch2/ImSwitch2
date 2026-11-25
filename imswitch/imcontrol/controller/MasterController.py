@@ -28,6 +28,22 @@ class MasterController:
             self._cleanupAfterInitializationFailure()
             raise
 
+    def _attachMockLaserStates(self):
+        """Simulation only: detectors that image a virtual sample read the
+        lasers' set state (on/off, power) from what the laser controller
+        publishes as shared attributes, and each laser's configured range.
+        Read-only; detectors without a virtual sample ignore it, and no
+        hardware path changes."""
+        attributes = getattr(self.__commChannel, 'sharedAttrs', None)
+        if attributes is None:
+            return
+        from imswitch.imcontrol.model.managers.detectors._mock_optics import LaserStates
+        states = LaserStates(attributes, self.lasersManager)
+        for _, detector in self.detectorsManager:
+            attach = getattr(detector, 'attachMockLaserStates', None)
+            if callable(attach):
+                attach(states)
+
     def _initialize(self, setupInfo, commChannel, moduleCommChannel):
         self.__logger = initLogger(self)
         self.__setupInfo = setupInfo
@@ -81,6 +97,7 @@ class MasterController:
 
         self.lasersManager = LasersManager(self.__setupInfo.lasers,
                                            **lowLevelManagers)
+        self._attachMockLaserStates()
         self.positionersManager = PositionersManager(self.__setupInfo.positioners,
                                                      **lowLevelManagers)
         self.rotatorsManager = RotatorsManager(self.__setupInfo.rotators,

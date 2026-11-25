@@ -147,9 +147,10 @@ class APDManager(DetectorManager):
         # A synthetic sample imaged from the scan waveforms (simulation only).
         self._mock_sample = MockSample.from_property(manager_props.get("mockSample"))
         self._mock_optics = PointScanOptics.from_property(manager_props.get("mockSample"))
-        # The lasers' set power and on/off state, as the simulated NI-DAQ
-        # last wrote them (read-only).
-        self._mock_laser_states = LaserStates(nidaqManager)
+        # The lasers' set power and on/off state (read-only); unknown, so
+        # lit, until the master controller attaches the lasers' published
+        # state (attachMockLaserStates).
+        self._mock_laser_states = LaserStates()
         # Bleaching lasts as long as the detector: a region scanned again
         # comes back dimmer.
         self._mock_bleaching = (
@@ -326,6 +327,11 @@ class APDManager(DetectorManager):
             self.__logger.exception(
                 'Failed to report APD scan %s failure', stage
             )
+
+    def attachMockLaserStates(self, states):
+        """Simulation only: where the virtual sample reads the lasers' set
+        state (a read-only ``_mock_optics.LaserStates``; see MasterController)."""
+        self._mock_laser_states = states
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.initiateScan(scanInfoDict, signalDict)

@@ -10,8 +10,8 @@ it:
   in the scan (``TTLCycleSignalsDict``) or, without one, whether it is
   switched on; times its power, from the scan's analog power waveform when
   the scan has one (Advanced line-step power) or else the power it is set
-  to. The set state comes from the simulated NI-DAQ, which keeps the last
-  level each laser's lines were set to (:class:`LaserStates`);
+  to. The set state is what the laser controller publishes for each laser
+  (:class:`LaserStates`);
 * how the fluorophores answer -- they saturate (:class:`Photophysics`):
   emission per fluorophore goes as I / (I + I_sat), a saturated focus is
   wider, and a background (scatter, autofluorescence) grows with the light
@@ -98,37 +98,65 @@ class LaserState:
     enabled: Optional[bool] = None
     #: Set power as a fraction of the laser's range, 0 to 1.
     fraction: Optional[float] = None
-    #: The range its analog line was set with, (low, high).
+    #: Its configured range, (low, high), in its own units.
     range: Optional[Tuple[float, float]] = None
 
 
 class LaserStates:
-    """Read-only view of the lasers' set state, from the simulated NI-DAQ.
+    """Read-only view of the lasers' set state: on/off and power.
 
-    A laser's manager switches it and sets its power through the NI-DAQ
-    (``setDigital``, ``setAnalog``); in simulation the NI-DAQ manager keeps
-    the last level of each (``simulatedOutput``), which this reads under the
-    NI-DAQ's lock. Nothing here knows a laser manager class, and nothing is
-    written. A laser the NI-DAQ never set (another driver, or the power of a
-    binary laser) is unknown: on, at full power, where that matters.
+    The laser controller publishes every laser's state as shared attributes
+    (``("Laser", <name>, "Enabled")`` and ``("Laser", <name>, "Value")``)
+    whenever the Laser widget or a script changes it; this reads them, and
+    the laser's configured range from its manager (``valueRangeMin`` /
+    ``valueRangeMax``, or 0-100 % for one with a calibration lookup), as
+    any laser manager declares them. Nothing is written and no laser driver
+    is touched. Reading a key of a dict another thread writes is atomic, so
+    the detector worker threads read it as they go. A laser with no
+    published state (no laser controller, or a power on a binary laser) is
+    unknown: on, at full power, where that matters.
     """
 
-    def __init__(self, source=None):
-        self._read = getattr(source, 'simulatedOutput', None)
+    CATEGORY = 'Laser'
+
+    def __init__(self, attributes=None, lasers=None):
+        self._attributes = attributes
+        self._lasers = lasers
+
+    def _attribute(self, name, key):
+        if self._attributes is None:
+            return None
+        try:
+            return self._attributes[(self.CATEGORY, name, key)]
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _range(self, name):
+        try:
+            manager = self._lasers[name]
+        except (KeyError, TypeError, IndexError):
+            return None
+        if getattr(manager, 'isBinary', False):
+            return None
+        lookup = getattr(manager, 'usesCalibrationLookup', None)
+        try:
+            if callable(lookup) and lookup():
+                return 0.0, 100.0
+            return float(manager.valueRangeMin), float(manager.valueRangeMax)
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def get(self, name) -> LaserState:
-        if not callable(self._read):
-            return LaserState()
-        try:
-            output = self._read(name) or {}
-        except Exception:
-            return LaserState()
-        enabled, value, span = output.get('enabled'), output.get('value'), output.get('range')
+        enabled = self._attribute(name, 'Enabled')
+        value = self._attribute(name, 'Value')
+        span = self._range(name)
         fraction = None
         if value is not None and span is not None and span[1] > span[0]:
-            fraction = min(max((value - span[0]) / (span[1] - span[0]), 0.0), 1.0)
-        return LaserState(None if enabled is None else bool(enabled), fraction,
-                          None if span is None else (float(span[0]), float(span[1])))
+            try:
+                fraction = min(max((float(value) - span[0]) / (span[1] - span[0]), 0.0), 1.0)
+            except (TypeError, ValueError):
+                fraction = None
+        return LaserState(None if enabled is None else bool(enabled), fraction, span)
 
 
 def _resample(signal, n):

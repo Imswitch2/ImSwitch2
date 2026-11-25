@@ -1,19 +1,17 @@
 """Laser power and on/off state acting on the virtual sample.
 
-The simulated NI-DAQ keeps the level each laser's lines were last set to;
-the mock detectors read it (read-only) and the fluorophores answer with
+The laser controller publishes each laser's on/off state and power as
+shared attributes; the master controller hands the mock detectors a
+read-only view of them, and the fluorophores answer with
 saturation, a background that grows with the light, and Poisson noise, so
 image quality has an optimum power. For MoNaLISA each laser's power acts on
 its own step: ON fraction, OFF dose (resolution), readout signal.
 """
-import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from imswitch.imcontrol.model import DetectorInfo, SetupInfo
-from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
-from imswitch.imcontrol.model.managers.detectors.HamamatsuManager import HamamatsuManager
 from imswitch.imcontrol.model.managers.detectors._mock_lattice import (
     FrameConditions,
     MockLattice,
@@ -38,20 +36,28 @@ AXES = {'X': 5.0, 'Y': 5.0}
 RATE = 100_000
 
 
-class FakeDaq:
-    """What a simulated NI-DAQ reports after the lasers were set."""
+class FakeLasers:
+    """What a laser controller publishes, and the lasers' ranges (0-5 V)."""
+
+    KEYS = {'Enabled': 'enabled', 'Value': 'value'}
 
     def __init__(self, **fractions):
-        self.levels = {name.replace('_', ' '): {'enabled': True, 'value': 5.0 * f,
-                                                 'range': (0.0, 5.0)}
+        self.levels = {name: {'enabled': True, 'value': 5.0 * f}
                        for name, f in fractions.items()}
 
-    def simulatedOutput(self, name):
-        return dict(self.levels.get(name, {}))
+    def __getitem__(self, key):                  # the shared-attribute view
+        category, name, attribute = key
+        assert category == 'Laser'
+        return self.levels[name][self.KEYS[attribute]]
+
+    def states(self):
+        manager = SimpleNamespace(isBinary=False, valueRangeMin=0.0, valueRangeMax=5.0,
+                                  usesCalibrationLookup=lambda: False)
+        return LaserStates(self, {name: manager for name in self.levels})
 
 
 def _states(**fractions):
-    return LaserStates(FakeDaq(**fractions))
+    return FakeLasers(**fractions).states()
 
 
 @pytest.fixture(scope='module')
@@ -74,11 +80,11 @@ def _parked(at, n, ttl=None):
 
 def _point_signal(at, fraction, prop=None, enabled=True, ttl=None):
     prop = {'axes': AXES, 'preset': 'beads', 'excitation': ['488'], **(prop or {})}
-    daq = FakeDaq(**{'488': fraction})
+    daq = FakeLasers(**{'488': fraction})
     daq.levels['488']['enabled'] = enabled
     sample = MockSample.from_property(prop)
     signal = PointScanSignal(sample, PointScanOptics.from_property(prop), _parked(at, 4, ttl),
-                             1, 1e6, states=LaserStates(daq))
+                             1, 1e6, states=daq.states())
     return signal(0, 4)
 
 
@@ -86,51 +92,38 @@ def _point_signal(at, fraction, prop=None, enabled=True, ttl=None):
 # How the state gets there
 # ---------------------------------------------------------------------------
 
-def _nidaq(simulation):
-    return NidaqManager(SetupInfo.from_json(json.dumps({
-        'detectors': {}, 'positioners': {},
-        'lasers': {'488': {'analogChannel': 'Dev1/ao3', 'digitalLine': 'Dev1/port0/line1',
-                           'managerName': 'NidaqLaserManager', 'managerProperties': {},
-                           'wavelength': 488, 'valueRangeMin': 0, 'valueRangeMax': 5}},
-        'nidaq': {'simulation': simulation, 'timerCounterChannel': None,
-                  'startTrigger': False},
-    }), infer_missing=True))
-
-
-def test_the_simulated_nidaq_keeps_what_each_laser_was_set_to():
-    nidaq = _nidaq(simulation=True)
-    assert nidaq.simulatedOutput('488') == {}
-    assert LaserStates(nidaq).get('488').enabled is None
-    nidaq.setDigital('488', True)
-    nidaq.setAnalog('488', 1.25, min_val=0, max_val=5)
-    assert nidaq.simulatedOutput('488') == {'enabled': True, 'value': 1.25, 'range': (0.0, 5.0)}
-    state = LaserStates(nidaq).get('488')
-    assert (state.enabled, state.fraction) == (True, pytest.approx(0.25))
-    # A copy: the reader cannot change what the NI-DAQ keeps.
-    nidaq.simulatedOutput('488')['value'] = 99.0
-    assert nidaq.simulatedOutput('488')['value'] == 1.25
-
-
-def test_hardware_keeps_no_simulated_levels():
-    nidaq = _nidaq(simulation=False)
-    nidaq.setDigital('488', True)            # no backend here: refused, as before
-    assert nidaq.simulatedOutput('488') == {}
-    assert LaserStates(nidaq).get('488').enabled is None
+def test_the_published_state_and_range_make_a_power_fraction():
+    attributes = {('Laser', '488', 'Enabled'): True, ('Laser', '488', 'Value'): 1.25,
+                  ('Laser', 'lut', 'Value'): 40.0, ('Laser', 'binary', 'Value'): 0.0}
+    managers = {
+        '488': SimpleNamespace(isBinary=False, valueRangeMin=0, valueRangeMax=5,
+                               usesCalibrationLookup=lambda: False),
+        'lut': SimpleNamespace(isBinary=False, valueRangeMin=0, valueRangeMax=5,
+                               usesCalibrationLookup=lambda: True),
+        'binary': SimpleNamespace(isBinary=True, valueRangeMin=0, valueRangeMax=200),
+    }
+    states = LaserStates(attributes, managers)
+    state = states.get('488')
+    assert (state.enabled, state.fraction, state.range) == (True, 0.25, (0.0, 5.0))
+    assert states.get('lut').fraction == pytest.approx(0.4)        # % of 0-100
+    assert states.get('binary').fraction is None                   # no power: full
+    assert states.get('unknown') == states.get('unknown').__class__()
+    assert LaserStates().get('488').enabled is None                # no controller
 
 
 def test_a_laser_is_lit_by_its_ttl_else_its_set_state_at_its_power():
     lasers = parse_lasers({'488': 1.0}, 'excitation')
-    daq = FakeDaq(**{'488': 0.4})
-    assert laser_light({}, lasers, 3, states=LaserStates(daq)) == pytest.approx([0.4] * 3)
+    daq = FakeLasers(**{'488': 0.4})
+    assert laser_light({}, lasers, 3, states=daq.states()) == pytest.approx([0.4] * 3)
     daq.levels['488']['enabled'] = False
-    assert laser_light({}, lasers, 3, states=LaserStates(daq)) == pytest.approx([0, 0, 0])
+    assert laser_light({}, lasers, 3, states=daq.states()) == pytest.approx([0, 0, 0])
     # The scan's TTL decides while it runs; the set power still counts.
     ttl = {'TTLCycleSignalsDict': {'488': np.array([1, 0, 1], bool)}}
-    assert laser_light(ttl, lasers, 3, states=LaserStates(daq)) == pytest.approx([0.4, 0, 0.4])
+    assert laser_light(ttl, lasers, 3, states=daq.states()) == pytest.approx([0.4, 0, 0.4])
     # A power waveform in the scan wins, read against the laser's range.
     ao = {'scanSignalsDict': {'488': np.array([5.0, 2.5, 0.0])}, **ttl}
     ttl['TTLCycleSignalsDict']['488'] = np.ones(3, bool)
-    assert laser_light(ao, lasers, 3, states=LaserStates(daq)) == pytest.approx([1, 0.5, 0])
+    assert laser_light(ao, lasers, 3, states=daq.states()) == pytest.approx([1, 0.5, 0])
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +165,7 @@ def test_an_apd_scan_with_its_lasers_at_zero_says_why_it_is_dark(bead, caplog):
     shows dark counts only, and the mock says which lasers to raise."""
     import logging
 
+    from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
     from imswitch.imcontrol.model.managers.detectors.APDManager import (
         APDManager,
         ScanWorker,
@@ -188,7 +182,7 @@ def test_an_apd_scan_with_its_lasers_at_zero_says_why_it_is_dark(bead, caplog):
                            'darkCountRate': 2e5}},
         'forAcquisition': True}})
     apd = APDManager(setup.detectors['APD'], 'APD', NidaqManager(setup))
-    apd._mock_laser_states = _states(**{'488': 0.0})
+    apd.attachMockLaserStates(_states(**{"488": 0.0}))
     with caplog.at_level(logging.WARNING):
         worker = ScanWorker(apd, _slow_detector_scan_info(),
                             {'TTLCycleSignalsDict': {}, **_parked(bead, 400)})
@@ -261,8 +255,8 @@ def test_the_paths_agree_on_the_same_sample(bead):
 
 def test_the_live_camera_shows_the_readout_laser_as_set():
     lattice = _lattice()
-    daq = FakeDaq(**{'488 (EXC)': 0.0})
-    frames = MockLatticeFrames(lattice, 0.075, seed=0, states=LaserStates(daq))
+    daq = FakeLasers(**{'488 (EXC)': 0.0})
+    frames = MockLatticeFrames(lattice, 0.075, seed=0, states=daq.states())
     shape = (96, 96)
     dark = lattice.expected_photons(shape, 0.075, frames._live(FrameConditions()))
     assert dark.max() == 0.0
@@ -303,30 +297,36 @@ def test_each_monalisa_laser_acts_on_its_own_step():
     assert values[1] > values[0] and values[1] > values[2]
 
 
-def test_the_shipped_monalisa_camera_follows_its_lasers():
-    """A real manager on a simulated NI-DAQ: the laser's writes reach the
-    live view, through the NI-DAQ only."""
-    setup = json.load(open('imswitch/_data/user_defaults/imcontrol_setups/'
-                           'simple_monalisa_mock_scan_setup.json', encoding='utf-8'))
-    camera = setup['detectors']['Camera']
-    camera['managerProperties']['hamamatsu'].update(
-        subarray_hsize=96, subarray_vsize=96, image_width=96, image_height=96)
-    nidaq = NidaqManager(SetupInfo.from_json(json.dumps({
-        'detectors': {'Camera': camera}, 'lasers': setup['lasers'], 'positioners': {},
-        'nidaq': {'simulation': True, 'timerCounterChannel': None, 'startTrigger': False},
-    }), infer_missing=True))
-    manager = HamamatsuManager(DetectorInfo(**camera), 'Camera', nidaqManager=nidaq)
-    source = manager._mockFrames
-    level = lambda: source.lattice.expected_photons(  # noqa: E731
-        (96, 96), source.pixelUm, source._live(FrameConditions())).sum()
-    assert level() > 0                     # never set: unknown, so lit
-    nidaq.setDigital('488 (EXC)', False)
-    assert level() == 0
-    nidaq.setDigital('488 (EXC)', True)
-    nidaq.setAnalog('488 (EXC)', 0.5, min_val=0, max_val=5)
-    low = level()
-    nidaq.setAnalog('488 (EXC)', 5.0, min_val=0, max_val=5)
-    assert 0 < low < level()
+def test_the_laser_widget_reaches_the_shipped_monalisa_camera(qtbot):
+    """The real path: a MasterController and LaserController on the shipped
+    SimpleMoNaLISA mock setup. What the Laser widget sets reaches the mock
+    camera's live view through the shared attributes -- no driver involved."""
+    from .test_scan_cloak_contract import CloakRig, _controllerClass
+    from imswitch.imcontrol._test import optionsBasic
+    from imswitch.imcontrol.view import widgets
+
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        lasers = rig.factory.createController(
+            _controllerClass('LaserController'), widgets.LaserWidget(optionsBasic))
+        source = rig.master.detectorsManager['Camera']._mockFrames
+
+        def level():
+            return source.lattice.expected_photons(
+                (96, 96), source.pixelUm, source._live(FrameConditions())).sum()
+
+        # The controller switches every laser off and to its minimum on start.
+        assert level() == 0
+        lasers.toggleLaser('488 (EXC)', True)
+        assert level() == 0                     # on, at 0 V
+        lasers.valueChanged('488 (EXC)', 0.5)
+        low = level()
+        lasers.valueChanged('488 (EXC)', 5.0)
+        assert 0 < low < level()
+        lasers.toggleLaser('488 (EXC)', False)
+        assert level() == 0
+    finally:
+        rig.close()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

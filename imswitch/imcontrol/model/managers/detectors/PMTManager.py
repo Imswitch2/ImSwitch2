@@ -145,8 +145,8 @@ class PMTManager(DetectorManager):
         mockSampleProperty = manager_props.get("mockSample")
         self._mock_sample = MockSample.from_property(mockSampleProperty)
         self._mock_optics = PointScanOptics.from_property(mockSampleProperty)
-        # The lasers' set state, as the simulated NI-DAQ last wrote them.
-        self._mock_laser_states = LaserStates(nidaqManager)
+        # The lasers' set state (read-only; see APDManager).
+        self._mock_laser_states = LaserStates()
         self._mock_bleaching = (
             Bleaching(self._mock_optics.bleach_half_life_s)
             if self._mock_optics.bleach_half_life_s else None
@@ -370,6 +370,11 @@ class PMTManager(DetectorManager):
             self.__logger.exception(
                 'Failed to report PMT scan %s failure', stage
             )
+
+    def attachMockLaserStates(self, states):
+        """Simulation only: where the virtual sample reads the lasers' set
+        state (a read-only ``_mock_optics.LaserStates``; see MasterController)."""
+        self._mock_laser_states = states
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.initiateScan(scanInfoDict, signalDict)
