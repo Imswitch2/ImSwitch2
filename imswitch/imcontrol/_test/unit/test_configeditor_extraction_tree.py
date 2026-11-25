@@ -89,7 +89,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Hamamatsu's mockSample (SimplePointScan / SimpleMoNaLISA mock setups).
     # MoNaLISA reconstruction defaults now belong to processing, not
     # detector hardware schemas (244 rather than 244 + 18).
-    assert report.keys == 244
+    # 247: useMockOnFailure on the Marzhauser, Piezoconcept (two) and SQUID
+    # stages -- a missing rs232 device is an error unless the setup opts in
+    # to the mock (device-failure policy).
+    assert report.keys == 247
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 64 after the device-reconnection rebase: CoolLED and MPB read
@@ -97,7 +100,7 @@ def test_the_coverage_the_plan_is_built_on(report):
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
     assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
-    assert report.optional == 178
+    assert report.optional == 181
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
@@ -129,7 +132,7 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # port (str()) are coerced in code.
     # 114: the 16 instrument keys read through float()/int()/str().
     # 118 / 121: the seven useMockOnFailure reads through bool().
-    assert report.typed_by_code == 121
+    assert report.typed_by_code == 124
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

@@ -615,6 +615,12 @@ Marzhauser XY stage driven over RS-232.
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required (subscripted, no default).
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -633,9 +639,10 @@ Not supported.
 
 **Low-level dependencies**
 
-* ``rs232sManager[<rs232device>]`` — used for all stage I/O.  On
-  any exception during lookup the manager falls back to
-  ``MockRS232Driver`` and logs a warning.
+* ``rs232sManager[<rs232device>]`` — used for all stage I/O.  If the
+  lookup fails the stage raises an error naming the device, unless
+  ``useMockOnFailure`` is true (then ``MockRS232Driver`` stands in and
+  the status is a reported mock).
 
 **Vendor library**
 
@@ -901,6 +908,12 @@ Piezoconcept Z-piezo over RS-232 (original firmware).
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -918,8 +931,9 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.  If the lookup fails, the manager logs a warning and
-  continues on a ``MockRS232Driver``.
+  ``query()``.  If the lookup fails the manager raises an error naming
+  the device, unless ``useMockOnFailure`` is true (then it continues on a
+  ``MockRS232Driver``, reported as a mock).
 
 **Vendor library**
 
@@ -968,6 +982,12 @@ Piezoconcept Z-piezo over RS-232 (variant the docstring describes as
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
    * - ``range_um``
      - number
      - Total travel range in µm.  Required for the auto-centering
@@ -991,8 +1011,9 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.  If the lookup fails, the manager logs a warning and
-  continues on a ``MockRS232Driver``.
+  ``query()``.  If the lookup fails the manager raises an error naming
+  the device, unless ``useMockOnFailure`` is true (then it continues on a
+  ``MockRS232Driver``, reported as a mock).
 
 **Vendor library**
 
@@ -1039,6 +1060,12 @@ that exposes a ``_squid`` attribute with ``move_x_usteps`` /
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -1057,10 +1084,10 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — must expose a ``_squid``
-  attribute providing the microstep-move API.  On any exception the
-  manager falls back to ``MockRS232Driver`` and logs a warning (note
-  that the mock does not provide ``_squid``, so moves on the
-  fallback will fail).
+  attribute providing the microstep-move API.  If the lookup fails the
+  manager raises an error naming the device, unless ``useMockOnFailure``
+  is true (then a ``MockRS232Driver`` carrying a small mock board stands
+  in; moves are accepted and logged, and the status is a reported mock).
 
 **Vendor library**
 

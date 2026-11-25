@@ -4,17 +4,17 @@
     "constrained": 56,
     "docs_agree": 166,
     "docs_documented": 166,
-    "keys": 246,
+    "keys": 250,
     "managers": 66,
     "none_default_only": 40,
     "none_only": 16,
-    "optional": 180,
+    "optional": 184,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 121,
-    "typed_with_docs": 190,
-    "typed_with_examples": 158,
+    "typed_by_code": 125,
+    "typed_with_docs": 194,
+    "typed_with_examples": 162,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -381,7 +381,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "MPBLaserManager": {
@@ -511,7 +511,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "PiezoconceptZManager2": {
@@ -521,7 +521,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 0
     },
     "PulseGeneratorLaserManager": {
@@ -589,7 +589,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "SerialDacZManager": {

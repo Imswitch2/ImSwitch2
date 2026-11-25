@@ -4,7 +4,8 @@
     "managerName": "PiezoconceptZManager2",
     "managerProperties": {
       "range_um": 1.5,
-      "rs232device": "example"
+      "rs232device": "example",
+      "useMockOnFailure": true
     }
   }
 }

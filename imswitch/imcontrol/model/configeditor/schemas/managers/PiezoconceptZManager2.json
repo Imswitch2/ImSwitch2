@@ -20,6 +20,13 @@
         "docs:string"
       ],
       "x-imswitch-widget": "ref"
+    },
+    "useMockOnFailure": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "PiezoconceptZManager2 managerProperties",
