@@ -35,13 +35,35 @@ under Limitations.
 Mock inventory by device family
 --------------------------------
 
-Two rules apply to every family below. A real device that cannot be opened is
-a mock only where its entry says so (a configured mock, or an explicit
-``useMockOnFailure``); otherwise it is *not connected* and reported as such in
-Hardware status, and the application starts without it. And a device whose
-manager cannot even be constructed (a vendor library that does not load, a
-setup error) is logged with its traceback, left out of its group, and reported
-as an error in Hardware status; the other devices still start.
+The policy (``docs/design/plans/device-reconnect-2.0.md``, section 4.0):
+
+* **Startup never crashes, and what did not start is reported.** A device that
+  fails is listed in the log at startup, in a notice in the main window, and
+  in Hardware status. A device whose manager cannot even be constructed (a
+  vendor library that does not load, a setup error) is logged with its
+  traceback, left out of its group, and reported as an error; the other
+  devices still start.
+* **Detectors fall back to a reported mock.** An acquisition needs a
+  detector, so a camera that cannot be opened is replaced by a mock whose
+  model name starts with ``MOCK (real camera not connected)``, whose
+  recordings carry ``recording:detector_simulated`` and the reason, and which
+  the camera's reconnect replaces by the real one. ``useMockOnFailure: false``
+  opts out (the detector is left out and reported).
+* **Everything else is absent, not mocked.** A laser, stage, rotator, flip
+  mirror, pulse generator, SLM or stand that cannot be opened is not
+  connected: its panel is greyed with the reason, commands are refused, and
+  Hardware status reconnects it without a restart. A mock is used only where
+  the setup configures one (a ``Mock*Manager``, a ``MOCK_`` serial,
+  ``simulation: true``) or opts in with ``useMockOnFailure: true``. A device
+  on a serial transport that failed to open is not usable either.
+
+Some managers still fall back to a mock automatically although they should be
+absent: the Cobolt 06-01 lasers (legacy and new), CoolLED, Lantz, the ESP32
+LED, PulseStreamer and PyMicroscope lasers, the PI and Leica Z positioners, the
+Leica DMI stand (and an unavailable stand manager), the Elliptec rotators and
+the Hamamatsu USB SLM. Their fallback is reported, but it is a mock of a device
+that should be absent; the classification table in the design plan lists them
+as remaining work.
 
 Detectors
 ~~~~~~~~~
