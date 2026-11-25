@@ -1957,9 +1957,15 @@ class TilingController(ImConWidgetController):
         startup, which is the failure this codebase already hit once with
         ``cameraPixelSizeUm``.
         """
+        try:
+            started = set(self._master.detectorsManager.getAllDeviceNames())
+        except Exception:
+            started = None      # cannot tell: offer every configured detector
         names = [
             name for name, info in self._setupInfo.detectors.items()
             if getattr(info, 'forAcquisition', False)
+            # A detector that failed to start cannot be tiled with.
+            and (started is None or name in started)
         ]
         self._widget.setDetectors(names)
         if preferredName and preferredName in names:

@@ -2678,3 +2678,24 @@ def _positionerNamed(master, name):
     positioners = master.positionersManager
     getDevice = getattr(positioners, 'getDevice', None)
     return getDevice(name) if callable(getDevice) else positioners[name]
+
+
+def _missingDevices(master, *, detector=None, positioner=None):
+    """Reasons for the devices a controller's setup section names that did not
+    start (or do not exist); an empty list when all are there. The reason of a
+    device that failed at startup is its failure."""
+    reasons = []
+    for label, group, name in (('detector', 'detectorsManager', detector),
+                               ('positioner', 'positionersManager', positioner)):
+        if not name:
+            continue
+        devices = getattr(master, group, None)
+        getDevice = getattr(devices, 'getDevice', None)
+        try:
+            if callable(getDevice):
+                getDevice(name)
+            else:
+                devices[name]
+        except Exception as error:
+            reasons.append(f'{label} {name!r}: {error}')
+    return reasons
