@@ -35,14 +35,6 @@ from imswitch.imcommon.model import APIExport, dirtools, initLogger
 # working while the canonical definition lives in the model layer.
 
 
-def _positionerNamed(master, name):
-    """The positioner manager called ``name``. One that failed to start is
-    named with its reason (``getDevice``) instead of a bare KeyError."""
-    positioners = master.positionersManager
-    getDevice = getattr(positioners, 'getDevice', None)
-    return getDevice(name) if callable(getDevice) else positioners[name]
-
-
 class ImConWidgetControllerFactory(WidgetControllerFactory):
     """ Factory class for creating a ImConWidgetController object. """
 
@@ -2678,3 +2670,11 @@ _attrCategoryTTL = 'ScanTTL'
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def _positionerNamed(master, name):
+    """The positioner manager called ``name``. One that failed to start is
+    named with its reason (``getDevice``) instead of a bare KeyError."""
+    positioners = master.positionersManager
+    getDevice = getattr(positioners, 'getDevice', None)
+    return getDevice(name) if callable(getDevice) else positioners[name]

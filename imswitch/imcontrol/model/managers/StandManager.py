@@ -92,6 +92,13 @@ class StandManager(ABC):
             or manager.__name__.startswith("Mock")
         )
 
+    @property
+    def isUsable(self) -> bool:
+        """Whether there is a stand to command: a stand that failed to start
+        is replaced by one that does nothing, and says so here."""
+        from imswitch.imcontrol.model.devices.status import device_usable
+        return self._subManager is not None and device_usable(self._subManager)
+
     def motCorrPos(self, position):
         if self._subManager is not None:
             self._subManager.motCorrPos(position)
