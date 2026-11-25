@@ -226,7 +226,11 @@ safely.  When the last instance is finalized the bus is closed.
    * - ``homeOnInit``
      - bool
      - ``false``
-     - If true, home this rotator at startup (uses the bus lock; safe to set on multiple devices).
+     - If true, home this rotator at startup when it answers (uses the bus lock; safe to set on multiple devices). A reconnect never homes.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - A mount that does not answer is reported **not connected**: moves are refused with its name and a reconnect from Hardware status re-reads the positions without moving anything. ``true`` runs a reported mock that moves virtually.
 
 **Low-level dependencies**
 
@@ -237,9 +241,10 @@ None.  The shared bus is internal to the manager — no
 
 ``pylablib.devices.Thorlabs.ElliptecMotor`` (lazy via the
 ``imswitch.imcontrol.model.interfaces.elliptecbus`` wrapper).  If the
-real bus fails to open, the manager swaps in
-``MockElliptecBus`` + ``MockElliptecMotor`` — a stateful per-address
-simulator suitable for headless / CI use.
+real bus fails to open, the mounts are reported not connected and refuse
+moves; with ``useMockOnFailure`` the shared bus keeps virtual per-address
+positions instead — a stateful simulator suitable for headless / CI use,
+reported as a mock.
 
 **Gotchas**
 

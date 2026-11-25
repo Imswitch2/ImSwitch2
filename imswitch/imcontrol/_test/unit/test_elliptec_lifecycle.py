@@ -60,13 +60,16 @@ def _reset_shared_buses():
     elliptecbus._SharedElliptecBus._instances.clear()
 
 
-def _info(port="COM20", address=0, *, scale="stage", home=False):
+def _info(port="COM20", address=0, *, scale="stage", home=False, mock=False):
+    # The mock is an explicit opt-in (device-failure policy); the tests that pin
+    # a mock pass mock=True, the *_absent_* tests pin the default.
     return SimpleNamespace(
         managerProperties={
             "port": port,
             "address": address,
             "scale": scale,
             "homeOnInit": home,
+            "useMockOnFailure": mock,
         }
     )
 
@@ -84,7 +87,7 @@ def test_startup_failure_uses_stateful_mock_and_reconnects_in_place(monkeypatch)
 
     monkeypatch.setattr(elliptecbus, "_open_elliptec_stage", _open)
 
-    manager = ElliptecRotatorManager(_info(), "HWP")
+    manager = ElliptecRotatorManager(_info(mock=True), "HWP")
     identity = id(manager)
     assert manager.isMock is True
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
@@ -102,6 +105,48 @@ def test_startup_failure_uses_stateful_mock_and_reconnects_in_place(monkeypatch)
     assert manager.connectionState is DeviceConnectionState.CONNECTED
     assert manager.position == pytest.approx(37.5)
     assert real_stage.home_calls == []
+
+
+def test_elliptec_that_does_not_answer_is_absent_refuses_moves_and_reconnects_unmoved(monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
+    real_stage = _FakeStage({0: 37.5})
+    attempts = 0
+
+    def _open(_port, _scale):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("COM20 unavailable")
+        return real_stage
+
+    monkeypatch.setattr(elliptecbus, "_open_elliptec_stage", _open)
+
+    manager = ElliptecRotatorManager(_info(home=True), "HWP")
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL         # not a mock
+    assert manager.connectionState is DeviceConnectionState.ERROR and not manager.isUsable
+    assert "not connected" in manager.connectionStatusSummary
+    with pytest.raises(DeviceNotConnectedError, match="HWP: move refused"):
+        manager.move_abs(14.0)
+    with pytest.raises(DeviceNotConnectedError):
+        manager.move_rel(1.0)
+    assert manager.position == pytest.approx(0.0)                 # nothing "moved"
+
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is True and manager.isUsable
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.position == pytest.approx(37.5)                # a read, no motion
+    assert real_stage.home_calls == [] and real_stage.move_calls == []   # incl. no homeOnInit
+
+
+def test_a_failed_elliptec_reconnect_stays_absent_not_mocked(monkeypatch):
+    monkeypatch.setattr(
+        elliptecbus, "_open_elliptec_stage",
+        lambda _port, _scale: (_ for _ in ()).throw(OSError("COM20 unavailable")))
+    manager = ElliptecRotatorManager(_info(), "HWP")
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is False and "rotator not connected" in result.summary
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
 
 
 def test_shared_bus_keeps_missing_address_mock_and_reconnect_refreshes_all(monkeypatch):
@@ -142,8 +187,8 @@ def test_runtime_transport_failure_falls_entire_shared_bus_back_to_mock(monkeypa
     monkeypatch.setattr(
         elliptecbus, "_open_elliptec_stage", lambda _port, _scale: stage
     )
-    hwp = ElliptecRotatorManager(_info(address=0), "HWP")
-    qwp = ElliptecRotatorManager(_info(address=1), "QWP")
+    hwp = ElliptecRotatorManager(_info(address=0, mock=True), "HWP")
+    qwp = ElliptecRotatorManager(_info(address=1, mock=True), "QWP")
 
     with pytest.raises(OSError, match="closed"):
         hwp.move_abs(50.0)

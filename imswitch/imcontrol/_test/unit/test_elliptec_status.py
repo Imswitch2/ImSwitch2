@@ -43,13 +43,14 @@ def _reset_shared_buses():
     elliptecbus._SharedElliptecBus._instances.clear()
 
 
-def _info():
+def _info(mock=False):
     return SimpleNamespace(
         managerProperties={
             "port": "COM20",
             "address": 0,
             "scale": "stage",
             "homeOnInit": False,
+            "useMockOnFailure": mock,
         }
     )
 
@@ -74,7 +75,7 @@ def test_elliptec_reports_mock_fallback_without_status_probe(monkeypatch):
         lambda port, scale: (_ for _ in ()).throw(OSError("COM20 unavailable")),
     )
 
-    manager = ElliptecRotatorManager(_info(), "HWP")
+    manager = ElliptecRotatorManager(_info(mock=True), "HWP")
 
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
