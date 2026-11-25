@@ -113,7 +113,9 @@ states record which calibration a value was set under
 (``Laser:<name>:Calibration`` = ``{id, contentHash, driveValue}``); a saved
 value applied under a different calibration is never reinterpreted: the
 recorded drive is applied (converted into the current scale) or, when that
-is impossible, the value is skipped — with a warning either way.
+is impossible, the value is skipped — with a warning either way.  Loading the
+settings of a recording follows the same rule (see *Loading settings from a
+recording* in :doc:`/gui`).
 
 .. code-block:: json
 

@@ -197,6 +197,21 @@ and every value it stored, with the current value beside it:
 * Replay **never switches a laser on** (or off): the recorded emission state
   is shown for information only.  A value change on a laser that is emitting
   changes its output power, and the dialog says so on that row.
+* **Laser power calibrations.**  A laser value records which power
+  calibration it was set under (:ref:`calibrations-window`).  When that is the
+  calibration in force on the laser now, the value applies as recorded.  When
+  it differs ("recorded under calibration X; Y is in force now"), the
+  recorded percentage is never re-read through the new calibration: the
+  recorded *drive* is applied, converted into the current scale (*Will
+  apply* shows the converted value) — the output the recording was made with
+  — and if that drive lies outside the current calibration or range the value
+  is skipped.  On a different laser (a remapped row) the same drive does not
+  give the same output, so that value starts on *Skip* and is applied only if
+  you choose *Apply*.  Values are never converted between drive units (volts,
+  AOTF amplitude, mW).  A recording made before calibrations were recorded
+  applies as before, with a note when the laser now has a calibration in
+  force.  Presets, setup modes and restored widget states follow the same
+  rule.
 * Scan parameters are applied all together or not at all.  A file recorded
   with another scan panel, or whose scan names TTL lines or scan axes this
   setup does not have, starts on *Skip*; remap the lines and axes to apply it.
@@ -220,7 +235,9 @@ different setup from the same one.
 Scripts load settings without a dialog through
 ``api.imcontrol.replaySettingsFromFile(path)``: only devices that match exactly
 and values inside their range are applied, lasers are never switched on, and
-stages and rotators move only with ``allowMoves=True``.  It returns what was
+stages and rotators move only with ``allowMoves=True``.  A laser value
+recorded under a different calibration is applied by its recorded drive or
+skipped, as above, and the returned note says which.  It returns what was
 applied, skipped and failed.  ``api.imcontrol.planReplayFromFile(path)`` returns
 the same plan the dialog shows, without applying anything.
 
@@ -483,7 +500,10 @@ where, its comment, the file it came from, and its curve.
   startup.  A calibration made for a differently named laser asks for
   confirmation ("made for '488 (EXC)', applying to 'Ex488'"); one measured
   at another wavelength or on another kind of device warns more strongly;
-  one with a different drive unit cannot be used.
+  one with a different drive unit cannot be used.  Activating one changes
+  what a saved percentage means; saved states, setup modes, presets and
+  recordings loaded later are checked against it (see
+  :ref:`load-settings-from-recording`).
 * **Run <laser> on raw units** drops the calibration for this session.
 * **Save selection to setup file** writes, for each laser whose selection
   differs from the setup file, ``managerProperties.calibrationId`` — and
@@ -493,6 +513,10 @@ where, its comment, the file it came from, and its curve.
 * **Import CSV…** adds a calibration file (the two-column format with a
   ``#`` header, e.g. the ``lut_file`` of ``measureLaserPowerLut``) to the
   store; when the file does not name its laser, you are asked which one.
+  A file whose power is not monotonic in the drive (measurement noise) is
+  refused with the reason; the import offers to fit a monotonic curve (the
+  isotonic fit ``measureLaserPowerLut`` uses), shows the largest correction
+  first, and records "fitted on import".
   **Import referenced file into store** does that for the ``calibCsvPath``
   file the selected laser uses — the file and the setup stay as they are.
 * **Export CSV…** writes the selected calibration back as such a file, with

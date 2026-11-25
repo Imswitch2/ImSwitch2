@@ -130,11 +130,16 @@ Lasers
     * ``Laser:<LaserName>:Enabled`` (boolean)
     * ``Laser:<LaserName>:Value`` (power)
     * ``Laser:<LaserName>:Units``, ``:RangeMin`` and ``:RangeMax``: what
-      ``Value`` means on that laser, so a value can be checked against
-      another laser's range when the file is loaded on a different setup
-    * ``Laser:<LaserName>:Calibration`` (reserved, not written yet): the
-      identity of the power calibration behind the value, ``{"id",
-      "contentHash", "driveValue"}``
+      ``Value`` means on that laser (``%`` and 0–100 under a power
+      calibration, the laser's own unit and range otherwise), so a value can
+      be checked against another laser's range when the file is loaded on a
+      different setup
+    * ``Laser:<LaserName>:Calibration``: the power calibration behind the
+      value, ``{"id", "contentHash", "driveValue"}`` (the drive the value
+      gave), or ``null`` once a laser that had one runs on raw units; absent
+      for a laser never calibrated in the session.  Loading the file checks
+      it against the calibration in force (see :doc:`gui`, *Loading settings
+      from a recording*, and :doc:`devices/lasers`, *Power calibrations*)
     * ``Laser:<LaserName>:ModulationEnabled``, ``:Frequency`` and
       ``:DutyCycle`` for lasers that support modulation
 
@@ -174,7 +179,10 @@ Setup identity (metadata schema 1)
     * ``setup:inventory`` — per kind (``lasers``, ``positioners``,
       ``detectors``, ``rotators``, ``flipMirrors``, ``pulseGenerators``,
       ``scan``), each device's manager class and what remapping needs:
-      wavelength, value units and range, binary/modulated (lasers); axes and
+      wavelength, value units and range as the Laser panel shows them, the
+      raw drive unit and range, ``valueIs`` (``percent`` or ``raw``) and the
+      calibration in force as id and content hash only, binary/modulated
+      (lasers); axes and
       the travel range where the setup declares one (positioners); model,
       full frame, binnings and the parameters with their units, options and
       editability (detectors); scan panel type, scan positioners, TTL lines

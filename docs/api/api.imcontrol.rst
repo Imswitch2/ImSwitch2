@@ -512,12 +512,15 @@ api.imcontrol
 
       Always available.
 
-   .. method:: importLaserCalibration(path: 'str', laserName: 'str' = '') -> 'str'
+   .. method:: importLaserCalibration(path: 'str', laserName: 'str' = '', fitMonotone: 'bool' = False) -> 'str'
 
       Import a calibration CSV (for example the ``lut_file`` of
       :meth:`measureLaserPowerLut`) into the global calibration store and
       return its id. ``laserName`` names the laser it was made for when
-      the file does not say. Nothing is activated.
+      the file does not say. A file whose power is not monotonic in the
+      drive is refused unless ``fitMonotone``: then the isotonic fit of
+      ``measureLaserPowerLut`` is applied and recorded as "fitted on
+      import". Nothing is activated.
 
       Always available.
 
