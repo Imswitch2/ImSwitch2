@@ -17,6 +17,12 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Optional
 
 from imswitch.imcontrol.model import replay
+from imswitch.imcontrol.model.calibrations import (
+    laser_value_scale,
+    power_table_of,
+    raw_units_of,
+    resolution_of,
+)
 from imswitch.imcontrol.model.devices.status import device_usable
 
 
@@ -90,15 +96,34 @@ def buildInventory(master: Any, setupInfo: Any = None,
     inventory = replay.emptyInventory()
 
     for name, laser in _items(_get(master, 'lasersManager')):
+        # The value's scale as the Laser panel shows it: 0-100 % while a power
+        # calibration is in force, the manager's own unit and range otherwise.
+        # The raw drive's unit and range, and which calibration is in force
+        # (id and content hash only -- never a file path), say what a stored
+        # number meant.
+        try:
+            rangeMin, rangeMax, units, _decimals, step = laser_value_scale(laser)
+        except Exception:  # noqa: BLE001 - a dead device must not stop a load
+            rangeMin, rangeMax, units, step = (_get(laser, 'valueRangeMin'),
+                                               _get(laser, 'valueRangeMax'),
+                                               _get(laser, 'valueUnits'),
+                                               _get(laser, 'valueRangeStep'))
+        table = power_table_of(laser)
         inventory['lasers'][name] = {
             'managerClass': type(laser).__name__,
             'wavelength': _num(_get(laser, 'wavelength')),
-            'valueUnits': _get(laser, 'valueUnits'),
-            'valueRangeMin': _num(_get(laser, 'valueRangeMin')),
-            'valueRangeMax': _num(_get(laser, 'valueRangeMax')),
-            'valueRangeStep': _num(_get(laser, 'valueRangeStep')),
+            'valueUnits': units,
+            'valueRangeMin': _num(rangeMin),
+            'valueRangeMax': _num(rangeMax),
+            'valueRangeStep': _num(step),
             'isBinary': bool(_get(laser, 'isBinary', False)),
             'isModulated': bool(_get(laser, 'isModulated', False)),
+            'valueIs': 'percent' if table is not None else 'raw',
+            'rawUnits': raw_units_of(laser),
+            'rawRangeMin': _num(_get(laser, 'valueRangeMin')),
+            'rawRangeMax': _num(_get(laser, 'valueRangeMax')),
+            'calibration': ({'id': table.id, 'contentHash': table.contentHash()}
+                            if table is not None else None),
         }
 
     for name, positioner in _items(_get(master, 'positionersManager')):
@@ -191,7 +216,19 @@ def buildSnapshot(master: Any, setupInfo: Any, *, setupName: Optional[str],
                   scanController: Any = None, laserEnabled: Iterable[str] = ()) -> replay.SetupSnapshot:
     items = currentAttrs.items() if hasattr(currentAttrs, 'items') else currentAttrs
     current = {tuple(k): replay.plainValue(v) for k, v in items}
+    calibrations, failed = {}, set()
+    for name, laser in _items(_get(master, 'lasersManager')):
+        table = power_table_of(laser)
+        if table is not None:
+            calibrations[name] = table
+        try:
+            if resolution_of(laser).failed:
+                failed.add(name)
+        except Exception:  # noqa: BLE001
+            pass
     return replay.SetupSnapshot(
+        laserCalibrations=calibrations,
+        laserCalibrationFailed=failed,
         setupName=setupName,
         setupHash=setupHash,
         inventory=buildInventory(master, setupInfo, scanController),

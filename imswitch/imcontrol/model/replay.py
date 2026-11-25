@@ -58,10 +58,15 @@ SETUP_INVENTORY_KEY = (SETUP_CATEGORY, 'inventory')
 LASER_UNITS_ATTR = 'Units'
 LASER_RANGE_MIN_ATTR = 'RangeMin'
 LASER_RANGE_MAX_ATTR = 'RangeMax'
-#: Optional slot for a future laser power calibration identity:
-#: ``{'id': str, 'contentHash': str, 'driveValue': float}``.  Nothing writes it
-#: yet; when present it is shown in the replay dialog and carried into the
-#: replay provenance, never interpreted.
+#: The power calibration a laser's ``Value`` was set under:
+#: ``{'id': str, 'contentHash': str, 'driveValue': float}``, or None when it
+#: was set on raw units after a calibration had been in force.  Written by
+#: the Laser panel (``LaserController._publishLaserCalibration``).  Replay
+#: compares it with the calibration in force on the target laser and applies
+#: the rule of ``calibrations.saved_values`` (the same one presets and setup
+#: modes use): same -> the value; different -> the recorded drive converted
+#: into the current scale, or skipped; never the stored percentage
+#: reinterpreted through another calibration.
 LASER_CALIBRATION_ATTR = 'Calibration'
 
 ROTATOR_CATEGORY = 'Rotator'
@@ -272,6 +277,11 @@ class SetupSnapshot:
     unavailable: set = field(default_factory=set)
     current: Dict[Tuple[str, ...], Any] = field(default_factory=dict)
     laserEnabled: set = field(default_factory=set)
+    #: Laser name -> the power calibration in force (a ``LaserPowerTable``),
+    #: for lasers that have one; ``laserCalibrationFailed`` names lasers whose
+    #: referenced calibration did not load (they run on raw units).
+    laserCalibrations: Dict[str, Any] = field(default_factory=dict)
+    laserCalibrationFailed: set = field(default_factory=set)
 
     def devices(self, section: str) -> Dict[str, Dict[str, Any]]:
         return dict((self.inventory or {}).get(section) or {})
@@ -398,6 +408,11 @@ class ValueCheck:
     action: str = APPLY
     editedValue: Any = None
     requiresMoves: bool = False
+    #: The value to apply instead of ``stored`` when the stored one cannot be
+    #: applied as it is: a laser value recorded under another power
+    #: calibration, applied by its recorded drive in the target's scale.
+    converted: Any = None
+    convertedNote: str = ''
 
     @property
     def allowedActions(self) -> Tuple[str, ...]:
@@ -579,11 +594,19 @@ def _laserMismatch(record: Dict[str, Any], stored: Dict[str, Any],
             storedWavelength, currentRecord.get('wavelength')):
         return (f'Recorded at {storedWavelength} nm, this setup\'s laser of the same name '
                 f'is {currentRecord.get("wavelength")} nm.')
-    storedUnits = stored.get(LASER_UNITS_ATTR, record.get('valueUnits'))
-    if storedUnits not in (None, '') and currentRecord.get('valueUnits') not in (None, '') \
-            and str(storedUnits) != str(currentRecord.get('valueUnits')):
-        return (f'Value recorded in {storedUnits}, this setup\'s laser of the same name '
-                f'takes {currentRecord.get("valueUnits")}.')
+    storedRaw, currentRaw = record.get('rawUnits'), currentRecord.get('rawUnits')
+    if storedRaw not in (None, '') and currentRaw not in (None, ''):
+        # Both name the drive unit: a percent scale on one side only means a
+        # calibration changed (handled per value), not another device.
+        if str(storedRaw) != str(currentRaw):
+            return (f'Recorded on a laser driven in {storedRaw}, this setup\'s laser of the '
+                    f'same name is driven in {currentRaw}.')
+    else:
+        storedUnits = stored.get(LASER_UNITS_ATTR, record.get('valueUnits'))
+        if storedUnits not in (None, '') and currentRecord.get('valueUnits') not in (None, '') \
+                and str(storedUnits) != str(currentRecord.get('valueUnits')):
+            return (f'Value recorded in {storedUnits}, this setup\'s laser of the same name '
+                    f'takes {currentRecord.get("valueUnits")}.')
     storedBinary = record.get('isBinary')
     if storedBinary is not None and bool(storedBinary) != bool(currentRecord.get('isBinary')):
         return 'One of the two lasers is on/off only, the other has a power setpoint.'
@@ -841,18 +864,11 @@ def _checkLaser(item: ReplayItem, plan: ReplayPlan) -> List[ValueCheck]:
             check = ValueCheck(key='Value', label='Power', stored=stored['Value'],
                                current=plan.snapshot.current.get(('Laser', target, 'Value')),
                                units=record.get('valueUnits'))
-            if storedUnits not in (None, '') and record.get('valueUnits') not in (None, '') \
-                    and str(storedUnits) != str(record.get('valueUnits')):
-                check.status = V_INVALID
-                check.reason = (f'Recorded in {storedUnits}, "{target}" takes '
-                                f'{record.get("valueUnits")}; not converted.')
-            else:
-                _rangeCheck(check, _asFloat(stored['Value']),
-                            _asFloat(record.get('valueRangeMin')),
-                            _asFloat(record.get('valueRangeMax')))
-                if check.status == V_OK and target in plan.snapshot.laserEnabled:
-                    check.reason = (f'"{target}" is emitting now: applying changes its '
-                                    'output power.')
+            _checkLaserValue(check, item, plan, target, record, storedUnits)
+            if check.status == V_OK and check.action == APPLY \
+                    and target in plan.snapshot.laserEnabled:
+                check.reason = ((check.reason + ' ') if check.reason else '') + (
+                    f'"{target}" is emitting now: applying changes its output power.')
             checks.append(check)
     if 'Enabled' in stored:
         enabled = _asBool(stored['Enabled'])
@@ -863,10 +879,90 @@ def _checkLaser(item: ReplayItem, plan: ReplayPlan) -> List[ValueCheck]:
             status=V_SHOWN, action=SKIP,
             reason='Replay never switches a laser on (or off); shown only.'))
     if LASER_CALIBRATION_ATTR in stored:
+        table = plan.snapshot.laserCalibrations.get(target) if target else None
+        now = (f'{target} runs under {table.id}' if table is not None
+               else f'{target} runs on raw units') if target else 'no laser chosen'
+        recorded = stored[LASER_CALIBRATION_ATTR]
+        recordedText = (f'recorded under {recorded.get("id")}' if isinstance(recorded, dict)
+                        else 'recorded on raw units')
         checks.append(ValueCheck(key=LASER_CALIBRATION_ATTR, label='Calibration',
-                                 stored=stored[LASER_CALIBRATION_ATTR], status=V_SHOWN,
-                                 action=SKIP, reason='Calibration identity; shown only.'))
+                                 stored=recorded, status=V_SHOWN, action=SKIP,
+                                 reason=f'{recordedText}; {now}. Shown only.'))
     return checks
+
+
+def _checkLaserValue(check: ValueCheck, item: ReplayItem, plan: ReplayPlan, target: str,
+                     record: Dict[str, Any], storedUnits: Any) -> None:
+    """Units, calibration and range of a stored laser power on ``target``.
+
+    1. Drive units: values are never converted between drive units. When
+       both inventories name the drive unit (``rawUnits``) they must agree;
+       older files are held to the displayed unit, as before.
+    2. Calibration: ``calibrations.decide_saved_value`` -- the same rule as
+       presets and setup modes. A value recorded under a different
+       calibration is applied by its recorded drive (``converted``) or
+       skipped, never reinterpreted. On a *different* laser (remapped) the
+       drive does not reproduce the recorded output, so applying it is left to
+       the user (default Skip).
+    3. Range: the value applied must lie in the target's current range.
+    """
+    from imswitch.imcontrol.model.calibrations import (
+        APPLY_BY_DRIVE, APPLY_UNVERIFIED, SKIP_VALUE, decide_saved_value,
+        recorded_calibration_known,
+    )
+
+    stored = item.storedValues
+    storedRaw = item.storedInfo.get('rawUnits')
+    targetRaw = record.get('rawUnits')
+    targetUnits = record.get('valueUnits')
+    if storedRaw not in (None, '') and targetRaw not in (None, ''):
+        if str(storedRaw) != str(targetRaw):
+            check.status = V_INVALID
+            check.reason = (f'Recorded on a laser driven in {storedRaw}, "{target}" is driven '
+                            f'in {targetRaw}; not converted.')
+            return
+    elif storedUnits not in (None, '') and targetUnits not in (None, '') \
+            and str(storedUnits) != str(targetUnits):
+        check.status = V_INVALID
+        check.reason = (f'Recorded in {storedUnits}, "{target}" takes '
+                        f'{targetUnits}; not converted.')
+        return
+
+    saved = {'valueUnits': storedUnits}
+    if LASER_CALIBRATION_ATTR in stored:
+        saved['calibration'] = stored[LASER_CALIBRATION_ATTR]
+    decision = decide_saved_value(
+        stored['Value'], recorded=saved.get('calibration'),
+        recorded_known=recorded_calibration_known(saved),
+        table=plan.snapshot.laserCalibrations.get(target),
+        raw_range=(_asFloat(record.get('rawRangeMin', record.get('valueRangeMin'))),
+                   _asFloat(record.get('rawRangeMax', record.get('valueRangeMax')))),
+        raw_units=str(targetRaw or targetUnits or ''),
+        current_units=str(targetUnits or ''),
+        saved_units=None,          # units were compared above
+        calibration_failed=target in plan.snapshot.laserCalibrationFailed)
+    lo, hi = _asFloat(record.get('valueRangeMin')), _asFloat(record.get('valueRangeMax'))
+    if decision.outcome == SKIP_VALUE:
+        check.status = V_INVALID
+        check.reason = decision.reason
+        return
+    if decision.outcome == APPLY_BY_DRIVE:
+        check.converted = decision.value
+        check.convertedNote = (f'by recorded drive {decision.drive:g} {targetRaw or ""}'.rstrip()
+                               + f' (now {decision.value:.4g} {targetUnits or ""}'.rstrip()
+                               + f'; {decision.comparison.message})')
+        if lo is not None and hi is not None:
+            check.range = (lo, hi)
+        check.reason = decision.reason
+        if target != item.storedName:
+            check.action = SKIP
+            check.reason += (f' "{target}" is not the laser it was recorded on, so the same '
+                             f'drive does not reproduce the recorded output; choose Apply to '
+                             f'send it anyway.')
+        return
+    _rangeCheck(check, _asFloat(stored['Value']), lo, hi)
+    if decision.outcome == APPLY_UNVERIFIED and decision.reason:
+        check.reason = ((check.reason + ' ') if check.reason else '') + decision.reason
 
 
 def _checkDetector(item: ReplayItem, plan: ReplayPlan) -> List[ValueCheck]:
@@ -1094,7 +1190,9 @@ def buildActions(plan: ReplayPlan) -> ReplayActionSet:
                 continue
             used[usage] = item.storedName
             note = ''
-            if value.action == CLAMP:
+            if value.action == APPLY and value.converted is not None:
+                note = value.convertedNote or 'by recorded drive'
+            elif value.action == CLAMP:
                 note = f'clamped from {value.stored}'
             elif value.action == EDIT:
                 note = f'edited from {value.stored}'
@@ -1123,6 +1221,12 @@ def _finalValue(value: ValueCheck) -> Tuple[Any, str]:
     if value.action == APPLY:
         if value.status != V_OK:
             return None, value.reason or 'Out of range.'
+        if value.converted is not None:
+            number = _asFloat(value.converted)
+            if number is None or (value.range is not None and not (
+                    value.range[0] <= number <= value.range[1])):
+                return None, 'Out of range.'
+            return number, ''
         number = _asFloat(value.stored)
         if value.range is not None and number is not None and not (
                 value.range[0] <= number <= value.range[1]):
@@ -1245,6 +1349,11 @@ def buildProvenance(plan: ReplayPlan, result: ReplayResult, *, appliedAt: str,
         }
         if item.kind == LASER and LASER_CALIBRATION_ATTR in item.storedValues:
             perItem[item.id]['calibration'] = item.storedValues[LASER_CALIBRATION_ATTR]
+        if item.kind == LASER and item.target is not None:
+            table = plan.snapshot.laserCalibrations.get(item.target)
+            perItem[item.id]['calibrationAtTarget'] = (
+                {'id': table.id, 'contentHash': table.contentHash()} if table is not None
+                else None)
     for itemId, key, value, note in result.applied:
         entry = perItem.setdefault(itemId, {'applied': {}, 'skipped': {}, 'failed': {}})
         entry['applied'][key] = {'value': value, 'note': note} if note else value

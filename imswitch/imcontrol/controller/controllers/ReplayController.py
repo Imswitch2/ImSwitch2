@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import replay
 from imswitch.imcontrol.model import replay_inventory
+from imswitch.imcontrol.model.calibrations import laser_value_scale
 from ..basecontrollers import ComponentStateApplyMode, ImConWidgetController
 
 #: Remembered device choices per (source setup hash -> this setup hash).
@@ -280,7 +281,9 @@ class ReplayController(ImConWidgetController):
                 raise RuntimeError(f'laser attribute {key} is not replayed')
             manager = self._master.lasersManager[target]
             number = float(value)
-            lo, hi = manager.valueRangeMin, manager.valueRangeMax
+            # The range of the value as the laser takes it now: 0-100 % under a
+            # power calibration, its own range otherwise.
+            lo, hi = laser_value_scale(manager)[:2]
             if lo is not None and hi is not None and not (float(lo) <= number <= float(hi)):
                 raise RuntimeError(f'{number:g} is outside {lo} to {hi}; refused')
             laser = self._controller('Laser', 'Laser')
