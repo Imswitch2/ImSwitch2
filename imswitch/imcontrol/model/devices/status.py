@@ -113,14 +113,36 @@ class DeviceManagerStatusMixin:
         mode = self.runtimeMode
         if mode is DeviceRuntimeMode.MOCK:
             return True
+        if self._failedTransport() is not None:
+            return False
         return self.connectionState not in (
             DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED)
+
+    def _failedTransport(self):
+        """The serial transport this device talks through, when that
+        transport is down (it failed to open, or its I/O failed). A transport
+        that could not open puts a mock port in place so dependents can still
+        be built; the device on it must not look connected because of that."""
+        for value in list(self.__dict__.values()):
+            if value is self or not isinstance(value, DeviceManagerStatusMixin):
+                continue
+            if not callable(getattr(type(value), "reconnectTransport", None)):
+                continue
+            if value.connectionState in (
+                    DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+                return value
+        return None
 
     def _requireConnected(self, what: str = "command") -> None:
         """Refuse a command on a real device that is not connected."""
         if self.isUsable:
             return
-        summary = self.connectionStatusSummary or "not connected"
+        summary = self.connectionStatusSummary
+        transport = self._failedTransport()
+        if transport is not None and self.connectionState not in (
+                DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+            summary = f"transport: {transport.connectionStatusSummary}"
+        summary = summary or "not connected"
         raise DeviceNotConnectedError(
             f"{getattr(self, 'name', type(self).__name__)}: {what} refused, {summary}")
 
@@ -462,6 +484,13 @@ def not_connected_reason(manager) -> str:
     """What to show on a greyed-out row."""
     summary = getattr(manager, "connectionStatusSummary", None)
     details = getattr(manager, "connectionStatusDetails", None)
+    failed = getattr(manager, "_failedTransport", None)
+    transport = failed() if callable(failed) else None
+    if transport is not None and getattr(manager, "connectionState", None) not in (
+            DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+        # The device itself recorded nothing wrong; its serial port is down.
+        summary = f"Transport: {transport.connectionStatusSummary or 'not connected'}"
+        details = transport.connectionStatusDetails
     text = summary or "Not connected"
     if details and details not in text:
         text = f"{text}: {details}"

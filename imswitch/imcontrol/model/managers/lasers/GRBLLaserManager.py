@@ -35,6 +35,29 @@ class GRBLLaserManager(LaserManager):
             return
         self._setConnected("GRBL laser initialized")
 
+    # Transport hooks (DeviceLifecycleService): the board was reopened and
+    # re-programmed, so its output is off. The laser must agree, or the next
+    # power change would switch it on under an OFF panel.
+    def _lifecycleSafeState(self, *, verified: bool):
+        self.enabled = False
+        try:
+            self.setEnabled(False)
+        except Exception as exc:
+            return [f'{self.name}: could not confirm OFF: {exc}'] if verified else []
+        return []
+
+    def _onTransportReconnected(self, real: bool):
+        if not real:
+            self._setConnectionError('serial port could not be reopened',
+                                     summary='GRBL board did not reconnect')
+            return ['serial port could not be reopened']
+        errors = self._lifecycleSafeState(verified=True)
+        if errors:
+            self._setConnectionError('; '.join(errors), summary='GRBL laser reconnected but not usable')
+        else:
+            self._setConnected('GRBL laser reconnected; OFF')
+        return errors
+
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""
         self.enabled = enabled 
