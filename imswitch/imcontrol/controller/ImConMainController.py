@@ -109,6 +109,11 @@ class ImConMainController(MainController):
             controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
         )
 
+        # Devices that did not start: a non-blocking notice in the window,
+        # kept in step with every reconnect.
+        self.hardwareStatusController.addRefreshListener(self._updateHardwareNotice)
+        self._updateHardwareNotice(self.__masterController.deviceSupervisor.getHardwareStatuses())
+
         self.controllers = {}
 
         # Extra kwargs forwarded to specific controllers that need view-layer objects
@@ -122,14 +127,28 @@ class ImConMainController(MainController):
             },
         }
 
+        #: Panels whose controller could not start (widgetKey -> error): one
+        #: panel that needs a device which is not there must not end startup.
+        self.failedPanels = {}
         for widgetKey, widget in self.__mainView.widgets.items():
-            self.controllers[widgetKey] = self.__factory.createController(
-                (getattr(controllers, f'{widgetKey}Controller')
-                if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
-                widget,
-                **_extraKwargs.get(widgetKey, {})
-            )
+            try:
+                self.controllers[widgetKey] = self.__factory.createController(
+                    (getattr(controllers, f'{widgetKey}Controller')
+                    if widgetKey != 'Scan' else
+                    getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
+                    widget,
+                    **_extraKwargs.get(widgetKey, {})
+                )
+            except Exception as error:
+                self.__logger.error(
+                    f'The {widgetKey} panel could not start and is disabled: '
+                    f'{type(error).__name__}: {error}', exc_info=True)
+                self.failedPanels[widgetKey] = error
+                widget.setEnabled(False)
+                widget.setToolTip(f'This panel could not start: {error}')
+        if self.failedPanels:
+            self._updateHardwareNotice(
+                self.__masterController.deviceSupervisor.getHardwareStatuses())
 
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
         if 'SetupModes' in self.controllers:
@@ -386,6 +405,21 @@ class ImConMainController(MainController):
     @property
     def shortcutManager(self):
         return self.__shortcutManager
+
+    def _updateHardwareNotice(self, statuses):
+        from imswitch.imcontrol.model.devices import (
+            formatStartupReport, startupIssues, startupNoticeText,
+        )
+        issues = startupIssues(statuses)
+        text, detail = startupNoticeText(issues), formatStartupReport(issues)
+        panels = sorted(self.__dict__.get('failedPanels', {}))
+        if panels:
+            text = (text.rstrip('.') + '. ' if text else 'Hardware: ') + (
+                f"{len(panels)} panel{'s' if len(panels) != 1 else ''} could not start "
+                f"({', '.join(panels)}); see the log.")
+            detail = '\n'.join(filter(None, [detail] + [
+                f'{key} panel: {self.failedPanels[key]}' for key in panels]))
+        self.__mainView.setHardwareNotice(text, detail)
 
     def loadParamsFromHDF5(self):
         """ Set detector, positioner, laser etc. params from values saved in a

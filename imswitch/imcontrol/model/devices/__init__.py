@@ -26,6 +26,9 @@ from .supervisor import (
     DeviceSupervisor, resolveDeviceDescriptor, resolveDeviceStatus,
 )
 from .lifecycle_service import DeviceLifecycleService
+from .startup_report import (
+    StartupIssue, formatStartupReport, startupIssues, startupNoticeText,
+)
 
 __all__ = [
     "DeviceConnectionState",
@@ -71,4 +74,8 @@ __all__ = [
     "DeviceLifecycleProvider",
     "DeviceLifecycleResult",
     "DeviceLifecycleService",
+    "StartupIssue",
+    "formatStartupReport",
+    "startupIssues",
+    "startupNoticeText",
 ]

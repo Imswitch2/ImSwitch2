@@ -160,6 +160,9 @@ class MasterController:
             self, self.deviceSupervisor
         )
 
+        # One place that says what did not start, in the log too.
+        self._logStartupIssues()
+
         # Connect signals
         cc = self.__commChannel
 
@@ -176,6 +179,18 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+
+    def _logStartupIssues(self):
+        from imswitch.imcontrol.model.devices import formatStartupReport, startupIssues
+        try:
+            issues = startupIssues(self.deviceSupervisor.getHardwareStatuses())
+        except Exception:
+            self.__logger.warning('Could not read the hardware status at startup', exc_info=True)
+            return
+        if issues:
+            self.__logger.warning(
+                f'{len(issues)} device(s) did not start as configured; reconnect from '
+                f'Hardware -> Hardware status:\n{formatStartupReport(issues)}')
 
     def _startDevice(self, attrName, factory, *args, **kwargs):
         """Build one single-instance device manager; on failure log it and
