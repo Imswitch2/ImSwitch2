@@ -24,6 +24,8 @@ Design reference: docs/design/plans/detector-acquisition-selection.md.
 
 import threading
 
+from imswitch.imcommon.model.gui_diagnostics import timedStep
+
 from ._acquisition_leases import LeasePurpose
 from .NidaqManager import ScanBusyError
 
@@ -74,7 +76,7 @@ class ScanIterationToken:
     __slots__ = ('participants', 'owner', 'generation', 'leaseHandle',
                  'resolved', 'finishing', 'pending', 'acknowledgements',
                  'onComplete', 'timedOut', 'scanInfoDict', 'acquisitionTicket',
-                 'resourceTicket', '_lock')
+                 'resourceTicket', 'background', '_lock')
 
     def __init__(self, participants, *, owner=None, generation=0):
         self.participants = tuple(participants)
@@ -92,6 +94,10 @@ class ScanIterationToken:
         #: iteration armed without a run.
         self.acquisitionTicket = None
         self.resourceTicket = None
+        #: The finish sequence runs on a worker thread (``resolve(...,
+        #: background=True)``): every step that waits on a device is then
+        #: off the thread that asked.
+        self.background = False
         self._lock = threading.Lock()
 
     def __repr__(self):
@@ -574,7 +580,7 @@ class ScanExecutionCoordinator:
         return token
 
     def resolve(self, token, mode=FINISH_GRACEFUL, onComplete=None,
-                timeoutS=DEFAULT_FINISH_TIMEOUT_S):
+                timeoutS=DEFAULT_FINISH_TIMEOUT_S, background=False):
         """Begin finishing an iteration exactly once.
 
         Asks every participant to finish and then WAITS for their
@@ -592,6 +598,15 @@ class ScanExecutionCoordinator:
         acknowledged last. Repeat re-arm hangs off this, so the next frame
         cannot start while the previous frame's data is still being read out.
 
+        ``background=True`` is for a caller on the GUI thread whose finish
+        waits on devices (a stopped scan: detectors tear their scan threads and
+        input tasks down, then the lease release stops each detector, every
+        step to seconds on a slow driver): the participants are then asked, in
+        the same order, from one worker thread, and so are the lease release
+        and the completion that follow -- ``onComplete`` is called there, and
+        a caller that needs another thread marshals it itself, as for a
+        detector that acknowledges from its own thread.
+
         Returns True if this call started the finish, False if it was already
         started or done.
         """
@@ -601,6 +616,7 @@ class ScanExecutionCoordinator:
             if token.finishing or token.resolved:
                 return False
             token.finishing = True
+            token.background = bool(background)
             token.onComplete = onComplete
             token.pending = set(token.participants)
             token.acknowledgements = {}
@@ -625,6 +641,21 @@ class ScanExecutionCoordinator:
                 # the barrier normally.
                 self._log('Failed to schedule the scan-finish timeout')
 
+        if token.background:
+            try:
+                worker = threading.Thread(
+                    target=self._askParticipantsToFinish,
+                    args=(token, mode), name='ScanFinish', daemon=True)
+                worker.start()
+                return True
+            except Exception:
+                # No thread to ask from: ask from here, as always.
+                self._log('Could not start the scan-finish worker')
+                token.background = False
+        self._askParticipantsToFinish(token, mode)
+        return True
+
+    def _askParticipantsToFinish(self, token, mode):
         for name in tuple(token.participants):
             acknowledge = lambda n=name: self._acknowledge(token, n)
             with token._lock:
@@ -632,18 +663,19 @@ class ScanExecutionCoordinator:
                     break
                 token.acknowledgements[name] = acknowledge
             try:
-                self._detectorsManager.execOn(
-                    name,
-                    lambda detector, ack=acknowledge: detector.finishScan(
-                        mode, ack
-                    ),
-                )
+                with timedStep('scan finish', f'finishScan({mode}) of {name}',
+                               self._logger):
+                    self._detectorsManager.execOn(
+                        name,
+                        lambda detector, ack=acknowledge: detector.finishScan(
+                            mode, ack
+                        ),
+                    )
             except Exception:
                 # A manager that could not even be asked must not hold the
                 # barrier open.
                 self._log(f'finishScan({mode}) failed for detector "{name}"')
                 self._acknowledge(token, name)
-        return True
 
     def _participantFinishTimeout(self, participants):
         """The longest end-of-scan deadline a participant asks for.
@@ -719,6 +751,16 @@ class ScanExecutionCoordinator:
             f'{stuck}; releasing the scan lease anyway. Their final frame for '
             f'this iteration may be missing.'
         )
+        if token.background:
+            # The timer fires on the thread that armed it, the GUI thread: the
+            # release stops each detector, which it must not wait for.
+            try:
+                threading.Thread(
+                    target=self._completeToken, args=(token,),
+                    name='ScanFinishTimeout', daemon=True).start()
+                return
+            except Exception:
+                self._log('Could not start the scan-finish timeout worker')
         self._completeToken(token)
 
     def _completeToken(self, token):
@@ -733,7 +775,9 @@ class ScanExecutionCoordinator:
 
         if handle is not None:
             try:
-                self._detectorsManager.release(handle)
+                with timedStep('scan finish', 'release the scan lease '
+                               '(stop the detectors)', self._logger):
+                    self._detectorsManager.release(handle)
             except Exception:
                 self._log('Failed to release the scan detector lease')
 

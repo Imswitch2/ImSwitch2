@@ -7,6 +7,31 @@ Unreleased
 
 **Fixes**
 
+- **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
+  used to do the whole stop on the thread that took the click: stop and close
+  every NI-DAQ task (up to 2 s each), join the waiter threads, write the lines
+  and scanners to rest and wait for the ramp to play out; then, from the run's
+  end signal on the same thread, tear down each point detector's scan thread
+  and input task, stop each detector as its scan lease was released, and --
+  with BeadRec on -- stop the camera it held.  On a real driver that is as
+  long as the driver takes (measured on a mock rig with delays set to what a
+  driver does: 1.5 s for one slow task stop, 3 s for three slow closes, 1.5 s
+  per detector stop, 1.5 s for BeadRec's camera, ~1 s of APD thread join even
+  with nothing slow), long enough for the OS to call the window "not
+  responding" and for a click during it to queue up behind the stop.  The same
+  calls now run in the same order on worker threads and the run's end is
+  published from the GUI thread as before; the GUI-thread gap during Stop is
+  under 20 ms in every case measured.  Stop shows **Stopping...** and takes no
+  second click, Run is refused until the run has ended, and an exception in
+  the stop is logged and shown on the button (**Stop failed**, click to try
+  again) instead of escaping the slot.  A new diagnostic,
+  ``imswitch --gui-stall-seconds N`` (or ``IMSWITCH_GUI_STALL_SECONDS=N``),
+  writes the GUI thread's stack to ``logs/gui_stall.log`` whenever it stops
+  pumping events for N seconds, and the stop logs one INFO line per step with
+  its duration and thread.  Not changed: parking positioners that declare
+  ``returnToCenterAfterScan``, and the Time Tagger's card release when its
+  worker ends, still wait on the GUI thread.
+
 - **The config editor no longer drops keys from any System section, and a
   setup naming a plugin this computer lacks no longer stops ImProcess.**
   Applying a System section (``scan``, ``focusLock``, ``autofocus``,

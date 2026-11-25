@@ -302,8 +302,14 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             scanGeneration = self.__dict__.get('_scanDetectorGeneration')
         self._releaseBeadDetectorResources(scanGeneration)
 
-    def _releaseBeadDetectorResources(self, expectedGeneration=None) -> None:
-        """Release resources only after the frame-reading worker has stopped."""
+    def _releaseBeadDetectorResources(
+        self, expectedGeneration=None, background=False
+    ) -> None:
+        """Release resources only after the frame-reading worker has stopped.
+
+        ``background``: the lease release -- which stops the camera when this
+        was its last lease -- is made from a worker thread; the end of a scan
+        asks for it on the GUI thread, which must not wait for the driver."""
         try:
             self._releaseDetectorChunkConsumer(expectedGeneration)
         except Exception as e:
@@ -313,7 +319,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                     f'BeadRec failed to release its detector frame queue: {e}',
                     exc_info=True,
                 )
-        self._releaseScanDetectorLease(expectedGeneration)
+        self._releaseScanDetectorLease(expectedGeneration, background=background)
 
     @staticmethod
     def _disconnectSignal(signal, slot) -> None:
@@ -551,7 +557,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                     exc_info=True,
                 )
 
-    def _releaseScanDetectorLease(self, expectedGeneration=None) -> None:
+    def _releaseScanDetectorLease(self, expectedGeneration=None, background=False) -> None:
         with self._resourceLock():
             generation = self.__dict__.get('_scanDetectorGeneration')
             if (
@@ -566,8 +572,23 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             self._scanDetectorGeneration = None
         if handle is None:
             return
+        detectorsManager = self._master.detectorsManager
+        if background and callable(getattr(detectorsManager, 'releaseInBackground', None)):
+            def released(error):
+                if error is not None:
+                    self._logger.error(
+                        f'BeadRec failed to release its scan detector lease: {error}',
+                        exc_info=error,
+                    )
+            try:
+                detectorsManager.releaseInBackground(handle, released)
+                return
+            except Exception as e:
+                self._logger.error(
+                    f'BeadRec could not release its scan detector lease in the '
+                    f'background; releasing it here: {e}', exc_info=True)
         try:
-            self._master.detectorsManager.release(handle)
+            detectorsManager.release(handle)
         except Exception as e:
             self._logger.error(
                 f'BeadRec failed to release its scan detector lease: {e}',
@@ -1334,7 +1355,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # the scan ends must not bleed into the finished reconstruction.
         self._scanArmed = False
         self._builtBoundaryPending = False
-        self._releaseBeadDetectorResources(generation)
+        self._releaseBeadDetectorResources(generation, background=True)
         received = self._receivedScanFrames()
         if self.running and received == 0:
             msg = ('BeadRec: 0 detector frames received during the scan — '

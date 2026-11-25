@@ -1,3 +1,4 @@
+import logging
 import threading
 from contextlib import contextmanager
 from time import monotonic, sleep
@@ -7,6 +8,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.gui_diagnostics import timedStep
 from imswitch.imcontrol.model.devices.lifecycle import DeviceLifecycleBlockedError
 from ._acquisition_leases import (FRAME_STREAM_PURPOSES, AcquisitionLeaseTable,
                                   DetectorFaultedError, LeaseHandle, LeasePurpose)
@@ -226,6 +228,34 @@ class DetectorsManager(MultiManager, SignalInterface):
             # lease transition. The lease-table lock is already released, and
             # the lifecycle lock is re-entrant for synchronous callbacks.
             self.__emitTransitionSignals(transition)
+
+    def releaseInBackground(self, handle: LeaseHandle, onDone=None) -> threading.Thread:
+        """ ``release(handle)`` from a worker thread, for a caller on the GUI
+        thread that must not wait for the detector's hardware stop (a camera's
+        stop is a driver call of up to the bounded stop time, per detector).
+        The release itself is unchanged -- the same lease transition, the same
+        bounded stop, the same fault quarantine on a failed stop.
+
+        ``onDone(error)`` runs on the worker afterwards, ``error`` being the
+        exception ``release`` raised or ``None``; a caller that needs another
+        thread marshals it itself. Returns the started thread. """
+        def run():
+            error = None
+            try:
+                with timedStep('detector release', f'release lease {handle.purpose.name}'):
+                    self.release(handle)
+            except BaseException as e:
+                error = e
+            if onDone is not None:
+                try:
+                    onDone(error)
+                except Exception:
+                    logging.getLogger('imswitch').error(
+                        'A detector-release completion callback failed', exc_info=True)
+
+        thread = threading.Thread(target=run, name='DetectorLeaseRelease', daemon=True)
+        thread.start()
+        return thread
 
     def __stopPollThread(self) -> None:
         """Stop and join the poller without holding the lease-table lock."""
