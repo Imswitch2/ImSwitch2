@@ -183,6 +183,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
         # Internal state — always kept in sync with parameters via setParameter()
         self._resolveRoles(publish=False)
+        # The card knows which detector images which input: two FLIM
+        # detectors on one input are refused here, at startup, and the
+        # conditional filter triggers on the FLIM detectors' inputs only.
+        self._registerInput()
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
         self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
         # The histogram window and the laser period are one physical fact
@@ -406,6 +410,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._releaseCard()
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
+        unregister = getattr(getattr(self, '_timeTagger', None), 'unregisterDetector', None)
+        if unregister is not None:
+            try:
+                unregister(self.name)
+            except Exception:
+                pass
         if getattr(self, '_ownsTimeTagger', False):
             try:
                 self._timeTagger.finalize()
@@ -446,7 +456,20 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self.parameters[name].value = resolved if resolved is not None else 0
             return self.parameters
         super().setParameter(name, value)
-        if name in ('click_role', 'start_role', 'line_role', 'frame_role'):
+        if name == 'click_role':
+            previous = self._click_role
+            self._click_role = str(value)
+            try:
+                self._resolveRoles()
+                self._registerInput()
+            except (ValueError, TimeTaggerError) as error:
+                # Refused (another FLIM detector images that input, or it is
+                # no detector input): back to the input it had.
+                self._logger.error(str(error))
+                self._click_role = previous
+                self.parameters['click_role'].value = previous
+                self._resolveRoles()
+        elif name in ('start_role', 'line_role', 'frame_role'):
             setattr(self, f'_{name}', str(value))
             self._resolveRoles()
         elif name == 'live_fit_period_s':
@@ -611,6 +634,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 params['click_deadtime_ps'].value = self._click_deadtime_ps
             if 'click_delay_ps' in params:
                 params['click_delay_ps'].value = self._click_delay_ps
+
+    def _registerInput(self):
+        """Tell the card which input this detector images and how; raises
+        ``ValueError`` when another FLIM detector images it already."""
+        register = getattr(self._timeTagger, 'registerDetector', None)
+        if register is None:
+            return
+        try:
+            register(self._instanceName, self._click_role, self._measurement)
+        except TimeTaggerError as error:
+            raise ValueError(f'{self._instanceName}: {error}') from None
 
     def _writeTriggerLevel(self, which, voltage):
         """A trigger-level parameter writes through to the card; refused

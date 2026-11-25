@@ -150,6 +150,12 @@ def test_the_card_manager_keys_inputs_by_name_and_roles_as_aliases():
         assert card.channel("laser_sync") == card.channel("sync") == 2
         assert card.channelInfo("lc").plays == "line_clock"
         assert card.channelInfo("apd_b").plays is None
+        # The filter's triggers come from use: no detector yet, no filter.
+        assert card.filterChannels() == ([], [2])
+        assert card.tagger.getConditionalFilterTrigger() == []
+        card.registerDetector("FLIM_a", "apd_a", "flim")
+        card.registerDetector("FLIM_b", "apd_b", "flim")
+        assert card.waitForFilter()
         assert card.filterChannels() == ([-1, -4], [2])
         assert card.tagger.getConditionalFilterTrigger() == [-1, -4]
         # The positive line delay moves the markers, not the card's input.

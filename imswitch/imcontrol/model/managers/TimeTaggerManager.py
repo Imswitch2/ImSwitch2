@@ -314,6 +314,11 @@ class TimeTaggerManager(SignalInterface):
         self._sessionEpoch = -1
         self._markerCache: Optional[PixelMarkers] = None
         self._markerCacheClean = False
+        #: Detector -> (input name, measurement), and the conditional
+        #: filter's lists as last sent to the card.
+        self._detectorInputs: Dict[str, Tuple[str, str]] = {}
+        self._filterApplied: Optional[Tuple[tuple, tuple]] = None
+        self._filterFuture: Optional[Future] = None
 
         # Raises TimeTaggerConfigError (a ValueError) with what to change.
         resolved = info.resolvedInputs()
@@ -488,8 +493,18 @@ class TimeTaggerManager(SignalInterface):
         here, so a measurement sees the ones that fall into its window.
         The session's participants are all armed by now; it is started."""
         with self._lock:
-            if self._session is not None and not self._session.closed:
-                self._session.started = True
+            session = self._session
+            if session is not None and not session.closed:
+                session.started = True
+            else:
+                session = None
+        if session is not None:
+            # The participants are known: only the photon inputs their FLIM
+            # detectors image trigger the filter. Never wider than between
+            # scans (every FLIM detector's input), so it can only narrow here,
+            # and a write landing after the first lines only lets a few
+            # extra syncs through.
+            self._reconcileFilter(detectors=set(session.everyone))
         self._mockHook("start_scan")
 
     def _onScanDone(self, *_args):
@@ -687,27 +702,135 @@ class TimeTaggerManager(SignalInterface):
             tagger.setInputDelay(channel.channel, self._hardwareDelayPs(channel))
         if self._info.filterSyncByPhotons:
             trigger, filtered = self.filterChannels()
-            tagger.setConditionalFilter(trigger=trigger, filtered=filtered)
+            if trigger:
+                tagger.setConditionalFilter(trigger=trigger, filtered=filtered)
+                self._filterApplied = (tuple(trigger), tuple(filtered))
 
-    def filterChannels(self) -> Tuple[list, list]:
-        """The conditional filter's ``(trigger, filtered)`` channel lists:
-        every detector input lets through the first sync after each of its
-        photons, so every FLIM detector on the card has its sync; the
-        filtered inputs are the laser syncs. Per card: one filter, so the
-        TCSPC direction is the card's, not a detector's.
+    def filterChannels(self, detectors=None) -> Tuple[list, list]:
+        """The conditional filter's ``(trigger, filtered)`` channel lists,
+        derived from use: the photon inputs a FLIM detector images trigger
+        it (each lets through the first sync after each of its photons, so
+        every FLIM detector has its sync), and the laser syncs are filtered.
+        An input only a counting detector images does not trigger it, so it
+        lets no extra syncs through. ``detectors``: only these (a scan
+        session's participants); default every detector on the card. An
+        empty trigger list means no FLIM measurement needs the filter.
+        Per card: one filter, so the TCSPC direction is the card's.
 
         Without an ``inputs`` map this is exactly ``[photons]`` and
-        ``[laser_sync]``, as it always was."""
+        ``[laser_sync]``, as it always was: one photon input, set at
+        connect and left there."""
         if not self._fromInputsBlock:
             return [self.channel("photons")], [self.channel("laser_sync")]
-        trigger = [c.channel for c in self._channels.values() if c.kind == "detector"]
         filtered = [c.channel for c in self._channels.values() if c.kind == "laser_sync"]
-        if not trigger or not filtered:
+        if not filtered:
             raise TimeTaggerError(
-                "filterSyncByPhotons needs at least one detector input and one "
-                "laser_sync input in the timeTagger block"
+                "filterSyncByPhotons needs a laser_sync input in the timeTagger block"
             )
-        return trigger, filtered
+        return self._flimTriggers(detectors), filtered
+
+    def _flimTriggers(self, detectors=None) -> list:
+        """Channels of the inputs FLIM detectors image, in declaration order."""
+        used = {name for det, (name, measurement) in self._detectorInputs.items()
+                if measurement == "flim" and (detectors is None or det in detectors)}
+        return [c.channel for name, c in self._channels.items() if name in used]
+
+    # -- which detector images which input ------------------------------- #
+
+    def registerDetector(self, detector: str, input: str, measurement: str) -> None:
+        """``detector`` images ``input`` (a name or a role) with
+        ``measurement`` (``flim`` or ``counting``). Called when a detector
+        is built and when it is re-pointed at another input.
+
+        Two FLIM detectors on one input are refused: each sets its own
+        ``t0`` as that input's delay during its scan, and they would fit
+        the same photons twice. A FLIM and a counting detector -- or two
+        counting detectors -- may share an input: they read the same tag
+        stream independently (the counts are the FLIM intensity). Updates
+        the conditional filter's trigger list."""
+        name = self.inputName(input)
+        measurement = str(measurement)
+        with self._lock:
+            if measurement == "flim":
+                for other, (otherInput, otherMeasurement) in self._detectorInputs.items():
+                    if other != detector and otherInput == name and otherMeasurement == "flim":
+                        raise TimeTaggerError(
+                            f"FLIM detectors {other!r} and {detector!r} both image Time "
+                            f"Tagger input {name!r}: each sets its own t0 as that input's "
+                            f"delay, and they would fit the same photons twice. Give each "
+                            f"FLIM detector its own detector input, or make one of them "
+                            f'measurement "counting" (a counting detector may share a '
+                            f"FLIM detector's input)."
+                        )
+            self._detectorInputs[str(detector)] = (name, measurement)
+        self._reconcileFilter()
+
+    def unregisterDetector(self, detector: str) -> None:
+        with self._lock:
+            removed = self._detectorInputs.pop(str(detector), None)
+        if removed is not None:
+            self._reconcileFilter()
+
+    def detectorInputs(self) -> Dict[str, Tuple[str, str]]:
+        """Detector -> (input name, measurement)."""
+        with self._lock:
+            return dict(self._detectorInputs)
+
+    def appliedFilterChannels(self) -> Optional[Tuple[list, list]]:
+        """The trigger and filtered lists last sent to the card (``None``
+        before any)."""
+        applied = self._filterApplied
+        return None if applied is None else (list(applied[0]), list(applied[1]))
+
+    def _reconcileFilter(self, detectors=None) -> None:
+        """Send the trigger list for ``detectors`` (default: every detector
+        on the card) if it differs from the card's, on the I/O thread. An
+        empty list (no FLIM measurement) leaves the filter as it is. The
+        card-wide list is not sent while a scan holds the card: the
+        session's end sends it."""
+        if not self._info.filterSyncByPhotons or self._tagger is None:
+            return
+        with self._lock:
+            if detectors is None and self._holders:
+                return
+            try:
+                trigger, filtered = self.filterChannels(detectors)
+            except TimeTaggerError:
+                return
+            wanted = (tuple(trigger), tuple(filtered))
+            if not trigger or wanted == self._filterApplied:
+                return
+            self._filterApplied = wanted
+            try:
+                self._filterFuture = self.submit(self._writeFilter, list(trigger), list(filtered))
+            except TimeTaggerError:
+                pass
+
+    def _writeFilter(self, trigger, filtered) -> None:
+        """On the I/O thread. A refused write leaves the card's filter
+        unknown: the conditioning is retried before the next scan."""
+        with self._lock:
+            tagger = self._tagger
+            if tagger is None:
+                return
+            try:
+                tagger.setConditionalFilter(trigger=trigger, filtered=filtered)
+            except Exception as error:
+                self._conditioningError = error
+                self._filterApplied = None
+                self.__logger.exception("Could not set the conditional filter")
+
+    def waitForFilter(self, timeout_s: float = 5.0) -> bool:
+        """Wait (bounded) for a queued filter write to land; never on the
+        GUI thread. Returns whether none is pending any more."""
+        future = self._filterFuture
+        if future is None:
+            return True
+        try:
+            future.result(timeout=max(0.0, float(timeout_s)))
+        except Exception:
+            return future.done()
+        return True
 
     def _hardwareDelayPs(self, channel: ChannelInfo) -> int:
         """The delay the card applies to an input.
@@ -1022,6 +1145,8 @@ class TimeTaggerManager(SignalInterface):
         session.closed = True
         if session._markers is not None and session._markers is self._markerCache:
             self._markerCacheClean = bool(clean)
+        # Back to every FLIM detector's input, queued before the hold goes.
+        self._reconcileFilter(detectors=set(self._detectorInputs))
 
     @property
     def scanSession(self) -> Optional[TimeTaggerScanSession]:
@@ -1086,6 +1211,11 @@ class TimeTaggerManager(SignalInterface):
 
         class _Transaction:
             def __enter__(self_):
+                # A session's filter restore may still be queued: the
+                # calibration must snapshot the card after it, or it would
+                # put the session's list back. (Calibrations run on worker
+                # and script threads.)
+                manager.waitForFilter()
                 with manager._lock:
                     if manager._holders:
                         holders = ", ".join(sorted(manager._holders))
@@ -1256,17 +1386,13 @@ class TimeTaggerManager(SignalInterface):
             "inputs": {name: c.conditioning() for name, c in self._channels.items()},
             "inputs_block": bool(self._fromInputsBlock),
             "filter_channels": (
-                [list(x) for x in self.filterChannels()]
-                if self._info.filterSyncByPhotons and self._safeFilterChannels() else None
+                [list(x) for x in self.appliedFilterChannels()]
+                if self._info.filterSyncByPhotons and self._filterApplied is not None else None
             ),
+            "detector_inputs": {d: {"input": i, "measurement": m}
+                                for d, (i, m) in self.detectorInputs().items()},
         }
 
-    def _safeFilterChannels(self) -> bool:
-        try:
-            self.filterChannels()
-            return True
-        except TimeTaggerError:
-            return False
 
     def finalize(self) -> bool:
         """Free the card. Idempotent; a failure is logged and reported.

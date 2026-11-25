@@ -319,6 +319,7 @@ def test_flim_on_two_inputs_against_one_sync(reverse):
     dets = [_detector(nidaq, card, f"FLIM_{n}", n, "flim", fit_method="exp1")
             for n in ("apd_a", "apd_b")]
     if reverse:
+        assert card.waitForFilter()
         assert card.filterChannels() == ([-1, -4], [2])
         assert card.tagger.filterOn
     _prepare(nidaq, dets)
