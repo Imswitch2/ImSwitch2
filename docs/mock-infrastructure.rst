@@ -146,16 +146,45 @@ cannot:
   out-of-focus light at its pinhole. The live view of the camera keeps the
   z of the last scan: a z moved outside a scan is not in any scan signal.
 * **Excitation** -- ``excitation`` names the lasers that light the sample,
-  as a list or ``{"<laser>": <efficiency>}``: the sample is lit only while
-  their TTLs (``TTLCycleSignalsDict``) are high. A laser's analog power
-  counts only where the scan carries a power waveform for it (Advanced
-  line-step power) and the entry says what voltage is full power
-  (``{"<laser>": {"efficiency": 1, "fullScaleV": 5}}``); the power a
-  laser was set to outside the scan is not in the scan signals and is not
-  modelled. A laser the scan does not switch counts as on. Without
-  ``excitation`` the sample is always lit.
-* **Photobleaching** -- ``bleachHalfLifeS``: seconds of full excitation
-  that halve the fluorophores, accumulated on a 100 nm grid in the order the
+  as a list or ``{"<laser>": <efficiency>}``. A laser lights it while its
+  TTL in the scan (``TTLCycleSignalsDict``) is high or, without one (live
+  view, a laser the scan does not switch), while it is switched on; at its
+  power: the scan's analog power waveform where the scan carries one
+  (Advanced line-step power, SimpleMoNaLISA, SimplePointScan channel
+  power), else the power set in the Laser widget. The set state reaches the
+  mock detectors through the simulated NI-DAQ, which keeps the level each
+  laser's digital and analog lines were last written to
+  (``NidaqManager.simulatedOutput``, simulation only, read-only for the
+  detectors; ``LaserStates`` in ``_mock_optics.py``). A laser that the
+  NI-DAQ never wrote -- one on another driver, or the power of a binary
+  laser -- counts as on at full power. Without ``excitation`` the sample is
+  always lit, as before.
+* **Laser power** is a fraction of the laser's configured range
+  (``valueRangeMin`` to ``valueRangeMax``) times its ``efficiency``; there
+  is no power calibration yet (``Laser.intensity`` is the seam where one
+  would turn a setting into physical power). ``fullScaleV`` in an
+  ``excitation`` entry sets what voltage of a scan's power waveform is full
+  power when the laser's range is not known. A laser with a calibration
+  lookup table is read by its drive voltage against its range.
+* **Photophysics** (with ``excitation``) -- fluorophores saturate: a
+  fluorophore emits as I / (I + I_sat), scaled to the nominal brightness at
+  intensity 1 (a laser of efficiency 1 at the top of its range);
+  ``saturationPower`` is I_sat in the same units (default 0.2 for a point
+  scan, 0.3 for the camera's readout, whose light is spread over its foci;
+  ``null`` turns saturation off). A saturated focus is wider: the
+  excitation PSF is replaced by the Gaussian of the same peak and volume as
+  the saturated one, sigma times sqrt((1 + x) ln(1 + x) / x), x = I / I_sat.
+  The background -- autofluorescence (0.03) plus ``scatterBackground``
+  (default 0.12) at intensity 1 -- grows in proportion to the light and does
+  not saturate. With Poisson noise on all of it, dark counts, camera offset
+  and read noise, image quality has an optimum: too little light and shot
+  noise dominates; too much and the signal stops growing while the focus
+  widens and the background keeps growing. ``saturationPower: null,
+  scatterBackground: 0`` gives the plain linear gating of earlier versions.
+* **Photobleaching** -- ``bleachHalfLifeS``: seconds of emission at the
+  nominal brightness that halve the fluorophores -- so more power bleaches
+  faster, as much faster as the fluorophores emit more, up to their
+  saturation -- accumulated on a 100 nm grid in the order the
   scan exposes the sample (per line read for a point detector, per frame
   for the camera), for the life of the detector. The live view shows the
   bleached sample but does not bleach it. Off by default.
@@ -186,7 +215,13 @@ OFF pattern has its zeros at the foci, so the effective PSF narrows by
 ``sqrt(1 + zeta pi^2 sigma^2 / period^2)``, ``zeta`` the OFF dose. With the
 shipped profile (ON 1 ms, OFF 2 ms) that is about 80 nm FWHM; the confocal
 mode (no OFF step) stays at 200 nm. A cycle with no ON pulse reads what the
-earlier readouts left on. The camera counts Poisson photons
+earlier readouts left on. Each laser's power acts on its own step: the ON
+dose (``onPerMs`` x power x duration) sets how many emitters are on; the OFF
+dose sets the resolution, so too little OFF power reads confocal-like; the
+readout power sets the signal, which saturates with the emitters while the
+readout switches them off as fast as they emit and the background keeps
+growing, so its signal-to-noise ratio peaks in between (about 30 % of
+range by default). The camera counts Poisson photons
 (``peakCounts`` at brightness 1 for the confocal readout in focus), adds
 ``offsetCounts`` (100) and Gaussian ``readNoiseCounts`` (1.5), and seeds
 its noise with the manager's ``mockRandomSeed``.
@@ -196,8 +231,17 @@ each spot is one Gaussian placed and sized from the first moments of the
 excited emitters, not their full image; a focus sees only its own zero of
 the OFF pattern; the switching state is carried from frame to frame as one
 number at the focus centre, not per emitter; switching fatigue and
-OFF-light bleaching are not modelled; and the camera's live view (no scan)
-shows the confocal readout. ``test_mock_monalisa_reconstruction.py`` runs
+OFF-light bleaching are not modelled, so more OFF power only ever sharpens;
+saturation is per laser sum, not per wavelength or per structure; and the
+camera's live view (no scan) shows the confocal readout of the readout
+lasers as set, ignoring the ON and OFF lasers.
+
+What a user sees out of the box: lasers start off and at their lowest
+power, as ImControl sets them on startup. The SimpleMoNaLISA acquisition
+fires its lasers at full power through its own power waveform, so a mock
+recording shows the sample at once; its live view, and a SimplePointScan
+overview without channel power, stay dark until a laser is raised in the
+Laser widget -- the mock logs which lasers to raise. ``test_mock_monalisa_reconstruction.py`` runs
 mock scans of both modes through the real ``reconstruct_scan`` and checks
 each recovers the specimen under its own effective PSF.
 
