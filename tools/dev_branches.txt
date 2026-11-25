@@ -41,3 +41,6 @@ feat/timelapse                     # Timelapse widget: camera/scan/tiling timela
                                    #    gains #69's "Calibration" page)
 fix/setup-loader-blank-values      # loader: a blank or unreadable typed setup value warns and uses the default; "false" bools
                                    #   read false (twin of scan-engines' Swabian managerProperties fix); PR to open
+fix/triggerscope-monitor-lock      # PR #95: TriggerScope scan start off the GUI thread, BeadRec / scan-once recording frame boundary
+                                   #   (monitor commits already in dev via scan-engines; serial-monitor test: the branch's pyvisa
+                                   #    stand-in fixture; RecordingManager: dev's frame auxiliary read inside the boundary lock)

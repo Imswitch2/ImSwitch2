@@ -28,6 +28,17 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
     devices, firmware parameters and scan type.
     """
 
+    #: BeadRec's frame boundary for this source. ``sigScanBuilt`` is emitted
+    #: before the parameter upload, about a second before the scan command, so
+    #: a free-running camera would pour that second into the reconstruction;
+    #: ``sigScanStarted`` is emitted just before the command, while the
+    #: firmware is still idle (see ScanManagerTriggerScope._startFirmwareScan).
+    beadRecBoundary = 'started'
+
+    #: How long the board may take to accept a scan's parameters and command
+    #: before the start is given up. A raster scan needs about a second.
+    _triggerScopeUploadTimeoutS = 30.0
+
     def _initTriggerScopeScanLifecycle(self):
         coordinator = getattr(
             self._master, 'scanExecutionCoordinator', None
@@ -56,6 +67,8 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         self._triggerScopeBoundCompletions = []
         self._triggerScopeRunOutcome = None
         self._scanStopRequested = False
+        self._triggerScopeStartInFlight = None
+        self._triggerScopeUploadHandle = None
 
         self._master.scanManager.sigScanStarted.connect(
             self._onTriggerScopeScanStarted
@@ -74,6 +87,19 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         isNonFinalPartOfSequence=False,
     ):
         """Reserve, announce, arm and start one firmware iteration."""
+        if self.__dict__.get('_triggerScopeStartInFlight') is not None:
+            # The previous request is still handing its parameters to the
+            # board. A second click or API call is ignored, not queued: the
+            # first one owns the run, and the start button stays disabled.
+            reason = (
+                'Ignoring a TriggerScope scan start while the previous start '
+                'is still being sent to the board.'
+            )
+            self._logger.warning(reason)
+            self._setTriggerScopeScanButtonChecked(True)
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
+            return False
+
         localRun = self._triggerScopeRunToken
         activeRun = self._scanCoordinator.runForOwner(self)
         activeIteration = self._scanCoordinator.tokenForOwner(self)
@@ -183,13 +209,44 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         self.emitScanSignal(self._commChannel.sigScanBuilt, devices)
 
         def startFirmware():
-            started = self._master.scanManager.runScan(
-                parameters, scan_type=scanType
-            )
-            if started is False:
+            scanManager = self._master.scanManager
+            runAsync = getattr(scanManager, 'runScanAsync', None)
+            if not callable(runAsync):
+                started = scanManager.runScan(parameters, scan_type=scanType)
+                if started is False:
+                    raise RuntimeError(
+                        f'TriggerScope refused scan type "{scanType}".'
+                    )
+                return
+            # The parameter upload (a ~50 ms pause per PARAMETER line) and the
+            # serial writes run on the uploader thread; this thread returns at
+            # once and learns the outcome in _onTriggerScopeUploadFinished.
+            iterationToken = self._scanCoordinator.tokenForOwner(self)
+            self._triggerScopeStartInFlight = iterationToken
+            try:
+                handle = runAsync(
+                    parameters, scanType,
+                    lambda ok, message: self._deliverOnControllerThread(
+                        lambda: self._onTriggerScopeUploadFinished(
+                            iterationToken, ok, message
+                        )
+                    ),
+                )
+            except BaseException:
+                self._triggerScopeStartInFlight = None
+                raise
+            if handle is False:
+                self._triggerScopeStartInFlight = None
                 raise RuntimeError(
                     f'TriggerScope refused scan type "{scanType}".'
                 )
+            self._triggerScopeUploadHandle = handle
+            QtCore.QTimer.singleShot(
+                int(self._triggerScopeUploadTimeoutS * 1000),
+                lambda: self._onTriggerScopeUploadTimeout(
+                    iterationToken, handle
+                ),
+            )
 
         try:
             self._scanCoordinator.armWithStarter(
@@ -216,6 +273,41 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 self._releaseTriggerScopeRun(runToken)
             return False
         return True
+
+    def _onTriggerScopeUploadFinished(self, iterationToken, ok, message):
+        """Outcome of the off-thread upload; runs on the controller thread."""
+        if self.__dict__.get('_triggerScopeStartInFlight') is iterationToken:
+            self._triggerScopeStartInFlight = None
+            self._triggerScopeUploadHandle = None
+        if ok or self._scanCoordinator.tokenForOwner(self) is not iterationToken:
+            # Either the board has the scan, or the iteration was already
+            # failed, force-stopped or finished and there is nothing to undo.
+            return
+        text = f'TriggerScope could not start the scan: {message}'
+        self._logger.error(text)
+        ScanLifecycleMixin._recordScanStartRejection(self, text)
+        self._failTriggerScopeScan(text)
+
+    def _onTriggerScopeUploadTimeout(self, iterationToken, handle):
+        if (
+            self.__dict__.get('_triggerScopeUploadHandle') is not handle
+            or self._scanCoordinator.tokenForOwner(self) is not iterationToken
+        ):
+            return
+        handle.cancel()
+        self._onTriggerScopeUploadFinished(
+            iterationToken, False,
+            f'no answer from the board within '
+            f'{self._triggerScopeUploadTimeoutS:g} s',
+        )
+
+    def _cancelTriggerScopeUpload(self):
+        """Stop an upload that is still being written; nothing more is sent."""
+        handle = self.__dict__.get('_triggerScopeUploadHandle')
+        self._triggerScopeStartInFlight = None
+        self._triggerScopeUploadHandle = None
+        if handle is not None:
+            handle.cancel()
 
     def _prepareRecordingForTriggerScopeScan(self) -> bool:
         """Ask an armed recording to bind to this scan. False vetoes the start.
@@ -438,6 +530,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 self._setTriggerScopeAbortPending(False)
                 return False
             self._triggerScopeRepeatPending = False
+            self._cancelTriggerScopeUpload()
             self._scanStopRequested = True
             self.doingNonFinalPartOfSequence = False
             self.isRunning = False

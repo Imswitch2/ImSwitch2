@@ -1,4 +1,5 @@
 import re
+import threading
 import time
 
 import numpy as np
@@ -26,6 +27,69 @@ from imswitch.imcontrol.model.devices.graph import (
 from imswitch.imcontrol.model.devices.status import DeviceId
 
 
+class UploadJob:
+    """An ordered batch of board commands handed to the uploader thread.
+
+    ``commands`` is a list of ``(command, pauseAfterS)``. ``onFinished(ok,
+    message)`` is called once on the thread that owns the manager (the GUI
+    thread), whatever happened: every command written, a write that raised,
+    or the job cancelled before it got to the next command.
+    """
+
+    def __init__(self, commands, onFinished=None, label=''):
+        self.commands = list(commands)
+        self.onFinished = onFinished
+        self.label = label
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        """Do not send any command not yet written. A command already inside
+        the serial write cannot be recalled."""
+        self._cancelled.set()
+
+    @property
+    def cancelled(self):
+        return self._cancelled.is_set()
+
+
+class _CommandUploader(Worker):
+    """Writes ``UploadJob`` batches to the board, one job at a time, in the
+    order they were requested.
+
+    It lives on its own thread so that a long batch (a raster scan uploads
+    ~20 PARAMETER lines with a 50 ms pause after each) and any wait on the
+    serial I/O lock never run on the GUI thread. One thread, one queue: the
+    board still sees exactly the order of the requests.
+    """
+
+    sigJobDone = Signal(object, bool, str)
+
+    def __init__(self, write, onJobFinished=None):
+        super().__init__()
+        self.__logger = initLogger(self)
+        self._write = write
+        self._onJobFinished = onJobFinished
+
+    def runJob(self, job):
+        ok, message = True, ''
+        try:
+            for command, pauseS in job.commands:
+                if job.cancelled:
+                    ok, message = False, 'cancelled before all commands were sent'
+                    break
+                self._write(command)
+                if pauseS:
+                    time.sleep(pauseS)
+        except Exception as exc:
+            ok, message = False, f'{type(exc).__name__}: {exc}'
+            self.__logger.error(
+                'TriggerScope upload %r failed: %s', job.label, message)
+        finally:
+            if self._onJobFinished is not None:
+                self._onJobFinished()
+        self.sigJobDone.emit(job, ok, message)
+
+
 class TriggerScopeManager(SignalInterface):
     """ Board-level manager for TriggerScope DAQ hardware.
 
@@ -39,6 +103,11 @@ class TriggerScopeManager(SignalInterface):
 
     sigScanDone = Signal()
     sigScanStarted = Signal()
+    #: GUI thread -> uploader thread (queued, so strictly in request order).
+    _sigUploadRequested = Signal(object)
+
+    #: Longest the GUI thread waits for the monitor/uploader threads to stop.
+    SHUTDOWN_WAIT_MS = 5000
 
     def __init__(self, setupInfo, rs232sManager):
         super().__init__()
@@ -48,6 +117,12 @@ class TriggerScopeManager(SignalInterface):
         self._rs232Name = str(info.rs232device)
         self._rs232manager = rs232sManager[info.rs232device]
         self._rs232manager.setTimeout(100000)
+        # Ordered off-GUI-thread writer (created on first use).
+        self._uploadLock = threading.Lock()
+        self._uploadsOutstanding = 0
+        self._uploader = None
+        self._uploadThread = None
+        self._stuckThreads = []
         self.send('*')
 
         # Build device registry: name -> {DACChannel, TTLLine, MinV, MaxV}
@@ -134,13 +209,79 @@ class TriggerScopeManager(SignalInterface):
     # ------------------------------------------------------------------
 
     def setParameter(self, parameterName, parameterValue):
-        """ Send a PARAMETER,name,value command and wait for board to process. """
-        self.send(f'PARAMETER,{parameterName},{parameterValue}\n')
-        time.sleep(self.setParSleepTime)
+        """ Send a PARAMETER,name,value command and wait for board to process.
+
+        Blocks the calling thread for ``setParSleepTime``; scan uploads go
+        through :meth:`uploadCommands` instead so the GUI thread never sleeps.
+        """
+        command, pauseS = self.parameterCommand(parameterName, parameterValue)
+        self.send(command)
+        time.sleep(pauseS)
+
+    def parameterCommand(self, parameterName, parameterValue):
+        """ ``(command, pauseAfterS)`` of one PARAMETER line. """
+        return (f'PARAMETER,{parameterName},{parameterValue}\n',
+                self.setParSleepTime)
 
     def send(self, command):
-        """ Write a raw command string to the TriggerScope serial port. """
+        """ Write a raw command string to the TriggerScope serial port.
+
+        While an upload is queued or running the command joins the same queue,
+        so it reaches the board after the upload, exactly as it did when the
+        upload held the calling thread; otherwise it is written directly.
+        """
+        with self._uploadLock:
+            if self._uploadsOutstanding:
+                self._enqueueLocked(UploadJob([(command, 0)], label='send'))
+                return
         self._rs232manager.write(command)
+
+    def uploadCommands(self, commands, onFinished=None, label=''):
+        """ Write ``[(command, pauseAfterS), ...]`` in order on the uploader
+        thread and return at once.
+
+        ``onFinished(ok, message)`` runs later on the manager's thread. The
+        returned :class:`UploadJob` can be cancelled; a cancelled job sends no
+        further command. Jobs run one after another in request order.
+        """
+        job = UploadJob(commands, onFinished, label)
+        with self._uploadLock:
+            self._enqueueLocked(job)
+        return job
+
+    def _enqueueLocked(self, job):
+        self._ensureUploader()
+        self._uploadsOutstanding += 1
+        self._sigUploadRequested.emit(job)
+
+    def _ensureUploader(self):
+        if self._uploader is not None:
+            return
+        self._uploader = _CommandUploader(
+            self._rs232manager.write, self._jobWritten)
+        self._uploadThread = Thread()
+        self._uploader.moveToThread(self._uploadThread)
+        self._sigUploadRequested.connect(self._uploader.runJob)
+        self._uploader.sigJobDone.connect(self._onJobDone)
+        self._uploadThread.start()
+
+    def _jobWritten(self):
+        # Runs on the uploader thread once a job has written its last command
+        # (or stopped): from here a direct write cannot overtake it.
+        with self._uploadLock:
+            self._uploadsOutstanding -= 1
+
+    def _onJobDone(self, job, ok, message):
+        if not ok and job.label != 'send':
+            self.__logger.error(
+                'TriggerScope upload %r did not complete: %s', job.label, message)
+        if job.onFinished is not None:
+            try:
+                job.onFinished(ok, message)
+            except Exception:
+                self.__logger.error(
+                    'TriggerScope upload completion handler failed',
+                    exc_info=True)
 
     def setDigital(self, target, enable):
         """ Switch a named device's TTL line on (True) or off (False): the
@@ -168,10 +309,25 @@ class TriggerScopeManager(SignalInterface):
     def finalize(self):
         """ Idempotent shutdown: stop and wait for the serial monitor thread.
         Safe to call multiple times and safe if the monitor was never started. """
+        uploadThread = getattr(self, '_uploadThread', None)
+        if uploadThread is not None:
+            self._uploadThread = None
+            uploadThread.quit()
+            if not uploadThread.wait(self.SHUTDOWN_WAIT_MS):
+                self.__logger.warning(
+                    'TriggerScope uploader thread did not stop within %d ms',
+                    self.SHUTDOWN_WAIT_MS)
+                # A QThread destroyed while still running aborts the process;
+                # keep it alive until the blocked write returns and it exits.
+                self._stuckThreads.append(uploadThread)
         if hasattr(self, '_monitoring') and self._monitoring:
             if hasattr(self, '_thread'):
                 self._thread.quit()
-                self._thread.wait()
+                # Bounded: the GUI thread must not hang on a stuck port.
+                if self._thread.wait(self.SHUTDOWN_WAIT_MS) is False:
+                    self.__logger.warning(
+                        'TriggerScope serial monitor did not stop within '
+                        '%d ms; closing the port anyway', self.SHUTDOWN_WAIT_MS)
             self._monitoring = False
 
     def closeMonitor(self):
@@ -271,7 +427,7 @@ class SerialMonitor(Worker):
                 continue
             if msg == 'Scan done':
                 self.sigScanDone.emit()
-            elif msg[:3] == 'MSG':
+            elif msg[:3] == 'MSG' and msg[3:].isdigit():
                 self.sigTrigMSG.emit(int(msg[3:]))
             else:
                 self.sigUnknownMessage.emit(msg)

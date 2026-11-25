@@ -158,6 +158,16 @@ def memory_save_mode_problem(widget):
     return unsupported_memory_save_mode(saveMode, saveFormat)
 
 
+def _recordingScanBoundary(recMode, source):
+    """The scan signal ('built' or 'started') at which a recording bound to
+    ``source`` sets its frame boundary, or None: only Scan once / Scan lapse,
+    and only for a source that declares ``beadRecBoundary``."""
+    if recMode not in (RecMode.ScanOnce, RecMode.ScanLapse):
+        return None
+    boundary = getattr(source, 'beadRecBoundary', None)
+    return boundary if boundary in ('built', 'started') else None
+
+
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RecordingWidget. """
 
@@ -278,6 +288,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             )
         self._commChannel.sigScanDone.connect(self.scanDone)
         self._commChannel.sigScanEnded.connect(self._scanLifecycleEnded)
+        # The scan's frame boundary for a scan-bound recording; which of the
+        # two applies is the scan source's own declaration (beadRecBoundary).
+        self._commChannel.sigScanBuilt.connect(self._onScanBuiltForRecording)
+        self._commChannel.sigScanStarted.connect(self._onScanStartedForRecording)
         self._commChannel.sigUpdateRecFrameNum.connect(self.updateRecFrameNum)
         self._commChannel.sigUpdateRecTime.connect(self.updateRecTime)
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
@@ -1616,6 +1630,40 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         )
         return False
 
+    def _scanBoundaryForRecording(self):
+        """Which scan signal sets this recording's frame boundary, or None.
+
+        Only a recording bound to a scan (Scan once, Scan lapse) whose source
+        declares ``beadRecBoundary`` -- the same per-source rule BeadRec uses
+        ('built' for the NI-DAQ scans, 'started' for the TriggerScope).
+        Everything else (free-running, camera lapse, snaps, a scan source that
+        declares nothing) records exactly as before.
+        """
+        return _recordingScanBoundary(
+            self.recMode, self.__dict__.get('_recordingScanSource'))
+
+    def _onScanBuiltForRecording(self, *_args):
+        self._markRecordingScanBoundary('built')
+
+    def _onScanStartedForRecording(self, *_args):
+        self._markRecordingScanBoundary('started')
+
+    def _markRecordingScanBoundary(self, signalName: str) -> None:
+        """Hand the recording its scan's frame boundary, once, for the scan it
+        is bound to (never for another controller's scan). Runs from the scan's
+        own signal, before that scan's first trigger."""
+        if self.__dict__.get('_pendingScanBoundary') != signalName:
+            return
+        source = self.__dict__.get('_recordingScanSource')
+        if source is not None and self._commChannel.getActiveScanSource() is not source:
+            return
+        self._pendingScanBoundary = None
+        try:
+            self._master.recordingManager.markScanBoundary()
+        except Exception:
+            self.__logger.error('Could not set the recording\'s scan boundary',
+                                exc_info=True)
+
     def _startManagerRecording(self) -> bool:
         managerGeneration = getattr(
             self._master.recordingManager,
@@ -1628,10 +1676,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # adopted while startRecording is creating the next worker.
             self._recordingGenerationBeforeOperation = managerGeneration
         self._recordingManagerGeneration = None
+        self._pendingScanBoundary = None
         try:
-            generation = self._master.recordingManager.startRecording(
-                **self.recordingArgs
-            )
+            boundary = _recordingScanBoundary(
+                getattr(self, 'recMode', None),
+                getattr(self, '_recordingScanSource', None))
+            args = self.recordingArgs
+            if boundary is not None:
+                args = dict(args, holdUntilScanBoundary=True)
+                self._pendingScanBoundary = boundary
+            generation = self._master.recordingManager.startRecording(**args)
             if isinstance(generation, int) and not isinstance(
                 generation, bool
             ):
