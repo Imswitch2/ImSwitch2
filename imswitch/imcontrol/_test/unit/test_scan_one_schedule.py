@@ -431,3 +431,21 @@ def test_a_trajectory_without_an_approach_ends_where_it_started():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_the_scan_info_says_the_longest_stretch_without_a_step():
+    """A pause before each frame is time a scan-triggered camera spends
+    without a frame: the scan info carries the longest such stretch for the
+    recording watchdog (a 27 s time-lapse wait failed a recording at frame
+    zero after the flat 10 s)."""
+    from imswitch.imcontrol.model.scan_program.scan_info import LONGEST_IDLE_KEY
+
+    def idle(pause_s):
+        program = presets.pulse_sequence(
+            pulses=[['L', 1e-3, 1e-3]], camera='Cam', exposure_pulse=1, frames=3,
+            pause_s=pause_s)
+        schedule = realize(expand(program, RunContext()), 1e5)
+        return scan_info_for(program, schedule, 1e5)[LONGEST_IDLE_KEY]
+
+    assert idle(2.5) == pytest.approx(2.5)
+    assert idle(0.0) < 0.01

@@ -57,6 +57,9 @@ What the board declares
    * - ``trigger_latency_ticks``
      - **Not declared until measured.** The host then refuses trigger waits
        as unknown rather than guess the latency. See below.
+   * - ``prologue 1``
+     - It plays a step of its own before every pass of a loop (``PROLOGUE``):
+       the RESOLFT cycle's activation and depletion at the resting position.
    * - ``alive_ticks 500000``
      - A message at least every 0.5 s while a program runs (``STEP``,
        ``ALIVE``, ``WAITING``), so the host tells a hung board from a busy

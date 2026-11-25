@@ -227,6 +227,11 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
     spans: List[RealizedSpan] = []
     events: List[RealizedEvent] = []
     offsets: List[RealizedOffset] = []
+    # The offsets of each step (its prologues' and its own), indexed as they
+    # are placed: the stillness check of a step reads its step's alone, not
+    # every offset of the run (a 9000-step scan with two offsets a step took
+    # 20 s to realize).
+    step_offsets: Dict[Optional[int], List[RealizedOffset]] = {}
     segments = [Segment(0, None)]
     tick = 0
     requested = 0.0
@@ -246,7 +251,7 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
             tick = 0
             requested = 0.0
             continue
-        quantity = {'step': 'step', 'return': 'return', 'move': 'move',
+        quantity = {'step': 'step', 'prologue': 'step', 'return': 'return', 'move': 'move',
                     'wait': 'wait', 'preparation': 'preparation'}[span.kind]
         where = _where(span)
         ticks = conv.ticks(span.duration_s, quantity, where)
@@ -289,9 +294,9 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
                         f'{_fmt((realized.move_ticks[name] + realized.settle_ticks[name]) / rate_hz)}'
                         f', which leaves no stationary time in the {_fmt(ticks / rate_hz)} step.'
                     )
-        if span.kind == 'step':
+        if span.kind in ('step', 'prologue'):
             _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
-                            carry)
+                            carry, step_offsets)
             carry = {}
         else:
             carry = {name: left - ticks for name, left in carry.items() if left > ticks}
@@ -336,6 +341,8 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
 def _where(span):
     if span.kind == 'step':
         return f'step {span.step_index}'
+    if span.kind == 'prologue':
+        return f'prologue before step {span.step_index}'
     return span.kind
 
 
@@ -352,7 +359,7 @@ def _final_um(expansion, spans) -> Dict[str, float]:
 
 
 def _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
-                    carry=None):
+                    carry=None, step_offsets=None):
     span = realized.span
     where = _where(span)
     step_ticks = realized.ticks
@@ -393,15 +400,19 @@ def _realize_events(conv, program, policy, realized, events, offsets, motion, ra
                     f'{event.device} is stationary from 0 to {_fmt(stationary_end / rate_hz)} '
                     'in this step.'
                 )
-            offsets.append(RealizedOffset(event.device, float(event.value), event.shape,
-                                          realized.start_tick + start, realized.start_tick + end,
-                                          move, settle, span.step_index))
+            offset = RealizedOffset(event.device, float(event.value), event.shape,
+                                    realized.start_tick + start, realized.start_tick + end,
+                                    move, settle, span.step_index)
+            offsets.append(offset)
+            if step_offsets is not None:
+                step_offsets.setdefault(span.step_index, []).append(offset)
         placed.append((event, start, end, instance))
         events.append(RealizedEvent(event.device, event.kind,
                                     realized.start_tick + start, realized.start_tick + end,
                                     event.value, event.id, span.step_index, realized.segment))
-    _check_relations(conv, policy, placed, where, float(program.step_s))
-    _check_stationary(conv, program, realized, placed, offsets, where, rate_hz, carry or {})
+    _check_relations(conv, policy, placed, where, float(span.duration_s))
+    mine = offsets if step_offsets is None else step_offsets.get(span.step_index, ())
+    _check_stationary(conv, program, realized, placed, mine, where, rate_hz, carry or {})
 
 
 def _relation(a_start, a_end, b_start, b_end):

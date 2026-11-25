@@ -38,7 +38,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
 | scanning 06-08 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
-| timetagger 01-10 | `galvo_flim_mock_scan_setup.json` | the same, plus a simulated Swabian Time Tagger with a FLIM detector |
+| timetagger 01-13 | `galvo_flim_mock_scan_setup.json` | the same as scanning 05, plus a simulated Swabian Time Tagger with a FLIM detector |
 | measurement 01 | `example_no_hardware.json` | two waveplates in front of a polarimeter |
 
 ## Running a tutorial

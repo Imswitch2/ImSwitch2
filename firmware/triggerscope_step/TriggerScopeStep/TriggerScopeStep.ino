@@ -280,9 +280,14 @@ void setup() {
 
 void loop() {
     nowTicks();               // keep the 64-bit clock extended while idle
+    if (!Serial.available()) return;
+    // The LED is on the I2C expander: a write takes hundreds of
+    // microseconds, so it is switched once per burst of bytes, not per
+    // byte (per byte, a 24-line program took 0.9 s to be answered, past the
+    // host's reply timeout; measured on the rig 2026-10-21).
+    mcp.digitalWrite(DAC_LED, HIGH);
     while (Serial.available()) {
-        mcp.digitalWrite(DAC_LED, HIGH);
         board->feed(Serial.read());    // a RUN executes inside this call
-        mcp.digitalWrite(DAC_LED, LOW);
     }
+    mcp.digitalWrite(DAC_LED, LOW);
 }

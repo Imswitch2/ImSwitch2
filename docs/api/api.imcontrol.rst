@@ -264,8 +264,7 @@ api.imcontrol
 
    .. method:: getLaserActive(laserName: str) -> bool
 
-      Returns whether the specified laser is powered on, so a script
-      that switches lasers off can put back exactly the state it found.
+      Return the current Live ON/OFF state for ``laserName``.
 
       Needs *Laser* in ``availableWidgets``.
 

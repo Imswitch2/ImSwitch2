@@ -220,6 +220,7 @@ void Board::sendCaps() {
     replyf("CAPS,ttl,%u", (unsigned)info_.ttlCount);
     replyf("CAPS,max_steps,%lu", (unsigned long)info_.maxSteps);
     replyf("CAPS,trigger_in,%u", info_.triggerIn ? 1u : 0u);
+    reply("CAPS,prologue,1");
     if (info_.hasLatency) replyf("CAPS,trigger_latency_ticks,%lu", (unsigned long)info_.latencyTicks);
     for (uint8_t i = 0; i < info_.dacCount; ++i) {
         if (info_.dacBits[i]) replyf("CAPS,dac_bits,%u,%u", (unsigned)i, (unsigned)info_.dacBits[i]);
@@ -601,6 +602,39 @@ bool Board::parseLine(char* text) {
         }
         return true;
     }
+    if (strcmp(kind, "PROLOGUE") == 0 && fields == 2) {
+        int8_t loop;
+        if (!parseLoopRef(f[0], &loop)) return false;
+        if (loop == NO_LOOP) { fail(E_SYNTAX, "a prologue needs its loop"); return false; }
+        for (uint8_t i = 0; i < p.prologueCount; ++i)
+            if (p.prologues[i].loop == loop) { fail(E_SYNTAX, "loop %d has a prologue already", (int)loop); return false; }
+        if (p.prologueCount >= MAX_LOOPS) { fail(E_CAPACITY, "this board holds %u prologues", (unsigned)MAX_LOOPS); return false; }
+        Prologue& pr = p.prologues[p.prologueCount];
+        memset(&pr, 0, sizeof pr);
+        pr.loop = loop;
+        if (!parseUint(f[1], &pr.ticks)) return false;
+        ++p.prologueCount;
+        return true;
+    }
+    if (strcmp(kind, "PROFFSET") == 0 && fields == 3) {
+        if (!parseChannel(f[0], &c)) return false;
+        int8_t loop;
+        if (!parseLoopRef(f[1], &loop)) return false;
+        Prologue* pr = NULL;
+        for (uint8_t i = 0; i < p.prologueCount; ++i)
+            if (p.prologues[i].loop == loop) pr = &p.prologues[i];
+        if (pr == NULL) { fail(E_SYNTAX, "no PROLOGUE line for loop %d before it", (int)loop); return false; }
+        if (findDrive(c) == NULL) { fail(E_SYNTAX, "a prologue offset needs a DRIVE line before it"); return false; }
+        double v;
+        if (!parseFloat(f[2], &v)) return false;
+        for (uint8_t i = 0; i < pr->offsetCount; ++i)
+            if (sameChannel(pr->offsets[i].channel, c)) { pr->offsets[i].value = v; return true; }
+        if (pr->offsetCount >= MAX_DRIVES) { fail(E_CAPACITY, "this board holds %u prologue offsets", (unsigned)MAX_DRIVES); return false; }
+        pr->offsets[pr->offsetCount].channel = c;
+        pr->offsets[pr->offsetCount].value = v;
+        ++pr->offsetCount;
+        return true;
+    }
     if (strcmp(kind, "EVENT") == 0 && fields == 8) {
         if (p.eventCount >= MAX_EVENTS) { fail(E_CAPACITY, "this board holds %u events", (unsigned)MAX_EVENTS); return false; }
         Event& e = p.events[p.eventCount];
@@ -610,7 +644,8 @@ bool Board::parseLine(char* text) {
         if (strcmp(f[3], "step") == 0) e.anchor = AT_STEP;
         else if (strcmp(f[3], "pass-start") == 0) e.anchor = PASS_START;
         else if (strcmp(f[3], "pass-end") == 0) e.anchor = PASS_END;
-        else { fail(E_SYNTAX, "anchor '%.20s' is not one of step, pass-start, pass-end", f[3]); return false; }
+        else if (strcmp(f[3], "prologue") == 0) e.anchor = AT_PROLOGUE;
+        else { fail(E_SYNTAX, "anchor '%.20s' is not one of step, pass-start, pass-end, prologue", f[3]); return false; }
         if (!parseLoopRef(f[4], &e.anchorLoop)) return false;
         if (e.anchor != AT_STEP && e.anchorLoop == NO_LOOP) { fail(E_SYNTAX, "a pass anchor needs its loop"); return false; }
         if (strcmp(f[5], "-") == 0) {
@@ -746,6 +781,11 @@ bool Board::check() {
         channelName(p.events[i].channel, name, sizeof name);
         if (!hasChannel(p.events[i].channel)) { fail(E_CHANNEL, "%s: this board has no such channel", name); return false; }
         if (p.events[i].channel.kind == CH_TIME) { fail(E_CHANNEL, "%s: only a line or a DAC takes an event", name); return false; }
+        if (p.events[i].anchor == AT_PROLOGUE) {
+            bool found = false;
+            for (uint8_t j = 0; j < p.prologueCount; ++j) found |= p.prologues[j].loop == p.events[i].anchorLoop;
+            if (!found) { fail(E_SYNTAX, "%s: an event on the prologue of loop %d, which has none", name, (int)p.events[i].anchorLoop); return false; }
+        }
     }
     for (uint8_t i = 0; i < p.safeCount; ++i) {
         channelName(p.safe[i].channel, name, sizeof name);
@@ -1100,6 +1140,40 @@ bool Board::wait(const Wait& w, const double* here) {
     return true;
 }
 
+double Board::prologueOffset(const Prologue& pr, const Channel& c) const {
+    for (uint8_t i = 0; i < pr.offsetCount; ++i)
+        if (sameChannel(pr.offsets[i].channel, c)) return pr.offsets[i].value;
+    return 0.0;
+}
+
+bool Board::hasPrologueOffset(const Prologue& pr, const Channel& c) const {
+    for (uint8_t i = 0; i < pr.offsetCount; ++i)
+        if (sameChannel(pr.offsets[i].channel, c)) return true;
+    return false;
+}
+
+uint8_t Board::prologuesBefore(uint32_t index, const Counters& cur, const Counters& prev,
+                               uint8_t* out) const {
+    // (executor) prologues_before: outermost first, as the loops are declared.
+    uint8_t n = 0;
+    for (uint8_t depth = 0; depth < program_.loopCount; ++depth) {
+        for (uint8_t i = 0; i < program_.prologueCount; ++i) {
+            if (program_.prologues[i].loop != depth) continue;
+            if (index == 0 || outerDiffers(cur, prev, depth)) out[n++] = i;
+        }
+    }
+    return n;
+}
+
+void Board::entryOffsets(uint32_t index, const Counters& cur, const Counters& prev,
+                         double* delta) const {
+    // (executor) entry: the first prologue's offsets, none without one.
+    uint8_t chain[MAX_LOOPS];
+    uint8_t n = prologuesBefore(index, cur, prev, chain);
+    for (uint8_t i = 0; i < program_.driveCount; ++i)
+        delta[i] = n ? prologueOffset(program_.prologues[chain[0]], program_.drives[i].channel) : 0.0;
+}
+
 bool Board::walk() {
     const Program& p = program_;
     const uint8_t L = p.loopCount;
@@ -1116,8 +1190,14 @@ bool Board::walk() {
         first[i] = posCur[i] = position(p.drives[i], cur.counter);
         if (hasNext) posNext[i] = position(p.drives[i], next.counter);
     }
-    // (executor) every drive at its first value before the first step.
-    for (uint8_t i = 0; i < p.driveCount; ++i) write(p.drives[i].channel, first[i], false, 0);
+    // (executor) every drive at its entry value before the first step: the
+    // first prologue's position when the first step opens a pass with one.
+    double delta[MAX_DRIVES], posEntry[MAX_DRIVES];
+    entryOffsets(0, cur, prev, delta);
+    for (uint8_t i = 0; i < p.driveCount; ++i) {
+        posEntry[i] = first[i] + delta[i];
+        write(p.drives[i].channel, posEntry[i], false, 0);
+    }
     if (failure_[0]) return false;
 
     for (uint32_t index = 0; ; ++index) {
@@ -1134,16 +1214,54 @@ bool Board::walk() {
         // The waits here: at the start (the first step), each loop's at the
         // first step of its pass (a change in it or a loop outside it),
         // outermost first, then the step's. (executor) _waits_here.
+        entryOffsets(index, cur, prev, delta);
+        for (uint8_t i = 0; i < p.driveCount; ++i) posEntry[i] = posCur[i] + delta[i];
         for (uint8_t i = 0; i < p.waitCount; ++i)
-            if (p.waits[i].at == WAIT_START && index == 0 && !wait(p.waits[i], posCur)) return false;
+            if (p.waits[i].at == WAIT_START && index == 0 && !wait(p.waits[i], posEntry)) return false;
         for (uint8_t depth = 0; depth < L; ++depth) {
             bool starts = index == 0 || outerDiffers(cur, prev, depth + 1);
             if (!starts) continue;
             for (uint8_t i = 0; i < p.waitCount; ++i)
-                if (p.waits[i].at == depth && !wait(p.waits[i], posCur)) return false;
+                if (p.waits[i].at == depth && !wait(p.waits[i], posEntry)) return false;
         }
         for (uint8_t i = 0; i < p.waitCount; ++i)
-            if (p.waits[i].at == WAIT_STEP && !wait(p.waits[i], posCur)) return false;
+            if (p.waits[i].at == WAIT_STEP && !wait(p.waits[i], posEntry)) return false;
+
+        // (executor) the prologues before this step, outermost first: each
+        // one's events from its start; at its end every offset drive goes
+        // to the next prologue's position, or the step's, inside its move
+        // and settle.
+        {
+            uint8_t chain[MAX_LOOPS];
+            uint8_t n = prologuesBefore(index, cur, prev, chain);
+            uint32_t phaseHere = p.phaseLoop == NO_LOOP ? 0 : cur.counter[p.phaseLoop];
+            for (uint8_t k = 0; k < n; ++k) {
+                const Prologue& pr = p.prologues[chain[k]];
+                const Prologue* after = k + 1 < n ? &p.prologues[chain[k + 1]] : NULL;
+                int64_t proStart = tick_;
+                for (uint8_t i = 0; i < p.eventCount; ++i) {
+                    const Event& e = p.events[i];
+                    if (e.anchor != AT_PROLOGUE || e.anchorLoop != pr.loop) continue;
+                    if (!e.allPhases) {
+                        bool inPhase = false;
+                        for (uint8_t j = 0; j < e.phaseCount; ++j) inPhase |= e.phases[j] == phaseHere;
+                        if (!inPhase) continue;
+                    }
+                    edge(e, proStart + e.start, proStart + e.end);
+                }
+                for (uint8_t i = 0; i < p.driveCount; ++i) {
+                    const Drive& d = p.drives[i];
+                    bool offsetAfter = after != NULL && hasPrologueOffset(*after, d.channel);
+                    if (hasPrologueOffset(pr, d.channel) || offsetAfter) {
+                        double next = after ? prologueOffset(*after, d.channel) : 0.0;
+                        write(d.channel, posCur[i] + next, true,
+                              proStart + (int64_t)pr.ticks - (int64_t)d.move - (int64_t)d.settle);
+                    }
+                }
+                advanceTo(proStart + pr.ticks);
+                if (failure_[0]) return false;
+            }
+        }
 
         int64_t stepStart = tick_;
         bool last = !hasNext;
@@ -1161,7 +1279,8 @@ bool Board::walk() {
             } else if (e.anchor == PASS_START) {
                 bool starts = index == 0 || outerDiffers(cur, prev, (uint8_t)e.anchorLoop);
                 if (starts) edge(e, stepStart + e.start, stepStart + e.end);
-            } else {
+            } else if (e.anchor == PASS_END) {
+                // (a prologue's events were played before the step)
                 bool ends = last || outerDiffers(cur, next, (uint8_t)e.anchorLoop);
                 if (ends) {
                     int64_t end = stepStart + p.stepTicks;
@@ -1193,8 +1312,9 @@ bool Board::walk() {
             if (movers) advanceTo(tick_ + longest);
         } else {
             advanceTo(stepStart + p.stepTicks);
+            if (!last) entryOffsets(index + 1, next, cur, delta);
             for (uint8_t i = 0; i < p.driveCount; ++i) {
-                double target = last ? restoreTarget(p.drives[i], first, posCur) : posNext[i];
+                double target = last ? restoreTarget(p.drives[i], first, posCur) : posNext[i] + delta[i];
                 write(p.drives[i].channel, target, false, 0);
             }
             advanceTo(tick_ + p.returnTicks);

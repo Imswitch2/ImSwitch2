@@ -109,7 +109,7 @@ def test_the_conformance_programs_pass(transport):
     results = conformance_runner.run(transport, report=lambda line: None)
     assert [r.program for r in results if not r.passed] == [], \
         '\n'.join(f'{r.program}: {r.problems}' for r in results if not r.passed)
-    assert len(results) == 5       # the four, and a power level on the second DAC
+    assert len(results) == 6       # the five, and a power level on the second DAC
 
 
 def test_the_programs_run_on_chosen_channels(transport):
@@ -118,8 +118,9 @@ def test_the_programs_run_on_chosen_channels(transport):
     lines = []
     results = conformance_runner.run(transport, report=lines.append, dac=1, lines=[3, 2, 1],
                                      power=False)
-    assert [r.program for r in results if not r.passed] == []
-    assert len(results) == 4
+    assert [r.program for r in results if not r.passed] == [], \
+        '\n'.join(f'{r.program}: {r.problems}' for r in results if not r.passed)
+    assert len(results) == 5
     assert 'driving dac1, ttl3, ttl2, ttl1, no power level' in lines
     with pytest.raises(StepBoardError, match='no dac7'):
         conformance_runner.run(transport, report=lambda line: None, dac=7)

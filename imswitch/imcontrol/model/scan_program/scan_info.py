@@ -176,7 +176,27 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
     info[RASTER_KEY] = not refusal
     info[RASTER_REASON_KEY] = refusal
     info['timing_policy'] = schedule.policy.id
+    info[LONGEST_IDLE_KEY] = _longest_idle_s(schedule, rate_hz)
     return info
+
+
+#: The longest stretch, in s, the scan itself holds without a step: a timed
+#: wait before a timepoint, a long move or return, the approach. A camera the
+#: scan triggers takes no frame in it, and the recording watchdog allows for
+#: it rather than calling the camera stalled (a 27 s time-lapse wait failed a
+#: recording at frame zero after the flat 10 s).
+LONGEST_IDLE_KEY = 'scan_longest_idle_s'
+
+
+def _longest_idle_s(schedule, rate_hz) -> float:
+    longest = run = 0
+    for realized in schedule.spans:
+        if realized.span.kind in ('step', 'prologue'):
+            run = 0
+        else:
+            run += int(realized.ticks)
+            longest = max(longest, run)
+    return longest / float(rate_hz) if rate_hz else 0.0
 
 
 #: The trajectory a point detector measures (plan §6, M4): each window's

@@ -94,29 +94,47 @@ class SimulatedTransport:
 
 
 class SerialTransport:
-    """The line link to a board on a serial port (pyserial)."""
+    """The line link to a board on a serial port (pyserial).
+
+    Bytes are taken from the port in bulk and split into lines here. Taken a
+    line at a time (pyserial's ``readline`` reads byte by byte, and setting
+    the timeout before each line is a system call), the host fell behind a
+    board answering ``LOG?`` with thousands of lines at USB speed, the
+    board's USB writes timed out, and the log's tail was lost (the rig,
+    2026-10-21: 1167 of 2605 lines and no ``LOG,END``; read in bulk, the
+    whole log comes in 15 ms).
+    """
 
     def __init__(self, port, baudrate, reply_timeout):
         import serial
-        self._serial = serial.Serial(port, baudrate=baudrate, timeout=reply_timeout)
+        self._serial = serial.Serial(port, baudrate=baudrate, timeout=0)
         self.reply_timeout = reply_timeout
         # A run sends nothing while it waits for a trigger: the follower
         # reads in reply-timeout slices so a close is noticed.
         self.run_timeout = reply_timeout
         self.board = None
-        self._partial = b''
+        self._buffer = bytearray()
 
     def write(self, line):
         self._serial.write((line + '\n').encode('ascii'))
 
     def read(self, timeout):
-        self._serial.timeout = timeout
-        raw = self._serial.readline()
-        if not raw.endswith(b'\n'):
-            self._partial += raw
-            return None
-        raw, self._partial = self._partial + raw, b''
-        return raw.decode('ascii', errors='replace').strip()
+        """The next line, without its ending; ``None`` when none has ended
+        within ``timeout`` seconds (what came of one stays for the next call)."""
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            newline = self._buffer.find(b'\n')
+            if newline >= 0:
+                raw = bytes(self._buffer[:newline])
+                del self._buffer[:newline + 1]
+                return raw.decode('ascii', errors='replace').strip()
+            waiting = self._serial.in_waiting
+            if waiting:
+                self._buffer += self._serial.read(waiting)
+                continue
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.001)
 
     def close(self):
         self._serial.close()
@@ -136,7 +154,7 @@ def simulated_board(props) -> SimulatedStepBoard:
         trigger_latency_ticks=props.get('triggerLatencyTicks'),
         trigger_min_ticks=props.get('triggerMinTicks'), clock_ppm=props.get('clockPpm'),
         dac_bits={int(i): int(b) for i, b in (props.get('dacBits') or {}).items()},
-        alive_ticks=props.get('aliveTicks'))
+        alive_ticks=props.get('aliveTicks'), prologue=bool(props.get('prologue', True)))
     return SimulatedStepBoard(caps, latency_ticks=props.get('actualTriggerLatencyTicks'))
 
 
@@ -246,6 +264,9 @@ class StepProtocolScanEngine(StepEngineBase):
         self._clockPpm = None if caps is None else caps.clock_ppm
         self._waits = frozenset({'time'} | ({'start-trigger', 'step-trigger'}
                                             if caps is not None and caps.trigger_in else set()))
+        # Until the board answers, a prologue is its to refuse; a board that
+        # does not declare it cannot play one.
+        self._prologues = caps is None or caps.prologue
 
     def capabilities(self) -> EngineCapabilities:
         caps = super().capabilities()
@@ -356,9 +377,24 @@ class StepProtocolScanEngine(StepEngineBase):
                 captured[name] = plan.captured_um[d['device']]
             if d['device'] in plan.park_um:
                 park[name] = plan.park_um[d['device']]
+        prologues = []
+        for pro in getattr(plan, 'prologues', ()):
+            offsets = {}
+            for device, value in pro['offsets'].items():
+                if device in factors:
+                    offsets[token(channels[device].analog)] = value / factors[device]
+                elif device in plan.captured_um or any(d['device'] == device for d in timing):
+                    continue        # another engine's device: timing only here
+                else:
+                    unknown.append(f'{device} declares no conversionFactor (µm per volt).')
+            prologues.append(dict(pro, offsets=offsets))
         outputs = [d for d in plan.drives if d.get('output', True)]
         for d, wire in zip(outputs, drives[len(timing):]):
             low, high = _extremes(wire, plan, captured.get(wire['device'], 0.0))
+            for pro in prologues:
+                extra = pro['offsets'].get(wire['device'])
+                if extra:
+                    low, high = min(low, low + extra), max(high, high + extra)
             parked = park.get(wire['device'])
             if parked is not None:
                 low, high = min(low, parked), max(high, parked)
@@ -372,7 +408,24 @@ class StepProtocolScanEngine(StepEngineBase):
 
         events, safe, carriers = [], {}, {}
         lasers = getattr(self._setupInfo, 'lasers', None) or {}
+        offsets = _offset_levels(plan, channels, factors, refusals)
         for e in plan.events:
+            if e['kind'] == 'offset':
+                # An intra-step offset of a device that stands still over the
+                # scan: the DAC at the offset position during the event, at
+                # the device's position otherwise (assess() admitted it).
+                levels = offsets.get(id(e))
+                if levels is None:
+                    continue
+                name = token(channels[e['device']].analog)
+                on, off = levels
+                low, high = self._caps.dacs[channel(name)[1]]
+                if not (low <= min(on, off) and max(on, off) <= high):
+                    refusals.append(f'{e["device"]} needs {min(on, off):g} to {max(on, off):g}'
+                                    f' V; {self.name} {name} gives {low:g} to {high:g} V.')
+                    continue
+                events.append(dict(e, device=name, on=on, off=off))
+                continue
             if e['kind'] == 'level':
                 # A power level: the laser's DAC at its volts during the event,
                 # at the volts of off (0) otherwise and after a stop (§7.8).
@@ -430,7 +483,7 @@ class StepProtocolScanEngine(StepEngineBase):
         wire = WirePlan(loops=plan.loops, phase_loop=plan.phase_loop, drives=drives,
                         step_ticks=plan.step_ticks, return_ticks=plan.return_ticks,
                         events=events, waits=plan.waits, preparation=preparation,
-                        captured_um=captured, park_um=park, safe=safe)
+                        captured_um=captured, park_um=park, safe=safe, prologues=prologues)
         refusals += _width_refusals(wire)
         return wire, back, refusals, unknown
 
@@ -795,6 +848,47 @@ class StepProtocolScanEngine(StepEngineBase):
         self._unreachable = 'closed'
         if transport is not None:
             transport.close()
+
+
+def _offset_levels(plan, channels, factors, refusals):
+    """``{id(event): (on_volts, off_volts)}`` for the plan's offset events.
+
+    The device stands still over the scan (its drive has no weight and no
+    table), so its position is one number; ``on`` is that position plus the
+    offset, in volts. ``off`` is where the DAC goes when the event ends: the
+    position -- or, when another offset of the device begins at that very
+    tick, that one's level, so the two edges written at the same tick carry
+    the same value whichever is applied last."""
+    levels = {}
+    by_device = {}
+    for e in plan.events:
+        if e['kind'] == 'offset':
+            by_device.setdefault(e['device'], []).append(e)
+    for device, offsets in by_device.items():
+        drive = next((d for d in plan.drives if d['device'] == device and d.get('output', True)),
+                     None)
+        factor = factors.get(device)
+        if drive is None or factor is None:
+            refusals.append(f'{device} takes an intra-step offset and has no drive this board '
+                            'plays.')
+            continue
+        if any(drive['weights'].values()) or drive['table'] is not None:
+            refusals.append(f'{device} moves with the loops; a board plays an intra-step offset '
+                            'as one absolute level.')
+            continue
+        base_um = drive['offset'] + (plan.captured_um.get(device, 0.0)
+                                     if drive['origin'] == 'captured' else 0.0)
+        offsets = sorted(offsets, key=lambda e: (e['anchor'], e['start']))
+        for index, e in enumerate(offsets):
+            on = (base_um + float(e['value'])) / factor
+            off = base_um / factor
+            for other in offsets:
+                if (other is not e and other['anchor'] == e['anchor']
+                        and other['phases'] == e['phases'] and other['start'] == e['end']):
+                    off = (base_um + float(other['value'])) / factor
+                    break
+            levels[id(e)] = (on, off)
+    return levels
 
 
 def _replace(report, feature, verdict, reason):

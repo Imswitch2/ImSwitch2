@@ -5,7 +5,7 @@ interpreter, timing policies and the Advanced adapter
 from .interpreter import DeviceFacts, InterpretError, RunContext, expand, visits
 from .policy import PolicyError, TimingPolicy, load_policy, resolve_policy
 from .program import (
-    DetectorBinding, DeviceDrive, Loop, Motion, ProgramError, ScanProgram, Separation,
+    DetectorBinding, DeviceDrive, Loop, Motion, Prologue, ProgramError, ScanProgram, Separation,
     TimelineEvent, Wait, validate,
 )
 from .schedule import RealizedSchedule, ScheduleRefused, realize

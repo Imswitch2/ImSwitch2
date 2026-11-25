@@ -89,6 +89,10 @@ program runs, when the board reports on its own (`While it runs`_).
            trigger, ``ALIVE`` through anything longer (a long step, a time
            wait) -- so a host can tell a board that fell silent from one that
            is busy. Not declared, it cannot.
+       * - ``CAPS,prologue,1``
+         - It plays ``PROLOGUE`` steps (a step of its own before every pass
+           of a loop). Not declared, a program with one is refused as
+           impossible on this board.
        * - ``CAPS,dac_bits,<i>,<bits>``
          - DAC ``i`` sets the nearest of ``2**bits`` codes over its range, and
            logs the volts it set. The host refuses a step finer than one
@@ -157,14 +161,26 @@ line names it, and a ``DRIVE`` before its ``WEIGHT`` and ``TABLE`` lines.
      - Volts per count of that loop.
    * - ``TABLE,<dac>,<loop>,<v0;v1;...>``
      - Volts per count of that loop, given explicitly.
+   * - ``PROLOGUE,<loop>,<ticks>``
+     - A step of its own before the first step of every pass of ``loop``,
+       lasting ``ticks``: the RESOLFT cycle's activation and depletion, fired
+       with the readout device parked. Events anchored ``prologue`` on that
+       loop run in it, from its start. At its end, each drive with a
+       ``PROFFSET`` moves to the pass's first position (its ``move`` then
+       ``settle``, inside the ticks). One per loop.
+   * - ``PROFFSET,<dac>,<loop>,<volts>``
+     - Where that drive stands during the loop's prologue: this far from the
+       pass's first position. A drive without one stands at the first
+       position.
    * - ``EVENT,<channel>,<start>,<end>,<anchor>,<loop>,<phases>,<on>,<off>``
      - The line (or DAC) is at ``on`` from ``start`` to ``end`` ticks after
        its anchor, and at ``off`` otherwise. On a DAC the values are volts:
        a laser's power level inside a step. ``anchor`` is ``step`` (every
        step), ``pass-start`` (the first step of every pass of ``loop``) or
        ``pass-end`` (the end of the last step of every pass of ``loop``;
-       times are then <= 0). ``phases`` (``0;2``, or ``-`` for all) limits
-       it to those phase counters.
+       times are then <= 0) or ``prologue`` (the prologue of ``loop``, from
+       its start). ``phases`` (``0;2``, or ``-`` for all) limits it to those
+       phase counters.
    * - ``WAIT,<at>,<trigger>,<interval>,<timeout>,<on_timeout>``
      - A wait before the run (``at`` = ``start``), before every step
        (``step``), or before every iteration of a loop (its index).

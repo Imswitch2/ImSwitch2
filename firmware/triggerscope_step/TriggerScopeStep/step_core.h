@@ -114,7 +114,7 @@ enum Traversal : uint8_t { FORWARD, REVERSE, SERPENTINE };
 enum Placement : uint8_t { IN_STEP, BETWEEN_STEPS };
 enum Origin : uint8_t { ABSOLUTE, CAPTURED };
 enum Restore : uint8_t { RESTORE_CAPTURED, RESTORE_FIRST, RESTORE_PARK, RESTORE_HOLD };
-enum Anchor : uint8_t { AT_STEP, PASS_START, PASS_END };
+enum Anchor : uint8_t { AT_STEP, PASS_START, PASS_END, AT_PROLOGUE };
 enum WaitAt : uint8_t { WAIT_START = 0xFE, WAIT_STEP = 0xFF };   // else a loop index
 
 static const int8_t NO_LOOP = -1;
@@ -159,6 +159,14 @@ struct Wait {
 
 struct ChannelValue { Channel channel; double value; };
 struct ChannelTicks { Channel channel; uint32_t ticks; };
+// A step of its own before every pass of a loop: its offset drives stand
+// that far from the pass's first position until its end.
+struct Prologue {
+    int8_t loop;
+    uint32_t ticks;
+    uint8_t offsetCount;
+    ChannelValue offsets[MAX_DRIVES];
+};
 
 struct Program {
     uint8_t loopCount;
@@ -182,6 +190,8 @@ struct Program {
     ChannelValue park[MAX_DRIVES];
     uint8_t safeCount;
     ChannelValue safe[MAX_SAFE];
+    uint8_t prologueCount;
+    Prologue prologues[MAX_LOOPS];
     uint32_t steps;             // the product of the counts
 };
 
@@ -300,6 +310,15 @@ private:
         uint32_t ordinal[MAX_LOOPS];
         bool reversed[MAX_LOOPS];
     };
+    // The prologues before a step, outermost first: those of the loops that
+    // start a pass there. Returns their count; `out` holds their indices.
+    uint8_t prologuesBefore(uint32_t index, const Counters& cur, const Counters& prev,
+                            uint8_t* out) const;
+    // Each drive's offset in the first of those prologues (0 without one).
+    void entryOffsets(uint32_t index, const Counters& cur, const Counters& prev,
+                      double* delta) const;
+    double prologueOffset(const Prologue& pr, const Channel& c) const;
+    bool hasPrologueOffset(const Prologue& pr, const Channel& c) const;
     void startPass(Counters& c, uint8_t depth) const;
     void firstVisit(Counters& c) const;
     bool nextVisit(Counters& c) const;      // false at the end

@@ -224,7 +224,9 @@ class ImageWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _fitScale(scale, ndim):
-        sc = tuple(float(s) for s in scale)
+        """``scale`` with one value per axis: the last values given are the
+        last axes', missing leading axes get 1."""
+        sc = tuple(float(v) for v in scale)
         if len(sc) < ndim:
             sc = (1.0,) * (ndim - len(sc)) + sc
         elif len(sc) > ndim:

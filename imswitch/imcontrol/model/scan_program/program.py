@@ -171,6 +171,25 @@ class Trajectory:
 
 
 @dataclass(frozen=True)
+class Prologue:
+    """A step of its own before the first step of every pass of ``loop``.
+
+    It lasts ``duration_s``. A device named in ``offsets_um`` stands that far
+    (in µm) from the pass's first position during it, the others at the
+    first position; at its end each offset device makes its in-step
+    transition (its motion's ``move_s`` then ``settle_s``) to the first
+    position, inside the duration. The timeline's events anchored
+    ``'prologue:<loop>'`` run in it, at times from 0 to ``duration_s``:
+    pulses and levels, no detector window and no intra-step offset. The
+    activation and depletion pulses of a RESOLFT cycle, fired with the
+    readout device parked at its resting position, are one.
+    """
+    loop: str
+    duration_s: float
+    offsets_um: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ScanProgram:
     loops: Tuple[Loop, ...]
     drives: Tuple[DeviceDrive, ...]
@@ -179,6 +198,8 @@ class ScanProgram:
     waits: Tuple[Wait, ...] = ()
     separations: Tuple[Separation, ...] = ()
     detectors: Tuple[DetectorBinding, ...] = ()
+    #: A step of its own before every pass of a loop (``Prologue``).
+    prologues: Tuple[Prologue, ...] = ()
     park: Mapping[str, float] = field(default_factory=dict)
     timing_policy: str = 'strict-v1'
     #: A free path instead of loops and drives (§1.5); ``step_s`` is then the
@@ -222,7 +243,7 @@ def _check_choice(problems, where, value, choices):
 def _anchor_loop(anchor):
     if anchor == 'step':
         return None
-    for prefix in ('pass-start:', 'pass-end:'):
+    for prefix in ('pass-start:', 'pass-end:', 'prologue:'):
         if anchor.startswith(prefix):
             return anchor[len(prefix):]
     return ''
@@ -331,6 +352,22 @@ def validate(program: ScanProgram) -> ScanProgram:
             if value is not None and value < 0:
                 problems.append(f'{where}: {name} must not be negative')
 
+    prologue_of = {}
+    for prologue in program.prologues:
+        where = f'prologue of {prologue.loop!r}'
+        if prologue.loop not in ids:
+            problems.append(f'{where}: unknown loop')
+        if prologue.loop in prologue_of:
+            problems.append(f'{where}: a loop has one prologue')
+        prologue_of[prologue.loop] = prologue
+        duration = _finite(problems, where, 'duration_s', prologue.duration_s)
+        if duration is not None and not duration > 0:
+            problems.append(f'{where}: duration_s must be positive, not {prologue.duration_s}')
+        for name, value in prologue.offsets_um.items():
+            if name not in devices:
+                problems.append(f'{where}: an offset needs a drive for {name!r}')
+            _finite(problems, where, f'offset of {name!r}', value)
+
     event_ids = [event.id for event in program.timeline if event.id is not None]
     if len(set(event_ids)) != len(event_ids):
         problems.append(f'Event ids must be unique: {event_ids}')
@@ -351,6 +388,16 @@ def validate(program: ScanProgram) -> ScanProgram:
             problems.append(f'{where}: end must be after start')
         if event.anchor == 'step' and (event.start_s < 0 or event.end_s > program.step_s):
             problems.append(f'{where}: outside its step (0 to {format_seconds(program.step_s)})')
+        if event.anchor.startswith('prologue:'):
+            prologue = prologue_of.get(anchor_loop)
+            if prologue is None:
+                problems.append(f'{where}: loop {anchor_loop!r} has no prologue')
+            elif event.start_s < 0 or event.end_s > float(prologue.duration_s):
+                problems.append(f'{where}: outside its prologue (0 to '
+                                f'{format_seconds(prologue.duration_s)})')
+            if event.kind in ('detector', 'offset'):
+                problems.append(f'{where}: a prologue takes pulses and levels, not a '
+                                f'{event.kind}')
         if event.kind in ('level', 'offset') and event.value is None:
             problems.append(f'{where}: a {event.kind} event needs a value')
         if event.phases is not None:

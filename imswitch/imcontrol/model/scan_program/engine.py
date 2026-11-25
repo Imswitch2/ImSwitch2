@@ -45,6 +45,8 @@ class EngineCapabilities:
     stepping: str = 'none'                   # 'native', 'emulated' or 'none'
     transitions: FrozenSet[str] = frozenset({'jump'})
     intra_step_offsets: bool = False
+    #: A step of its own before every pass of a loop (``Prologue``).
+    prologues: bool = False
     timing_grid_s: Optional[float] = None
     min_pulse_s: Optional[float] = None
     max_samples: Optional[int] = None
@@ -263,6 +265,12 @@ def assess_program(program, caps: EngineCapabilities, owns, channels) -> Feasibi
         else:
             report.add(f'{shape} transition', IMPOSSIBLE,
                        f'{caps.name} moves with {", ".join(sorted(caps.transitions))} only.')
+
+    for prologue in getattr(program, 'prologues', ()):
+        report.add(f'prologue of {prologue.loop}', NATIVE if caps.prologues else IMPOSSIBLE,
+                   '' if caps.prologues else
+                   f'{caps.name} cannot play a step of its own before every pass.',
+                   '' if caps.prologues else 'Run the scan on a step board that can.')
 
     trajectory = getattr(program, 'trajectory', None)
     if trajectory is not None:

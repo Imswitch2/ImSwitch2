@@ -2102,18 +2102,25 @@ def test_entering_simple_with_an_expert_edit_not_yet_reported_lists_that_edit(
     assert program.step_s == 0.008 and held(program)
 
 
-@pytest.mark.parametrize('width, sideways', [(520, False), (380, False), (330, True)])
-def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, width,
+@pytest.mark.parametrize('spare, sideways', [(200, False), (80, False), (-40, True)])
+def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, spare,
                                                                  sideways):
     """Beside the widest label the table was squeezed below its columns, and
     scrolled, hiding part of its last pulse; and the hidden Tables page kept
     the whole panel scrolling sideways. Narrower than the table's columns,
-    the panel scrolls sideways, and every pulse is still in view."""
+    the panel scrolls sideways, and every pulse is still in view.
+
+    The panel is sized from the table's columns, ``spare`` pixels wider or
+    narrower: how wide the columns are depends on the font. Fixed widths held
+    for one font only -- 380 px scrolled sideways with Linux CI's, 330 px did
+    not with Windows'. The panel's own room beside the table (the form's
+    margins and the scroll area's frame and bar) is some 55 px."""
     rig, w = shown, shown.widget
     form = _simple(rig)
-    w.resize(width, 900)
     qtbot.wait(150)
     table = _editor(form, 'pulses').table
+    w.resize(table.minimumWidth() + spare, 900)
+    qtbot.wait(150)
     assert table.viewport().height() >= table.verticalHeader().length()    # every row
     assert not table.verticalScrollBar().isVisible()
     assert not table.horizontalScrollBar().isVisible()
