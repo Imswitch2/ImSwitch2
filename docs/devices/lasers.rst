@@ -318,10 +318,12 @@ package.  Has an explicit mock fallback.
        manager indexes ``[0]`` after normalisation).  **Required**.
    * - ``useMockOnFailure``
      - bool
-     - Defaults to ``true``. When the configured port cannot be opened, start
-       with ``MockCobolt06`` instead of aborting ImSwitch2 startup. Set it to
-       ``false`` for a hardware-required setup where a missing laser must be
-       reported as an error.
+     - Defaults to ``false``. When the configured port cannot be opened the
+       laser is left **not connected**: the error shows in Hardware status,
+       commands are refused with the laser's name, and a reconnect there
+       brings it back dark (the cached setpoint is applied only when the
+       user switches it on). ``true`` starts ``MockCobolt06`` instead,
+       reported as a mock.
    * - ``simulation``
      - bool
      - Defaults to ``false``. When ``true`` the real serial transport is never
