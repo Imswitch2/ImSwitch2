@@ -55,6 +55,7 @@ class _StubController:
     finishScanRunAfterCurrent = SuperScanController.finishScanRunAfterCurrent
     abortScan = SuperScanController.abortScan
     _stopEngineNow = SuperScanController._stopEngineNow
+    _showStopState = SuperScanController._showStopState
 
     def __init__(self, repeat=True):
         self._repeatPending = False

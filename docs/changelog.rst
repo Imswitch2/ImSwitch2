@@ -83,6 +83,30 @@ Unreleased
 
 **Bug Fixes**
 
+- **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
+  used to do the whole stop on the thread that took the click: stop and close
+  every NI-DAQ task (up to 2 s each), join the waiter threads, write the lines
+  and scanners to rest and wait for the ramp to play out; then, from the run's
+  end signal on the same thread, tear down each point detector's scan thread
+  and input task, stop each detector as its scan lease was released, and --
+  with BeadRec on -- stop the camera it held.  On a real driver that is as
+  long as the driver takes (measured on a mock rig with delays set to what a
+  driver does: 1.5 s for one slow task stop, 3 s for three slow closes, 1.5 s
+  per detector stop, 1.5 s for BeadRec's camera, ~1 s of APD thread join even
+  with nothing slow), long enough for the OS to call the window "not
+  responding" and for a click during it to queue up behind the stop.  The same
+  calls now run in the same order on worker threads and the run's end is
+  published from the GUI thread as before; the GUI-thread gap during Stop is
+  under 20 ms in every case measured.  Stop shows **Stopping...** and takes no
+  second click, Run is refused until the run has ended, and an exception in
+  the stop is logged and shown on the button (**Stop failed**, click to try
+  again) instead of escaping the slot.  A new diagnostic,
+  ``imswitch --gui-stall-seconds N`` (or ``IMSWITCH_GUI_STALL_SECONDS=N``),
+  writes the GUI thread's stack to ``logs/gui_stall.log`` whenever it stops
+  pumping events for N seconds, and the stop logs one INFO line per step with
+  its duration and thread.  Not changed: parking positioners that declare
+  ``returnToCenterAfterScan``, and the Time Tagger's card release when its
+  worker ends, still wait on the GUI thread.
 - **A long scan program loads in seconds, and its own waits are not a camera stall.** The schedule's stillness check read every offset of the run for every step: a 9000-step three-colour scan took 20 s to realize, and the Expert panel realizes a scan several times on load. The offsets are now indexed per step as they are placed (1.5 s). A scan-triggered camera was given the flat 10 s for its first frame, so a converted time-lapse scan that waits 27 s before every timepoint failed its recording at frame zero; the scan info now carries its longest stretch without a step (``scan_longest_idle_s``), and the watchdog adds it to that camera's allowance.
 - Scan engines, review round 1, recording, docs and tests: a recording holds what ran beside what was requested (``ScanStage:scan_schedule``: the timing policy with its contents, the grid and its source, every time that runs differently, the approach), for Expert and Advanced scans; a timing policy that declares tolerances is refused, since nothing applies them; **What this setup can scan…** takes each feature's verdict from the engine's own assessment and asks a board that had not answered again; the plugin docs no longer say pulse-generator plugins are rejected; a test helper that left a bare ``QCoreApplication`` (which aborted widget tests later in the same xdist worker) creates a full ``QApplication``; two pulse-generator safe-state tests could not fail and now can.
 - Scan engines, review round 1, semantics and the protocol: after a run each positioner it moved is told where the run left it (the restore position; a step board's last write after a stop), where it kept its pre-scan position and the next run's origin was wrong; a pulse-generator laser switched by hand follows ``ttlActiveLevel`` (an active-low laser was on when the GUI said off); the NI-DAQ refuses a positioner without ``conversionFactor`` instead of taking 1 µm per volt; the Expert raster preset asks for its move shape, so a step board can run it; the step-engine protocol logs the level each edge wrote (``LOG,ON,...,<level>``) and the conformance tool checks it, with an active-low line and a power level, so firmware that ignores the host's polarity or volts fails; the protocol defines ``ALIVE`` for a board busy longer than ``alive_ticks``, and its safe state puts a laser's power DAC at its off volts.

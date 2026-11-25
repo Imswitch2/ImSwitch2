@@ -73,6 +73,7 @@ from imswitch.imcontrol.model.scan_stop import axis_limits_volts, rest_to_rest_r
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.gui_diagnostics import timedStep
 from .mockscan import ScanSimulationCoordinator
 
 
@@ -268,6 +269,10 @@ class NidaqManager(SignalInterface):
     # contract every engine follows for a stopped run, ScanEngine).
     sigScanStopped = Signal()
 
+    # Worker thread -> this manager's thread: a background stop's hardware part
+    # is over (stopScan(background=True)).
+    _sigStopHardwareDone = Signal()
+
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
@@ -340,6 +345,9 @@ class NidaqManager(SignalInterface):
         # what that stop did (lastStop).
         self._runStopped = False
         self._lastStop = None
+        self._stopInFlight = False
+        self._stopThread = None
+        self._sigStopHardwareDone.connect(self._onStopHardwareDone)
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
         self.__scanSimulator = None
@@ -464,6 +472,15 @@ class NidaqManager(SignalInterface):
         """
         state = object.__getattribute__(self, '__dict__')
         finalizeLock = self._getFinalizeLock()
+
+        # A stop still writing the outputs to rest finishes first (bounded):
+        # shutting down under it would refuse those writes and leave the
+        # lines where they were. Joined before the lifecycle lock is taken,
+        # which the stop's own one-shot writes need.
+        stopThread = state.get('_stopThread')
+        if (stopThread is not None and stopThread.is_alive()
+                and stopThread is not threading.current_thread()):
+            stopThread.join(max(0, int(waiterTimeoutMs)) / 1000)
 
         with finalizeLock:
             if state.get('_finalized', False):
@@ -2292,7 +2309,7 @@ class NidaqManager(SignalInterface):
         stop = self.__dict__.get('_lastStop')
         return None if stop is None else copy.deepcopy(stop)
 
-    def stopScan(self) -> bool:
+    def stopScan(self, *, background=False) -> bool:
         """Stop the run in progress now (plan scan-stop-now, Lenny 2026-10-18).
 
         Every task of the run stops and closes -- the rollback a failed run
@@ -2305,20 +2322,78 @@ class NidaqManager(SignalInterface):
         ``acc_max``. A scanner that declares no limits, or whose position the
         driver does not report, stays where it is, and the log says so. The
         run then ends stopped: ``sigScanStopped``, then ``sigScanDone``.
-        Returns whether there was a run to stop."""
+        Returns whether there was a run to stop.
+
+        Every step above waits on the driver: a task's stop and close (each
+        to ``_TASK_DRIVER_TEARDOWN_TIMEOUT_MS``), the waiter threads' joins,
+        and the rest writes, which play out for as long as the ramp. A GUI
+        caller passes ``background=True``: the same steps then run in the
+        same order on one worker thread, and the two end signals are sent
+        from this manager's own thread when it is done -- the thread the run's
+        other signals come from -- so no handler sees a different thread than
+        before. The stop is accepted at once (the run is marked stopped, and
+        a second stop is refused until it ends); ``False`` is returned for a
+        second stop while one is in flight, as for one with nothing left to
+        stop. A new scan is refused as busy until the stop has ended.
+        """
         with self._scanStateLock:
             simulator = self.__scanSimulator
             simulated = simulator is not None and simulator.isActive
-            if self.signalSent or not (self.tasks or simulated):
+            if (self.signalSent or self.__dict__.get('_stopInFlight', False)
+                    or not (self.tasks or simulated)):
                 return False
             self._runStopped = True
-            analog = self.__dict__.get('_lastAnalogWrite') or ((), (), 0)
-            channels = list(self.__dict__.get('_lastAnalogChannels') or ())
-            digital = self.__dict__.get('_lastDigitalWrite') or ((), (), 0)
-            lines = list(self.__dict__.get('_lastDigitalLines') or ())
-            aoTask = self.tasks.get('ao')
-        found = self._outputPositionsAtStop(aoTask, analog, simulator if simulated else None)
-        cleanupSucceeded = self._cleanupScanResources()
+            self._stopInFlight = True
+            # Terminal from here on: a completion arriving while the stop is
+            # still taking the tasks down must not end the run a second time.
+            self.signalSent = True
+            snapshot = {
+                'analog': self.__dict__.get('_lastAnalogWrite') or ((), (), 0),
+                'channels': list(self.__dict__.get('_lastAnalogChannels') or ()),
+                'digital': self.__dict__.get('_lastDigitalWrite') or ((), (), 0),
+                'lines': list(self.__dict__.get('_lastDigitalLines') or ()),
+                'aoTask': self.tasks.get('ao'),
+                'simulator': simulator if simulated else None,
+            }
+        if not background:
+            try:
+                self._runScanStop(snapshot)
+            finally:
+                self._endScanStop()
+            return True
+        thread = threading.Thread(
+            target=self._runScanStopInBackground, args=(snapshot,),
+            name='NidaqScanStop', daemon=True)
+        self._stopThread = thread
+        try:
+            thread.start()
+        except BaseException:
+            # No thread to do it: stop here rather than leave the run armed.
+            try:
+                self._runScanStop(snapshot)
+            finally:
+                self._endScanStop()
+        return True
+
+    def _runScanStopInBackground(self, snapshot):
+        try:
+            self._runScanStop(snapshot)
+        except BaseException:
+            self.__logger.error('The scan stop failed', exc_info=True)
+        finally:
+            # Queued to this manager's thread: the run's end is published from
+            # where its other signals are.
+            self._sigStopHardwareDone.emit()
+
+    def _runScanStop(self, snapshot):
+        """The hardware part of a stop, in the order it has always had."""
+        analog, channels = snapshot['analog'], snapshot['channels']
+        digital, lines = snapshot['digital'], snapshot['lines']
+        with timedStep('scan stop', 'where the outputs were'):
+            found = self._outputPositionsAtStop(
+                snapshot['aoTask'], analog, snapshot['simulator'])
+        with timedStep('scan stop', 'stop and close the run\'s tasks'):
+            cleanupSucceeded = self._cleanupScanResources()
         with self._scanStateLock:
             self._scanTransactionActive = False
             # Free for the safe-state writes below; a run whose tasks did not
@@ -2326,14 +2401,24 @@ class NidaqManager(SignalInterface):
             self.busy = not cleanupSucceeded
         stop = {'found': dict(found), 'left': {}, 'held': {}, 'errors': []}
         if cleanupSucceeded:
-            self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
+            with timedStep('scan stop', 'lines off and scanners to rest'):
+                self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
         else:
             stop['errors'].append('the run\'s tasks did not all close; no output was written')
         self._lastStop = stop
         self._logStop(stop)
+
+    def _onStopHardwareDone(self):
+        self._endScanStop()
+
+    def _endScanStop(self):
+        """Publish the stopped run's end (on the manager's own thread)."""
+        with self._scanStateLock:
+            if not self.__dict__.get('_stopInFlight', False):
+                return
+            self._stopInFlight = False
         self.sigScanStopped.emit()
         self.sigScanDone.emit()
-        return True
 
     def _outputPositionsAtStop(self, aoTask, analog, simulator):
         """Each analog output's volts where the run is now: the sample its

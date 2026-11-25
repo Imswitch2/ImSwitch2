@@ -1144,8 +1144,8 @@ def test_abort_requested_iteration_resolves_with_abort_mode():
         def runForOwner(self, candidate):
             return runToken if candidate is owner else None
 
-        def resolve(self, token, mode, onComplete=None):
-            self.resolved.append((token, mode, onComplete))
+        def resolve(self, token, mode, onComplete=None, background=False):
+            self.resolved.append((token, mode, onComplete, background))
 
     coordinator = _Coordinator()
     owner._scanCoordinator = coordinator
@@ -1154,6 +1154,8 @@ def test_abort_requested_iteration_resolves_with_abort_mode():
     SuperScanController._SuperScanController__onNidaqScanDone(owner)
 
     assert coordinator.resolved[0][:2] == (iterationToken, FINISH_ABORT)
+    # a stopped run's detectors are finished from a worker thread, not the GUI's
+    assert coordinator.resolved[0][3] is True
 
 
 def test_scan_end_releases_run_before_notifying_reentrant_listeners():
