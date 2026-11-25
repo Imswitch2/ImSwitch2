@@ -117,7 +117,7 @@ class ElliptecRotatorManager(RotatorManager):
         # A ``MOCK_`` port is a configured mock (the shipped no-hardware
         # setups), not a failure: it runs on virtual positions, as a mock.
         self._configuredMock = str(
-            rotatorInfo.managerProperties.get("port", "")).upper().startswith("MOCK")
+            rotatorInfo.managerProperties["port"]).upper().startswith("MOCK")
         if self._configuredMock:
             self._useMockOnFailure = True
 
