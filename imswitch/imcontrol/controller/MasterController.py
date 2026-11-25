@@ -34,6 +34,10 @@ class MasterController:
         publishes as shared attributes, and each laser's configured range.
         Read-only; detectors without a virtual sample ignore it, and no
         hardware path changes."""
+        # Only a simulated NI-DAQ drives virtual samples; on hardware there is
+        # nothing to attach.
+        if getattr(self.nidaqManager, 'isSimulated', False) is not True:
+            return
         attributes = getattr(self.__commChannel, 'sharedAttrs', None)
         if attributes is None:
             return
