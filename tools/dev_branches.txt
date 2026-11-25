@@ -49,3 +49,8 @@ fix/startup-device-failures        # PR #96: a device that fails at startup is r
                                    #    vendor-guard test follows the import there; panel loop: resolve_controller inside the
                                    #    try; ScanManagerTriggerScope: the absent-board refusal in runScan and runScanAsync;
                                    #    config-editor schemas/snapshot regenerated, pinned counts are the merged totals)
+feat/timetagger-usability          # PR #100 (folds #101): Time Tagger GUI-freeze fixes, trigger-level finding, several detectors
+                                   #   on one card; stacked on feat/scan-engines
+                                   #   (dev retired the detector's private card (5692bee7): the branch's finalize keeps only
+                                   #    unregisterDetector, docs say a detector without the block has no card; counts/setups
+                                   #    pins are the merged totals)

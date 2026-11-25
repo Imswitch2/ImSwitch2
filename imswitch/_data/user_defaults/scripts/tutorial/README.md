@@ -39,6 +39,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
 | scanning 06-08 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | timetagger 01-13 | `galvo_flim_mock_scan_setup.json` | the same as scanning 05, plus a simulated Swabian Time Tagger with a FLIM detector |
+| timetagger 14 | `galvo_two_apd_counting_mock_setup.json` | the same, with two counting detectors on one simulated Time Tagger and no laser sync |
 | measurement 01 | `example_no_hardware.json` | two waveplates in front of a polarimeter |
 
 ## Running a tutorial
@@ -107,6 +108,7 @@ back, delete your copy and restart ImSwitch.
 | 11 | `11_binned_photon_arrivals.py` | `galvo_flim_mock_scan_setup.json` | `BinnedPhotonArrivalWorkflow`: the cube and gates saved to HDF5 (format 2), read back with `load_products()` |
 | 12 | `12_gated_sted.py` | `galvo_flim_mock_scan_setup.json` | `GatedSTEDWorkflow` with a peak-relative preset from `gate_presets/`; the late/early ratio; `sted_pulse_delay()` |
 | 13 | `13_tau_sted.py` | `galvo_flim_mock_scan_setup.json` | `TauSTEDWorkflow`: the per-pixel lifetime image and what the products carry |
+| 14 | `14_several_detectors_on_one_card.py` | `galvo_two_apd_counting_mock_setup.json` | the `inputs` block; a level per detector input; two counting detectors, one scan, one card: is each image from its own input? |
 
 `timetagger/gate_presets/*.json` are the gate presets tutorial 12 and the
 Lifetime widget share (peak-relative gates and a ratio).

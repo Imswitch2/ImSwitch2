@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -737,17 +738,120 @@ class TeensyPulseInfo:
     reports its own via ``*IDN?``). """
 
 
+#: What a Time Tagger input carries (``TimeTaggerInputInfo.kind``).
+TIME_TAGGER_INPUT_KINDS = ("detector", "laser_sync", "line_clock", "frame_clock", "marker")
+
+#: The well-known roles, the kind of input each one is, and the legacy
+#: ``TimeTaggerInfo`` fields that declare it: (channel, trigger level, dead
+#: time, delay); ``None`` where the role has no such field. The frame clock
+#: takes the line clock's dead time and delay (one DAQ driver, one bounce).
+#: The order is the order consumers and docs list them in.
+TIME_TAGGER_ROLES: Dict[str, Dict[str, Any]] = {
+    "photons": dict(kind="detector", fields=(
+        "photonsChannel", "photonsTriggerV", "photonsDeadtimePs", None)),
+    "laser_sync": dict(kind="laser_sync", fields=(
+        "laserSyncChannel", "laserSyncTriggerV", None, None)),
+    "line_clock": dict(kind="line_clock", fields=(
+        "lineClockChannel", "lineClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs")),
+    "frame_clock": dict(kind="frame_clock", fields=(
+        "frameClockChannel", "frameClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs")),
+    "sted_pulse": dict(kind="marker", fields=(
+        "stedPulseChannel", "stedPulseTriggerV", None, None)),
+}
+
+#: Input names that mean something else where an input is named.
+_RESERVED_INPUT_NAMES = frozenset({"none", "auto", ""})
+
+
+class TimeTaggerConfigError(ValueError):
+    """The ``timeTagger`` block is ambiguous or inconsistent."""
+
+
+@dataclass(frozen=True)
+class TimeTaggerInputInfo:
+    """One input of a Time Tagger card, in the block's ``inputs``."""
+
+    channel: int
+    """ The input number; negative selects the falling edge (a SPAD's NIM
+    pulse: ``-1``). """
+
+    kind: str = "detector"
+    """ What the input carries: ``"detector"`` (photon pulses, one detector
+    each), ``"laser_sync"`` (a TCSPC reference), ``"line_clock"`` /
+    ``"frame_clock"`` (the scan's clocks, at most one each per card) or
+    ``"marker"`` (any other pulse source: a STED-beam photodiode, a trigger
+    out). """
+
+    triggerV: float = 0.5
+    """ Trigger threshold in volts; inputs are 50 ohm, range +/-2.5 V. The
+    sign goes with the channel's edge. """
+
+    deadtimePs: int = 0
+    """ Dead time in picoseconds; ``0`` = the card's minimum. """
+
+    delayPs: int = 0
+    """ Input delay in picoseconds. On the line clock a positive value moves
+    the pixel markers instead (see ``lineClockDelayPs``). """
+
+    mockSample: Optional[str] = None
+    """ Mock card only: what a detector input images (a ``mockSample``
+    preset). ``None`` = the block's ``mockSample``, varied per detector
+    input so two inputs never image the same thing. Ignored with a real
+    card. """
+
+
+@dataclass(frozen=True)
+class ResolvedTimeTaggerInputs:
+    """The card's inputs by name, in order, and which input plays each role."""
+
+    inputs: Dict[str, TimeTaggerInputInfo]
+    roles: Dict[str, str]
+    """ Role -> input name, for the roles some input plays. """
+    fromInputsBlock: bool
+    """ Whether the block declared an ``inputs`` map (else: legacy fields). """
+
+    def detectorInputs(self) -> List[str]:
+        return [name for name, spec in self.inputs.items() if spec.kind == "detector"]
+
+    def role(self, name: str) -> Optional[str]:
+        """The role an input plays, if any."""
+        for role, input_name in self.roles.items():
+            if input_name == name:
+                return role
+        return None
+
+
 @dataclass(frozen=True)
 class TimeTaggerInfo:
     """One Swabian Time Tagger card, shared by every detector and script
     that uses it.
 
-    Channels are named by *role*; the FLIM detector and the scripting facade
-    speak roles, so re-cabling the card is one edit here. A negative channel
-    number selects the falling edge of that input, the Swabian convention
-    (a SPAD's NIM pulse is triggered on its falling edge, so ``-1``).
-    Consumed by ``imswitch.imcontrol.model.managers.TimeTaggerManager``.
+    The card's inputs are declared once, either in the ``inputs`` map (any
+    number of named inputs, each with its kind) or, the older form, in the
+    role fields below (one input per role). A negative channel number
+    selects the falling edge of that input, the Swabian convention (a
+    SPAD's NIM pulse is triggered on its falling edge, so ``-1``). Consumers
+    name inputs, or the roles ``photons``, ``laser_sync``, ``line_clock``,
+    ``frame_clock``, ``sted_pulse``, which resolve to inputs
+    (:meth:`resolvedInputs`). Consumed by
+    ``imswitch.imcontrol.model.managers.TimeTaggerManager``.
     """
+
+    inputs: Dict[str, TimeTaggerInputInfo] = field(default_factory=dict)
+    """ The card's inputs by name, e.g. ``{"apd_green": {"channel": -1,
+    "triggerV": -0.25}, "apd_red": {"channel": -2, "triggerV": -0.25},
+    "line_clock": {"channel": 3, "kind": "line_clock"}}``. Empty = the
+    role fields below describe the card (the older form, unchanged).
+
+    With an ``inputs`` map, it is the card: a role field left at its
+    default is ignored (the role fields have defaults -- photons on 1, the
+    sync on 2, the line clock on 3 -- that a saved setup file carries
+    whether or not they are cabled); one set to another value adds that
+    role's input, and is refused when the map already has the role (same
+    name, or the only input of that kind) with other values. A role
+    resolves to the input named like it, else to the only input of its
+    kind (``photons``: the only ``detector`` input). Two inputs on one
+    physical input, and more than one line or frame clock, are refused. """
     serial: Optional[str] = None
     """ Serial number of the card to open; ``None`` = the first card found. """
 
@@ -774,14 +878,17 @@ class TimeTaggerInfo:
     card's minimum. Set it to the detector's own dead time to suppress
     ringing and double counts. """
 
-    laserSyncChannel: int = 2
-    """ Input carrying the laser sync (the TCSPC reference). """
+    laserSyncChannel: Optional[int] = 2
+    """ Input carrying the laser sync (the TCSPC reference); ``null`` = no
+    sync cabled (a card used for photon counting only, with no
+    time-resolved detector on it). """
 
     laserSyncTriggerV: float = 0.5
     """ Trigger threshold in volts for the laser sync input. """
 
-    lineClockChannel: int = 3
-    """ Input carrying the scan's line clock (``scan.lineClockLine``). """
+    lineClockChannel: Optional[int] = 3
+    """ Input carrying the scan's line clock (``scan.lineClockLine``);
+    ``null`` = not cabled. """
 
     lineClockTriggerV: float = 0.5
     """ Trigger threshold in volts for the line clock input. An NI DO line
@@ -845,6 +952,169 @@ class TimeTaggerInfo:
     ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``,
     ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``,
     ``{"laser_rep_rate_mhz": 40}``. Ignored with a real card. """
+
+    def resolvedInputs(self) -> ResolvedTimeTaggerInputs:
+        """The card's inputs by name and the input each role resolves to.
+
+        Without an ``inputs`` map: one input per configured role field,
+        named by its role, exactly what the role fields always meant. With
+        one: the map, plus any role field set away from its default; see
+        ``inputs``. Raises ``TimeTaggerConfigError`` with what to change
+        for an ambiguous or inconsistent block.
+        """
+        declared = dict(self.inputs or {})
+        legacy = self._legacyRoleInputs()
+        if not declared:
+            return ResolvedTimeTaggerInputs(
+                inputs=legacy, roles={role: role for role in legacy}, fromInputsBlock=False)
+
+        inputs: Dict[str, TimeTaggerInputInfo] = {}
+        for name, spec in declared.items():
+            inputs[str(name)] = _coerceInput(name, spec)
+        _checkInputs(inputs)
+
+        defaults = {f.name: f.default for f in dataclasses.fields(TimeTaggerInfo)
+                    if f.default is not dataclasses.MISSING}
+        roles = _rolesOf(inputs)
+        for role, spec in TIME_TAGGER_ROLES.items():
+            chField, trigField, deadField, delayField = spec["fields"]
+            channelSet = getattr(self, chField) != defaults[chField]
+            if not channelSet:
+                # Only the channel adds a role; its other fields must then
+                # be untouched, or they would be silently ignored. The
+                # frame clock's dead time and delay are the line clock's
+                # fields and are checked there.
+                if role == "frame_clock":
+                    continue
+                stray = [name for name in (trigField, deadField, delayField)
+                         if name is not None and getattr(self, name) != defaults[name]]
+                if stray:
+                    raise TimeTaggerConfigError(
+                        f"timeTagger: {', '.join(stray)} {'is' if len(stray) == 1 else 'are'} "
+                        f"set but {chField} is not, and the block declares its inputs in "
+                        f"'inputs': move the value into the {role} input's "
+                        f"{_INPUT_FIELD_OF[stray[0]]} there"
+                    )
+                continue
+            legacyInput = legacy[role]
+            existing = roles.get(role)
+            if existing is not None:
+                if inputs[existing] != legacyInput:
+                    raise TimeTaggerConfigError(
+                        f"timeTagger: the {role} role is declared twice, as {chField} = "
+                        f"{getattr(self, chField)} and as inputs[{existing!r}] (channel "
+                        f"{inputs[existing].channel}); keep one of them"
+                    )
+                continue
+            if role in inputs:
+                raise TimeTaggerConfigError(
+                    f"timeTagger: {chField} adds an input named {role!r}, but 'inputs' "
+                    f"already has one of that name with kind {inputs[role].kind!r}"
+                )
+            inputs[role] = legacyInput
+            _checkInputs(inputs)
+            roles = _rolesOf(inputs)
+        return ResolvedTimeTaggerInputs(inputs=inputs, roles=roles, fromInputsBlock=True)
+
+    def _legacyRoleInputs(self) -> Dict[str, TimeTaggerInputInfo]:
+        out: Dict[str, TimeTaggerInputInfo] = {}
+        for role, spec in TIME_TAGGER_ROLES.items():
+            chField, trigField, deadField, delayField = spec["fields"]
+            channel = getattr(self, chField)
+            if channel is None:
+                continue
+            out[role] = TimeTaggerInputInfo(
+                channel=int(channel),
+                kind=spec["kind"],
+                triggerV=float(getattr(self, trigField)),
+                deadtimePs=int(getattr(self, deadField)) if deadField else 0,
+                delayPs=int(getattr(self, delayField)) if delayField else 0,
+            )
+        return out
+
+
+#: Legacy field -> the input field that replaces it.
+_INPUT_FIELD_OF = {
+    fieldName: inputField
+    for spec in TIME_TAGGER_ROLES.values()
+    for fieldName, inputField in zip(spec["fields"], ("channel", "triggerV", "deadtimePs", "delayPs"))
+    if fieldName is not None
+}
+
+
+def _coerceInput(name, spec) -> TimeTaggerInputInfo:
+    """An ``inputs`` entry as loaded (a dataclass, or a dict when the block
+    was built by hand), checked field by field."""
+    where = f"timeTagger.inputs[{name!r}]"
+    if not isinstance(name, str) or name.strip().lower() in _RESERVED_INPUT_NAMES:
+        raise TimeTaggerConfigError(
+            f"{where}: an input needs a name other than "
+            f"{', '.join(repr(n) for n in sorted(_RESERVED_INPUT_NAMES) if n)}")
+    if isinstance(spec, dict):
+        unknown = set(spec) - {f.name for f in dataclasses.fields(TimeTaggerInputInfo)}
+        if unknown:
+            raise TimeTaggerConfigError(f"{where}: unknown field(s) {', '.join(sorted(unknown))}")
+        if "channel" not in spec:
+            raise TimeTaggerConfigError(f"{where}: 'channel' is required")
+        spec = TimeTaggerInputInfo(**spec)
+    if not isinstance(spec, TimeTaggerInputInfo):
+        raise TimeTaggerConfigError(f"{where}: expected an object with a 'channel'")
+    try:
+        channel = int(spec.channel)
+    except (TypeError, ValueError):
+        raise TimeTaggerConfigError(f"{where}: channel {spec.channel!r} is not a number") from None
+    if channel == 0:
+        raise TimeTaggerConfigError(
+            f"{where}: inputs are numbered from 1 (negative = falling edge), not 0")
+    if spec.kind not in TIME_TAGGER_INPUT_KINDS:
+        raise TimeTaggerConfigError(
+            f"{where}: kind {spec.kind!r} is not one of {', '.join(TIME_TAGGER_INPUT_KINDS)}")
+    return TimeTaggerInputInfo(
+        channel=channel, kind=str(spec.kind), triggerV=float(spec.triggerV),
+        deadtimePs=int(spec.deadtimePs), delayPs=int(spec.delayPs),
+        mockSample=spec.mockSample,
+    )
+
+
+def _checkInputs(inputs: Dict[str, TimeTaggerInputInfo]) -> None:
+    byInput: Dict[int, str] = {}
+    for name, spec in inputs.items():
+        other = byInput.get(abs(spec.channel))
+        if other is not None:
+            raise TimeTaggerConfigError(
+                f"timeTagger: inputs {other!r} and {name!r} are both on input "
+                f"{abs(spec.channel)} (one physical input has one trigger level); "
+                f"give each its own input")
+        byInput[abs(spec.channel)] = name
+    for kind in ("line_clock", "frame_clock"):
+        named = [name for name, spec in inputs.items() if spec.kind == kind]
+        if len(named) > 1:
+            raise TimeTaggerConfigError(
+                f"timeTagger: {', '.join(repr(n) for n in named)} are all {kind} inputs; "
+                f"a card's scan has one {kind.replace('_', ' ')}")
+    for role, spec in TIME_TAGGER_ROLES.items():
+        if role in inputs and inputs[role].kind != spec["kind"]:
+            raise TimeTaggerConfigError(
+                f"timeTagger: the input named {role!r} has kind {inputs[role].kind!r}; an "
+                f"input named after the {role} role must be a {spec['kind']!r} input "
+                f"(or rename it)")
+
+
+def _rolesOf(inputs: Dict[str, TimeTaggerInputInfo]) -> Dict[str, str]:
+    """Role -> input: the input named like the role, else the only input of
+    the role's kind. ``sted_pulse`` (a ``marker``) only by name: markers
+    are many things."""
+    roles: Dict[str, str] = {}
+    for role, spec in TIME_TAGGER_ROLES.items():
+        if role in inputs:
+            roles[role] = role
+            continue
+        if role == "sted_pulse":
+            continue
+        ofKind = [name for name, s in inputs.items() if s.kind == spec["kind"]]
+        if len(ofKind) == 1:
+            roles[role] = ofKind[0]
+    return roles
 
 
 @dataclass(frozen=True)

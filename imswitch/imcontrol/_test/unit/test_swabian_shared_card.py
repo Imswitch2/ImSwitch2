@@ -139,6 +139,9 @@ def test_trigger_level_parameter_writes_through_to_the_card():
         _DetectorInfo({}), "FLIM", _Nidaq(), timeTaggerManager=card,
     )
     manager.setParameter("click_trigger", -0.15)
+    # The write runs on the card's I/O thread, not in the GUI slot: wait for
+    # it (and its completion callback, which runs before the next call).
+    card.submit(lambda: None).result(timeout=5)
     assert card.tagger.getTriggerLevel(1) == -0.15
     assert card.channelInfo("photons").trigger_v == -0.15
     assert manager._click_trigger == -0.15

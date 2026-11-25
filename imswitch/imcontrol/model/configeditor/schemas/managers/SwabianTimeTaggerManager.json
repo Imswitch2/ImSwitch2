@@ -38,7 +38,8 @@
       ]
     },
     "click_role": {
-      "description": "Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.",
+      "description": "The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). Two FLIM detectors on one input are refused at startup, naming both; a counting detector may share any detector's input. The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.",
+      "x-imswitch-alias-of": "photon_input",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -105,6 +106,14 @@
         "code:optional(get)"
       ]
     },
+    "measurement": {
+      "description": "``\"flim\"`` or ``\"counting\"`` (see above). Shown as a read-only parameter.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "min_counts_per_pixel": {
       "description": "Minimum photon count for a pixel's fit to be considered valid; below this the lifetime is treated as NaN.",
       "type": [
@@ -128,8 +137,19 @@
         "docs:integer"
       ]
     },
+    "photon_input": {
+      "description": "The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). Two FLIM detectors on one input are refused at startup, naming both; a counting detector may share any detector's input. The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.",
+      "x-imswitch-aliases": [
+        "click_role"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "start_role": {
-      "description": "Role whose input receives the TCSPC start (laser sync).",
+      "description": "Input or role that receives the TCSPC start (laser sync). FLIM only; a FLIM detector on a card without a sync is refused at startup (use ``measurement: \"counting\"``).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",

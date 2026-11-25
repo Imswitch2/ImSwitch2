@@ -114,8 +114,11 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 282 with the device-failure policy (fix/startup-device-failures), +13:
     # the useMockOnFailure opt-ins of the rs232 stages and of the lasers and
     # stages that are now absent rather than silently mocked on failure.
-    assert report.keys == 282
-    assert report.alias_spellings == 9
+    # 283 with feat/timetagger-usability: the Swabian detector's measurement
+    # (flim / counting); its photon_input takes over click_role's key,
+    # click_role becoming photon_input's older spelling (alias 10).
+    assert report.keys == 283
+    assert report.alias_spellings == 10
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
     # device-reconnection rebase: CoolLED and MPB read rs232device unguarded
@@ -137,7 +140,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure flags and the Hamamatsu's mockSample. 205: the seven
     # retired Swabian card properties. 218: the device-failure policy's 13
     # useMockOnFailure flags (all optional; required unchanged).
-    assert report.optional == 218
+    # 219: the Swabian detector's optional measurement.
+    assert report.optional == 219
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -178,7 +182,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # rotators, the seven useMockOnFailure rows and the Hamamatsu's mockSample.
     # 189: the seven retired Swabian card-property rows are gone. 201 with the
     # device-failure policy: its 12 useMockOnFailure rows in docs/devices.
-    assert (report.docs_agree, report.docs_documented) == (201, 201)
+    # 202: the Swabian detector's measurement row (photon_input has
+    # click_role's row, click_role being its older spelling).
+    assert (report.docs_agree, report.docs_documented) == (202, 202)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -194,7 +200,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # the seven useMockOnFailure reads through bool(). 122: the retired
     # Swabian card properties' float() and mapping reads. 135 with the
     # device-failure policy: its 13 useMockOnFailure reads through bool().
-    assert report.typed_by_code == 135
+    # 136: the Swabian detector's measurement, read through str().
+    assert report.typed_by_code == 136
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

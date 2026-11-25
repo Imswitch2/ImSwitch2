@@ -24,6 +24,7 @@ import numpy as np
 
 from imswitch.imcommon.model.cancellation import cancellableSleep, checkpoint
 from imswitch.imcontrol.model.managers.TimeTaggerManager import (
+    ROLE_FIELDS,
     ROLES,
     TimeTaggerBusyError,
     TimeTaggerError,
@@ -233,14 +234,265 @@ class SweepResult:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
+# --------------------------------------------------------------------------- #
+# Trigger levels: what an input carries, and how a level is judged             #
+# --------------------------------------------------------------------------- #
+
+#: The inputs' range (50 ohm, both polarities).
+INPUT_RANGE_V = 2.5
+#: Below this a comparator counts electrical noise, whatever is cabled.
+NOISE_FLOOR_V = 0.05
+#: A level wants at least this much room to the noise floor.
+SAFE_MARGIN_V = 0.05
+#: A plateau narrower than this leaves no room for drifts and reflections.
+MIN_PLATEAU_WIDTH_V = 0.1
+#: What an NI-DAQ digital line reaches into the card's 50 ohm input, at
+#: least (about 1 to 1.5 V): a clock threshold above this may never fire.
+DAQ_LINE_REACH_V = 1.0
+#: A level counts as "counting" with at least this many counts.
+MIN_LEVEL_COUNTS = 5
+#: The coarse sweep, as magnitudes in volts (the sign is the input's).
+COARSE_LEVELS_V = (0.02, 0.04, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.65,
+                   0.8, 1.0, 1.25, 1.5, 2.0, 2.5)
+#: Levels added between two coarse levels to place a plateau edge.
+FINE_STEPS = 5
+
+#: Hints per kind of signal, by the role an input is configured as. A role
+#: is only a label: an input without one gets the generic hints, and every
+#: check works on any input.
+SIGNAL_KINDS: Dict[str, Dict[str, Any]] = {
+    "photons": dict(kind="detector pulses", scan_only=False,
+                    typical="a SPAD or hybrid detector's NIM pulse, about -0.4 to -0.8 V "
+                            "into 50 ohm: falling edge (negative channel), negative level"),
+    "laser_sync": dict(kind="laser sync", scan_only=False,
+                       typical="a laser's sync output, often NIM (negative) or a 0.5-1 V "
+                               "positive pulse; a photodiode sync can be under 0.1 V"),
+    "line_clock": dict(kind="DAQ clock", scan_only=True,
+                       typical="an NI-DAQ line, 1-1.5 V into 50 ohm, rising edge: "
+                               "about +0.5 V, never above 1 V", default_v=0.5),
+    "frame_clock": dict(kind="DAQ clock", scan_only=True,
+                        typical="an NI-DAQ line, 1-1.5 V into 50 ohm, rising edge: "
+                                "about +0.5 V, never above 1 V", default_v=0.5),
+    "sted_pulse": dict(kind="photodiode", scan_only=False,
+                       typical="a fast photodiode on a pulsed beam, often small "
+                               "(tens to hundreds of mV)"),
+}
+GENERIC_KIND = dict(kind="TTL or pulse source", scan_only=False,
+                    typical="the sign of the channel number says the polarity: "
+                            "negative channel, negative pulses")
+
+#: Verdicts of ``find_trigger_level``, with what to do about each.
+LEVEL_VERDICTS: Dict[str, str] = {
+    "good": "a wide plateau: the level in its middle is safe; apply it",
+    "too_small": ("the pulses barely clear the noise: no level is safe -- attenuate "
+                  "less, amplify, or shorten the cable; the middle of the narrow "
+                  "plateau is the best there is"),
+    "wrong_polarity": ("the pulses have the other sign: flip the sign of the channel "
+                       "number in the timeTagger block (and the level with it)"),
+    "noise_only": ("counts only next to 0 V: that is noise (nothing cabled, a source "
+                   "that is off) or pulses smaller than ~0.1 V"),
+    "no_signal": ("no counts at any level of either sign: check the cable, the "
+                  "input number and that the source is on"),
+    "needs_scan": ("this input carries a scan clock, which fires only while a scan "
+                   "runs: run a scan with the time-resolved detector disabled "
+                   "(enabled = False) and Repeat on, and find again; until then "
+                   "keep the default level"),
+}
+
+
+#: The hints for an input that plays no role, by its kind.
+KIND_HINTS: Dict[str, Dict[str, Any]] = {
+    "detector": SIGNAL_KINDS["photons"],
+    "laser_sync": SIGNAL_KINDS["laser_sync"],
+    "line_clock": SIGNAL_KINDS["line_clock"],
+    "frame_clock": SIGNAL_KINDS["frame_clock"],
+    "marker": GENERIC_KIND,
+}
+
+
+def signal_kind(role: Optional[str], manager=None) -> Dict[str, Any]:
+    """The hints for an input: by the role it plays, else -- with the card
+    ``manager`` -- by its kind (a second detector input gets the detector
+    hints), else generic."""
+    if manager is not None and role:
+        try:
+            info = manager.channelInfo(role)
+        except Exception:
+            info = None
+        if info is not None:
+            plays = getattr(info, "plays", None)
+            if plays in SIGNAL_KINDS:
+                return SIGNAL_KINDS[plays]
+            return KIND_HINTS.get(getattr(info, "kind", ""), GENERIC_KIND)
+    return SIGNAL_KINDS.get(role or "", GENERIC_KIND)
+
+
+def _input_label(channel: int, role: Optional[str]) -> str:
+    return f"{role} (input {channel:+d})" if role else f"input {channel:+d}"
+
+
+@dataclass
+class LevelResult:
+    """What ``find_trigger_level`` found on one input."""
+
+    input: str
+    """ The role and input, or ``"input N"`` for an input without a role. """
+    channel: int
+    role: Optional[str]
+    verdict: str
+    """ A key of ``LEVEL_VERDICTS``. """
+    level_v: Optional[float]
+    """ The level to use (the middle of the plateau), signed; ``None`` when
+    there is none to recommend. """
+    plateau_v: Optional[tuple]
+    """ ``(low, high)`` magnitudes of the plateau, volts. """
+    width_v: float
+    margin_v: float
+    """ From the level down to the plateau's low edge, where the counts
+    start to depart towards the noise. """
+    rate_hz: float
+    """ The count rate on the plateau. """
+    original_v: float
+    applied: bool
+    levels_v: List[float] = field(default_factory=list)
+    rates_hz: List[float] = field(default_factory=list)
+    reason: str = ""
+    """ Why this verdict, in words; ``action`` says what to do. """
+    in_inputs_map: bool = False
+    """ Whether the input is declared in the block's ``inputs`` map (its
+    level is kept there), else by a role field. """
+
+    @property
+    def action(self) -> str:
+        return LEVEL_VERDICTS.get(self.verdict, "")
+
+    @property
+    def field_name(self) -> Optional[str]:
+        """The ``timeTagger`` block field that keeps this level, if any:
+        ``photonsTriggerV``, or ``inputs.apd_b.triggerV`` for an input of
+        the ``inputs`` map."""
+        if self.in_inputs_map:
+            return f"inputs.{self.role}.triggerV" if self.role else None
+        fields = ROLE_FIELDS.get(self.role or "")
+        return fields[1] if fields else None
+
+    def block_line(self) -> Optional[str]:
+        """The exact line for the setup file's ``timeTagger`` block, e.g.
+        ``"photonsTriggerV": -0.27``, or for an input of the ``inputs`` map
+        the line inside its entry, ``"triggerV": -0.27`` (``None`` for an
+        input the block does not declare, or without a level)."""
+        name = self.field_name
+        if name is None or self.level_v is None:
+            return None
+        if self.in_inputs_map:
+            return f'"triggerV": {self.level_v:.3f}'
+        return f'"{name}": {self.level_v:.3f}'
+
+    def summary(self) -> str:
+        head = f"{self.input}: {self.verdict}"
+        if self.level_v is not None:
+            head += f", level {self.level_v:+.3f} V"
+        if self.plateau_v is not None:
+            head += (f" (plateau {self.plateau_v[0]:.3f}-{self.plateau_v[1]:.3f} V, "
+                     f"width {self.width_v:.3f} V, {self.margin_v:.3f} V above its low "
+                     f"edge, {self.rate_hz:,.0f} Hz)")
+        text = head + (f". {self.reason}" if self.reason else "") + f" -- {self.action}"
+        if self.applied:
+            text += f" [applied; was {self.original_v:+.3f} V]"
+        else:
+            text += f" [level left at {self.original_v:+.3f} V]"
+        return text
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = {k: getattr(self, k) for k in self.__dataclass_fields__}
+        out["action"] = self.action
+        out["block_line"] = self.block_line()
+        return out
+
+
+def _plateau(magnitudes: Sequence[float], rates: Sequence[float],
+             duration_s: float) -> Optional[tuple]:
+    """The widest run of consecutive levels (by volts) that count the same
+    rate, above the noise floor: ``(first index, last index)`` or None.
+
+    "The same" is within 10 % or three Poisson sigmas of the run's first
+    level, whichever is wider; a level needs ``MIN_LEVEL_COUNTS`` counts.
+    """
+    best = None
+    n = len(magnitudes)
+    for i in range(n):
+        ref = rates[i]
+        if magnitudes[i] < NOISE_FLOOR_V - 1e-9 or ref * duration_s < MIN_LEVEL_COUNTS:
+            continue
+        # Poisson noise widens the band at low counts, never past half the rate.
+        tol = min(0.5 * ref, max(0.1 * ref, 3.0 * math.sqrt(ref * duration_s) / duration_s))
+        j = i
+        while (j + 1 < n and abs(rates[j + 1] - ref) <= tol
+               and rates[j + 1] * duration_s >= MIN_LEVEL_COUNTS):
+            j += 1
+        if j > i:
+            span = magnitudes[j] - magnitudes[i]
+            if best is None or span > magnitudes[best[1]] - magnitudes[best[0]]:
+                best = (i, j)
+    return best
+
+
+def _bump(magnitudes: Sequence[float], rates: Sequence[float], duration_s: float) -> bool:
+    """Whether the counts peak *above* the lowest level: a pulse that clears
+    the comparator's floor. Noise falls monotonically from 0 V instead."""
+    if not len(rates):
+        return False
+    peak = int(np.argmax(rates))
+    return peak > 0 and rates[peak] * duration_s >= MIN_LEVEL_COUNTS \
+        and rates[peak] > 1.5 * rates[0]
+
+
+def level_warnings(manager, input, level_v: float, *, rate_hz: Optional[float] = None,
+                   scan_running: Optional[bool] = None) -> List[str]:
+    """What is wrong with ``level_v`` on an input, without touching the card.
+
+    For any input; a role adds its hints (a scan clock's reach, that it is
+    silent between scans). ``rate_hz`` is what the input counts now, if
+    known; a scan clock's 0 Hz is flagged only when ``scan_running``.
+    """
+    channel, role = manager.resolveInput(input)
+    kind = signal_kind(role, manager)
+    level = float(level_v)
+    out: List[str] = []
+    if abs(level) > INPUT_RANGE_V:
+        out.append(f"{level:+.3f} V is outside the input range (+/-{INPUT_RANGE_V:g} V)")
+    if level != 0.0 and (level < 0) != (channel < 0):
+        out.append(
+            f"the level is {'negative' if level < 0 else 'positive'} but the channel "
+            f"({channel:+d}) triggers on the {'falling' if channel < 0 else 'rising'} edge: "
+            "the sign of the channel says the pulses' polarity")
+    if abs(level) < NOISE_FLOOR_V + SAFE_MARGIN_V:
+        out.append(f"{level:+.3f} V is inside the comparator's noise "
+                   f"(below {NOISE_FLOOR_V + SAFE_MARGIN_V:g} V): noise will count")
+    if kind.get("scan_only") and abs(level) > DAQ_LINE_REACH_V:
+        out.append(f"{level:+.3f} V is above what a DAQ line reliably reaches into 50 ohm "
+                   f"(~1-1.5 V): the clock may never fire")
+    if rate_hz is not None and rate_hz <= 0:
+        if kind.get("scan_only"):
+            if scan_running:
+                out.append("0 Hz during a scan: the clock does not reach the card at this level")
+        else:
+            out.append("counts nothing: no signal, the wrong polarity, or a level above the pulses")
+    return out
+
+
 @dataclass
 class ChannelReport:
     role: str
+    """ The input's name (a role, in a block without an ``inputs`` map). """
     channel: int
     edge: str
     trigger_v: float
     deadtime_ps: int
     delay_ps: int
+    kind: str = "detector"
+    plays: Optional[str] = None
+    """ The role the input plays, if any. """
 
 
 # --------------------------------------------------------------------------- #
@@ -285,12 +537,27 @@ class TimeTaggerFacade:
         return self._manager.tcspcDirection
 
     def roles(self) -> List[str]:
+        """The roles some input plays, in the roles' order."""
         return [role for role in ROLES if self._manager.hasRole(role)]
 
+    def inputs(self) -> List[str]:
+        """Every declared input by name, in the block's order -- what the
+        Signals panel, the level checks and the pre-flight list. Without an
+        ``inputs`` map these are the roles."""
+        inputs = getattr(self._manager, "inputs", None)
+        return list(inputs()) if inputs is not None else self.roles()
+
+    def detector_inputs(self) -> List[str]:
+        """The inputs that carry detector pulses."""
+        return [name for name, info in self._manager.channels().items()
+                if getattr(info, "kind", "detector") == "detector"]
+
     def channels(self) -> Dict[str, ChannelReport]:
+        """Every input by name (the roles, without an ``inputs`` map)."""
         return {
             role: ChannelReport(role, info.channel, info.edge, info.trigger_v,
-                                info.deadtime_ps, info.delay_ps)
+                                info.deadtime_ps, info.delay_ps,
+                                getattr(info, "kind", "detector"), getattr(info, "plays", role))
             for role, info in self._manager.channels().items()
         }
 
@@ -399,9 +666,13 @@ class TimeTaggerFacade:
 
     def count_rates(self, roles: Optional[Sequence[str]] = None,
                     duration_s: float = 1.0) -> RatesResult:
-        roles = list(roles) if roles is not None else self.roles()
+        """Counts per second per input or role (default: every declared
+        input) -- an entry may also be a channel number (any input,
+        declared or not)."""
+        roles = list(roles) if roles is not None else self.inputs()
         manager = self._manager
-        rate = manager.api.Countrate(manager.tagger, [manager.channel(r) for r in roles])
+        channels = [manager.resolveInput(r)[0] for r in roles]
+        rate = manager.api.Countrate(manager.tagger, channels)
         data = np.asarray(self._run(rate, duration_s), dtype=np.float64)
         return RatesResult({r: float(v) for r, v in zip(roles, data)}, float(duration_s))
 
@@ -682,12 +953,18 @@ class TimeTaggerFacade:
 
     # -- mock-only hooks (no-ops on a real card) ---------------------------- #
 
-    def mock_truth(self, ny: int, nx: int):
+    def mock_truth(self, ny: int, nx: int, input: Optional[str] = None):
         """The *mock* sample's ``(rate_map_hz, lifetime_map_ns)`` on an
         ``ny`` x ``nx`` grid, or ``None`` on a real card (whose truth is the
-        APD image)."""
+        APD image). ``input``: as the detector on that input sees it (each
+        detector input of the mock images its own sample); default the
+        first detector's."""
         hook = getattr(self._manager._tagger, "sample_truth", None) if self.is_mock else None
-        return hook(ny, nx) if hook is not None else None
+        if hook is None:
+            return None
+        if input is None:
+            return hook(ny, nx)
+        return hook(ny, nx, channel=self._manager.resolveInput(input)[0])
 
     def set_mock_fault(self, name: str, value) -> None:
         """Inject (or clear, with ``None``) a *mock* fault at run time, for
@@ -736,6 +1013,139 @@ class TimeTaggerFacade:
             plateau = float(np.median(top))
         return SweepResult(role, levels, rates, plateau, original)
 
+    def find_trigger_level(self, input, duration_s: float = 0.1, *,
+                           apply: bool = False) -> LevelResult:
+        """Find a good trigger level for one input, without choosing a range.
+
+        ``input`` is a role (``"photons"``) or a channel number -- any input,
+        ``-5`` for a second detector on input 5's falling edge. The sign of
+        the channel says the pulses' polarity; the levels of that sign are
+        swept coarsely from 20 mV to the input's 2.5 V, and when nothing
+        but noise counts there, the other sign is probed. Around the widest
+        plateau -- the levels that count the same rate -- the edges are
+        swept finely, and the level is the plateau's middle: as far from
+        the noise below as from the pulses' top above.
+
+        Returns a ``LevelResult`` with the verdict (``LEVEL_VERDICTS``), the
+        plateau, its width and the margin. Runs inside a calibration
+        transaction (refused while a scan holds the card), and puts the
+        input's level back afterwards -- also on an error or a Stop --
+        unless ``apply`` is set and the verdict is ``good``. ``duration_s``
+        is per level, for 20 to 40 levels. A scan clock counts only while
+        a scan runs; between scans it reads ``needs_scan``.
+        """
+        manager = self._manager
+        channel, role = manager.resolveInput(input)
+        kind = signal_kind(role, manager)
+        sign = -1.0 if channel < 0 else 1.0
+        duration = max(0.001, float(duration_s))
+        owner = "find_trigger_level"
+        measured: Dict[float, float] = {}
+
+        def measure(levels):
+            for level in levels:
+                level = round(float(level), 4)
+                if level in measured:
+                    continue
+                checkpoint()
+                manager.setInputTriggerLevel(channel, level, owner=owner)
+                counter = manager.api.Countrate(manager.tagger, [channel])
+                measured[level] = float(np.asarray(self._run(counter, duration))[0])
+
+        def side(polarity):
+            pairs = sorted((abs(v), r) for v, r in measured.items()
+                           if v != 0 and (v < 0) == (polarity < 0))
+            return [m for m, _ in pairs], [r for _, r in pairs]
+
+        def signal(mags, rates):
+            return _plateau(mags, rates, duration) is not None or _bump(mags, rates, duration)
+
+        original = float(manager.triggerLevelOf(channel))
+        applied = False
+        with manager.calibrationTransaction(owner):
+            try:
+                measure([sign * m for m in COARSE_LEVELS_V])
+                polarity = sign
+                mags, rates = side(sign)
+                if not signal(mags, rates):
+                    measure([-sign * m for m in COARSE_LEVELS_V])
+                    other = side(-sign)
+                    if signal(*other):
+                        polarity = -sign
+                        mags, rates = other
+                run = _plateau(mags, rates, duration)
+                if run is not None:
+                    # Place both edges between the coarse levels around them.
+                    i, j = run
+                    fine = []
+                    if i > 0:
+                        fine += list(np.linspace(mags[i - 1], mags[i], FINE_STEPS + 2)[1:-1])
+                    if j + 1 < len(mags):
+                        fine += list(np.linspace(mags[j], mags[j + 1], FINE_STEPS + 2)[1:-1])
+                    measure([polarity * m for m in fine])
+                    mags, rates = side(polarity)
+                    run = _plateau(mags, rates, duration)
+                result = self._judge_levels(channel, role, kind, sign, polarity, mags, rates,
+                                            run, duration, original)
+                if apply and result.verdict == "good" and result.level_v is not None:
+                    manager.setInputTriggerLevel(channel, result.level_v, owner=owner)
+                    applied = True
+            finally:
+                if not applied:
+                    manager.setInputTriggerLevel(channel, original, owner=owner)
+        result.applied = applied
+        info = getattr(manager, "info", None)
+        result.in_inputs_map = bool(role) and role in (getattr(info, "inputs", None) or {})
+        result.levels_v = sorted(measured)
+        result.rates_hz = [measured[v] for v in result.levels_v]
+        return result
+
+    @staticmethod
+    def _judge_levels(channel, role, kind, sign, polarity, mags, rates, run,
+                      duration, original) -> LevelResult:
+        label = _input_label(channel, role)
+        counting = [m for m, r in zip(mags, rates) if r * duration >= MIN_LEVEL_COUNTS]
+
+        def result(verdict, level=None, plateau=None, width=0.0, margin=0.0, rate=0.0,
+                   reason=""):
+            return LevelResult(label, channel, role, verdict, level, plateau, width, margin,
+                               rate, original, False, reason=reason)
+
+        if run is None:
+            if not counting:
+                if kind.get("scan_only"):
+                    default = float(kind.get("default_v", 0.5)) * sign
+                    return result("needs_scan", level=default,
+                                  reason=f"no edges at any level now; {kind['typical']}")
+                return result("no_signal", reason="nothing counted at any level, either sign")
+            if not _bump(mags, rates, duration):
+                return result("noise_only", reason=(
+                    f"counts fall from {rates[0]:,.0f} Hz at {mags[0]:.2f} V towards "
+                    f"larger levels, without a plateau (nothing counts above "
+                    f"{max(counting):.2f} V)"))
+            # A signal, but no two levels agree: a pulse barely above noise.
+            peak = int(np.argmax(rates))
+            verdict = "wrong_polarity" if polarity != sign else "too_small"
+            return result(verdict, level=polarity * mags[peak], rate=rates[peak], reason=(
+                f"counts peak at {polarity * mags[peak]:+.2f} V without a plateau"))
+        i, j = run
+        lo, hi = float(mags[i]), float(mags[j])
+        middle = 0.5 * (lo + hi)
+        width = hi - lo
+        rate = float(np.median(rates[i:j + 1]))
+        common = dict(level=round(polarity * middle, 3), plateau=(lo, hi), width=width,
+                      margin=middle - lo, rate=rate)
+        if polarity != sign:
+            return result("wrong_polarity", reason=(
+                f"the {'negative' if polarity < 0 else 'positive'} levels count "
+                f"{rate:,.0f} Hz, the {'positive' if polarity < 0 else 'negative'} ones "
+                f"nothing; use channel {-channel:+d}"), **common)
+        if width < MIN_PLATEAU_WIDTH_V or middle < NOISE_FLOOR_V + SAFE_MARGIN_V:
+            return result("too_small", reason=(
+                f"the plateau is {width * 1000:.0f} mV wide (a safe one is at least "
+                f"{MIN_PLATEAU_WIDTH_V * 1000:.0f} mV)"), **common)
+        return result("good", reason=f"pulses reach about {hi:.2f} V", **common)
+
     # -- preflight ------------------------------------------------------- #
 
     def preflight(self, detector_name: Optional[str] = None, duration_s: float = 1.0):
@@ -749,6 +1159,11 @@ class TimeTaggerFacade:
 
 
 __all__ = [
+    "LEVEL_VERDICTS",
+    "LevelResult",
+    "SIGNAL_KINDS",
+    "level_warnings",
+    "signal_kind",
     "ChannelReport",
     "HistogramResult",
     "PeriodResult",

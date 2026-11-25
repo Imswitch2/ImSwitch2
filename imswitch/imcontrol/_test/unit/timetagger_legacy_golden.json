@@ -1,0 +1,704 @@
+{
+ "forward": {
+  "calls": [
+   [
+    "-- connect --"
+   ],
+   [
+    "setTriggerLevel",
+    -1,
+    -0.25
+   ],
+   [
+    "setDeadtime",
+    -1,
+    50000
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    2,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    2,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    3,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    3,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    4,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    4,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    5,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    5,
+    0
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "EventGenerator",
+    "V1",
+    3,
+    [
+     10000,
+     100010000,
+     200010000
+    ],
+    16
+   ],
+   [
+    "EventGenerator",
+    "V2",
+    3,
+    [
+     100009999,
+     200009999,
+     300009999
+    ],
+    16
+   ],
+   [
+    "Flim",
+    {
+     "binwidth": 32,
+     "click_channel": -1,
+     "frame_begin_channel": 4,
+     "n_bins": 391,
+     "n_pixels": 128,
+     "pixel_begin_channel": "V1",
+     "pixel_end_channel": "V2",
+     "start_channel": 2
+    }
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- finalized --"
+   ]
+  ],
+  "failures": [],
+  "metadata_roles": {
+   "frame_clock": {
+    "channel": 4,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "laser_sync": {
+    "channel": 2,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "line_clock": {
+    "channel": 3,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "photons": {
+    "channel": -1,
+    "deadtime_ps": 50000,
+    "delay_ps": 0,
+    "edge": "falling",
+    "trigger_v": -0.25
+   },
+   "sted_pulse": {
+    "channel": 5,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   }
+  },
+  "reverse": false,
+  "scans": [
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "502e5e3427b6e601",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4238.0
+     },
+     "lifetime_ns": {
+      "sha": "62c3b1b17059b956",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 246.746
+     },
+     "raw": {
+      "sha": "62c3b1b17059b956",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 246.746
+     }
+    }
+   },
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "ead89f9b0ca8bc99",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4234.0
+     },
+     "lifetime_ns": {
+      "sha": "cc55d22f46d5967b",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 238.328
+     },
+     "raw": {
+      "sha": "cc55d22f46d5967b",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 238.328
+     }
+    }
+   }
+  ],
+  "setup": "galvo_flim_mock_scan_setup.json",
+  "t0_ps": null
+ },
+ "forward_t0": {
+  "calls": [
+   [
+    "-- connect --"
+   ],
+   [
+    "setTriggerLevel",
+    -1,
+    -0.25
+   ],
+   [
+    "setDeadtime",
+    -1,
+    50000
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    2,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    2,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    3,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    3,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    4,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    4,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    5,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    5,
+    0
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    -700
+   ],
+   [
+    "EventGenerator",
+    "V1",
+    3,
+    [
+     10000,
+     100010000,
+     200010000
+    ],
+    16
+   ],
+   [
+    "EventGenerator",
+    "V2",
+    3,
+    [
+     100009999,
+     200009999,
+     300009999
+    ],
+    16
+   ],
+   [
+    "Flim",
+    {
+     "binwidth": 32,
+     "click_channel": -1,
+     "frame_begin_channel": 4,
+     "n_bins": 391,
+     "n_pixels": 128,
+     "pixel_begin_channel": "V1",
+     "pixel_end_channel": "V2",
+     "start_channel": 2
+    }
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    -700
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- finalized --"
+   ]
+  ],
+  "failures": [],
+  "metadata_roles": {
+   "frame_clock": {
+    "channel": 4,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "laser_sync": {
+    "channel": 2,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "line_clock": {
+    "channel": 3,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "photons": {
+    "channel": -1,
+    "deadtime_ps": 50000,
+    "delay_ps": 0,
+    "edge": "falling",
+    "trigger_v": -0.25
+   },
+   "sted_pulse": {
+    "channel": 5,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   }
+  },
+  "reverse": false,
+  "scans": [
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "3465fba6e4448080",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4288.0
+     },
+     "lifetime_ns": {
+      "sha": "f326c64b65a4146f",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 287.199
+     },
+     "raw": {
+      "sha": "f326c64b65a4146f",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 287.199
+     }
+    }
+   },
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "51f5c2f3a1f55d1c",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4253.0
+     },
+     "lifetime_ns": {
+      "sha": "91edfdb7d06e1d1f",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 262.578
+     },
+     "raw": {
+      "sha": "91edfdb7d06e1d1f",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 262.578
+     }
+    }
+   }
+  ],
+  "setup": "galvo_flim_mock_scan_setup.json",
+  "t0_ps": 700
+ },
+ "reverse": {
+  "calls": [
+   [
+    "-- connect --"
+   ],
+   [
+    "setTriggerLevel",
+    -1,
+    -0.25
+   ],
+   [
+    "setDeadtime",
+    -1,
+    50000
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    2,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    2,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    3,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    3,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    4,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    4,
+    0
+   ],
+   [
+    "setTriggerLevel",
+    5,
+    0.5
+   ],
+   [
+    "setInputDelay",
+    5,
+    0
+   ],
+   [
+    "setConditionalFilter",
+    "filtered=[2]",
+    "trigger=[-1]"
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "EventGenerator",
+    "V1",
+    3,
+    [
+     10000,
+     100010000,
+     200010000
+    ],
+    16
+   ],
+   [
+    "EventGenerator",
+    "V2",
+    3,
+    [
+     100009999,
+     200009999,
+     300009999
+    ],
+    16
+   ],
+   [
+    "Flim",
+    {
+     "binwidth": 32,
+     "click_channel": 2,
+     "frame_begin_channel": 4,
+     "n_bins": 391,
+     "n_pixels": 128,
+     "pixel_begin_channel": "V1",
+     "pixel_end_channel": "V2",
+     "start_channel": -1
+    }
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- scan --"
+   ],
+   [
+    "setInputDelay",
+    -1,
+    0
+   ],
+   [
+    "-- scan done --"
+   ],
+   [
+    "-- finalized --"
+   ]
+  ],
+  "failures": [],
+  "metadata_roles": {
+   "frame_clock": {
+    "channel": 4,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "laser_sync": {
+    "channel": 2,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "line_clock": {
+    "channel": 3,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   },
+   "photons": {
+    "channel": -1,
+    "deadtime_ps": 50000,
+    "delay_ps": 0,
+    "edge": "falling",
+    "trigger_v": -0.25
+   },
+   "sted_pulse": {
+    "channel": 5,
+    "deadtime_ps": 0,
+    "delay_ps": 0,
+    "edge": "rising",
+    "trigger_v": 0.5
+   }
+  },
+  "reverse": true,
+  "scans": [
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "cba78e1bf9dcbd61",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4305.0
+     },
+     "lifetime_ns": {
+      "sha": "1f6fc0c9de0c068c",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 264.17
+     },
+     "raw": {
+      "sha": "1f6fc0c9de0c068c",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 264.17
+     }
+    }
+   },
+   {
+    "FLIM": {
+     "acked": 1,
+     "final": 1,
+     "frames": 1,
+     "intensity": {
+      "sha": "1331c90f93e82f77",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 4317.0
+     },
+     "lifetime_ns": {
+      "sha": "d8fc13dd7da7c9fd",
+      "shape": [
+       8,
+       16
+      ],
+      "sum": 256.205
+     },
+     "raw": {
+      "sha": "d8fc13dd7da7c9fd",
+      "shape": [
+       1,
+       8,
+       16
+      ],
+      "sum": 256.205
+     }
+    }
+   }
+  ],
+  "setup": "galvo_flim_mock_scan_setup.json",
+  "t0_ps": null
+ }
+}
