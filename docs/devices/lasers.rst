@@ -574,8 +574,15 @@ interface.
    * - ``channel_index``
      - int
      - ``0``
-     - ESP32 laser channel index.  The default ``0`` only applies when
-       hardware init fails and the manager runs as a mock.
+     - ESP32 laser channel index.  The default ``0`` only applies to the
+       ``useMockOnFailure`` mock.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - A missing ``rs232device`` is an error naming it (the laser is reported
+       as failed); a board that is not connected leaves the laser not
+       connected (commands refused, reconnectable from Hardware status, back
+       OFF). ``true`` runs a reported mock that drops commands.
 
 **LaserInfo fields used**
 
@@ -592,8 +599,8 @@ interface.
 **Vendor library**
 
 None directly — communication is via the ESP32 RS232 sub-manager.  If
-the RS232 lookup fails, the manager enters mock mode and drops
-``setEnabled`` / ``setValue`` calls.
+the RS232 lookup fails, the manager raises an error naming the device,
+unless ``useMockOnFailure`` is true (a reported mock that drops calls).
 
 **Source**
 
@@ -925,9 +932,10 @@ PulseStreamerLaserManager
 
 Swabian Pulse Streamer 8/2.  **Legacy.**  This manager expects a
 ``pulseStreamerManager`` low-level manager, which ``MasterController`` no
-longer constructs, so it always starts in mock mode (with a warning) and
-drops every call.  Setup validation also flags a ``pulseStreamer`` section
-as legacy.  Use ``PulseGeneratorLaserManager`` with a pulse-generator
+longer constructs, so the laser is reported as **not available** (an error
+naming it and pointing at ``PulseGeneratorLaserManager``), unless
+``useMockOnFailure`` is true (a reported mock that drops calls).  Setup
+validation also flags a ``pulseStreamer`` section as legacy.  Use ``PulseGeneratorLaserManager`` with a pulse-generator
 backend instead.
 
 **Setup JSON**
@@ -948,9 +956,21 @@ backend instead.
 
 **managerProperties**
 
-None.  The class docstring lists ``digitalChannel`` /
-``analogChannel`` but the implementation reads them from
-``laserInfo.digitalLine`` / ``laserInfo.analogChannel`` directly.
+.. list-table::
+   :widths: 25 12 63
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``useMockOnFailure``
+     - bool
+     - Default ``false``. ``true`` runs a reported mock that drops calls
+       when no ``pulseStreamerManager`` is available.
+
+The class docstring lists ``digitalChannel`` / ``analogChannel`` but the
+implementation reads them from ``laserInfo.digitalLine`` /
+``laserInfo.analogChannel`` directly.
 
 **LaserInfo fields used**
 
@@ -964,8 +984,7 @@ None.  The class docstring lists ``digitalChannel`` /
 
 * ``pulseStreamerManager`` — accessed as
   ``lowLevelManagers["pulseStreamerManager"]``.  It is never provided, so
-  the lookup fails and the manager enters mock mode and silently drops
-  calls.
+  the lookup fails and the laser is reported as not available.
 
 **Vendor library**
 
@@ -1053,13 +1072,19 @@ Generic adapter for lasers supported by the
      - ``"Unknown"``
      - Dotted ``module.Class`` to import from ``microscope.lights``
        (e.g. ``"toptica.TopticaiBeam"``).  If malformed or missing the
-       manager enters mock mode.
+       laser is left not connected (see ``useMockOnFailure``).
    * - ``digitalPorts``
      - str
      - ``"Unknown"``
      - Connection string forwarded to the driver constructor (e.g. a
        COM port).  Note: documented as a list in the docstring but
        passed through as-is to the driver.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - A laser that cannot be opened is left **not connected** (reported,
+       commands refused by name, reconnectable from Hardware status; it comes
+       back OFF with no power restored). ``true`` runs a reported mock.
 
 **LaserInfo fields used**
 
@@ -1075,8 +1100,9 @@ None.
 **Vendor library**
 
 ``microscope.lights.<module>`` — lazy-imported via ``importlib``.  On
-any import or construction failure the manager enters mock mode
-(``_isMock=True``) and silently drops calls.
+any import or construction failure the laser is left not connected
+(reported; reconnect from Hardware status), or runs a reported mock with
+``useMockOnFailure``.
 
 **Gotchas**
 

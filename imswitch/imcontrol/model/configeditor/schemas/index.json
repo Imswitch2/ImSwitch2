@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 174,
-    "docs_documented": 174,
-    "keys": 254,
+    "docs_agree": 177,
+    "docs_documented": 177,
+    "keys": 257,
     "managers": 66,
     "none_default_only": 40,
     "none_only": 16,
-    "optional": 188,
+    "optional": 191,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 129,
-    "typed_with_docs": 198,
-    "typed_with_examples": 166,
+    "typed_by_code": 132,
+    "typed_with_docs": 201,
+    "typed_with_examples": 169,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -160,7 +160,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "ESP32LEDMatrixManager": {
@@ -541,7 +541,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "PulseStreamerManager": {
@@ -561,7 +561,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "RS232Manager": {

@@ -94,7 +94,7 @@ def test_the_coverage_the_plan_is_built_on(report):
     # to the mock (device-failure policy).
     # 250: useMockOnFailure on the legacy Cobolt 06-01 and the two managers
     # that share its Lantz base.
-    assert report.keys == 251
+    assert report.keys == 254
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 64 after the device-reconnection rebase: CoolLED and MPB read
@@ -102,7 +102,7 @@ def test_the_coverage_the_plan_is_built_on(report):
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
     assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
-    assert report.optional == 185
+    assert report.optional == 188
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
@@ -123,7 +123,7 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 155: and MockPAX's plate rotators. 159 / 162: the seven useMockOnFailure rows.
     # 163: the APD's mockSample row; 164: the Hamamatsu's. 167: the
     # useMockOnFailure row of the Marzhauser, Piezoconcept (two) and SQUID stages.
-    assert (report.docs_agree, report.docs_documented) == (171, 171)
+    assert (report.docs_agree, report.docs_documented) == (174, 174)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -135,7 +135,7 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # port (str()) are coerced in code.
     # 114: the 16 instrument keys read through float()/int()/str().
     # 118 / 121: the seven useMockOnFailure reads through bool().
-    assert report.typed_by_code == 128
+    assert report.typed_by_code == 131
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

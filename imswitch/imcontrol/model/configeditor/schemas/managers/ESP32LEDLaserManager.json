@@ -8,7 +8,7 @@
       ]
     },
     "channel_index": {
-      "description": "ESP32 laser channel index.  The default ``0`` only applies when",
+      "description": "ESP32 laser channel index.  The default ``0`` only applies to the",
       "x-imswitch-kind": "integer",
       "x-imswitch-source": [
         "code:default:integer",
@@ -24,6 +24,14 @@
         "docs:string"
       ],
       "x-imswitch-widget": "ref"
+    },
+    "useMockOnFailure": {
+      "description": "A missing ``rs232device`` is an error naming it (the laser is reported",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "ESP32LEDLaserManager managerProperties",
