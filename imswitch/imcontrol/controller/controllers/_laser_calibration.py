@@ -160,6 +160,9 @@ class LaserCalibrationMixin:
         if not device_usable(manager):
             raise CalibrationSwapRefused(f'{laserName} is not connected '
                                          f'({not_connected_reason(manager)})')
+        if self.__dict__.get('is_scanning'):
+            raise CalibrationSwapRefused(
+                f'{laserName}: a scan is running; change calibrations between scans')
         try:
             self._requireLaserEditsAllowed()
         except Exception as exc:
