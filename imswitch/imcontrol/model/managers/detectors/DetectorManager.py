@@ -961,13 +961,30 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
             self._oversizedWarned().discard(consumerKey)
             self._chunkConsumerBytes().pop(consumerKey, None)
 
-            self._distributeChunkLocked(self.drainChunk())
+            payload = self.drainChunk()
+            self._distributeChunkLocked(payload)
+            # Diagnostic: how many frames were already in the detector at this
+            # boundary, i.e. are excluded from the new consumer. A scan whose
+            # first trigger fired before its consumer's boundary shows >0.
+            try:
+                excluded = payload.of(ChunkKind.DISPLAY)
+                if excluded is None:
+                    excluded = payload.of(ChunkKind.RAW)
+                excludedCount = 0 if excluded is None else len(excluded)
+            except Exception:
+                excludedCount = None
+            self.__dict__.setdefault('_chunkBoundaryExcluded', {})[consumerKey] = excludedCount
 
             self._chunkConsumers[consumerKey] = []
             self._chunkConsumerBytes()[consumerKey] = 0
             kinds = self._chunkKinds()
             if kinds is not None:
                 kinds[consumerKey] = kind
+
+    def chunkBoundaryExcluded(self, consumerKey: str):
+        """ Frames the last ``startChunkConsumer(consumerKey)`` drained and did
+        NOT hand to that consumer (None when unknown / never started). """
+        return self.__dict__.get('_chunkBoundaryExcluded', {}).get(consumerKey)
 
     @abstractmethod
     def startAcquisition(self) -> None:
