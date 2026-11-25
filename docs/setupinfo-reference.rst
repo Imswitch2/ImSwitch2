@@ -1229,19 +1229,23 @@ timeTagger
 ----------
 
 Optional :class:`TimeTaggerInfo` object. **Required to use a Swabian Time
-Tagger** (the ``SwabianTimeTaggerManager`` FLIM detector, and the Time
-Tagger diagnostics from scripts). One block describes the one card; its
-inputs are named by *role* and every consumer refers to the roles, so
-re-cabling the card is one edit here. A negative channel number selects the
-falling edge of that input (a SPAD's NIM pulse: ``-1``). Inputs are 50 Ω,
-trigger range ±2.5 V; an NI DO line drives about 1–1.5 V into 50 Ω, so keep
-the clock thresholds well below that.
+Tagger** (``SwabianTimeTaggerManager`` detectors -- FLIM or photon counting,
+one or several on the card -- and the Time Tagger diagnostics from
+scripts). One block describes the one card, and every consumer refers to
+its inputs by name or by role, so re-cabling the card is one edit here. The
+inputs are declared either in an ``inputs`` map (any number of named
+inputs, each with its kind) or, the older form, with one field set per role
+(``photonsChannel``, ``laserSyncChannel``, ...). A negative channel number
+selects the falling edge of that input (a SPAD's NIM pulse: ``-1``). Inputs
+are 50 Ω, trigger range ±2.5 V; an NI DO line drives about 1–1.5 V into
+50 Ω, so keep the clock thresholds well below that.
 
 Key fields:
 
 * ``serial`` (str or null): the card to open; ``null`` = the first card found
 * ``simulation`` (bool): use the in-process mock instead of a card (default ``false``)
 * ``useMockOnFailure`` (bool): fall back to the mock when the library is missing or the card cannot be opened — honoured **only while** ``nidaq.simulation`` **is also true**; on a rig a missing card stays a hard error that rolls the scan back (default ``false``, unlike ``teensyPulse``)
+* ``inputs`` (dict of name → input): the card's inputs by name (default empty: the role fields below describe the card). Each input has ``channel`` (required, signed), ``kind`` — ``"detector"`` (default; photon pulses, each can be its own detector), ``"laser_sync"``, ``"line_clock"``, ``"frame_clock"`` or ``"marker"`` (any other pulse source) — ``triggerV`` (default ``0.5``), ``deadtimePs`` and ``delayPs`` (default ``0``), and ``mockSample`` (simulation only: what that detector input images; default the block's ``mockSample``, varied per input). A role resolves to the input named like it, else to the only input of its kind (``photons``: the only ``detector`` input; ``sted_pulse`` only by name). With an ``inputs`` map, role fields left at their defaults are ignored (a saved setup file carries them whether or not anything is cabled there); one set to another value adds that role's input. Refused, with what to change: two inputs on one physical input (either edge), two line or two frame clocks, a role declared both in the map and by a role field with other values, a role's trigger level, dead time or delay field set while its channel field is not, an input named after a role with another kind (``"line_clock"`` must be a ``line_clock`` input).
 * ``photonsChannel`` / ``photonsTriggerV`` / ``photonsDeadtimePs``: the single-photon detector input (defaults ``1`` / ``0.5`` / ``0``)
 * ``laserSyncChannel`` / ``laserSyncTriggerV``: the laser sync, the TCSPC reference (defaults ``2`` / ``0.5``; ``null`` = no sync cabled, for a card that only counts photons and has no time-resolved detector on it)
 * ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``; ``null`` = not cabled). The NI-DAQ already plays the line and frame clocks the scan's phase delay (D2) later, so they follow the beam as the APD readout does; this delay is for what remains: positive when the clock still fires *early* (the detector delays its marker pattern by it), negative when it arrives *late* (a long cable; the card moves the line timestamps earlier). The frame clock takes the same delay on the card. Tutorial 09 measures it; a value measured before the clocks followed the beam holds the galvo's lag and must be measured again.
@@ -1266,11 +1270,26 @@ Key fields:
        "lineClockTriggerV": 0.5
    }
 
-**Required devices**: a ``SwabianTimeTaggerManager`` detector that names the
-roles (``click_role``, ``start_role``, ``line_role``), see
-:doc:`devices/detectors`. A detector *without* this block keeps working from
-its legacy ``click_channel`` / ``start_channel`` / ``line_channel``
-properties and logs the equivalent block to move them into.
+The same card with two detectors and no laser sync (a two-colour confocal
+counting photons), in the ``inputs`` form:
+
+.. code-block:: json
+
+   "timeTagger": {
+       "inputs": {
+           "apd_green":   {"channel": -1, "triggerV": -0.25, "deadtimePs": 50000},
+           "apd_red":     {"channel": -2, "triggerV": -0.25, "deadtimePs": 50000},
+           "line_clock":  {"channel": 3, "kind": "line_clock", "triggerV": 0.5},
+           "frame_clock": {"channel": 4, "kind": "frame_clock", "triggerV": 0.5}
+       }
+   }
+
+**Required devices**: ``SwabianTimeTaggerManager`` detectors that name their
+inputs (``photon_input``, ``start_role``, ``line_role``) and their
+``measurement`` (``flim`` or ``counting``), see :doc:`devices/detectors`. A
+detector *without* this block keeps working from its legacy
+``click_channel`` / ``start_channel`` / ``line_channel`` properties and logs
+the equivalent block to move them into.
 
 **See also**: :class:`TimeTaggerInfo`
 

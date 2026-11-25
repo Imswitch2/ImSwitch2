@@ -224,6 +224,7 @@
    "ba8e94139039ffbe2ba1a6922448c23ad0db8d3e13e6d7df80442313b6e11bc8"
   ],
   "scripts/tutorial/README.md": [
+   "01556359291e246e403dd6219bbf15c97c81d8dba22aa9b5e429e0adf536e281",
    "13ecb6c44361cdb793c66b6d4d0e7c4e66bd04e3ca2c6b44319c87874d24e0ba",
    "3749c0cd2194ecde4d375e826307af2d2512be598f941402651ea05df55d87e5",
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
@@ -417,6 +418,9 @@
   ],
   "scripts/tutorial/timetagger/13_tau_sted.py": [
    "38e2afbf333aed19eb4f8ddf47efe3df2a8dd111447f7f898c2a0d7279846d02"
+  ],
+  "scripts/tutorial/timetagger/14_several_detectors_on_one_card.py": [
+   "d3458f34c03bf9e361099c76a86fd8813ca10a492eb091bbce45bebc1487fb30"
   ],
   "scripts/tutorial/timetagger/gate_presets/detection_window.json": [
    "f39a4a29aeb2791c58fda9bd6e46137b229c152f3e39e8d1e49ee1831f512f37"

@@ -552,17 +552,30 @@ substitutes ``MockCameraTIS`` from
 SwabianTimeTaggerManager
 ========================
 
-Swabian Instruments TimeTagger for FLIM (fluorescence-lifetime imaging).
-Fits a lifetime per pixel from TCSPC histograms during an NI-DAQ-driven
-scan.
+One detector on a Swabian Instruments Time Tagger card: the pulses of one
+card input, imaged pixel by pixel during an NI-DAQ-driven scan. Its
+``measurement`` says what it makes of them:
+
+* ``flim`` (default) -- TCSPC against a laser sync, a ``Flim`` histogram
+  cube per frame and a lifetime fitted per pixel (the image);
+* ``counting`` -- photons per pixel, with no laser sync and no fit (a
+  ``CountBetweenMarkers`` between the scan's pixel markers); the image is
+  the counts. It has no time axis, so no time-resolved products, and the
+  Lifetime widget does not offer it.
 
 The card itself is described once, in the setup's top-level ``timeTagger``
-block (see :doc:`../setupinfo-reference`): which input carries the photons,
-the laser sync and the scan's line clock, with their trigger levels, edge
+block (see :doc:`../setupinfo-reference`): its inputs -- detectors, laser
+sync, the scan's line and frame clocks -- with their trigger levels, edge
 signs, dead times and delays. The block is loaded into one shared
-``TimeTaggerManager`` that this detector, any second time-resolved detector
-and the scripting facade all use. The detector only names the *roles* it
-reads.
+``TimeTaggerManager`` that every detector on the card and the scripting
+facade use. A detector only names the inputs it reads, by name or by role.
+**Several detectors on one card** each name their own ``photon_input``:
+they share the sync (when FLIM), the scan clocks, one pair of pixel markers
+and one measurement lifecycle per scan (the card's *scan session*: the card
+is held until the last of them has drained its final frame), and each has
+its own measurement, worker, image, final-frame acknowledgement and
+recording. :doc:`../timetagger/index` has the details and two shipped mock
+setups (two counting APDs; two-colour FLIM).
 
 **Setup JSON**
 
@@ -611,14 +624,22 @@ consumer needs it.
      - Type
      - Default
      - Meaning
+   * - ``measurement``
+     - str
+     - ``"flim"``
+     - ``"flim"`` or ``"counting"`` (see above). Shown as a read-only parameter.
+   * - ``photon_input``
+     - str
+     - ``click_role``
+     - The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. Wins over ``click_role``. On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs).
    * - ``click_role``
      - str
      - ``"photons"``
-     - Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.
+     - The older name of ``photon_input``. The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.
    * - ``start_role``
      - str
      - ``"laser_sync"``
-     - Role whose input receives the TCSPC start (laser sync).
+     - Input or role that receives the TCSPC start (laser sync). FLIM only; a FLIM detector on a card without a sync is refused at startup (use ``measurement: "counting"``).
    * - ``line_role``
      - str
      - ``"line_clock"``
@@ -694,7 +715,9 @@ consumer needs it.
 
 The three ``*_trigger`` detector *parameters* exist with either
 configuration: they show the card's current trigger levels for the chosen
-roles and write a new value through to the card. A write is refused, with a
+inputs and write a new value through to the card (a detector's
+``click_trigger`` is its own input's level; ``start_trigger`` is the shared
+sync's, so it changes the sync for every detector on the card). A write is refused, with a
 log line, while a scan holds the card, and the parameter then shows the
 card's real value again.
 

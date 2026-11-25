@@ -2,22 +2,28 @@
 The Swabian Time Tagger
 *******************************
 
-One Swabian Time Tagger card serves everything time-resolved in a setup:
-the FLIM detector (:ref:`SwabianTimeTaggerManager <swabian-detector>` in
-:doc:`../devices/detectors`), the calibration and debugging tutorials, and
-the scripting facade. This chapter is the card's own page: how it is
-described in the setup file, what the card can do, what ImSwitch2 does with
-it, and how a script reaches it. :doc:`debugging` maps symptoms to the
-tutorial that finds the cause.
+One Swabian Time Tagger card serves everything on it in a setup: one or
+several detectors -- FLIM, or photon counting per pixel
+(:ref:`SwabianTimeTaggerManager <swabian-detector>` in
+:doc:`../devices/detectors`) -- the calibration and debugging tutorials, and
+the scripting facade. FLIM and STED are use cases of the card, not what the
+card is: a two-APD confocal that counts photons on one card, with no laser
+sync, is as much a Time Tagger setup as a gated-STED one. This chapter is
+the card's own page: how it is described in the setup file, what the card
+can do, what ImSwitch2 does with it, and how a script reaches it.
+:doc:`debugging` maps symptoms to the tutorial that finds the cause.
 
 The ``timeTagger`` block
 ========================
 
 The card is described once, in a top-level ``timeTagger`` block of the setup
-JSON (reference: :doc:`../setupinfo-reference`). Its inputs are named by
-*role*, and every consumer -- the detector's ``click_role`` /
-``start_role`` / ``line_role``, the tutorials, the facade -- refers to the
-roles, so re-cabling the card is one edit here:
+JSON (reference: :doc:`../setupinfo-reference`), in one of two forms. The
+``inputs`` map declares any number of named inputs, each with its kind
+(:ref:`below <timetagger-inputs>`); the older form sets one field group per
+*role*. Every consumer -- a detector's ``photon_input`` / ``start_role`` /
+``line_role``, the tutorials, the facade -- refers to an input by its name
+or by the role it plays, so re-cabling the card is one edit here. The roles
+and their fields in the older form:
 
 .. list-table::
    :header-rows: 1
@@ -62,6 +68,113 @@ picks a card; ``simulation`` uses the in-process mock (:doc:`../mock-infrastruct
 too, so a rig never images a missing card as zeros. ``filterSyncByPhotons``
 enables the conditional filter (below). ``mockSample`` and ``mockFaults``
 drive the mock.
+
+.. _timetagger-inputs:
+
+Inputs by name, and several detectors on one card
+-------------------------------------------------
+
+The ``inputs`` map names every input the card has cabled. Each entry has a
+``channel`` (signed: negative is the falling edge), a ``kind`` --
+``detector`` (photon pulses; the default), ``laser_sync``, ``line_clock``,
+``frame_clock`` or ``marker`` (any other pulse source: a STED-beam
+photodiode, a trigger out) -- and its ``triggerV``, ``deadtimePs`` and
+``delayPs``. Two detectors counting on one card, with no sync (shipped as
+``galvo_two_apd_counting_mock_setup.json``):
+
+.. code-block:: json
+
+   "timeTagger": {
+       "inputs": {
+           "apd_green":   {"channel": -1, "triggerV": -0.25, "deadtimePs": 50000},
+           "apd_red":     {"channel": -2, "triggerV": -0.25, "deadtimePs": 50000},
+           "line_clock":  {"channel": 3, "kind": "line_clock", "triggerV": 0.5},
+           "frame_clock": {"channel": 4, "kind": "frame_clock", "triggerV": 0.5}
+       }
+   },
+   "detectors": {
+       "TT_green": {"managerName": "SwabianTimeTaggerManager",
+                    "managerProperties": {"photon_input": "apd_green", "measurement": "counting"}},
+       "TT_red":   {"managerName": "SwabianTimeTaggerManager",
+                    "managerProperties": {"photon_input": "apd_red", "measurement": "counting"}}
+   }
+
+Each detector is its own image channel in a scan, in the live view and in a
+recording. Add a ``laser_sync`` input and set ``measurement`` to ``flim``
+and each detector builds its own histogram, cube and fit against the shared
+sync (shipped as ``galvo_two_colour_flim_mock_setup.json``); a FLIM and a
+counting detector can share a scan too.
+
+**Roles.** A role resolves to the input named like it (an input named
+``line_clock`` must be a ``line_clock`` input), else to the only input of
+its kind -- ``photons`` to the only ``detector`` input; with two detector
+inputs a detector must name its ``photon_input``, and the error says so.
+``sted_pulse`` resolves by name only (markers are many things).
+
+**The older form keeps working, unchanged.** A block without ``inputs``
+means exactly what it always did: one input per configured role, named by
+its role, with the same conditioning; the shipped FLIM setup drives the card
+call for call as it did before (a golden test records it). With an
+``inputs`` map, the role fields left at their defaults are ignored -- a
+saved setup file carries ``photonsChannel: 1``, ``laserSyncChannel: 2``,
+``lineClockChannel: 3`` whether or not anything is cabled there -- and a
+role field set to another value adds that role's input. Refused at load,
+with what to change: two inputs on one physical input (either edge: one
+input has one trigger level), two line or two frame clocks (one scan, one
+raster), a role declared both ways with other values, a level, dead time or
+delay field of a role whose channel field is not set.
+
+**Measurements.** ``flim`` builds a ``Flim`` on the detector's photon input
+and the sync; ``counting`` builds a ``CountBetweenMarkers`` of the photon
+input between the scan's pixel markers -- one count per pixel, no sync, no
+fit -- and its image is the counts. (``CountBetweenMarkers`` is the vendor
+class we expect to be the most direct per-pixel counter; its behaviour --
+fills its values once, ``ready()`` then, ``clear()`` re-arms it -- is to be
+confirmed on a real card. ``Flim`` itself would need a sync.)
+
+**One scan session per card.** Every detector of a scan joins the card's
+scan session while the scan is prepared, before the NI-DAQ starts the
+clocks. The session owns what exists once per card per scan: the *pixel
+markers* (one ``EventGenerator`` pair on the line clock, however many
+detectors count between them -- a repeat scan of the same geometry keeps
+them when every participant's last frame was closed by the card) and the
+*hold*: conditioning stays refused until the *last* detector of the scan
+has drained its final frame or was aborted or stopped. Every measurement
+counts between the same markers, which fire only on line-clock edges, so
+all of them start on the same first edge; a detector that would join after
+the clocks started is refused. Each detector keeps its own worker, its own
+final-frame acknowledgement, its own ``finishTimeoutS`` and its own retired
+workers: a slow detector holds the end of the scan for its own deadline,
+not the others' frames.
+
+**Per input, per card.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Per input
+     - trigger level, dead time, delay; a FLIM detector's ``t0_ps`` (applied
+       to its own photon input's delay during its scan, put back after).
+       One FLIM detector per photon input.
+   * - Per card
+     - the conditional filter (``filterSyncByPhotons``: every detector input
+       triggers it, every sync input is filtered, so the TCSPC direction is
+       the card's), the pixel-marker pattern offset
+       (``pixelPatternOffsetPs`` plus a positive line-clock delay), the
+       markers, the hold, the overflow counter. The frame clock still follows
+       the line clock's delay and dead time when either is changed at run
+       time.
+
+**Provenance.** A detector shows its photon input's name, channel, level,
+dead time and delay as read-only parameters (``click_role``,
+``click_channel``, ``click_trigger``, ``click_deadtime_ps``,
+``click_delay_ps``) and its ``measurement``; recordings store every
+detector's parameters, so each dataset says which input it came from and
+how it was conditioned. FLIM products carry the same under
+``photon_input`` in their metadata, with the scan session's participants,
+next to the card's own snapshot (``time_tagger``, which now lists every
+input under ``inputs``).
 
 Which level for which input
 ===========================
@@ -174,11 +287,13 @@ the detectors like ``nidaqManager``. It
 
 * opens the card (or the mock) once and applies the block's conditioning:
   trigger levels, dead times, delays, the conditional filter;
-* resolves roles to channels and records a snapshot of itself into every
-  time-resolved product's metadata;
-* holds the card for a scan from preparation until the detector's final
-  frame has been drained, and refuses trigger-level, delay and dead-time
-  changes meanwhile; conversely a *calibration transaction* (the rep-rate
+* keys the inputs by name, resolves roles to inputs, and records a
+  snapshot of itself (every input's conditioning) into every time-resolved
+  product's metadata;
+* runs one scan session per scan for every detector on the card: one pair
+  of pixel markers, and the card held from preparation until the last
+  detector's final frame has been drained, refusing trigger-level, delay
+  and dead-time changes meanwhile; conversely a *calibration transaction* (the rep-rate
   measurement, a trigger sweep) owns the conditioning for its duration and
   refuses a scan from starting on temporary settings;
 * is the one reader of the card's read-and-clear overflow counter and keeps
@@ -214,11 +329,14 @@ From a script: ``facade.time_tagger``
    facade = api.imcontrol.buildWorkflowFacade()
    tt = facade.time_tagger          # None on a setup without a timeTagger block
 
-   tt.channels()                    # {role: ChannelReport(channel, edge, trigger_v, ...)}
-   tt.count_rates(['photons', 'laser_sync'], duration_s=1.0).rates_hz
+   tt.inputs()                      # every declared input by name (the roles, in the older form)
+   tt.roles(); tt.detector_inputs()  # the roles some input plays; the detector inputs
+   tt.channels()                    # {input: ChannelReport(channel, edge, trigger_v, kind, plays, ...)}
+   tt.count_rates(['photons', 'laser_sync'], duration_s=1.0).rates_hz   # default: every input
    tt.rep_rate(duration_s=2.0)      # RepRateResult: rate_hz, period_ps, jitter_ps, card_limited
    tt.histogram(duration_s=2.0)     # HistogramResult in forward time: t_axis_ns, counts, peak_ns, fwhm_ns
    tt.find_trigger_level('photons')  # LevelResult: verdict, level_v, plateau_v, block_line()
+   tt.find_trigger_level('apd_red')  # any input by name; its line goes into inputs["apd_red"]
    tt.trigger_sweep('photons', levels_v, duration_s=0.2)   # SweepResult with plateau_v
    tt.dark_rates(['photons'], duration_s=2.0)
    with tt.test_signal_on(['line_clock']): ...            # owns the card, off again afterwards
@@ -232,6 +350,7 @@ From a script: ``facade.time_tagger``
    tt.skew('frame_clock', 'line_clock', added_delay_ps=50_000)    # SkewResult: signed skew_ps
    tt.scope(['frame_clock', 'line_clock'], 'frame_clock', window_ps, detector_name='FLIM')
    tt.pattern_offset_ps(); tt.mock_truth(ny, nx); tt.set_mock_fault('line_delay_ps', -800_000)
+   tt.mock_truth(ny, nx, 'apd_red')  # what the mock's detector on that input images
    tt.sted_pulse_delay(duration_s=1.0)   # HistogramResult of the STED photodiode vs the sync
 
 Every result has a ``summary()`` string and a ``to_dict()``. Every blocking
@@ -305,6 +424,11 @@ The tutorials
     against the sync (``sted_pulse_delay``, with the optional photodiode).
 13
     Tau STED: the per-pixel lifetime image and what the products carry.
+14
+    Several detectors on one card (on
+    ``galvo_two_apd_counting_mock_setup.json``): the ``inputs`` block, a
+    level per detector input, two counting detectors in one scan, and the
+    check that each image came from its own input.
 
 Steps 07 to 13 load ``scan_params/flim_scan_64px.json`` into the Scan
 widget for their runs (64 x 64 pixels at 400 us, about 2 s) and put the

@@ -106,7 +106,14 @@ Detectors
        clocks, ``Scope``), timed from ``sigScanStarted`` so a measurement
        sees the edges that fall into its window; ``sample_truth`` and
        ``set_fault`` are the hooks tutorial 09 uses. Analytic or seeded: no thread,
-       no wall clock.
+       no wall clock. With an ``inputs`` block every detector input images a
+       sample of its own (its ``mockSample``, else the block's: the first
+       detector input the preset itself, each further one the preset's
+       lifetimes plus 0.75 ns per input and a brightness pattern of its own),
+       so images from two inputs differ and a cross-wired detector is
+       caught; ``sample_truth(ny, nx, channel)`` gives each one's truth.
+       ``CountBetweenMarkers`` counts an input between the pixel markers
+       for counting detectors.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.
@@ -316,6 +323,11 @@ Ready-to-use hardware-free setup files, all under
   Time Tagger (``timeTagger.simulation``) and a ``SwabianTimeTaggerManager``
   FLIM detector on it: a lifetime scan runs, fits and records end to end
   with no hardware, imaging two bead populations of 1.5 ns and 4.0 ns.
+* ``galvo_two_apd_counting_mock_setup.json`` — two single-photon detectors on
+  one simulated Time Tagger, each counting photons per pixel (no laser sync,
+  no FLIM): one scan, two images, one card.
+* ``galvo_two_colour_flim_mock_setup.json`` — two FLIM detectors on one
+  simulated Time Tagger against one laser sync.
 
 Treat "null AO/DO channels" (no physical scan output built) and "fake
 ``Dev1/...`` detector input names" (manager configuration placeholders only,

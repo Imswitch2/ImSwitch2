@@ -351,8 +351,9 @@ what it will do, and only then press **Run all**.
     trigger levels and dead time, dark counts, the laser sync's rate and
     jitter, bandwidth and the conditional filter, the IRF and ``t0``, and
     the pre-flight checklist. Each measurement prints a suggestion and
-    writes it only when the script's ``APPLY`` is True. See
-    :doc:`timetagger/index`.
+    writes it only when the script's ``APPLY`` is True. Step 14 runs on
+    ``galvo_two_apd_counting_mock_setup.json``: two detectors counting on
+    one card. See :doc:`timetagger/index`.
 
 ``workflows``
     Complete acquisitions for real rigs -- see the cookbooks below. These
