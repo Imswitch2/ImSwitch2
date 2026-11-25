@@ -321,6 +321,7 @@ class Storer(abc.ABC):
             # a reader its camera had produced frames the scan did not account
             # for -- the single fact this field exists to carry.
             "recording:discarded_frames",
+            "recording:pre_scan_frames_discarded",
         }
         return {
             key: value
@@ -386,16 +387,25 @@ class Storer(abc.ABC):
         self._set_ome_annotations(detectorName, completed)
         return completed
 
-    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
+    def noteDiscardedFrames(self, discarded: Dict[str, int],
+                            preScan: Optional[Dict[str, int]] = None) -> None:
         """Frames the producer received beyond the plan and did not write.
 
         Recorded per detector as ``recording:discarded_frames`` at finalize,
         so a file whose camera ran free or was pulsed more often than the
         scan declared does not look like a clean scan to a reader.
+
+        ``preScan``: for a recording that held for its scan's boundary, the
+        frames discarded before it, per detector (zeros included), recorded as
+        ``recording:pre_scan_frames_discarded``. None for any other recording,
+        which then carries no such attribute.
         """
         self._discardedFrames = {
             str(k): int(v) for k, v in (discarded or {}).items() if int(v) > 0
         }
+        self._preScanDiscarded = (
+            None if preScan is None else {str(k): int(v) for k, v in preScan.items()}
+        )
 
     def _finalize_recording_attrs(
         self,
@@ -410,6 +420,10 @@ class Storer(abc.ABC):
             attrs = dict(source.get(detectorName, {}) or {})
             actual_frames = int(max(0, currentFrames.get(detectorName, 0)))
             attrs["recording:discarded_frames"] = int(discarded.get(detectorName, 0))
+            preScan = getattr(self, "_preScanDiscarded", None)
+            if preScan is not None:
+                attrs["recording:pre_scan_frames_discarded"] = int(
+                    preScan.get(detectorName, 0))
             planned_frames = attrs.get("recording:planned_frames")
             try:
                 planned_frames = int(planned_frames) if planned_frames is not None else None
@@ -2403,7 +2417,8 @@ class RecordingManager(SignalInterface):
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
                        recLapseTotal=1, recLapseIndex=0, scanDims=None,
                        scanStepSizes=None, recLapseIntervalS=None,
-                       recLapseScheduledTime=None, acquisitionLayouts=None):
+                       recLapseScheduledTime=None, acquisitionLayouts=None,
+                       holdUntilScanBoundary=False):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -2421,6 +2436,14 @@ class RecordingManager(SignalInterface):
             acquisitionLayouts: Optional synthetic or producer-authored
                 ``{detector: AcquisitionLayout}`` mapping. Layouts are
                 canonicalized and cross-checked before a writer is opened.
+            holdUntilScanBoundary: A scan-bound recording only. The producer
+                discards every frame it reads until :meth:`markScanBoundary`
+                is called, which the scan's owner does after the detectors are
+                armed and BEFORE the scan's first trigger. Frames that reach
+                the recording between its own arming and the scan (a late
+                frame of the previous scan, a stray trigger) are then not
+                frame 0 of the file. The number discarded is written as
+                ``recording:pre_scan_frames_discarded``.
         """
 
         self.__logger.info('Starting recording')
@@ -2448,7 +2471,7 @@ class RecordingManager(SignalInterface):
                 attrs, saveFormat, singleMultiDetectorFile, singleLapseFile, recFrames,
                 recTime, numCamTTL, stallTimeout, recLapseTotal, recLapseIndex,
                 scanDims, scanStepSizes, recLapseIntervalS, recLapseScheduledTime,
-                acquisitionLayouts)
+                acquisitionLayouts, holdUntilScanBoundary)
         except BaseException:
             if getattr(self.__recordingWorker, 'acquisitionTicket', None) is not acquisitionTicket:
                 gate.release(acquisitionTicket)      # the worker never took it over
@@ -2460,7 +2483,7 @@ class RecordingManager(SignalInterface):
                                  recTime, numCamTTL, stallTimeout, recLapseTotal,
                                  recLapseIndex, scanDims, scanStepSizes,
                                  recLapseIntervalS, recLapseScheduledTime,
-                                 acquisitionLayouts):
+                                 acquisitionLayouts, holdUntilScanBoundary=False):
         detectorNames = self.__normalizeDetectorNames(detectorNames)
         acquisitionLayouts = self.__normalizeAcquisitionLayouts(
             acquisitionLayouts,
@@ -2489,6 +2512,7 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.recLapseIntervalS = recLapseIntervalS
         self.__recordingWorker.recLapseScheduledTime = recLapseScheduledTime
         self.__recordingWorker.acquisitionLayouts = acquisitionLayouts
+        self.__recordingWorker.holdUntilScanBoundary = bool(holdUntilScanBoundary)
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
 
         self.__activeDetectorNames = detectorNames
@@ -2523,6 +2547,24 @@ class RecordingManager(SignalInterface):
                                         FailureKind.HARDWARE)
             raise
         return recordingGeneration
+
+    def markScanBoundary(self):
+        """The scan this recording is bound to is about to trigger its detectors.
+
+        Called by the scan's owner at the scan's own frame boundary (see
+        ``beadRecBoundary`` on the scan controllers), once, after the
+        detectors are armed and before the first trigger. Everything the
+        recording read or the detectors hold at this instant is discarded and
+        counted; from here on every frame is the scan's. Returns the number
+        discarded per detector, or None when the active recording is not
+        holding for a boundary (or has already had it: it is one-shot, so a
+        later call, e.g. for the next iteration of a repeat, cannot drop
+        frames of the scan).
+        """
+        worker = self.__dict__.get('_RecordingManager__recordingWorker')
+        if worker is None or not self.__record:
+            return None
+        return worker.releaseScanBoundary()
 
     def endRecording(self, emitSignal=True, wait=True):
         """ Ends the current recording. Unless emitSignal is false, the
@@ -3432,7 +3474,10 @@ class WriterThread(threading.Thread):
                         else:
                             noteDiscarded = getattr(self._storer, 'noteDiscardedFrames', None)
                             if callable(noteDiscarded):
-                                noteDiscarded(dict(self._discardedFrames))
+                                noteDiscarded(
+                                    dict(self._discardedFrames),
+                                    preScan=getattr(self, '_preScanDiscarded', None),
+                                )
                             self._phase = 'finalizing'
                             self._storer.finalizeStream(
                                 self._currentFrames,
@@ -3629,9 +3674,15 @@ class WriterThread(threading.Thread):
                 time.sleep(0.01)
                 continue
     
-    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
-        """Record how many frames the producer dropped beyond the plan."""
+    def noteDiscardedFrames(self, discarded: Dict[str, int],
+                            preScan: Optional[Dict[str, int]] = None) -> None:
+        """Record how many frames the producer dropped beyond the plan, and
+        (``preScan``, None when the recording did not hold for a scan boundary)
+        before the scan's first trigger."""
         self._discardedFrames = {k: int(v) for k, v in (discarded or {}).items() if int(v) > 0}
+        self._preScanDiscarded = (
+            None if preScan is None else {k: int(v) for k, v in preScan.items()}
+        )
 
     def finish(self):
         """Signal end of recording and wait for writer thread to complete.
@@ -3749,6 +3800,14 @@ class RecordingWorker(Worker):
         self.__recordingManager = recordingManager
         self.__logger = initLogger(self)
         self._writerThread = None
+        # A scan-bound recording discards what it reads until the scan's frame
+        # boundary (RecordingManager.markScanBoundary). The lock makes "read
+        # the detector and decide" one step, so a frame read before the
+        # boundary instant is always discarded and one read after is never.
+        self.holdUntilScanBoundary = False
+        self._boundaryLock = threading.Lock()
+        self._boundaryReleased = True
+        self._preScanDiscarded: Dict[str, int] = {}
 
     def requestWriterAbort(self):
         writerThread = self._writerThread
@@ -4130,6 +4189,16 @@ class RecordingWorker(Worker):
         discardedFrames: Dict[str, int] = {}
         discardWarned: set = set()
         self.discardedFrames = discardedFrames
+        holdForBoundary = bool(
+            getattr(self, 'holdUntilScanBoundary', False)
+            and self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
+        )
+        with self._boundaryLock:
+            self._boundaryReleased = not holdForBoundary
+            self._preScanDiscarded = (
+                {detectorName: 0 for detectorName in self.detectorNames}
+                if holdForBoundary else {}
+            )
         lastFrameTime = {detectorName: time.time() for detectorName in self.detectorNames}
         stallAllowance = {
             detectorName: self._stallAllowanceFor(detectorName)
@@ -4312,8 +4381,16 @@ class RecordingWorker(Worker):
                         continue
                     
                     # Get new frames
-                    newFrames = self._getNewFrames(detectorName)
-                    n = len(newFrames)
+                    with self._boundaryLock:
+                        newFrames = self._getNewFrames(detectorName)
+                        n = len(newFrames)
+                        if n > 0 and not self._boundaryReleased:
+                            # Read before the scan's frame boundary: not the
+                            # scan's. Counted, not written.
+                            self._preScanDiscarded[detectorName] = (
+                                self._preScanDiscarded.get(detectorName, 0) + n
+                            )
+                            n = 0
                     if n > 0:
                         # Clip frames if needed for SpecFrames mode
                         if self.recMode in [
@@ -4487,7 +4564,11 @@ class RecordingWorker(Worker):
                 if aborting:
                     writerThread.abort()
                 else:
-                    writerThread.noteDiscardedFrames(discardedFrames)
+                    writerThread.noteDiscardedFrames(
+                        discardedFrames,
+                        preScan=(dict(self._preScanDiscarded)
+                                 if holdForBoundary else None),
+                    )
                     writerThread.finish()
             except Exception as error:
                 cleanupErrors.append(error)
@@ -4552,6 +4633,33 @@ class RecordingWorker(Worker):
             )
         except Exception as exc:
             self.__logger.debug(f'No memory estimate for this recording: {exc!r}')
+
+    def releaseScanBoundary(self):
+        """The scan's frame boundary (see RecordingManager.markScanBoundary).
+
+        One-shot, and atomic with the producer's reads: whatever the producer
+        has read so far, and whatever the detectors hold now, is before the
+        scan's first trigger and is discarded. Returns ``{detector: frames
+        discarded so far}``, or None when not holding.
+        """
+        with self._boundaryLock:
+            if self._boundaryReleased:
+                return None
+            for detectorName in list(getattr(self, 'detectorNames', None) or []):
+                dropped = len(self._getNewFrames(detectorName))
+                self._preScanDiscarded[detectorName] = (
+                    self._preScanDiscarded.get(detectorName, 0) + dropped
+                )
+            self._boundaryReleased = True
+            counts = dict(self._preScanDiscarded)
+        if any(counts.values()):
+            self.__logger.warning(
+                'Discarded frames that reached the recording before its scan '
+                f'started (per detector): {counts}. They are not part of the '
+                'scan; the file records the number as '
+                'recording:pre_scan_frames_discarded.'
+            )
+        return counts
 
     def _getNewFrames(self, detectorName):
         # readChunk (not getChunk): the destructive getChunk would steal
