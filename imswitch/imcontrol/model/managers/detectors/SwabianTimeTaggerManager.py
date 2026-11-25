@@ -261,7 +261,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 group='Channels', value=self._click_ch,
                 valueUnits='ch', editable=False),
             'start_channel': DetectorNumberParameter(
-                group='Channels', value=self._start_ch,
+                group='Channels', value=self._start_ch if self._start_ch is not None else 0,
                 valueUnits='ch', editable=False),
             'line_channel': DetectorNumberParameter(
                 group='Channels', value=self._line_ch,
@@ -553,6 +553,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 resolved[which] = tt.channelInfo(role)
             except TimeTaggerError as error:
                 hint = ''
+                if which == 'start':
+                    hint = (' FLIM needs a laser sync; set measurement to "counting" '
+                            'to count photons without one.')
                 if which == 'click':
                     detectors = list(getattr(tt, 'inputsOfKind', lambda _k: ())('detector'))
                     if detectors:

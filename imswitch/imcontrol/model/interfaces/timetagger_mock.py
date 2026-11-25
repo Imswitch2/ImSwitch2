@@ -1340,7 +1340,10 @@ class CountBetweenMarkers(_Measurement):
         self._frame: Optional[np.ndarray] = None
         self._filled = False
         self._polls = 0
-        self.complete_after_polls = 0
+        #: As on ``Flim``: the detector's baseline read at arming sees an
+        #: unfilled counter (the clocks have not run yet), the worker's
+        #: first look a filled one.
+        self.complete_after_polls = 1
 
     def _geometry(self):
         gen = self._tagger._generators.get(self.begin_channel)
