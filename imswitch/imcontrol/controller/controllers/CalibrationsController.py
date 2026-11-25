@@ -362,7 +362,8 @@ class CalibrationsController(ImConWidgetController):
         ``laserName`` for this session (refused while the laser is on; its
         setpoint is reset to 0 %). A calibration made for another device is
         refused unless ``allowMismatch``; one with a different drive unit
-        always. Returns True when it is in force. """
+        always, and so is any swap without the *Laser* panel. Returns True
+        when it is in force. """
         return self.activate(laserName, calibrationId, confirmed=bool(allowMismatch),
                              interactive=False)
 

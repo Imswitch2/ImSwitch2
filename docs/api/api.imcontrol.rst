@@ -22,6 +22,17 @@ api.imcontrol
 
       Always available.
 
+   .. method:: activateLaserCalibration(laserName: 'str', calibrationId: 'str', allowMismatch: 'bool' = False) -> 'bool'
+
+      Put the stored calibration ``calibrationId`` in force for
+      ``laserName`` for this session (refused while the laser is on; its
+      setpoint is reset to 0 %). A calibration made for another device is
+      refused unless ``allowMismatch``; one with a different drive unit
+      always, and so is any swap without the *Laser* panel. Returns True
+      when it is in force.
+
+      Always available.
+
    .. method:: activateRotScan(activate: bool)
 
       API callable method to activate or deactivate the scan.
@@ -259,6 +270,16 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: getLaserCalibration(laserName: 'str') -> 'Dict[str, Any]'
+
+      What the laser's value means now: ``state`` (``'calibrated'``,
+      ``'raw'`` or ``'failed'``), ``units``, the calibration ``id``,
+      ``contentHash``, ``measuredAt``, ``comment``, ``powerUnit`` and the
+      predicted ``power`` at the current setpoint (None without a power
+      unit), and ``error`` when a referenced calibration did not load.
+
+      Needs *Laser* in ``availableWidgets``.
+
    .. method:: getLaserInfo(laserName: str) -> Dict[str, Any]
 
       Describes the laser: ``wavelength`` in nm, the ``units`` of its
@@ -480,6 +501,23 @@ api.imcontrol
 
       Needs *Tiling* in ``availableWidgets``.
 
+   .. method:: getStoredCalibrations() -> 'List[Dict[str, Any]]'
+
+      The calibrations in the global store: ``id``, ``laser`` (made
+      for), ``wavelength``, ``measuredAt``, ``comment``, ``created``,
+      ``contentHash`` and ``path``.
+
+      Always available.
+
+   .. method:: importLaserCalibration(path: 'str', laserName: 'str' = '') -> 'str'
+
+      Import a calibration CSV (for example the ``lut_file`` of
+      :meth:`measureLaserPowerLut`) into the global calibration store and
+      return its id. ``laserName`` names the laser it was made for when
+      the file does not say. Nothing is activated.
+
+      Always available.
+
    .. method:: isFocusLocked() -> bool
 
       Whether the focus is locked right now.
@@ -571,6 +609,8 @@ api.imcontrol
       Runs go to ``folder`` (default ``ImSwitchConfig/measurement_runs``).
       With ``allow_unverified_timing`` (until the meter's timing is checked
       on hardware) the run is kept but no LUT is written.
+      ``importLaserCalibration(report.lut_file)`` adds the LUT to the global
+      calibration store, where Hardware → Calibrations… can activate it.
 
       Needs *Instruments* in ``availableWidgets``.
 
@@ -725,6 +765,14 @@ api.imcontrol
       method behaves like ``detectCellTargets()`` and does not move hardware.
 
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: runLaserOnRawUnits(laserName: 'str') -> 'bool'
+
+      Run ``laserName`` without a calibration for this session (its
+      value becomes the raw drive, reset to the minimum; refused while the
+      laser is on).
+
+      Always available.
 
    .. method:: runScan(source: Optional[str] = None) -> imswitch.imcontrol.model.scan_request.ScanRunHandle
 
