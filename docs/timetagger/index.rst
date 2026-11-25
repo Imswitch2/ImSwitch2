@@ -156,15 +156,31 @@ not the others' frames.
    * - Per input
      - trigger level, dead time, delay; a FLIM detector's ``t0_ps`` (applied
        to its own photon input's delay during its scan, put back after).
-       One FLIM detector per photon input.
    * - Per card
-     - the conditional filter (``filterSyncByPhotons``: every detector input
-       triggers it, every sync input is filtered, so the TCSPC direction is
-       the card's), the pixel-marker pattern offset
-       (``pixelPatternOffsetPs`` plus a positive line-clock delay), the
-       markers, the hold, the overflow counter. The frame clock still follows
-       the line clock's delay and dead time when either is changed at run
-       time.
+     - the conditional filter (``filterSyncByPhotons``; every sync input is
+       filtered, one filter, so the TCSPC direction is the card's), the
+       pixel-marker pattern offset (``pixelPatternOffsetPs`` plus a positive
+       line-clock delay), the markers, the hold, the overflow counter. The
+       frame clock still follows the line clock's delay and dead time when
+       either is changed at run time.
+
+**Sharing an input.** Two FLIM detectors on one photon input are refused
+when the setup loads (and on a run-time switch of ``click_role``), naming
+both detectors and the input: each would set its own ``t0`` as that input's
+delay and fit the same photons twice. Give each its own detector input. A
+counting detector may share a FLIM detector's input, and two counting
+detectors may share one: they read the same tags independently (the
+counts are the FLIM intensity; a FLIM detector's ``t0``, a few ns, moves
+them against pixels of microseconds by nothing visible).
+
+**Which inputs trigger the filter.** With ``filterSyncByPhotons`` the
+filter triggers only on the photon inputs that FLIM detectors image --
+between scans every FLIM detector's, during a scan only the participating
+FLIM detectors' (set when the clocks start, put back when the scan session
+ends, on the card's I/O thread) -- so an input used only for counting lets
+no extra syncs through. A card with no FLIM detector gets no filter write
+at all, and a setup without an ``inputs`` map keeps its one filter on
+``photons``, set at connect, exactly as before.
 
 **Provenance.** A detector shows its photon input's name, channel, level,
 dead time and delay as read-only parameters (``click_role``,

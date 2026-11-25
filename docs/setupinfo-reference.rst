@@ -1253,7 +1253,7 @@ Key fields:
 * ``pixelPatternOffsetPs`` (int): where the FLIM detector's first pixel marker sits after a line edge, so the frame edge leads pixel 0 whatever the cable skew (default ``10000``; raise it above a measured frame-to-line skew, tutorial 08)
 * ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
 * ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
-* ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)
+* ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``). The photons that trigger it are those of the inputs FLIM detectors image (during a scan, the participating ones); counting-only inputs never trigger it
 * ``mockSample`` (str): what the mock card images with ``simulation`` on — ``"beads_two_lifetimes"`` (default), ``"uniform"`` or ``"gradient"``
 * ``mockFaults`` (dict): faults the mock reproduces for the debugging tutorials, e.g. ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``, ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``, ``{"laser_rep_rate_mhz": 40}``, ``{"model": "Time Tagger 20"}``
 

@@ -54,10 +54,13 @@ class _SlowApi(base._SlowApi):
 
 
 def _rig(n, measurement):
+    filtered = measurement == "flim-filtered"
+    measurement = "flim" if filtered else measurement
     inputs = {f"apd{i}": TimeTaggerInputInfo(channel=CHANNELS[i], triggerV=-0.25) for i in range(n)}
     inputs["sync"] = TimeTaggerInputInfo(channel=2, kind="laser_sync")
     inputs["line_clock"] = TimeTaggerInputInfo(channel=3, kind="line_clock")
-    info = TimeTaggerInfo(simulation=True, inputs=inputs, mockSample="uniform")
+    info = TimeTaggerInfo(simulation=True, inputs=inputs, mockSample="uniform",
+                          filterSyncByPhotons=filtered)
     nidaq = base._Nidaq()
     card = TimeTaggerManager(info, SimpleNamespace(scan=SimpleNamespace(sampleRate=base.SAMPLE_RATE)),
                              nidaq, api=_SlowApi(model=tm.SignalModel.from_info(info)))
@@ -78,10 +81,13 @@ def _arm(nidaq, dets):
     assert nidaq.failures == []
 
 
-@pytest.mark.parametrize("measurement", ["flim", "counting"])
+@pytest.mark.parametrize("measurement", ["flim", "flim-filtered", "counting"])
 @pytest.mark.parametrize("n", [1, 2, 4])
 def test_gui_thread_time_at_first_and_repeat_start(qapp, n, measurement):
+    """``flim-filtered``: with the conditional filter, whose trigger list
+    the session sets at scan start through the card's I/O thread."""
     nidaq, card, dets = _rig(n, measurement)
+    card.waitForFilter()   # the registrations' write, at startup
     try:
         first = base._timed(lambda: _arm(nidaq, dets))
         # Drain a clean frame on every detector, release the leases.
@@ -104,7 +110,8 @@ def test_gui_thread_time_at_first_and_repeat_start(qapp, n, measurement):
 
         # One build per detector at the first start, nothing else that
         # scales; nothing at all on a repeat.
-        assert first < n * SLOW["flim_build"] + GUI_BOUND_S, first
+        # Per detector: its build, and starting its worker thread.
+        assert first < n * (SLOW["flim_build"] + 0.05) + GUI_BOUND_S, first
         assert repeat < GUI_BOUND_S, repeat
         for det in dets:
             det.stopAcquisition()
