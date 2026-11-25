@@ -153,12 +153,12 @@ PANELS: Dict[str, PanelSpec] = {spec.key: spec for spec in (
     _spec('WellPlate', 'Well Plate', 'Other', _S,
           'Moves every stage to 0 when it closes. '
           'Add it to the setup file and restart.'),
-    _spec('TriggerScopeRaster', 'TriggerScope Raster Scan', 'Other', _S, _SCAN),
-    _spec('TriggerScopePLSR', 'TriggerScope pLS-RESOLFT', 'Other', _S, _SCAN),
-    _spec('TriggerScopeGalvoDetection', 'TriggerScope Galvo Detection', 'Other', _S, _SCAN),
-    _spec('TriggerScopePLSRMulticolor', 'TriggerScope pLS-RESOLFT Multicolor', 'Other', _S, _SCAN),
-    _spec('TriggerScopeScan', 'TriggerScope Scan', 'Other', _S, _SCAN),
-    _spec('TriggerScopeLSXYR', 'TriggerScope LS-XY-RESOLFT', 'Other', _S, _SCAN),
+    _spec('TriggerScopeRaster', 'TriggerScope Raster Scan', 'Other', _S, _HARDWARE),
+    _spec('TriggerScopePLSR', 'TriggerScope pLS-RESOLFT', 'Other', _S, _HARDWARE),
+    _spec('TriggerScopeGalvoDetection', 'TriggerScope Galvo Detection', 'Other', _S, _HARDWARE),
+    _spec('TriggerScopePLSRMulticolor', 'TriggerScope pLS-RESOLFT Multicolor', 'Other', _S, _HARDWARE),
+    _spec('TriggerScopeScan', 'TriggerScope Scan', 'Other', _S, _HARDWARE),
+    _spec('TriggerScopeLSXYR', 'TriggerScope LS-XY-RESOLFT', 'Other', _S, _HARDWARE),
 )}
 
 #: Panels whose failure to build at startup stops ImControl, as it always

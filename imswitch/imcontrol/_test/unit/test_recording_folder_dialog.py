@@ -187,7 +187,7 @@ def test_each_menu_holds_one_kind_of_thing(mainView):
                               'Save Widget States…', 'Load Widget States…']
     assert menus['&Hardware'] == ['Pick hardware setup…', 'Edit hardware configuration…',
                                   'Hardware status…']
-    assert menus['&View'] == ['Log', 'Reset panel layout']
+    assert menus['&View'] == ['Add panel…', 'Log', 'Reset panel layout']
     assert menus['&Preferences'] == ['Recordings folder…', 'Setup folder…', 'Memory limits…']
 
 

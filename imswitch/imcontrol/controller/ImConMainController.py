@@ -19,7 +19,6 @@ from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.model.resources import get_resource_registry
-from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
@@ -29,6 +28,7 @@ from .SetupModeController import SetupModeController
 from .SmartMicroscopyModeService import SmartMicroscopyModeService
 from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
+from .runtime_panels import PanelService, reportStartupProblems
 
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
@@ -114,25 +114,15 @@ class ImConMainController(MainController):
 
         self.controllers = {}
 
-        # Extra kwargs forwarded to specific controllers that need view-layer objects
-        _imageWidget = self.__mainView.widgets.get('Image')
-        _extraKwargs = {
-            # Viewer Tools' line/rectangle/intensity buttons select the Line
-            # Profile panel's modes, so it is handed the panel too.
-            'ViewerTools': {
-                'imageWidget': _imageWidget,
-                'lineProfileWidget': self.__mainView.widgets.get('LineProfile'),
-            },
-        }
-
-        for widgetKey, widget in self.__mainView.widgets.items():
-            self.controllers[widgetKey] = self.__factory.createController(
-                (getattr(controllers, f'{widgetKey}Controller')
-                if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
-                widget,
-                **_extraKwargs.get(widgetKey, {})
-            )
+        # One controller per panel the view built -- through the same code
+        # that adds a panel while running (runtime_panels.PanelService). A
+        # non-core panel that fails is left out and reported below.
+        self.__panels = PanelService(
+            view=self.__mainView, factory=self.__factory, setupInfo=self.__setupInfo,
+            master=self.__masterController, controllers=self.controllers,
+            activeSetupPath=self.__activeSetupPath,
+        )
+        self.__panels.buildStartupControllers()
 
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
         if 'SetupModes' in self.controllers:
@@ -306,6 +296,15 @@ class ImConMainController(MainController):
                 self.__mainView
             )
 
+        # Panels added later (View > Add panel…) get what startup gave these.
+        self.__panels.attach(
+            setupModeController=self.setupModeController,
+            smartModeService=self.smartModeService,
+            shortcutManager=self.__shortcutManager,
+        )
+        if hasattr(self.__mainView, 'sigOpenAddPanel'):
+            self.__mainView.sigOpenAddPanel.connect(self.openAddPanel)
+
         # The panels only got their rows once their controllers ran, so the
         # dock proportions the view guessed while they were still empty are
         # re-derived here.  Before the saved layout is restored: a saved
@@ -337,6 +336,12 @@ class ImConMainController(MainController):
         # Everything is built and any saved layout has been applied: settle the
         # dock proportions once the window is actually on screen.
         self.__mainView.scheduleInitialDockLayout()
+
+        reportStartupProblems(
+            self.__mainView, self.__panels.startupProblems(),
+            lambda view, title, text: guitools.showWarning(
+                view, title, text, unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S),
+        )
 
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)
@@ -389,6 +394,18 @@ class ImConMainController(MainController):
     @property
     def shortcutManager(self):
         return self.__shortcutManager
+
+    @property
+    def panelService(self):
+        return self.__panels
+
+    def openAddPanel(self):
+        """ View > Add panel…: the panels that can be added to this session. """
+        self.__panels.openAddPanelDialog()
+
+    def addPanel(self, key):
+        """ Add panel ``key`` to this session (see runtime_panels). """
+        return self.__panels.addPanel(key)
 
     def loadParamsFromHDF5(self):
         """ Set detector, positioner, laser etc. params from values saved in a
