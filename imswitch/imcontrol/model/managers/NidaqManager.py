@@ -12,7 +12,7 @@ try:
     _NIDAQMX_AVAILABLE = True
     _TASK_COMMIT = nidaqmx.constants.TaskMode.TASK_COMMIT
     _NIDAQMX_IMPORT_ERROR = None
-except ImportError as error:
+except Exception as error:  # ImportError, or the NI driver library failing to load (OSError)
     _NIDAQMX_AVAILABLE = False
     _TASK_COMMIT = None
     _NIDAQMX_IMPORT_ERROR = error

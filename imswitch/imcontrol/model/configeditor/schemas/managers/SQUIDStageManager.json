@@ -11,6 +11,14 @@
         "docs:string"
       ],
       "x-imswitch-widget": "ref"
+    },
+    "useMockOnFailure": {
+      "description": "Optional, default ``false``. When the ``rs232device`` cannot be looked",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "SQUIDStageManager managerProperties",

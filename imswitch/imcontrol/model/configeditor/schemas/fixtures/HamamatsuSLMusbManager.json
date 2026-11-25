@@ -5,7 +5,8 @@
     "managerProperties": {
       "dll": null,
       "dll_base_directory": null,
-      "mockermode": true
+      "mockermode": true,
+      "useMockOnFailure": true
     }
   }
 }

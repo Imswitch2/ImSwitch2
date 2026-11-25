@@ -1,3 +1,6 @@
+from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError
+
 from .LaserManager import LaserManager
 
 
@@ -21,8 +24,39 @@ class GRBLLaserManager(LaserManager):
         self.laserval = 0
         self.enabled = False
         super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
-        self._rs232manager._board.set_laser_intensity(self.enabled*self.laserval)
+        try:
+            self._rs232manager._board.set_laser_intensity(self.enabled*self.laserval)
+        except DeviceNotConnectedError as error:
+            # The board is not there (yet). The laser exists; every command
+            # raises the same error until the board is reconnected, so the
+            # laser must not claim to be connected.
+            initLogger(self, instanceName=name).warning(
+                f'GRBL laser {name}: board not connected ({error})')
+            return
         self._setConnected("GRBL laser initialized")
+
+    # Transport hooks (DeviceLifecycleService): the board was reopened and
+    # re-programmed, so its output is off. The laser must agree, or the next
+    # power change would switch it on under an OFF panel.
+    def _lifecycleSafeState(self, *, verified: bool):
+        self.enabled = False
+        try:
+            self.setEnabled(False)
+        except Exception as exc:
+            return [f'{self.name}: could not confirm OFF: {exc}'] if verified else []
+        return []
+
+    def _onTransportReconnected(self, real: bool):
+        if not real:
+            self._setConnectionError('serial port could not be reopened',
+                                     summary='GRBL board did not reconnect')
+            return ['serial port could not be reopened']
+        errors = self._lifecycleSafeState(verified=True)
+        if errors:
+            self._setConnectionError('; '.join(errors), summary='GRBL laser reconnected but not usable')
+        else:
+            self._setConnected('GRBL laser reconnected; OFF')
+        return errors
 
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""

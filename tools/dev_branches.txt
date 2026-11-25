@@ -44,3 +44,8 @@ fix/setup-loader-blank-values      # loader: a blank or unreadable typed setup v
 fix/triggerscope-monitor-lock      # PR #95: TriggerScope scan start off the GUI thread, BeadRec / scan-once recording frame boundary
                                    #   (monitor commits already in dev via scan-engines; serial-monitor test: the branch's pyvisa
                                    #    stand-in fixture; RecordingManager: dev's frame auxiliary read inside the boundary lock)
+fix/startup-device-failures        # PR #96: a device that fails at startup is reported, absent/reconnectable or a reported mock
+                                   #   (Time Tagger vendor import guard widened in TimeTaggerManager, where dev imports it; its
+                                   #    vendor-guard test follows the import there; panel loop: resolve_controller inside the
+                                   #    try; ScanManagerTriggerScope: the absent-board refusal in runScan and runScanAsync;
+                                   #    config-editor schemas/snapshot regenerated, pinned counts are the merged totals)

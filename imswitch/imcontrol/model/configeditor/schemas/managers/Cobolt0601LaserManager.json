@@ -14,6 +14,14 @@
         "code:required",
         "example:array"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "Defaults to ``false``. When a port cannot be opened the laser is",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "required": [

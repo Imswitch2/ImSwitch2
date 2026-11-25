@@ -14,10 +14,15 @@ class StandManager(ABC):
         self._subManager = None
         currentPackage = '.'.join(__name__.split('.')[:-1])
         if deviceInfo:
+            useMock = (getattr(deviceInfo, 'managerProperties', None) or {}).get(
+                'useMockOnFailure', False)
+            if isinstance(useMock, str):
+                useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
             manager, is_mock = self._resolveStandManagerClass(
                 currentPackage,
                 deviceInfo.managerName,
                 self.__logger,
+                useMockOnFailure=bool(useMock),
             )
             self._subManager = manager(deviceInfo, **lowLevelManagers)
             self.mocker = is_mock
@@ -33,7 +38,11 @@ class StandManager(ABC):
                     self._subManager._mock_fallback = True
 
     @classmethod
-    def _resolveStandManagerClass(cls, currentPackage, managerName, logger):
+    def _resolveStandManagerClass(cls, currentPackage, managerName, logger,
+                                  useMockOnFailure=False):
+        """Resolve a stand manager class. A class that cannot be loaded is an
+        error that names it (the stand is then reported as failed), unless
+        ``managerProperties.useMockOnFailure`` opts in to the ``_mock`` twin."""
         registry = get_default_registry()
 
         manager = registry.load_manager_class("stand", managerName)
@@ -51,6 +60,11 @@ class StandManager(ABC):
         # actionable diagnostic below, which is what carries the external-plugin
         # install hint. Mirrors MultiManager._importLegacyManagerClass.
         except (ImportError, AttributeError, ValueError) as legacy_error:
+            if not useMockOnFailure:
+                raise ImportError(
+                    registry.format_resolution_error("stand", managerName)
+                    + " Set managerProperties.useMockOnFailure to true to run a "
+                      "mock stand instead.") from legacy_error
             mockName = f'{managerName}_mock'
             manager = registry.load_manager_class("stand", mockName)
             if manager is not None:
@@ -92,8 +106,16 @@ class StandManager(ABC):
             or manager.__name__.startswith("Mock")
         )
 
+    @property
+    def isUsable(self) -> bool:
+        """Whether there is a stand to command: a stand that failed to start
+        is replaced by one that does nothing, and says so here."""
+        from imswitch.imcontrol.model.devices.status import device_usable
+        return self._subManager is not None and device_usable(self._subManager)
+
     def motCorrPos(self, position):
-        self._subManager.motCorrPos(position)
+        if self._subManager is not None:
+            self._subManager.motCorrPos(position)
 
     # Public capability passthroughs — controllers should call these instead of
     # reaching into ``standManager._subManager`` (driver-specific, may be a mock).

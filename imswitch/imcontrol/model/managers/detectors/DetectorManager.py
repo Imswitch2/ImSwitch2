@@ -458,7 +458,14 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
 
     @property
     def model(self) -> str:
-        """ Detector model name. """
+        """ Detector model name. A mock that stands in for a camera that
+        failed says so in the name, wherever the model is shown or recorded. """
+        from imswitch.imcontrol.model.devices.status import (
+            DeviceConnectionState, DeviceRuntimeMode,
+        )
+        if (getattr(self, 'runtimeMode', None) is DeviceRuntimeMode.MOCK
+                and getattr(self, 'connectionState', None) is DeviceConnectionState.ERROR):
+            return f'MOCK (real camera not connected) - {self.__model}'
         return self.__model
 
     def _setModel(self, model: str) -> None:

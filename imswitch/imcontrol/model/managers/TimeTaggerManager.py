@@ -33,7 +33,8 @@ from imswitch.imcontrol.model.SetupInfo import TimeTaggerInfo
 
 try:
     import TimeTagger as _VendorTimeTagger
-except ImportError:  # the vendor installer provides it; pip does not
+except Exception:  # ImportError (the vendor installer provides it; pip does not),
+    # or the vendor library failing to load (OSError): the card is unavailable
     _VendorTimeTagger = None
 
 

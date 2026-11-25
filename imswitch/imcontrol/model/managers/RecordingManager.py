@@ -351,6 +351,38 @@ class Storer(abc.ABC):
         # use it to write standard OME metadata.
         self.omeMeta: Dict[str, Any] = {}
 
+    def _stampSimulation(self, detectorName: str, attrs: Dict[str, Any] | None) -> Dict[str, Any]:
+        """``attrs`` with a note when the detector's frames are simulated.
+
+        A mock standing in for a camera that failed must never pass as real
+        data: the file says so, and why.
+        """
+        stamped = dict(attrs or {})
+        try:
+            manager = self.detectorManager[detectorName]
+            from imswitch.imcontrol.model.devices.status import (
+                DeviceConnectionState, DeviceRuntimeMode,
+            )
+            if getattr(manager, "runtimeMode", None) is not DeviceRuntimeMode.MOCK:
+                return stamped
+            fallback = getattr(manager, "connectionState", None) is DeviceConnectionState.ERROR
+            summary = getattr(manager, "connectionStatusSummary", None) or ""
+            details = getattr(manager, "connectionStatusDetails", None)
+            if details:
+                summary = f"{summary} ({details})"
+            stamped["recording:detector_simulated"] = "True"
+            stamped["recording:detector_simulation_reason"] = (
+                ("real device failed, mock fallback: " if fallback else "configured mock: ")
+                + summary).strip()
+        except Exception:
+            pass
+        return stamped
+
+    def _withSimulationAttrs(self, attrs: Dict[str, Dict[str, Any]] | None):
+        if not isinstance(attrs, dict):
+            return attrs
+        return {name: self._stampSimulation(name, values) for name, values in attrs.items()}
+
     @staticmethod
     def _layout_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -372,6 +404,9 @@ class Storer(abc.ABC):
             # for -- the single fact this field exists to carry.
             "recording:discarded_frames",
             "recording:pre_scan_frames_discarded",
+            # Frames from a mock must not pass as real in any format.
+            "recording:detector_simulated",
+            "recording:detector_simulation_reason",
         }
         return {
             key: value
@@ -426,7 +461,7 @@ class Storer(abc.ABC):
         attrs: Dict[str, Any] | None,
         image: Any,
     ) -> Dict[str, Any]:
-        completed = dict(attrs or {})
+        completed = self._stampSimulation(detectorName, attrs)
         array = np.asarray(image)
         actual_frames = 1 if array.ndim <= 2 else int(array.shape[0])
         completed.setdefault("recording:planned_frames", actual_frames)
@@ -942,7 +977,7 @@ class ZarrStorer(Storer):
         self._stores = {}
         self._roots = {}
         self._datasets = {}
-        self._attrs = attrs
+        self._attrs = self._withSimulationAttrs(attrs)
         self._fileDests = fileDests
         self._currentFrames = {}
         self._groupPaths = {}
@@ -1437,7 +1472,7 @@ class HDF5Storer(Storer):
         self._datasets = {}
         self._fileDests = fileDests
         self._shapes = shapes
-        self._attrs = attrs
+        self._attrs = self._withSimulationAttrs(attrs)
         self._singleMultiDetectorFile = singleMultiDetectorFile
         self._singleLapseFile = singleLapseFile
         self._groupPaths = {}  # Track group paths for lapse files
@@ -1937,7 +1972,7 @@ class TiffStorer(Storer):
         # Kept for finalize: the OME-XML embedded there carries these shared
         # attributes as a MapAnnotation (TIFF's counterpart of the HDF5/Zarr
         # attribute serialization), completed with the recording's outcome.
-        self._attrs = attrs
+        self._attrs = self._withSimulationAttrs(attrs)
         for detectorName in detectorNames:
             path = fileDests[detectorName]
             self._paths[detectorName] = path

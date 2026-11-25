@@ -86,6 +86,12 @@ class MHXYStageManager(PositionerManager):
                 positionerInfo.managerProperties['rs232device']
             ]
         except Exception as e:
+            # A stage that is not there is absent, never a simulated stage the user
+            # could believe has moved: the mock is an explicit opt-in.
+            if not positionerInfo.managerProperties.get('useMockOnFailure', False):
+                raise RuntimeError(
+                    f"RS232 device {e} is not available. Define it in rs232devices, "
+                    f"or set useMockOnFailure to true for a simulated stage.") from e
             self.__logger.warning(
                 f'Failed to initialize rs232sManager, falling back to mock mode: {e}'
             )

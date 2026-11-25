@@ -48,18 +48,22 @@ class GRBLManager(DeviceManagerStatusMixin):
         )
         if self.backendHolder.backend:
             self._lifecycleReinitialise()
+            # Homing is the setup's explicit choice at startup. After a
+            # reconnect it is the user's (the stage's Reference action).
+            if self.backendIsReal and self.is_home:
+                self._board.home()
 
     #: The driver, read from the backend holder: a reconnect replaces it.
     _board = backend_attribute()
 
     def _lifecycleReinitialise(self) -> None:
-        """Program the board: at startup and again after it was reopened."""
+        """Program the board: at startup and again after it was reopened.
+        Nothing here moves a stage: the board lost its position when it was
+        reopened, and the user decides when to home it."""
         self._board.write_global_config()
         self._board.write_all_settings()
         #self.board.verify_settings()
         self._board.reset_stage()
-        if self.is_home:
-            self._board.home()
 
     def reconnectTransport(self) -> bool:
         """Open the board again in place (DeviceLifecycleService §4.3)."""

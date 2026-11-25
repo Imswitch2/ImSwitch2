@@ -85,9 +85,17 @@ def _manager_with_rs232(managerClass, rs232):
     )
 
 
+@pytest.mark.parametrize('managerClass', [PiezoconceptZManager, PiezoconceptZManager2])
+def test_a_missing_rs232_device_is_an_error_without_the_opt_in(managerClass):
+    with pytest.raises(RuntimeError, match="'missing-device' is not available.*useMockOnFailure"):
+        managerClass(_positioner_info(), 'Z-piezo', rs232sManager=_MissingRS232Manager())
+
+
 def test_piezoconceptz_manager_falls_back_to_mock_rs232(caplog):
+    # The mock is an explicit opt-in: without it a missing rs232 device is an
+    # error (see test_a_missing_rs232_device_is_an_error_without_the_opt_in).
     manager = PiezoconceptZManager(
-        _positioner_info(),
+        _positioner_info({'rs232device': 'missing-device', 'useMockOnFailure': True}),
         'Z-piezo',
         rs232sManager=_MissingRS232Manager(),
     )
@@ -102,7 +110,7 @@ def test_piezoconceptz_manager_falls_back_to_mock_rs232(caplog):
 
 def test_piezoconceptz_manager2_falls_back_to_mock_rs232():
     manager = PiezoconceptZManager2(
-        _positioner_info(),
+        _positioner_info({'rs232device': 'missing-device', 'useMockOnFailure': True}),
         'Z-piezo-v2',
         rs232sManager=_MissingRS232Manager(),
     )

@@ -1,6 +1,22 @@
 import importlib
 from .LaserManager import LaserManager
 from imswitch.imcommon.model import pythontools, initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
+
+
+class _NullLaser:
+    """The reported mock (``useMockOnFailure``): accepts and drops commands."""
+    power = 0.0
+
+    def enable(self):
+        pass
+
+    def disable(self):
+        pass
+
+    def shutdown(self):
+        pass
+
 
 class PyMicroscopeLaserManager(LaserManager):
     """ Generic LaserManager for laser handlers supported by Python Microscope.
@@ -12,14 +28,22 @@ class PyMicroscopeLaserManager(LaserManager):
         and the class name, e.g. ``toptica.TopticaiBeam``
     - ``digitalPorts`` -- string describing the COM port
         to connect to, e.g. ``["COM4"]``
+    - ``useMockOnFailure`` -- default ``false``: a laser that cannot be
+        opened is left not connected (reported, commands refused,
+        reconnectable from Hardware status; it comes back OFF). ``true``
+        runs a reported mock instead.
     """
     def __init__(self, laserInfo, name, **_lowLevelManager) -> None:
+        super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=1)
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
         self.__port = laserInfo.managerProperties.get("digitalPorts", "Unknown")
         self.__driver = str(laserInfo.managerProperties.get("pyMicroscopeDriver", "Unknown"))
-        
-        try:
+        self.__maxPower = float(laserInfo.valueRangeMax)
+        useMock = laserInfo.managerProperties.get('useMockOnFailure', False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
+
+        def open_real():
             driver = self.__driver.split(".")
             if len(driver) != 2:
                 raise ValueError(
@@ -28,50 +52,61 @@ class PyMicroscopeLaserManager(LaserManager):
             package = importlib.import_module(
                 pythontools.joinModulePath("microscope.lights", driver[0])
             )
-            self.__laser = getattr(package, driver[1])(self.__port)
+            laser = getattr(package, driver[1])(self.__port)
             self.__logger.info(f"[{self.__port}] {self.__driver} initialized. ")
-            self._setConnected("Python Microscope laser initialized")
-        except Exception as e:
-            self._isMock = True
-            self.__logger.warning(
-                f'Failed to initialize PyMicroscope hardware, running in mock mode: {e}'
-            )
-            self.__laser = None
-            self._setConnectionError(
-                e,
-                summary="Python Microscope laser initialization failed; mock fallback active",
-                mock_active=True,
-            )
-        
-        super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=1)
-        self.__maxPower = float(laserInfo.valueRangeMax)
-    
+            return laser
+
+        self._installBackend(
+            open_real, _NullLaser,
+            label=f'Python Microscope laser {name} ({self.__driver} on {self.__port})',
+            use_mock_on_failure=bool(useMock),
+            close=lambda laser: laser.shutdown(),
+        )
+
+    #: The driver, read from the backend holder: a reconnect replaces it.
+    _laser = backend_attribute()
+
+    def _lifecycleSafeState(self, *, verified: bool):
+        """Emission off. Before a reconnect: best effort. After: errors count."""
+        try:
+            self._laser.disable()
+        except Exception as exc:
+            return [f'{self.name}: could not confirm OFF: {exc}'] if verified else []
+        return []
+
     def setEnabled(self, enabled: bool) -> None:
-        if self._isMock:
-            self.__logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
-            return
-        
-        (self.__laser.enable() if enabled else self.__laser.disable())
-    
+        # A laser that is not there raises DeviceNotConnectedError.
+        (self._laser.enable() if enabled else self._laser.disable())
+
     def setValue(self, value) -> None:
         # laser power is handled as percentage
         # so we divide for the max power to obtain
         # the actual percentage to which we set
         # the output power
-        if self._isMock:
-            self.__logger.debug(f'Mock mode: setValue({value}) ignored')
-            return
-        
+        self._requireConnected('setting power')
         if self.__maxPower == 0:
             self.__logger.error(f"Cannot set power: maxPower is zero")
             return
-        self.__laser.power = float(value) / self.__maxPower
-    
+        self._laser.power = float(value) / self.__maxPower
+
     def finalize(self) -> None:
-        if self._isMock:
-            self.__logger.debug(f'Mock mode: finalize() ignored')
-            return
-        
         self.__logger.info(f"[{self.__port}] {self.__driver} closed.")
-        self.__laser.shutdown()
+        self.backendHolder.close(suppress_errors=True)
         self._setFinalizedStatus()
+
+
+# Copyright (C) 2021 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

@@ -242,7 +242,9 @@ class _PIStageLifecycle:
                 hardware_id=self.hardware_id,
                 action=DeviceLifecycleAction.RECONNECT,
                 success=False,
-                summary="PI stage reconnect failed; mock fallback active",
+                summary=("PI stage reconnect failed; mock fallback active"
+                         if self._manager._useMockOnFailure
+                         else "PI stage reconnect failed; stage not connected"),
                 details=str(exc),
                 affected_device_ids=(device_id,),
             )
@@ -260,8 +262,11 @@ class PIStageManager(PositionerManager, SignalInterface):
     """PositionerManager for a PI C-663 XY stage connected through USB.
 
     The manager is a stable logical positioner. Its runtime hardware backend is
-    replaceable so startup failures and lost USB connections can fall back to a
-    stateful mock without removing the configured positioner from the UI.
+    replaceable. A stage that is not there (startup failure, lost USB
+    connection) leaves a placeholder at its last known position that REFUSES
+    moves with the device's name: the stage is reported as not connected and
+    reconnects from Hardware status. ``managerProperties.useMockOnFailure``
+    (default ``false``) opts in to a reported mock that does move.
     """
 
     sigJoystickStatusChanged = Signal(bool)
@@ -288,6 +293,10 @@ class PIStageManager(PositionerManager, SignalInterface):
         SignalInterface.__init__(self)
 
         manager_properties = positionerInfo.managerProperties or {}
+        useMock = manager_properties.get("useMockOnFailure", False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ("1", "true", "yes", "on")
+        self._useMockOnFailure = bool(useMock)
         self.runtimeTimeoutMs = self._parseRuntimeTimeoutMs(
             manager_properties.get("runtime_timeout_ms", 500)
         )
@@ -333,11 +342,14 @@ class PIStageManager(PositionerManager, SignalInterface):
             backend, usb_description = self._buildRealBackend()
         except Exception as exc:
             self.__logger.warning(
-                f"Could not initialize PI motorized stage; mock fallback active: {exc}"
+                f"Could not initialize PI motorized stage; "
+                f"{'mock fallback active' if self._useMockOnFailure else 'left not connected'}: {exc}"
             )
             self._activateMockFallback(
                 exc,
-                summary="PI stage initialization failed; mock fallback active",
+                summary=("PI stage initialization failed; mock fallback active"
+                         if self._useMockOnFailure
+                         else "PI stage not connected"),
             )
         else:
             self._installRealBackend(
@@ -560,7 +572,10 @@ class PIStageManager(PositionerManager, SignalInterface):
         with self._backendLock:
             old_backend = self._backend
             if not old_backend.is_mock:
-                self._backend = self._mockFromCurrentState()
+                self._backend = self._mockFromCurrentState(
+                    refuse_motion=self._refusalReason(exc))
+            elif not self._useMockOnFailure:
+                old_backend.refuse_motion = self._refusalReason(exc)
             self._stopButtonPolling()
             self._setJoystickStatusCached(False)
             failure_kind = (
@@ -572,10 +587,18 @@ class PIStageManager(PositionerManager, SignalInterface):
                 exc,
                 summary=summary,
                 failure_kind=failure_kind,
-                mock_active=True,
+                mock_active=self._useMockOnFailure,
             )
         if not old_backend.is_mock:
             self._closeBackendBestEffort(old_backend)
+
+    def _refusalReason(self, exc):
+        """Why moves are refused on the placeholder; None for an opt-in mock,
+        which moves."""
+        if self._useMockOnFailure:
+            return None
+        return (f"PI stage {self.name} is not connected ({exc}); "
+                f"moves are refused until it is reconnected in Hardware status")
 
     def _runBackend(self, operation):
         with self._backendLock:
@@ -601,8 +624,9 @@ class PIStageManager(PositionerManager, SignalInterface):
                 self._setJoystickStatusCached(False)
                 self._setConnectionError(
                     exc,
-                    summary="PI communication lost; mock fallback active",
-                    mock_active=True,
+                    summary=("PI communication lost; mock fallback active"
+                             if self._useMockOnFailure else "PI communication lost"),
+                    mock_active=self._useMockOnFailure,
                 )
                 raise
 
@@ -619,7 +643,10 @@ class PIStageManager(PositionerManager, SignalInterface):
                 retired.append(old_backend)
             self._stopButtonPolling()
             self._setJoystickStatusCached(False)
-            self._setMockActive("PI stage reconnecting on mock backend")
+            if self._useMockOnFailure:
+                self._setMockActive("PI stage reconnecting on mock backend")
+            else:
+                self._setDisconnected("PI stage reconnecting")
             return tuple(retired)
 
     def _markReconnectFailure(self, exc):
@@ -638,9 +665,10 @@ class PIStageManager(PositionerManager, SignalInterface):
             )
             self._setConnectionError(
                 exc,
-                summary="PI stage reconnect failed; mock fallback active",
+                summary=("PI stage reconnect failed; mock fallback active"
+                         if self._useMockOnFailure else "PI stage reconnect failed"),
                 failure_kind=failure_kind,
-                mock_active=True,
+                mock_active=self._useMockOnFailure,
             )
 
     def _closeBackendBestEffort(self, backend):

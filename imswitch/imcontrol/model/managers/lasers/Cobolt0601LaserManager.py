@@ -84,8 +84,11 @@ class Cobolt0601LaserManager(LantzLaserManager):
 
         with self._ioLock:
             try:
-                self._initializeSafeState(self._laser)
-                if not self._backendIsMock:
+                if self._absent:
+                    pass          # nothing to initialise; commands are refused
+                else:
+                    self._initializeSafeState(self._laser)
+                if not self._backendIsMock and not self._absent:
                     self._knownSerials = self._readSerials(self._laser)
                     self._setConnected('Cobolt initialized; emission OFF')
             except Exception as exc:
@@ -236,6 +239,15 @@ class Cobolt0601LaserManager(LantzLaserManager):
     def _probeLifecycle(self):
         device_id = DeviceId('laser', self.name)
         with self._ioLock:
+            if self.__dict__.get('_absent', False):
+                return DeviceLifecycleResult(
+                    hardware_id=self._lifecycle.hardware_id,
+                    action=DeviceLifecycleAction.PROBE,
+                    success=False,
+                    summary='Cobolt is not connected',
+                    details=self.connectionStatusDetails,
+                    affected_device_ids=(device_id,),
+                )
             if self._backendIsMock:
                 details = self.connectionStatusDetails or 'Mock fallback is active.'
                 return DeviceLifecycleResult(
@@ -311,6 +323,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
                 self._laser = candidate
                 candidate = None
                 self._backendIsMock = False
+                self._absent = False
                 self._backendOpenError = None
                 self._digitalMod = False
                 self._enabled = False
@@ -333,6 +346,25 @@ class Cobolt0601LaserManager(LantzLaserManager):
                     f'{exc}. Physical emission state could not be verified.'
                 )
                 result_summary = 'Cobolt reconnect failed; mock fallback active'
+                if not self.__dict__.get('_useMockOnFailure', False):
+                    from imswitch.imcontrol.model.devices.status import _AbsentBackend
+
+                    self._laser = _AbsentBackend(self, self._label)
+                    self._backendIsMock = False
+                    self._absent = True
+                    self._digitalMod = False
+                    self._enabled = False
+                    self._setConnectionError(
+                        failure, summary=f'{self._label} not connected')
+                    return DeviceLifecycleResult(
+                        hardware_id=self._lifecycle.hardware_id,
+                        action=DeviceLifecycleAction.RECONNECT,
+                        success=False,
+                        summary='Cobolt reconnect failed; laser not connected',
+                        details=str(failure),
+                        affected_device_ids=(device_id,),
+                        deactivated_device_ids=(device_id,),
+                    )
                 try:
                     self._installMockFallback(
                         failure,
@@ -374,6 +406,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
     # ------------------------------------------------------------------
 
     def setEnabled(self, enabled):
+        self._requireNotAbsent('switching emission')
         with self._ioLock:
             self.__logger.debug(f'Laser turning {enabled}')
             try:
@@ -385,6 +418,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
             self._enabled = bool(enabled)
 
     def setValue(self, power, enabled=True, for_scanning=False):
+        self._requireNotAbsent('setting power')
         power = float(power)
         with self._ioLock:
             self._setpoint_mw = power
@@ -399,6 +433,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
                 raise
 
     def setScanModeActive(self, active):
+        self._requireNotAbsent('scan mode')
         with self._ioLock:
             try:
                 if active:
@@ -459,6 +494,9 @@ class Cobolt0601LaserManager(LantzLaserManager):
         self._laser.power_mod = power / self._numLasers
 
     def finalize(self):
+        if self.__dict__.get('_absent', False):
+            self._setFinalizedStatus()
+            return
         with self._ioLock:
             try:
                 # Best effort darkening before transport close.

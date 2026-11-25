@@ -57,12 +57,10 @@ class GrblDriver:
     
     
     def __init__(self, address='/dev/ttyACM0'):
-        try:
-            self.ser = serial.Serial(address, baudrate=115200, timeout=0.01)
-            self.is_connected = True
-        except:
-            print("No stage connected - Wrong Port?")
-            self.is_connected = False
+        # A port that cannot be opened raises (serial.SerialException): the
+        # owner (GRBLManager's backend holder) records it as a failed device.
+        self.ser = serial.Serial(address, baudrate=115200, timeout=0.01)
+        self.is_connected = True
         self.waittimeout = 0.01
         self.is_debug = False
         

@@ -6,7 +6,7 @@ from ctypes import c_int32, c_uint8, c_char_p, create_string_buffer
 from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.devices.status import (
-    DeviceFailureKind, DeviceManagerStatusMixin,
+    DeviceFailureKind, DeviceManagerStatusMixin, DeviceNotConnectedError,
 )
 
 
@@ -16,7 +16,14 @@ cwd = os.getcwd()
 _dll_base_directory = os.path.join(cwd, "imswitch", "imcontrol", "model", "interfaces")
 
 class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
-    """Manager for communication with Hamamatsu SLM with USB connection"""
+    """Manager for communication with Hamamatsu SLM with USB connection.
+
+    ``managerProperties.useMockOnFailure`` (default ``false``): an SLM whose
+    DLL cannot be loaded is reported not connected, ``upload_pattern`` refuses
+    with its name, and the SLM panel's Connect retries the DLL and the USB
+    device (it never uploads a pattern by itself). ``true`` switches the
+    manager to a reported mock instead.
+    """
 
     requires_device_connection: bool = True
 
@@ -34,8 +41,13 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
         self.pixel_size = slmInfo.pixelSize
 
         self.mockermode = False
+        self._useMockOnFailure = False
         if slmInfo.managerProperties is not None:
             self.mockermode = slmInfo.managerProperties.get("mockermode", False)
+            useMock = slmInfo.managerProperties.get("useMockOnFailure", False)
+            if isinstance(useMock, str):
+                useMock = useMock.strip().lower() in ("1", "true", "yes", "on")
+            self._useMockOnFailure = bool(useMock)
         
         # Initialize connection state variables
         self.bID = None
@@ -48,32 +60,46 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
             self._setMockActive("USB SLM mock mode configured")
         else:
             self._setDisconnected("USB SLM not connected")
+            self.dll = None
             try:
-                if slmInfo.managerProperties is not None and slmInfo.managerProperties.get("dll_base_directory") is not None:
-                    baseDir = slmInfo.managerProperties.get("dll_base_directory")
-                else:
-                    baseDir = _dll_base_directory
-                
-                if slmInfo.managerProperties is not None and slmInfo.managerProperties.get("dll") is not None:
-                    dll_name = slmInfo.managerProperties.get("dll")
-                else:
-                    raise ValueError("DLL name not provided in managerProperties")
-                    
-                dll_path = os.path.join(baseDir, dll_name)
-                self.dll = ctypes.CDLL(dll_path)
+                self._loadDll()
             except Exception as e:
-                self.__logger.error(f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode")
-                self.mockermode = True
                 self.dll = None
-                self._setConnectionError(
-                    e,
-                    summary="Hamamatsu SLM DLL could not be loaded; mock fallback active",
-                    failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
-                    mock_active=True,
-                )
+                if self._useMockOnFailure:
+                    self.__logger.error(f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode")
+                    self.mockermode = True
+                    self._setConnectionError(
+                        e,
+                        summary="Hamamatsu SLM DLL could not be loaded; mock fallback active",
+                        failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
+                        mock_active=True,
+                    )
+                else:
+                    self.__logger.error(
+                        f"Could not load Hamamatsu SLM DLL: {e}. The SLM is left not "
+                        f"connected; fix the DLL and use Connect in the SLM panel.")
+                    self._setConnectionError(
+                        e,
+                        summary=f"{self.slmName} not connected: DLL could not be loaded",
+                        failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
+                    )
 
-        if self.dll is not None:
-            self.define_dll_prototypes()
+    def _loadDll(self):
+        """Load the vendor DLL and declare its prototypes (raises on failure)."""
+        properties = self.slmInfo.managerProperties
+        if properties is not None and properties.get("dll_base_directory") is not None:
+            baseDir = properties.get("dll_base_directory")
+        else:
+            baseDir = _dll_base_directory
+
+        if properties is not None and properties.get("dll") is not None:
+            dll_name = properties.get("dll")
+        else:
+            raise ValueError("DLL name not provided in managerProperties")
+
+        dll_path = os.path.join(baseDir, dll_name)
+        self.dll = ctypes.CDLL(dll_path)
+        self.define_dll_prototypes()
 
     def finalize(self):
         """Finalize the manager by closing any open connections."""
@@ -88,7 +114,12 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
             return True, "Mocker mode - no actual device connection."
         
         if self.dll is None:
-            self.__logger.warning("DLL not loaded, cannot connect to device.")
+            try:
+                self._loadDll()          # the user may have fixed the DLL since startup
+            except Exception as exc:
+                self.dll = None
+                self.__logger.warning(f"DLL not loaded, cannot connect to device: {exc}")
+        if self.dll is None:
             self._setConnectionError(
                 "DLL not loaded",
                 summary="Hamamatsu SLM DLL not available",
@@ -157,7 +188,10 @@ class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
             return
 
         if not hasattr(self, "bID") or self.bID is None:
-            raise RuntimeError("No device connected. Cannot upload pattern.")
+            raise DeviceNotConnectedError(
+                f"{self.slmName}: upload refused, no SLM connected "
+                f"({self.connectionStatusSummary or 'not connected'}). "
+                f"Use Connect in the SLM panel.")
 
         # Flatten to 1D
         array_1d = pattern.flatten()

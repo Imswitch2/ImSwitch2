@@ -15,8 +15,9 @@ import ctypes as ct
 MU2NM = 1e3 # micrometer to nanometer
 
 
-class StageStatusException(BaseException):
-    """Custom exception"""
+class StageStatusException(Exception):
+    """Custom exception. An ``Exception``, not a ``BaseException``: a stage
+    that reports an error must be caught like any other device failure."""
     pass
 
 

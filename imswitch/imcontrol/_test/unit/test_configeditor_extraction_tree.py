@@ -111,7 +111,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Hamamatsu's mockSample (the APD's was here already). 269: the Swabian
     # detector's seven card properties (click/start/line_channel, *_trigger,
     # trigger_levels) are retired -- the timeTagger block describes the card.
-    assert report.keys == 269
+    # 282 with the device-failure policy (fix/startup-device-failures), +13:
+    # the useMockOnFailure opt-ins of the rs232 stages and of the lasers and
+    # stages that are now absent rather than silently mocked on failure.
+    assert report.keys == 282
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -132,8 +135,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # frame_role, live_fit_period_s, and the three channels, now optional;
     # 212 with main: the instrument managers' optional keys, the seven
     # useMockOnFailure flags and the Hamamatsu's mockSample. 205: the seven
-    # retired Swabian card properties.
-    assert report.optional == 205
+    # retired Swabian card properties. 218: the device-failure policy's 13
+    # useMockOnFailure flags (all optional; required unchanged).
+    assert report.optional == 218
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -172,8 +176,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # frame_role and live_fit_period_s have their own rows. 196 with main:
     # docs/devices/instruments.rst's 18 instrument keys, MockPAX's plate
     # rotators, the seven useMockOnFailure rows and the Hamamatsu's mockSample.
-    # 189: the seven retired Swabian card-property rows are gone.
-    assert (report.docs_agree, report.docs_documented) == (189, 189)
+    # 189: the seven retired Swabian card-property rows are gone. 201 with the
+    # device-failure policy: its 12 useMockOnFailure rows in docs/devices.
+    assert (report.docs_agree, report.docs_documented) == (201, 201)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -187,8 +192,9 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # are coerced in code. 103 with Lifetime 2.0's typed Swabian reads. 126
     # with main: the 16 instrument keys read through float()/int()/str() and
     # the seven useMockOnFailure reads through bool(). 122: the retired
-    # Swabian card properties' float() and mapping reads.
-    assert report.typed_by_code == 122
+    # Swabian card properties' float() and mapping reads. 135 with the
+    # device-failure policy: its 13 useMockOnFailure reads through bool().
+    assert report.typed_by_code == 135
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

@@ -6,6 +6,14 @@
       "x-imswitch-source": [
         "code:optional(in)"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "Default ``false``. ``true`` runs a reported mock that drops calls",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "PulseStreamerLaserManager managerProperties",

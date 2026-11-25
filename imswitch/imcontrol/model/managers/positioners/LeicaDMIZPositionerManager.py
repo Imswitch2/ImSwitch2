@@ -9,6 +9,7 @@ from imswitch.imcontrol.model.devices.graph import (
 from imswitch.imcontrol.model.devices.status import (
     DeviceFailureKind,
     DeviceId,
+    DeviceNotConnectedError,
     DeviceRuntimeMode,
 )
 from imswitch.imcontrol.model.interfaces.LeicaDMIHardware import createLeicaDMIHardware
@@ -99,8 +100,7 @@ class LeicaDMIZPositionerManager(PositionerManager):
                 )
                 self._setConnectionError(
                     self._connectionError,
-                    summary="Leica DMI Z transport is mock",
-                    mock_active=True,
+                    summary="Leica DMI Z not connected: serial port did not open",
                 )
             else:
                 self._connectionError = "Leica DMI hardware interface unavailable."
@@ -130,9 +130,8 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
         if transport_is_mock:
             self._setConnectionError(
-                "Leica RS232 transport is using a mock backend",
-                summary="Leica DMI Z transport is mock",
-                mock_active=True,
+                "Leica RS232 transport is using a placeholder port",
+                summary="Leica DMI Z not connected: serial port did not open",
             )
         else:
             self._setConnected("Leica DMI Z connected")
@@ -154,11 +153,10 @@ class LeicaDMIZPositionerManager(PositionerManager):
             self._setConnectionError(
                 self._connectionError,
                 summary=(
-                    "Leica DMI Z transport is mock"
+                    "Leica DMI Z not connected: serial port did not open"
                     if mock_active
                     else "Leica DMI Z hardware interface is unavailable"
                 ),
-                mock_active=mock_active,
             )
             return
 
@@ -220,14 +218,12 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
-        if not self.isAvailable:
-            return self._position
+        self._requireHardware('move')
         return self._call_hardware("move_z_relative_um", dist)
 
     def setPosition(self, position, axis=None):
         self._check_axis(axis)
-        if not self.isAvailable:
-            return self._position
+        self._requireHardware('move')
         return self._call_hardware("set_z_position_um", position)
 
     def updatePosition(self):
@@ -256,6 +252,13 @@ class LeicaDMIZPositionerManager(PositionerManager):
         result = self._call_hardware("set_pos_nm", pos_nm, updatePosition=False)
         self.updatePosition()
         return result
+
+    def _requireHardware(self, what):
+        """A Z that is not there refuses, by name, instead of "moving" silently."""
+        if not self.isAvailable:
+            raise DeviceNotConnectedError(
+                f"{self.name}: {what} refused, "
+                f"{self.connectionStatusSummary or 'Leica hardware unavailable'}")
 
     def _call_hardware(self, methodName, *args, updatePosition=True):
         method = getattr(self._hardware, methodName)

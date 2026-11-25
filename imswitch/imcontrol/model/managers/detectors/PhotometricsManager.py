@@ -51,6 +51,7 @@ class PhotometricsManager(DetectorManager):
             use_mock_on_failure=bool(
                 detectorInfo.managerProperties.get('useMockOnFailure', True)),
         )
+        self._requireBackend()
         self._binning = 1
 
         fullShape = self._camera.sensor_size

@@ -20,19 +20,36 @@ that the first implementation did not):
   Managers that share a transport object share a physical device. The device
   graph is built from backend ownership, not from per-manager descriptor
   declarations; a shared transport is the normal case, not a veto.
-- **P-2 A device's mode comes from the setup file and never changes at
-  runtime.** A failure changes the connection state (`ERROR`, `ABSENT`), never
-  the mode. No silent fallback to a simulation.
+- **P-2 (revised 2026-11, maintainer decision) A device that did not start is
+  never a silent fake.** The rule, in order:
+  1. startup never crashes;
+  2. every device that did not start is *reported* -- in the log, in a
+     non-blocking notice in the window, and in Hardware status -- never
+     silently replaced;
+  3. where it is safe and possible, the device is left absent (no backend, no
+     mock) and is reconnected from Hardware status without a restart;
+  4. where the application cannot work without the device, it runs on a mock
+     that is clearly reported as a mock, marked in the recording metadata, and
+     swapped for the real device on reconnect. That is the case for
+     **detectors**.
+
+  Lasers, stages, rotators, flip mirrors, pulse generators, SLMs, stands and
+  instruments are *never* mocked on failure unless the setup says so
+  (`useMockOnFailure: true`, available on every device): a mock laser or stage
+  on a real rig would let the user believe light is on or the stage moved.
+  NI-DAQ and the Time Tagger keep their explicit-simulation semantics
+  (a setup flag, not a plug); a failure is reported and startup continues.
+
+  This replaces the earlier P-2 ("a device's mode comes from the setup file
+  and never changes at runtime; no fallback to a simulation"), which had no
+  exception for detectors and so left the managers that need a sensor size at
+  construction with a rule they could not follow.
 
 **Mocks stay.** They are how ImSwitch is tested and taught
 (`example_no_hardware.json`, `MOCK_` serials, `MockPositionerManager`, the
 mock instruments); nothing here touches a *configured* mock, and
-`DeviceRuntimeMode.MOCK` remains a first-class, visible mode. What goes is
-the *fallback* mock: a real device that failed at startup being replaced by a
-simulation without the setup asking for it. That behaviour is kept as an
-explicit opt-in (`useMockOnFailure: true`, per device) for anyone who relies
-on it; the default becomes *absent with the error shown, reconnect when it is
-back*. §4.0 has the rules.
+`DeviceRuntimeMode.MOCK` remains a first-class, visible mode. §4.0 has the
+rules and the per-manager classification.
 
 Non-goals (for now): automatic reconnect on fault (lasers must never re-arm
 by themselves); NI-DAQ (its "simulation" is a setup flag, not a plug);
@@ -140,16 +157,79 @@ PyMicroscope, Swabian time tagger (own SDK sessions, `_isMock` latch at
 
 | Setup says | Startup | Hardware fails later | Hardware comes back |
 |---|---|---|---|
-| real device | `REAL` + `CONNECTED`, or `REAL` + `ABSENT` with the error (no mock installed; the panel shows "Not connected: <error>") | `REAL` + `ERROR`, commands refused with the error | Reconnect (or Connect for a transient one) → `CONNECTED` |
-| real device, `useMockOnFailure: true` | as today: `MOCK` + the error, a mock installed (explicit opt-in) | — (a mock does not fail) | Reconnect → `REAL` + `CONNECTED` (the one case where the mode changes, because the setup asked for it) |
-| mock (`Mock*Manager`, `MOCK_` serial, `simulation: true`) | `MOCK`, as today | — | — |
+| real device (not a detector) | `REAL` + `CONNECTED`, or `REAL` + `ERROR`/`ABSENT` with the error (no mock installed; the panel shows "Not connected: <error>") | `REAL` + `ERROR`, commands refused with the error | Reconnect (or Connect for a transient one) -> `CONNECTED` |
+| real **detector** | `REAL` + `CONNECTED`, or `MOCK` + `ERROR` with the reason: a mock that says so in its model name, in the log, in the window notice and in every recording made with it; `useMockOnFailure: false` opts out (the detector is then left out and reported) | `REAL` + `ERROR` | Reconnect -> `REAL` + `CONNECTED`, the mock replaced |
+| real device, `useMockOnFailure: true` | `MOCK` + the error, a mock installed (explicit opt-in) | -- | Reconnect -> `REAL` + `CONNECTED` |
+| mock (`Mock*Manager`, `MOCK_` serial, `simulation: true`) | `MOCK`, as configured | -- | -- |
 | transient real device | `REAL` + `ABSENT`, no attempt (unless `connectOnStartup`) | `REAL` + `ERROR` | Connect / Reconnect |
+| manager cannot be constructed (vendor library, setup error) | left out of its group; reported as `ERROR` (`FailedDeviceManager`); consumers see it missing | -- | needs a restart (no manager exists to reconnect) |
+
+A device on a serial transport that failed to open is not usable and says so
+(its panel is greyed with the transport's reason) even though a placeholder
+port keeps its constructor alive; the transport's reconnect heals it.
 
 Consequences: `isSimulated` / `_isMock` are read from the holder (which
 opener produced the backend), never stored; a command on an `ABSENT` /
-`ERROR` real device raises a clear error instead of succeeding on a fake —
-so the per-command simulation checks in the measurement adapters become
-plain "is it connected" checks, enforced in one place (the holder).
+`ERROR` real device raises a clear error instead of succeeding on a fake.
+
+#### 4.0.1 What makes the Marzhauser stage the template
+
+The Marzhauser XY stage over an `RS232Manager` fails at startup and recovers
+from Hardware status without a restart. What makes that work:
+
+1. **A stable transport object.** `RS232Manager` is created once; dependents
+   hold *it*, not its port. A failed open leaves a placeholder port
+   (`MockRS232Driver`) so every dependent can still be constructed, and the
+   transport records `ERROR` + `MOCK`.
+2. **`reconnectTransport()` replaces the port in place.** Nothing that holds
+   the transport needs rebinding.
+3. **The device refuses to trust a placeholder.** `MHXYStageManager` reads the
+   transport's mode: on a mock port it does not sync a position, records
+   `ERROR` ("position unavailable") and refuses moves
+   (`positionSynced` is false). It never looks connected.
+4. **The lifecycle service fans the reconnect out.** `reconnect(X)` finds X's
+   transport, runs every dependent's safe state, reopens the port once, then
+   calls each dependent's `_onTransportReconnected(real)`; the stage re-reads
+   its position and only then accepts moves.
+5. **Hardware status shows it.** The graph's `USES_TRANSPORT` relation turns a
+   failed transport into the dependent's status (`ERROR`, transport summary).
+
+Points 1, 2, 4 and 5 are generic; point 3 was the stage's own. It is now
+generic too (`DeviceManagerStatusMixin._failedTransport`): any device that
+holds a failed transport is not usable and its refusal names the transport.
+
+#### 4.0.2 Classification (target behaviour per manager)
+
+"Absent + reconnect" = no backend, no mock, panel greyed, reconnect from
+Hardware status. "Mock + reported" = a reported mock that the reconnect
+replaces. "Status" = state after this change.
+
+| Manager(s) | After a startup failure (target) | Now |
+|---|---|---|
+| AVManager, PiCamManager, PhotometricsManager, ThorCamTSIManager | mock + reported, swapped on reconnect | **done** (holder; `useMockOnFailure: false` leaves the detector out, reported) |
+| TISManager, HamamatsuManager | mock + reported, swapped on reconnect | **done** (own lifecycle; lifecycle tests) |
+| APDManager, PMTManager | NI-DAQ simulation semantics | unchanged (simulation is a setup flag) |
+| SwabianTimeTaggerManager | explicit simulation; unavailable library reported | unchanged; library failure guarded |
+| MPBLaserManager, AAAOTFLaserManager | absent + reconnect | **done** |
+| GRBLLaserManager, ESP32/LED/LightSheet lasers, Oxxius, TriggerScopeLaser | absent + reconnect via the board's transport | transport failure now makes them unusable; GRBL laser returns dark after reconnect; ESP32LEDLaserManager keeps its `_isMock` latch (**remaining**) |
+| PulseGeneratorLaserManager + TeensyPulseManager | absent + reconnect | **done** |
+| Cobolt0601New | absent + reconnect | **remaining**: default `useMockOnFailure: true`, `false` raises (left out, no reconnect) |
+| Cobolt0601, CoolLED, Lantz, PulseStreamerLaser, PyMicroscopeLaser | absent + reconnect | **remaining**: automatic mock fallback (reported as mock) |
+| KinesisStageManager, KinesisRotatorManager, StandaRotatorManager | absent + reconnect | **done** |
+| MHXYStageManager, PiezoconceptZ(2), SQUIDStageManager | absent + reconnect | **done**: a missing `rs232device` is an error (mock only with `useMockOnFailure`) |
+| PIStageManager, LeicaDMIZPositioner, LeicaDMIStandManager, ElliptecRotator | absent + reconnect | **remaining**: automatic mock fallback with its own lifecycle (reported as mock) |
+| ESP32/GRBL/Jena/BSC203/KDC101/SerialDacZ/TriggerScope positioners, SmarACT | absent + reconnect | absent through their transport where it has one; a constructor failure leaves the device out until restart |
+| ThorlabsMFF, instruments | absent + reconnect / connect | **done** (own lifecycles; `transient`) |
+| HamamatsuSLMusb | absent + reconnect | **remaining**: switches itself to mock mode on DLL failure (reported) |
+| StandManager | absent + reconnect | construction failure -> a do-nothing stand + reported error; an unavailable class still loads its mock manager (**remaining**) |
+| RS232Manager | placeholder port, reported, reconnect in place | **done**; dependents are unusable while it is down |
+| ESP32Manager, GRBLManager, SQUIDManager | absent + reconnect in place | **done** (holder) |
+| KDC101Manager, ElliptecManager | reconnect in place | **remaining** (`device_active` flag / own bus) |
+| NidaqManager | simulation is a setup flag | unchanged; unavailable backend reported |
+
+The remaining rows are bespoke managers whose fallback is intertwined with a
+lifecycle class whose tests pin the mock; each is a half-day to a day with a
+rig check, and none crashes startup.
 
 ### 4.1 Backend holder (in `DeviceManagerStatusMixin`, so every manager has it)
 
@@ -468,3 +548,26 @@ devices that can be probed. The optional periodic check (Q-1) is not
 built: off by default was the proposal, and nothing on the rig has asked
 for it yet.
 
+
+**Policy revision (2026-11, maintainer decision; PR "a hardware device that
+fails at startup no longer aborts the application").**
+- P-2 is rewritten (section 1) and section 4.0 gives the per-kind rules and the
+  classification; detectors are the one kind that defaults to a reported mock.
+- Startup never crashes: `MultiManager` and `MasterController` build every
+  device fail-soft (`FailedDeviceManager`, `startupFailures`); the supervisor
+  reports what failed.
+- One place that says what did not start: `devices/startup_report.py` feeds a
+  warning in the log, a dismissible notice in the main window (status bar,
+  hidden while all is well) and the Hardware status window. A mock standing in
+  for a failed detector says so in its model name, and
+  `recording:detector_simulated` / `recording:detector_simulation_reason` are
+  written into every recording made with it (HDF5, Zarr and OME-TIFF).
+- A device on a transport that failed to open is not usable
+  (`DeviceManagerStatusMixin._failedTransport`), not only the one stage that
+  happened to cross-check the transport.
+- Stages that looked up a missing `rs232device` no longer fall back to a mock
+  silently (`useMockOnFailure` is the opt-in).
+- Reconnect safety: see the report in the PR; reconnect re-applies detector
+  parameters (the user's own settings), re-reads positions, and returns
+  lasers dark; it does not re-apply laser power or move a stage, except that a
+  GRBL board re-homes after a reconnect when its setup says `is_home`.

@@ -2,6 +2,8 @@ import threading
 
 import numpy as np
 
+from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError
+
 from .ScanManagerBase import SuperScanManager
 
 # Per-thread capture of the commands a scan handler would send, so the same
@@ -46,6 +48,35 @@ class ScanStartHandle:
         self._onFinished(ok, message)
 
 
+class _NullSignal:
+    """Connectable, never emits: stands in for a signal of an absent board."""
+
+    def connect(self, *args, **kwargs):
+        pass
+
+    def disconnect(self, *args, **kwargs):
+        pass
+
+    def emit(self, *args, **kwargs):
+        raise DeviceNotConnectedError(_ABSENT_TRIGGERSCOPE)
+
+
+_ABSENT_TRIGGERSCOPE = ('TriggerScope: scan refused, the TriggerScope is not connected '
+                        '(it failed to start; see Hardware status and the log)')
+
+
+class _AbsentTriggerScope:
+    """Stand-in for a TriggerScope that failed to start."""
+
+    sigScanDone = _NullSignal()
+    sigScanStarted = _NullSignal()
+
+    def __getattr__(self, name):
+        if name.startswith('__'):
+            raise AttributeError(name)
+        raise DeviceNotConnectedError(_ABSENT_TRIGGERSCOPE)
+
+
 class ScanManagerTriggerScope(SuperScanManager):
     """ ScanManager for TriggerScope-based scan sequences.
 
@@ -68,7 +99,11 @@ class ScanManagerTriggerScope(SuperScanManager):
 
     def __init__(self, setupInfo, triggerScopeManager):
         super().__init__(setupInfo)
-        self._ts = triggerScopeManager
+        # A TriggerScope that failed to start is None: the scan controllers can
+        # still be built (they only subscribe to its signals), and every scan
+        # is then refused with a message saying why.
+        self._ts = (triggerScopeManager if triggerScopeManager is not None
+                    else _AbsentTriggerScope())
 
     # Forward board-level signals so the rest of the UI can subscribe the same way
     @property
@@ -107,6 +142,8 @@ class ScanManagerTriggerScope(SuperScanManager):
             ``'scanParameters'`` sub-dicts (format depends on scan type).
         :param scan_type: one of the supported firmware scan type strings.
         """
+        if isinstance(self._ts, _AbsentTriggerScope):
+            raise DeviceNotConnectedError(_ABSENT_TRIGGERSCOPE)   # before any parameter work
         handler = self._dispatch().get(scan_type)
         if handler is None:
             self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
@@ -126,6 +163,8 @@ class ScanManagerTriggerScope(SuperScanManager):
         in ``runScan``. Returns a :class:`ScanStartHandle`, or ``False`` for an
         unknown scan type.
         """
+        if isinstance(self._ts, _AbsentTriggerScope):
+            raise DeviceNotConnectedError(_ABSENT_TRIGGERSCOPE)   # before any parameter work
         dispatch = self._dispatch()
         handler = dispatch.get(scan_type)
         if handler is None:

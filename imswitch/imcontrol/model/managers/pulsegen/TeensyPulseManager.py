@@ -7,7 +7,9 @@ import dataclasses
 import threading
 from typing import List, Optional
 
-from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin, backend_attribute
+from imswitch.imcontrol.model.devices.status import (
+    DeviceManagerStatusMixin, DeviceNotConnectedError, backend_attribute,
+)
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.SetupInfo import TeensyPulseInfo  # re-export
 
@@ -159,11 +161,17 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
 
     @property
     def min_pulse_width_ns(self) -> int:
-        return self._driver.capabilities.min_pulse_us * 1_000
+        try:
+            return self._driver.capabilities.min_pulse_us * 1_000
+        except DeviceNotConnectedError:
+            return 0  # not connected: no capabilities to report
 
     @property
     def n_digital_channels(self) -> int:
-        return self._driver.capabilities.n_channels
+        try:
+            return self._driver.capabilities.n_channels
+        except DeviceNotConnectedError:
+            return 0  # not connected: no capabilities to report
 
     @property
     def supports_hw_trigger_in(self) -> bool:
@@ -206,7 +214,10 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
         # via the protocol_version of the driver's capabilities —
         # consumers that care about that should inspect the driver
         # directly via :attr:`driver`.
-        return getattr(self._driver, 'is_open', True)
+        try:
+            return getattr(self._driver, 'is_open', True)
+        except DeviceNotConnectedError:
+            return False  # absent driver: nothing is open
 
     @property
     def driver(self):

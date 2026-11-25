@@ -13,7 +13,7 @@ from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import configfiletools
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, _missingDevices
 
 _CLOSE_WAIT_TIMEOUT_MS = 2000
 
@@ -100,6 +100,17 @@ class FocusLockController(ImConWidgetController):
         self._pendingMove = 0.0
 
         if self._setupInfo.focusLock is None:
+            return
+
+        missing = _missingDevices(
+            self._master, detector=self._setupInfo.focusLock.camera,
+            positioner=self._setupInfo.focusLock.positioner)
+        if missing:
+            # A device the focus lock needs did not start: the panel stays
+            # inert (as for a setup without a focus lock) instead of ending startup.
+            self._logger.warning('Focus lock disabled: ' + '; '.join(missing))
+            self._widget.setEnabled(False)
+            self._widget.setToolTip('Focus lock disabled: ' + '; '.join(missing))
             return
 
         self.camera = self._setupInfo.focusLock.camera
