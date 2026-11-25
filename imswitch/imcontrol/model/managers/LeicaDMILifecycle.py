@@ -150,7 +150,7 @@ class LeicaDMILifecycle:
                     "Leica RS232 reconnect failed",
                 )
                 self._adoptHardware(None, error=details, mock_active=True)
-                return [f"Leica stand reconnect failed; mock fallback active ({details})"]
+                return [f"Leica stand reconnect failed; stand not connected ({details})"]
             try:
                 hardware = self._rebuildHardware()
             except Exception as exc:

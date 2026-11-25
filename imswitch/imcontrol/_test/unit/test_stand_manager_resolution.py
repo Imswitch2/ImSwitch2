@@ -76,7 +76,19 @@ def test_stand_manager_resolves_canonical_mock_name(monkeypatch, stand_info):
     assert manager.mocker is True
 
 
-def test_stand_manager_legacy_leica_name_falls_back_to_mock(
+def test_stand_manager_unloadable_class_is_an_error_not_a_silent_mock(
+    monkeypatch, stand_info
+):
+    registry = build_default_registry(discover=False)
+    monkeypatch.setattr(
+        stand_manager_module, "get_default_registry", lambda: registry
+    )
+
+    with pytest.raises(ImportError, match="(?s)LeicaDMIManager.*useMockOnFailure"):
+        StandManager(stand_info("LeicaDMIManager"))
+
+
+def test_stand_manager_legacy_leica_name_falls_back_to_mock_only_when_opted_in(
     monkeypatch, caplog, stand_info
 ):
     registry = build_default_registry(discover=False)
@@ -84,8 +96,10 @@ def test_stand_manager_legacy_leica_name_falls_back_to_mock(
         stand_manager_module, "get_default_registry", lambda: registry
     )
 
+    info = stand_info("LeicaDMIManager")
+    info.managerProperties = {"useMockOnFailure": True}
     with caplog.at_level("WARNING", logger="imswitch"):
-        manager = StandManager(stand_info("LeicaDMIManager"))
+        manager = StandManager(info)
 
     assert manager._subManager.__class__.__name__ == "MockLeicaDMIStandManager"
     assert manager.mocker is True

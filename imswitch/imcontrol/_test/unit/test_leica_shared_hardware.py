@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from imswitch.imcontrol.model.devices.status import DeviceConnectionState
+from imswitch.imcontrol.model.devices.status import DeviceConnectionState, DeviceRuntimeMode
 from imswitch.imcontrol.model.interfaces import LeicaDMIHardware
 from imswitch.imcontrol.model.managers.positioners.LeicaDMIZPositionerManager import (
     LeicaDMIZPositionerManager,
@@ -285,7 +285,7 @@ def test_leica_lifecycle_reconnects_mock_transport_and_rebinds_shared_hardware()
     }
 
 
-def test_leica_lifecycle_failed_transport_reconnect_keeps_mock_fallback_visible():
+def test_leica_lifecycle_failed_transport_reconnect_stays_not_connected_and_refuses_commands():
     from imswitch.imcontrol.model.devices.status import (
         DeviceManagerStatusMixin,
         DeviceRuntimeMode,
@@ -322,13 +322,46 @@ def test_leica_lifecycle_failed_transport_reconnect_keeps_mock_fallback_visible(
     result = stand.getDeviceLifecycle().reconnect()
 
     assert not result.success
-    assert "mock fallback active" in result.summary
+    assert "not connected" in result.summary
     assert stand._hardware is None
     assert z._hardware is None
-    assert stand.runtimeMode is DeviceRuntimeMode.MOCK
-    assert z.runtimeMode is DeviceRuntimeMode.MOCK
+    # Not connected, not a mock (the Leica stand has none): policy.
+    assert stand.runtimeMode is DeviceRuntimeMode.REAL
+    assert z.runtimeMode is DeviceRuntimeMode.REAL
     assert stand.connectionState is DeviceConnectionState.ERROR
     assert z.connectionState is DeviceConnectionState.ERROR
+    assert not stand.isUsable and not z.isUsable
+
+    # Commands are refused by name; nothing silently "succeeds".
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+    with pytest.raises(DeviceNotConnectedError, match="Leica stand: setFLUO refused"):
+        stand.setFLUO()
+    with pytest.raises(DeviceNotConnectedError, match="Objective Z: move refused"):
+        z.move(1.0, "Z")
+    with pytest.raises(DeviceNotConnectedError):
+        z.setPosition(1.0, "Z")
+
+
+def test_leica_stand_on_a_failed_port_starts_not_connected_not_as_a_mock():
+    from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
+
+    class DeadPortRS232(FakeLeicaRS232, DeviceManagerStatusMixin):
+        def __init__(self):
+            super().__init__()
+            self._setConnectionError("COM unavailable", summary="port failed",
+                                     mock_active=True)   # the placeholder port
+
+        def query(self, cmd):
+            return None
+
+        def reconnectTransport(self):
+            return False
+
+    rs232s = FakeRS232sManager(Leica=DeadPortRS232())
+    stand = LeicaDMIStandManager(_stand_info(), rs232sManager=rs232s)
+    assert stand.runtimeMode is DeviceRuntimeMode.REAL
+    assert "not connected" in stand.connectionStatusSummary
+    assert not stand.isUsable
 
 
 def test_reconnect_never_claims_shutters_it_could_not_close():

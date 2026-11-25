@@ -10,6 +10,7 @@ from imswitch.imcontrol.model.devices.status import (
     DeviceFailureKind,
     DeviceId,
     DeviceManagerStatusMixin,
+    DeviceNotConnectedError,
     DeviceRuntimeMode,
 )
 from imswitch.imcontrol.model.interfaces.LeicaDMIHardware import createLeicaDMIHardware
@@ -79,10 +80,12 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
                     "connectionStatusDetails",
                     "Leica RS232 transport is using a mock backend",
                 )
+                # The serial port did not open: the stand is not connected (a
+                # placeholder port is not a configured mock, and the Leica stand
+                # has no mock of its own).
                 self._setConnectionError(
                     self._connectionError,
-                    summary="Leica stand transport is mock",
-                    mock_active=True,
+                    summary="Leica stand not connected: serial port did not open",
                 )
             else:
                 self._connectionError = "Leica DMI hardware interface unavailable."
@@ -97,9 +100,8 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
 
         if transport_is_mock:
             self._setConnectionError(
-                "Leica RS232 transport is using a mock backend",
-                summary="Leica stand transport is mock",
-                mock_active=True,
+                "Leica RS232 transport is using a placeholder port",
+                summary="Leica stand not connected: serial port did not open",
             )
         else:
             self._setConnected("Leica stand connected")
@@ -120,11 +122,10 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
             self._setConnectionError(
                 self._connectionError,
                 summary=(
-                    "Leica stand transport is mock"
+                    "Leica stand not connected: serial port did not open"
                     if mock_active
                     else "Leica stand hardware interface is unavailable"
                 ),
-                mock_active=mock_active,
             )
             return
 
@@ -193,10 +194,10 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
 
     def _call_hardware(self, methodName, *args):
         if self._hardware is None:
-            self.__logger.warning(
-                f"Cannot run Leica DMI command {methodName}: hardware unavailable."
-            )
-            return None
+            # Refuse, naming the stand: a silent None would read as success.
+            raise DeviceNotConnectedError(
+                f"Leica stand: {methodName} refused, "
+                f"{self.connectionStatusSummary or 'hardware unavailable'}")
 
         method = getattr(self._hardware, methodName)
         try:
