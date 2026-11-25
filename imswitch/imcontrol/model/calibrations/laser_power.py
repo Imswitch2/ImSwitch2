@@ -202,6 +202,8 @@ def format_power(power: Optional[float], unit: str) -> str:
     if power is None or unit not in _POWER_SCALE_W:
         return ''
     watts = float(power) * _POWER_SCALE_W[unit]
+    if watts == 0.0:
+        return '0 W'
     for name, scale in (('W', 1.0), ('mW', 1e-3), ('µW', 1e-6), ('nW', 1e-9)):
         if abs(watts) >= scale or name == 'nW':
             return f'{watts / scale:.3g} {name}'

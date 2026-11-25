@@ -18,8 +18,8 @@ def _fmt(value, decimals: int = 3) -> str:
 def raw_units_text(units: str, valueRange=None) -> str:
     span = ''
     if valueRange is not None and None not in tuple(valueRange):
-        span = f', {_fmt(valueRange[0])}-{_fmt(valueRange[1])} {units}'
-    return f'the value is the raw drive in {units or "the manager’s units"}{span}'
+        span = f' ({_fmt(valueRange[0])}-{_fmt(valueRange[1])} {units})'
+    return f'the value is in the laser\'s own units, {units or "unitless"}{span}'
 
 
 def laser_calibration_tooltip(resolution: CalibrationResolution, value, *, rawUnits: str,
@@ -76,3 +76,20 @@ def optional_power_text(resolution: CalibrationResolution, value) -> Optional[st
         return None
     power = table.power_for_percent(value)
     return table.format_power(power) if power is not None else None
+
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

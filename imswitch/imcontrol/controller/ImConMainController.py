@@ -170,12 +170,20 @@ class ImConMainController(MainController):
                 widget=None,  # API-only, no widget
             )
 
+        # Calibrations window (Hardware → Calibrations…): swaps go through the
+        # Laser panel's controller, which owns the swap rules.
+        self.calibrationsController = self.__factory.createController(
+            controllers.CalibrationsController, self.__mainView.calibrationsWidget,
+            laserController=self.controllers.get('Laser'),
+        )
+
         # Generate API
         self.__api = None
         apiObjs = (
             list(self.controllers.values())
             + [self.setupModeController, self.__commChannel,
-               self.workflowFacadeController, self.reservationController]
+               self.workflowFacadeController, self.reservationController,
+               self.calibrationsController]
             + ([self.instrumentsController]
                if self.instrumentsController not in self.controllers.values() else [])
         )
