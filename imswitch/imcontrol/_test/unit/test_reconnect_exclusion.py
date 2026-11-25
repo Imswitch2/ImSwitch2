@@ -200,8 +200,11 @@ def test_pi_failure_while_installing_the_replacement_reports_failure(fake_pi, mo
 
     assert result.success is False
     assert 'USB lost' in result.details
-    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    # Not connected, not a mock (device-failure policy: a PI stage that is not
+    # there refuses moves; only useMockOnFailure runs a mock).
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
     assert manager.connectionState is DeviceConnectionState.ERROR
+    assert not manager.isUsable
 
 
 def test_settings_refresh_reconnected_detectors_on_the_ui_thread():
