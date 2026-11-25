@@ -80,3 +80,22 @@ def test_elliptec_reports_mock_fallback_without_status_probe(monkeypatch):
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert "COM20 unavailable" in (manager.connectionStatusDetails or "")
+
+
+def test_a_mock_port_is_a_configured_mock_not_a_failure(monkeypatch):
+    """The shipped no-hardware setups name a MOCK_ port: a mock by configuration."""
+    monkeypatch.setattr(
+        elliptecbus,
+        "_open_elliptec_stage",
+        lambda port, scale: (_ for _ in ()).throw(OSError("no such port")),
+    )
+    info = _info()
+    info.managerProperties["port"] = "MOCK_COM20"
+
+    manager = ElliptecRotatorManager(info, "HWP")
+
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.NOT_APPLICABLE
+    assert manager.isUsable
+    manager.move_abs(12.0)                       # moves virtually, as configured
+    assert manager.position == 12.0

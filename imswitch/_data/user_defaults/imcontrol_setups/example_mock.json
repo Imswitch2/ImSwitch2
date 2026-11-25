@@ -23,7 +23,8 @@
             "digitalLine": null,
             "managerName": "MHXYStageManager",
             "managerProperties": {
-                "rs232device": ""
+                "rs232device": "",
+                "useMockOnFailure": true
             },
             "axes": ["X", "Y"],
             "forPositioning": true

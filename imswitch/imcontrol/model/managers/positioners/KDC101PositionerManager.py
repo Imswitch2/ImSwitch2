@@ -5,6 +5,37 @@ from imswitch.imcontrol.model.devices.status import backend_attribute
 from .PositionerManager import PositionerManager
 
 
+class _MockKDC101:
+    """The configured mock for a ``MOCK_`` port: remembers where it was told to go."""
+
+    def __init__(self):
+        self.status = {'position': 0}
+        self.jogparams = {'step_size': 0, 'acceleration': 0, 'max_velocity': 0}
+        self.velparams = {'acceleration': 0, 'max_velocity': 0}
+
+    def move_absolute(self, position):
+        self.status['position'] = position
+
+    def move_velocity(self, forward):
+        pass
+
+    def stop(self):
+        pass
+
+    def home(self):
+        self.status['position'] = 0
+
+    def close(self):
+        pass
+
+    def set_jog_params(self, step_size, acceleration, max_velocity):
+        self.jogparams.update(step_size=step_size, acceleration=acceleration,
+                              max_velocity=max_velocity)
+
+    def set_velocity_params(self, acceleration, max_velocity):
+        self.velparams.update(acceleration=acceleration, max_velocity=max_velocity)
+
+
 class KDC101PositionerManager(PositionerManager):
     """PositionerManager for a Thorlabs KDC101-backed single-axis actuator.
 
@@ -49,8 +80,9 @@ class KDC101PositionerManager(PositionerManager):
             raise ValueError('posConvFac must be non-zero.')
 
         self._installBackend(
-            lambda: self._getDeviceObj(self._port),
+            lambda: self._getDeviceObj(self._port), _MockKDC101,
             label=f'KDC101 positioner {name} on {self._port}',
+            configured_mock=str(self._port).upper().startswith('MOCK'),
             close=lambda device: device.close() if hasattr(device, 'close') else None,
         )
 
@@ -168,7 +200,11 @@ class KDC101PositionerManager(PositionerManager):
 
     def _getDeviceObj(self, port: str):
         """Open the vendor device; raises when it cannot be opened (the
-        backend holder records that as the device not being connected)."""
+        backend holder records that as the device not being connected).
+        A ``MOCK_`` port is a configured mock (the shipped no-hardware
+        setups): a stateful in-process stand-in, reported as a mock."""
+        if str(port).upper().startswith('MOCK'):
+            return _MockKDC101()
         try:
             from thorlabs_apt_device.devices.kdc101 import KDC101
         except ImportError:
