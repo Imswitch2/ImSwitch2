@@ -8,6 +8,8 @@
 # classes with its own metaclass, which Sphinx's mock objects cannot do.
 sphinx>=7,<9
 sphinx-rtd-theme>=3
+# docs/tutorials.rst includes the shipped Markdown tutorial index.
+myst-parser>=3
 numpy
 scipy
 matplotlib

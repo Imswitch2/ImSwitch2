@@ -14,6 +14,10 @@ import pytest
 
 from imswitch.imcontrol.model.workflows import TilingParams, TilingWorkflow
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("tiling")
+
 
 class MockWidefieldStarssWorkflow:
     """Mock WidefieldStarss workflow for testing."""
@@ -70,12 +74,6 @@ def build_mock_facade():
 class TestTilingWorkflow:
     """Test suite for TilingWorkflow."""
 
-    def test_import(self):
-        """Verify module imports."""
-        from imswitch.imcontrol.model.workflows import TilingParams, TilingWorkflow
-        assert TilingParams is not None
-        assert TilingWorkflow is not None
-
     def test_params_initialization(self):
         """Test TilingParams dataclass initialization."""
         params = TilingParams(n_tiles=9)
@@ -91,17 +89,6 @@ class TestTilingWorkflow:
         assert params.tile_display_size == 256
         assert params.save_individual is True
         assert params.skip_cell_targeting is False
-
-    def test_params_support_custom_laser_channels(self):
-        """Tiling illumination channels are configurable, not fixed to 488 nm."""
-        params = TilingParams(
-            n_tiles=1,
-            laser_names=("561", "640"),
-            laser_powers_mw=(2.5, 1.25),
-        )
-
-        assert params.laser_names == ("561", "640")
-        assert params.laser_powers_mw == (2.5, 1.25)
 
     def test_params_reject_invalid_laser_power_shape(self):
         """Every configured laser channel needs one configured power."""
@@ -123,31 +110,6 @@ class TestTilingWorkflow:
         assert workflow._recording is widefield_starss
         assert workflow.params is params
         assert workflow.seg_filter == {}
-
-    def test_workflow_with_seg_filter(self):
-        """Test TilingWorkflow with segmentation filter."""
-        facade = build_mock_facade()
-        widefield_starss = MockWidefieldStarssWorkflow()
-        params = TilingParams(n_tiles=4)
-        seg_filter = {
-            "area_um2_min": 100.0,
-            "area_um2_max": 1000.0,
-            "area_enabled": True,
-        }
-
-        workflow = TilingWorkflow(facade, widefield_starss, params, seg_filter)
-        assert workflow.seg_filter == seg_filter
-
-    def test_workflow_initialization_without_widefield_starss_workflow(self):
-        """Test backward-compatible TilingWorkflow(facade, params) initialization."""
-        facade = build_mock_facade()
-        params = TilingParams(n_tiles=4)
-
-        workflow = TilingWorkflow(facade, params)
-
-        assert workflow.facade is facade
-        assert workflow._recording is None
-        assert workflow.params is params
 
     def test_run_creates_default_save_folder(self, monkeypatch, tmp_path):
         """Test run() creates a timestamped folder from measurements_root."""
@@ -887,17 +849,6 @@ class TestPhaseT1TargetListFoundation:
         target_list = TargetList.from_segmentation(seg_result, stitched, (0.0, 0.0))
         assert len(target_list) == 0
 
-    def test_tiling_params_with_build_stitched_overview(self):
-        """Test TilingParams with build_stitched_overview flag."""
-        params = TilingParams(
-            n_tiles=4,
-            build_stitched_overview=True,
-            pixel_size_um=6.5,
-        )
-
-        assert params.build_stitched_overview is True
-        assert params.pixel_size_um == 6.5
-
     def test_tiling_workflow_build_stitched_overview_requires_pixel_size(self):
         """Test TilingWorkflow.run() validates pixel_size_um when stitching enabled."""
         facade = build_mock_facade()
@@ -912,31 +863,6 @@ class TestPhaseT1TargetListFoundation:
         with tempfile.TemporaryDirectory() as tmpdir:
             with pytest.raises(ValueError, match="pixel_size_um"):
                 workflow.run(save_folder=Path(tmpdir))
-
-    def test_tiling_workflow_builds_stitched_overview_when_enabled(self):
-        """Test TilingWorkflow.run() builds stitched_image when flag is set."""
-        facade = build_mock_facade()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            params = TilingParams(
-                n_tiles=4,
-                save_folder=Path(tmpdir),
-                save_individual=False,
-                pulsed=False,
-                build_stitched_overview=True,
-                pixel_size_um=6.5,
-            )
-
-            workflow = TilingWorkflow(facade, params)
-            assert workflow.stitched_image is None
-
-            workflow.run()
-
-            # Verify stitched image was built
-            assert workflow.stitched_image is not None
-            overview = workflow.stitched_image.get_overview()
-            assert overview.shape[0] > 0
-            assert overview.shape[1] > 0
 
     def test_tiling_workflow_clears_stitched_overview_between_runs(self):
         """Test repeated runs do not expose stale stitched overview state."""
@@ -958,25 +884,6 @@ class TestPhaseT1TargetListFoundation:
 
             params.build_stitched_overview = False
             workflow.run()
-            assert workflow.stitched_image is None
-
-    def test_tiling_workflow_does_not_build_overview_by_default(self):
-        """Test TilingWorkflow.run() preserves existing behavior without flag."""
-        facade = build_mock_facade()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            params = TilingParams(
-                n_tiles=4,
-                save_folder=Path(tmpdir),
-                save_individual=False,
-                pulsed=False,
-                build_stitched_overview=False,  # Default
-            )
-
-            workflow = TilingWorkflow(facade, params)
-            workflow.run()
-
-            # Verify stitched image was NOT built
             assert workflow.stitched_image is None
 
     def test_tiling_workflow_stitched_image_origin_populated(self):

@@ -10,8 +10,9 @@ the ladder line-step aware but never reached this branch.
 These tests feed that recording through the resolver twice -- once as legacy
 metadata (legacy adapter, usable, not authoritative) and once as a recorded
 layout (authoritative) -- and assert what the fast-Gauss offline and live
-paths derive from it, which frames belong to condition 0, and what the scan
-dialog is filled with. The two provenances must agree; the older ladder is not
+paths derive from it and what the scan dialog is filled with. Which frames
+belong to condition 0 is pinned by ``test_acquisition_layout_resolver`` and
+``test_monalisa_coeffs_per_base``. The two provenances must agree; the older ladder is not
 consulted for either.
 """
 
@@ -33,7 +34,6 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
 )
 from imswitch.improcess.reconstructors.monalisa.coeffs_to_image import (
     linestep_conditions_interleave_per_line,
-    placement_from_layout,
 )
 from imswitch.improcess.reconstructors.monalisa.live_session import (
     MonalisaLiveSession,
@@ -133,26 +133,6 @@ BOTH_PROVENANCES = pytest.mark.parametrize(
     [_legacy_resolved, _recorded_resolved],
     ids=['legacy-adapter', 'recorded'],
 )
-
-
-def test_legacy_linestep_recording_resolves_to_a_per_line_interleaved_layout():
-    resolved = _legacy_resolved()
-    placement = placement_from_layout(resolved.layout)
-
-    assert (placement.cols, placement.rows, placement.n_conditions, placement.n_time) == (
-        COLS, ROWS, CONDITIONS, 1,
-    )
-    assert linestep_conditions_interleave_per_line(resolved.layout)
-
-    # Condition 0 is the first line of every pair of lines: frames
-    # 0..17, 36..53, 72..89, ... -- never the first 324 frames.
-    condition_0 = [
-        index for index, (t, _z, _y, _x) in enumerate(placement.slots) if t == 0
-    ]
-    assert condition_0 == [
-        row * COLS * CONDITIONS + col for row in range(ROWS) for col in range(COLS)
-    ]
-    assert condition_0[:20] == list(range(18)) + [36, 37]
 
 
 @BOTH_PROVENANCES

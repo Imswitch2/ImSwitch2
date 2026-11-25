@@ -5,8 +5,6 @@ Tools' Line / Rectangle ROI / ROI Intensity vs T buttons select its modes, so
 there is one drawing tool with two sets of buttons, not two tools on one layer.
 """
 
-import ast
-import inspect
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,7 +17,6 @@ from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.imcontrol.controller.controllers.ViewerToolsController import (
     ViewerToolsController,
 )
-from imswitch.imcontrol.view.widgets import LineProfileWidget as line_profile_module
 from imswitch.imcontrol.view.widgets.LineProfileWidget import LineProfileWidget
 from imswitch.imcontrol.view.widgets.ViewerToolsWidget import ViewerToolsWidget
 
@@ -75,18 +72,6 @@ def test_the_dock_explains_itself_without_an_image_display(qapp):
     assert panel.profile is None
     labels = panel.findChildren(QtWidgets.QLabel)
     assert any("image display" in label.text() for label in labels)
-
-
-def test_the_dock_has_no_sampler_of_its_own():
-    """It had one (map_coordinates) that drifted from ImProcess's."""
-    tree = ast.parse(inspect.getsource(line_profile_module))
-    imported = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert "map_coordinates" not in imported
 
 
 def test_viewer_tools_buttons_select_the_profile_mode(qapp):

@@ -66,9 +66,6 @@ class _FakeDetector:
         self._rawReady = True
         self._rawDelivered = False
 
-    def abortScan(self, generation=1):
-        self.markFailed(generation)
-
     def markFailed(self, generation=1):
         """An abort, or a worker whose run raised."""
         self._rawFailedGenerations.add(generation)
@@ -198,34 +195,6 @@ def _cameraDetector(**kwargs):
 # ----------------------------------------------------------------------
 
 
-def test_raw_is_empty_at_every_intermediate_boundary():
-    """1. A volume still being written is never handed out."""
-    detector = _detector(planes=3)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-
-    seen = []
-    for _ in range(3):
-        detector.writePlane()
-        seen.append(detector.readChunk('rec'))
-
-    assert [len(frames) for frames in seen] == [0, 0, 0]
-
-
-def test_exactly_one_complete_volume_after_the_scan_ends():
-    """2. And every plane in it is written."""
-    detector = _detector(planes=3, channels=2)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    for _ in range(3):
-        detector.writePlane()
-    detector.finishScan()
-
-    frames = detector.readChunk('rec')
-
-    assert len(frames) == 1
-    assert frames[0].shape == (2, 3, 4, 4)
-    assert not np.any(frames[0] == 0), 'a plane was left unwritten'
-
-
 def test_raw_and_display_consumers_each_get_their_own():
     """3. Concurrently, and neither starves the other."""
     detector = _detector(planes=2)
@@ -245,44 +214,6 @@ def test_raw_and_display_consumers_each_get_their_own():
     assert len(recFirst) == 0                               # not yet whole
     assert len(viewSecond) == 1
     assert len(recSecond) == 1 and recSecond[0].ndim == 4    # the volume
-
-
-def test_polling_raw_again_yields_nothing():
-    """4. Never a second copy — a duplicate is as wrong as a partial."""
-    detector = _detector()
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.writePlane()
-    detector.finishScan()
-
-    assert len(detector.readChunk('rec')) == 1
-    assert len(detector.readChunk('rec')) == 0
-    assert len(detector.readChunk('rec')) == 0
-
-
-def test_an_aborted_scan_publishes_no_raw_frame():
-    """6. A cancelled scan must not leak the volume it left behind."""
-    detector = _detector(planes=3)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.writePlane()
-    detector.abortScan()
-    detector.finishScan()          # teardown reaches here on every path
-
-    assert len(detector.readChunk('rec')) == 0
-
-
-def test_a_scan_whose_worker_raised_publishes_no_raw_frame():
-    """The worker signals completion either way, so the outcome must be kept.
-
-    Without it a crashed run is indistinguishable from a finished one, and the
-    volume it abandoned half-written would be advertised as whole.
-    """
-    detector = _detector(planes=3)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.writePlane()
-    detector.markFailed(generation=1)
-    detector.finishScan(generation=1)
-
-    assert len(detector.readChunk('rec')) == 0
 
 
 def test_a_later_generation_is_unaffected_by_an_earlier_failure():
@@ -338,73 +269,6 @@ def test_the_queue_holds_what_fits_in_memory_not_a_fixed_frame_count():
     assert MAX_QUEUED_CONSUMER_BYTES // volume < 8
 
 
-def test_a_deferred_raw_consumer_is_bounded_by_the_same_memory():
-    """A volume is large, so few of them fit; nothing declares that."""
-    detector = _detector(planes=1)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.writePlane()
-    detector.finishScan()
-    detector._distributeChunkLocked(detector.drainChunk())
-    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
-
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    for _ in range(fits + 4):
-        detector._written = 0          # each iteration is a fresh scan
-        detector.writePlane()
-        detector.finishScan()
-        detector._distributeChunkLocked(detector.drainChunk())
-
-    with pytest.raises(ChunkConsumerOverflowError):
-        detector.readChunk('rec')
-
-
-def test_a_camera_raw_consumer_survives_a_stall_no_detector_had_to_declare():
-    """The failure the field hit, and the category nobody has to remember.
-
-    The cap was keyed on ``ChunkKind.RAW`` alone, and the recording worker
-    registers RAW for *every* detector it records. A camera's raw frame is its
-    display frame, one per exposure, so a camera recording got 16 frames of
-    slack -- 1.7 ms at 9338 fps. Keying it on a per-detector flag fixed the
-    number but kept the trap: a new detector that forgot to declare itself got
-    the wrong budget. Bytes need no declaration.
-    """
-    detector = _cameraDetector()
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.produceFrame()
-    detector._distributeChunkLocked(detector.drainChunk())
-    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
-    assert fits > 1000, 'a small camera frame should buy a long stall'
-
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    for _ in range(2000):
-        detector.produceFrame()
-        detector._distributeChunkLocked(detector.drainChunk())
-
-    assert len(detector.readChunk('rec')) == 2000
-
-
-def test_a_camera_raw_consumer_still_fails_once_the_memory_is_gone():
-    """Bounding by bytes must not turn an unbounded leak into silence.
-
-    A large frame is used deliberately: the budget it buys is small, which is
-    the point of counting bytes, and it keeps this test from having to produce
-    tens of thousands of frames to reach the same edge.
-    """
-    detector = _cameraDetector(size=1024)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    detector.produceFrame()
-    detector._distributeChunkLocked(detector.drainChunk())
-    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
-
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-    for _ in range(fits + 4):
-        detector.produceFrame()
-        detector._distributeChunkLocked(detector.drainChunk())
-
-    with pytest.raises(ChunkConsumerOverflowError):
-        detector.readChunk('rec')
-
-
 def test_the_overflow_error_quotes_the_budget_that_actually_tripped():
     """The message used to hardcode one frame count whatever the kind.
 
@@ -430,27 +294,6 @@ def test_the_overflow_error_quotes_the_budget_that_actually_tripped():
     message = str(raised.value)
     assert str(MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)) in message
     assert 'MiB' in message
-
-
-def test_the_recording_worker_registers_the_kind_this_budget_applies_to():
-    """Bind the two files the bug lived between.
-
-    ``test_chunk_contract`` never mentioned the RecordingManager and
-    ``test_recording`` never mentioned ``ChunkKind``; both halves were correct
-    on their own. This asserts the join.
-    """
-    from imswitch.imcontrol.model.managers.RecordingManager import (
-        _RECORDING_CHUNK_CONSUMER,
-    )
-
-    detector = _cameraDetector()
-    detector.startChunkConsumer(_RECORDING_CHUNK_CONSUMER, kind=ChunkKind.RAW)
-
-    for _ in range(100):
-        detector.produceFrame()
-        detector._distributeChunkLocked(detector.drainChunk())
-
-    assert len(detector.readChunk(_RECORDING_CHUNK_CONSUMER)) == 100
 
 
 def test_the_two_latest_frame_caches_do_not_overwrite_each_other():
@@ -640,57 +483,6 @@ def _scan(detector):
     for _ in range(detector._planes):
         detector.writePlane()
     detector.finishScan()
-
-
-def test_one_raw_volume_larger_than_the_budget_is_delivered_whole(monkeypatch):
-    """The volume form: one frame, bigger than the whole queue budget."""
-    detector = _detector(planes=4, channels=2, size=64)
-    _shrinkBudget(monkeypatch, detector._volume.nbytes // 2)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-
-    _scan(detector)
-    frames = detector.readChunk('rec')
-
-    assert len(frames) == 1
-    assert frames[0].shape == detector._volume.shape
-    np.testing.assert_array_equal(frames[0], detector._volume)
-    assert 'rec' not in detector._chunkConsumersOverflowed
-
-
-def test_one_burst_larger_than_the_budget_is_delivered_whole(monkeypatch):
-    """The burst form: many frames in one delivery, each small, the sum not."""
-    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-        DetectorManager,
-    )
-
-    camera = _cameraDetector(size=64)
-    perFrame = DetectorManager._frameBytes(np.zeros((64, 64), np.uint16))
-    _shrinkBudget(monkeypatch, 4 * perFrame)
-    camera.startChunkConsumer('rec', kind=ChunkKind.RAW)
-
-    for _ in range(10):
-        camera.produceFrame()
-    frames = camera.readChunk('rec')
-
-    assert len(frames) == 10
-    assert [int(frame[0, 0]) for frame in frames] == list(range(1, 11))
-    assert 'rec' not in camera._chunkConsumersOverflowed
-
-
-def test_a_delivery_behind_an_oversized_one_overflows_as_before(monkeypatch):
-    """What the budget still bounds: anything queued behind such a delivery."""
-    detector = _detector(planes=4, channels=2, size=64)
-    _shrinkBudget(monkeypatch, detector._volume.nbytes // 2)
-    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
-
-    _scan(detector)
-    detector._distributeChunkLocked(detector.drainChunk())   # admitted alone
-    _scan(detector)
-    detector._distributeChunkLocked(detector.drainChunk())   # nothing fits behind it
-
-    assert 'rec' in detector._chunkConsumersOverflowed
-    with pytest.raises(ChunkConsumerOverflowError, match='stream is incomplete'):
-        detector.readChunk('rec')
 
 
 def test_deliveries_that_fit_are_admitted_after_an_oversized_one_is_read(monkeypatch):

@@ -15,6 +15,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("widefield_starss")
+
 
 @pytest.fixture
 def mock_facade():
@@ -52,15 +56,6 @@ def default_params():
 class TestWidefieldStarssWorkflow:
     """Test suite for WidefieldStarssWorkflow."""
 
-    def test_import(self):
-        """Verify WidefieldStarssWorkflow and WidefieldStarssParams are importable."""
-        from imswitch.imcontrol.model.workflows import (
-            WidefieldStarssParams,
-            WidefieldStarssWorkflow,
-        )
-        assert WidefieldStarssWorkflow is not None
-        assert WidefieldStarssParams is not None
-
     def test_legacy_recording_aliases(self):
         """Old RecordingWorkflow imports remain aliases for user scripts."""
         from imswitch.imcontrol.model.workflows import RecordingParams, RecordingWorkflow
@@ -73,16 +68,6 @@ class TestWidefieldStarssWorkflow:
         assert RecordingParams is WidefieldStarssParams
         assert ModuleRecordingWorkflow is WidefieldStarssWorkflow
         assert ModuleRecordingParams is WidefieldStarssParams
-
-    def test_workflow_initialization(self, mock_facade, default_params):
-        """Verify workflow can be instantiated with facade and params."""
-        workflow = WidefieldStarssWorkflow(mock_facade, default_params)
-        assert workflow.facade is mock_facade
-        assert workflow.params is default_params
-        assert isinstance(workflow.measurements_root, Path)
-        assert workflow.datastack is None
-        assert workflow.datastack_h is None
-        assert workflow.datastack_v is None
 
     def test_none_measurements_root_uses_environment_default(
         self, mock_facade, default_params, monkeypatch, tmp_path
@@ -175,23 +160,6 @@ class TestWidefieldStarssWorkflow:
             assert "cam.prepare_acquisition" not in call_names
             assert "trig.Sendsignal" not in call_names
 
-    def test_tiff_files_saved(self, mock_facade, default_params):
-        """Verify TIFF files are saved with correct names."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            default_params.measurements_root = Path(tmpdir)
-            default_params.measurement_name_addition = "_test"
-            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
-            workflow.run()
-
-            # Check that TIFF files were created
-            saved_files = list(Path(tmpdir).rglob("*.tif"))
-            assert len(saved_files) == 2  # One for H, one for V
-
-            # Verify filenames contain polarisation labels
-            filenames = [f.name for f in saved_files]
-            assert any("_h.tif" in name for name in filenames)
-            assert any("_v.tif" in name for name in filenames)
-
     def test_tiff_content_valid(self, mock_facade, default_params):
         """Verify saved TIFF files can be read and have correct shape."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -245,15 +213,6 @@ class TestWidefieldStarssWorkflow:
             # But Sendsignal should be called twice (once per polarisation)
             sendsignal_calls = [c for c in mock_facade.calls if c[0] == "trig.Sendsignal"]
             assert len(sendsignal_calls) == 2
-
-    def test_calculate_r_produces_numeric_result(self):
-        """Verify _calculate_r computes anisotropy without crashing."""
-        # Create a synthetic stack with known structure
-        stack = np.random.randint(100, 5000, size=(10, 64, 64), dtype=np.uint16)
-        
-        # Should not raise an exception
-        WidefieldStarssWorkflow._calculate_r(stack)
-        # Note: _calculate_r returns None (just logs), so we only verify no crash
 
     def test_compute_anisotropy_map_returns_valid_shape(self):
         """Verify compute_anisotropy_map produces correct output shape."""

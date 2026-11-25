@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from qtpy import QtWidgets
 
-from imswitch.imcontrol.controller.ShortcutManager import (
+from imswitch.imcommon.controller.ShortcutManager import (
     ShortcutManager, computePositionerJogDefaults,
 )
 from imswitch.imcontrol.controller.ImConMainController import ImConMainController

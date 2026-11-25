@@ -11,6 +11,10 @@ up your environment, running tests, and contributing safely.
    changes can damage equipment or create unsafe conditions. Always follow the
    safety guidelines in this document (see :ref:`red-zone-work`).
 
+   **Coding agents** read ``AGENTS.md`` at the repository root instead: the
+   same rules in dense form, plus "to add X, touch these files" checklists
+   with the test that guards each step.
+
 
 Quick Start
 ============
@@ -64,11 +68,12 @@ Before making changes, familiarize yourself with the architecture:
 * **Architecture overview:** start with :ref:`architecture-at-a-glance` on
   the home page, which maps ImControl, ImProcess, ImScripting, ImCommon and
   PluginAPI onto the model-view-presenter layers.  Then read
-  ``docs/design/ARCHITECTURE.md`` for the full dependency detail:
+  :doc:`architecture` for the detail:
 
-  * Manager inventory (hardware abstraction layer)
-  * Controller→Manager matrix (which controllers use which hardware)
-  * Startup flow (initialization sequence)
+  * Package layout and startup flow (initialization sequence)
+  * Managers, controllers and widgets in ImControl, and how
+    ``MasterController`` builds the managers
+  * The two signal buses, the recording path and widget-state persistence
 
 * **Red-zone rules:** :ref:`red-zone-work` below
 
@@ -112,30 +117,18 @@ No-Hardware Work (Safe)
 Hardware/Red-Zone Work (Requires Expert Review)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-**What it includes:**
+**What it includes:** DAQ timing and synchronization, laser control, scan
+waveform and TTL generation, stage and rotator movement, and hardware
+initialization and shutdown.  The CI tests cannot exercise any of it: every
+pull request is reviewed by a maintainer who tests it on their own microscope
+before it merges (see :doc:`current-state-and-known-issues`).
 
-* DAQ timing and synchronization
-* Laser control (power, enable/disable, modulation)
-* Galvo scan generation (voltage waveforms, acceleration)
-* TTL pulse generation (trigger sequences)
-* Stage movement (positioning, velocity, limits)
-* Hardware initialization and configuration
-
-**Safety rules:**
-
-1. **Never modify red-zone files** without explicit maintainer approval
-2. **Never change hardware timing constants** without values from a maintainer
-3. **Flag all red-zone changes** in PR descriptions with detailed risk explanations
-4. **Request review** from someone with physical hardware access
-
-**Red-zone files include** (but are not limited to):
-
-* Files containing ``DAQ``, ``NI``, ``nidaq`` in names or imports
-* Files in ``laser/``, ``positioner/``, ``stage/``, ``scanner/``, ``galvo/`` directories
-* Files with ``TTL``, ``trigger``, ``pulse``, ``waveform`` in names
-* Hardware manager initialization code
-
-When in doubt, treat a file as red-zone and say so in the pull request.
+The red zone is defined once, as concrete path globs with the rules for
+changing them, in the **Red zone** section of
+`AGENTS.md <https://github.com/Imswitch2/ImSwitch2/blob/main/AGENTS.md>`_ at
+the repository root; a test keeps every glob matching real files.  The
+pull-request template asks whether a change touches it.  When in doubt,
+treat a file as red-zone and say so in the pull request.
 
 
 Key Validation Commands
@@ -242,7 +235,8 @@ Adding a New Test
 
    * ``@pytest.mark.nohardware``: Config parsing, manager construction, logic
    * ``@pytest.mark.ui``: Widget behavior, controller-view contracts (not in CI yet)
-   * ``@pytest.mark.redzone``: Hardware timing simulation (not in CI yet)
+   * ``@pytest.mark.redzone``: declared in ``pyproject.toml`` but not used by
+     any test yet; CI selects tests by path, not by marker
    * ``@pytest.mark.hardware``: Physical device communication (never in CI)
 
 2. **Write the test** in ``imswitch/imcontrol/_test/unit/``:
@@ -383,7 +377,7 @@ Getting Help
   * :doc:`installation` — Setup and dependencies
   * :doc:`contributing` — General contribution guidelines
   * :doc:`adding-device-support` — Hardware integration
-  * ``docs/design/ARCHITECTURE.md`` — System architecture (in the repository)
+  * :doc:`architecture` — System architecture
   * :doc:`no-hardware-validation` — Testing guide
 
 * **Check existing issues:**
@@ -405,8 +399,8 @@ Resources
 * :doc:`contributing` — How to contribute
 * :doc:`adding-device-support` — Adding new hardware
 * :doc:`no-hardware-validation` — Testing without hardware
-* ``docs/design/ARCHITECTURE.md`` — Architecture overview (in the repository)
-* ``ROADMAP.md`` — Project roadmap and milestones (in the repository)
+* :doc:`architecture` — Architecture overview
+* :doc:`current-state-and-known-issues` — Where the project stands and what is open
 
 **External:**
 

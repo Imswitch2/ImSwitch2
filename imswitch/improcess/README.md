@@ -11,9 +11,7 @@ Controllers never import a plugin directly — they look it up by id. This
 document describes the contracts you implement to add a plugin and the data
 flow that connects them.
 
-> For a critical review of the module (debt, duplication, roadmap), see
-> [`IMPROCESS_REVIEW.md`](IMPROCESS_REVIEW.md). This README is the
-> "how it works / how to extend it" companion to that review.
+> This README is the "how it works / how to extend it" guide for the module.
 
 ---
 
@@ -355,14 +353,11 @@ ResultProcessorController (one per runtime-loaded processor)
             └─► chains back into the viewer / next processor
 ```
 
-### 3.3 File-watcher path
+### 3.3 File-watcher path (removed)
 
-For batch/headless reconstruction,
-`WatcherFrameController`
-([`controller/WatcherFrameController.py`](controller/WatcherFrameController.py))
-watches a directory and emits `sigReconstruct(dataObjs, True)`. This runs the
-same reconstruction path and writes each output under
-`{watched_dir}/{reconstructor.default_save_subdir}/` via the result's `save()`.
+The directory-watching controller (`WatcherFrameController`) no longer exists.
+Reconstruction starts from the interactive path (§3.2) or from the live
+streaming path (§3.4).
 
 ### 3.4 Live streaming path
 

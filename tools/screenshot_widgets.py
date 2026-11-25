@@ -202,7 +202,7 @@ def _populate_scan(w) -> None:
     try:
         w.initControls(positioners, ttl_devices, "ms")
     except TypeError:
-        # ScanWidgetPointScan.initControls(positionerNames, TTLDeviceNames)
+        # older panels: initControls(positionerNames, TTLDeviceNames)
         w.initControls(positioners, ttl_devices)
 
 
@@ -373,8 +373,6 @@ POPULATORS = {
     "PositionerWidget": _populate_positioner,
     "ScanWidgetBase": _populate_scan,
     "ScanWidgetAdvanced": _populate_scan,
-    "ScanWidgetMoNaLISA": _populate_scan,
-    "ScanWidgetPointScan": _populate_scan,
     "RecordingWidget": _populate_recording,
     "SettingsWidget": _populate_settings,
     "FocusLockWidget": _populate_focuslock,
@@ -559,8 +557,8 @@ def _capture_one(name: str) -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     _style_app(app)
     # In the application ImConMainView has imported this submodule before any
-    # widget is built, and SLMWidget relies on that (it uses pg.dockarea
-    # after importing only pyqtgraph); import it here to match.
+    # widget is built; import it here so a widget that uses pg.dockarea after
+    # importing only pyqtgraph works as it does in the application.
     import pyqtgraph.dockarea  # noqa: F401
 
     target = None

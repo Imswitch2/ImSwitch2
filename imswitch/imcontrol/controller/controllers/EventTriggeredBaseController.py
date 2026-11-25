@@ -214,10 +214,6 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._widget.setUpdatePeriodButton.clicked.connect(self.setUpdatePeriod)
         self._widget.setBusyFalseButton.clicked.connect(self.setBusyFalse)
 
-        # Comm-channel signals — direct connections so closeEvent can disconnect.
-        self._commChannel.sigSendScanParameters.connect(self.assignScanParameters)
-        self._commChannel.sigSendScanFreq.connect(self.logScanFreq)
-
         # Runtime state and buffers.
         self._state = EventTriggeredSessionState()
         self.resetDetLog()
@@ -371,9 +367,6 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         """Stop safely and report whether the owned scan barrier has drained."""
         self._closed = True
         self.stopExperiment(resetParams=True)
-        # Disconnect the comm-channel slots wired in __init__.
-        self._safeDisconnect(self._commChannel.sigSendScanParameters, self.assignScanParameters)
-        self._safeDisconnect(self._commChannel.sigSendScanFreq, self.logScanFreq)
         self._disconnectNidaqCompletionSignalsIfIdle()
         return self.shutdownComplete()
 
@@ -892,7 +885,11 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     # ── Scan parameter mgmt ─────────────────────────────────────────────── #
 
     def getScanParameters(self) -> None:
-        self._commChannel.scanWorkflow.request_scan_parameters()
+        params = self._commChannel.scanWorkflow.request_scan_parameters()
+        if params is None:
+            self._logger.warning('No scan controller could provide scan parameters.')
+            return
+        self.assignScanParameters(*params)
 
     def setUpdatePeriod(self) -> None:
         self._updatePeriod = int(self._widget.update_period_edit.text())
@@ -1177,6 +1174,8 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if result.success:
             self.signalDic = result.signal_dict
             self.scanInfoDict = result.scan_info_dict
+            if result.scan_freq is not None:
+                self.logScanFreq(result.scan_freq)
         else:
             self._logger.error(result.message)
             self._set_status('error', result.message)

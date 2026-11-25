@@ -526,8 +526,7 @@ Verified:
   `apply_display_transform` → `ImageWidget.setImage`.
 - `sigUpdateImage` has eight subscribers: Image, BeadRec, FLIMHist,
   AlignAverage, AlignXY, FFT, EventTriggered and EtSnouty (plus one-shot
-  lambdas in SLMs and the binary-mask lease). Its argument list is pinned by
-  `communication_channel_signal_inventory.json`. Two relays take a defaulted
+  lambdas in SLMs and the binary-mask lease). Two relays take a defaulted
   trailing parameter (`detectorName=` in `DetectorsManager.py:78`,
   `captureGeneration=` in `EventTriggeredBaseController.py:759`), so adding an
   argument would silently fill those instead of failing. Changing the

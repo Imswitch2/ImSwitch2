@@ -14,10 +14,10 @@ from imswitch.imcontrol.model.SetupInfo import SetupInfo
 # These tests were written against a non-existent ScanManagerBase API
 # (`signalDictTwoScan`); the real entry point is `makeFullScan(scanParameters,
 # TTLParameters)`. They have never run. Skipped until rewritten against the
-# real API — tracked under the scanning milestone in ROADMAP.md.
+# real API — listed under *Open work* in docs/current-state-and-known-issues.rst.
 pytestmark = pytest.mark.skip(
     reason="Written against non-existent API (signalDictTwoScan); needs rewrite "
-           "against ScanManagerBase.makeFullScan — see ROADMAP.md Milestone 9."
+           "against ScanManagerBase.makeFullScan."
 )
 
 

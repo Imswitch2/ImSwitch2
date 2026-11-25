@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 
@@ -7,7 +8,13 @@ from sphinx.ext import autodoc
 # installed package: Read the Docs installs only docs/requirements-readthedocs.txt.
 sys.path.insert(0, os.path.abspath('..'))
 
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon']
+# myst_parser only so docs/tutorials.rst can include the tutorial index that
+# ships as Markdown inside the package (one source for the app and the site).
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'myst_parser']
+
+# The Markdown files under docs/ are working notes and plans, not pages.
+source_suffix = {'.rst': 'restructuredtext'}
+exclude_patterns = ['_build', '*.md', '**/*.md']
 
 # Nothing is mocked: the framework layer combines Qt classes with its own
 # metaclass, which Sphinx's mock objects cannot stand in for, so the docs
@@ -22,6 +29,27 @@ html_favicon = 'images/imswitch2_icon.png'
 
 project = 'ImSwitch2'
 copyright = '2020-2026, ImSwitch developers'
+
+
+def _readVersion():
+    """``imswitch.__version__``, read from the source without importing it.
+
+    Importing the package would pull in Qt, which the minimal Read the Docs
+    requirements do install but a version lookup should not depend on.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'imswitch', '__init__.py')
+    with open(path, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == '__version__':
+                    return ast.literal_eval(node.value)
+    raise RuntimeError('imswitch/__init__.py defines no __version__')
+
+
+release = _readVersion()
+version = '.'.join(release.split('.')[:2])
 
 
 class ClassCondensedHeaderDocumenter(autodoc.ClassDocumenter):

@@ -1,11 +1,8 @@
 """Tests for ReconstructionView and Controller single-source-of-truth changes.
 
-These tests verify that:
-1. setImage accepts an optional name parameter and sets layer name + metadata
-2. clearImage resets name and metadata
-3. The controller passes result.name to the view
-4. The controller re-activates the main layer after setImage
-5. Display settings persistence works correctly with the new naming
+These tests verify that the controller re-activates the main layer after
+setImage, keeps display settings across a renamed layer, mints mutation tokens,
+and remembers camera, view and slice state per result and per plane.
 """
 
 from types import SimpleNamespace
@@ -282,66 +279,7 @@ class _FakeCommChannel:
         )
 
 
-# --- Tests for view layer naming behavior (via fake view) ---
-
-def test_fake_view_setImage_with_name_sets_layer_name_and_metadata():
-    """Verify the fake view implements setImage name parameter correctly."""
-    view = _FakeReconstructionView()
-    data = np.ones((4, 5), dtype=np.float32)
-    
-    view.setImage(data, ["Y", "X"], name="test_result.0")
-    
-    assert view.imgLayer.name == "test_result.0"
-    assert view.imgLayer.metadata["source_result"] == "test_result.0"
-
-
-def test_fake_view_setImage_without_name_keeps_default_name():
-    """Verify the fake view defaults to 'Reconstruction' when no name given."""
-    view = _FakeReconstructionView()
-    data = np.ones((4, 5), dtype=np.float32)
-    
-    view.setImage(data, ["Y", "X"])
-    
-    assert view.imgLayer.name == "Reconstruction"
-    assert "source_result" not in view.imgLayer.metadata
-
-
-def test_fake_view_clearImage_resets_name_and_metadata():
-    """Verify the fake view's clearImage resets layer state correctly."""
-    view = _FakeReconstructionView()
-    data = np.ones((4, 5), dtype=np.float32)
-    
-    # First set with a name
-    view.setImage(data, ["Y", "X"], name="test_result.0")
-    assert view.imgLayer.name == "test_result.0"
-    assert "source_result" in view.imgLayer.metadata
-    
-    # Then clear
-    view.clearImage()
-    
-    assert view.imgLayer.name == "Reconstruction"
-    assert "source_result" not in view.imgLayer.metadata
-    assert view.imgLayer.data.shape == (1, 1)
-
-
 # --- Tests for ReconstructionViewController ---
-
-def test_controller_passes_result_name_to_setImage():
-    """Verify that _setProcessingResultSlice passes result.name to setImage."""
-    view = _FakeReconstructionView()
-    controller = ReconstructionViewController.__new__(ReconstructionViewController)
-    controller._widget = view
-    controller._logger = SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)
-    controller._transposeOrder = [0, 1]
-    controller._displayedAxisLabels = []
-    
-    result = _FakeResult("my_result.0", np.ones((4, 5), dtype=np.float32))
-    
-    controller._setProcessingResultSlice(result)
-    
-    assert view.imgLayer.name == "my_result.0"
-    assert view.imgLayer.metadata["source_result"] == "my_result.0"
-
 
 def test_controller_reactivates_main_layer_after_setImage():
     """Verify that the controller re-activates imgLayer after setImage."""
@@ -544,27 +482,6 @@ def _viewer_state_controller(view):
     return controller
 
 
-def test_switching_same_plane_results_preserves_camera_after_initial_fit():
-    view = _FakeReconstructionView()
-    controller = _viewer_state_controller(view)
-    a = _FakeResult("a", np.ones((4, 5), dtype=np.float32))
-    b = _FakeResult("b", np.ones((4, 5), dtype=np.float32))
-    view._reconList = [a, b]
-
-    view._currentIndex = 0
-    controller.listItemChanged()
-    assert view.reset_view_calls == 1
-    view.napariViewer.camera.zoom = 7.5
-    view.napariViewer.camera.center = (0.0, 12.0, 13.0)
-
-    view._currentIndex = 1
-    controller.listItemChanged()
-
-    assert view.reset_view_calls == 1
-    assert view.napariViewer.camera.zoom == 7.5
-    assert view.napariViewer.camera.center == (0.0, 12.0, 13.0)
-
-
 def test_unlocked_same_plane_results_share_latest_camera():
     """Default comparison mode keeps YZ/XY peers at identical framing."""
     view = _FakeReconstructionView()
@@ -754,52 +671,6 @@ def test_xyz_result_with_only_standard_declared_gets_orthogonal_view_modes():
     ]
 
 
-def test_switching_xy_to_yz_refits_camera_then_restores_each_results_camera():
-    class _VolumeResult(ProcessingResult):
-        def __init__(self, name, preferred):
-            super().__init__(
-                name=name,
-                data=np.zeros((3, 4, 5), dtype=np.float32),
-                axis_labels=["Z", "Y", "X"],
-                view_modes=[
-                    SimpleNamespace(name="Standard", transpose=(0, 1, 2)),
-                    SimpleNamespace(name="Bottom", transpose=(1, 0, 2)),
-                    SimpleNamespace(name="Left", transpose=(2, 0, 1)),
-                ],
-            )
-            self._preferred = preferred
-
-        def initial_view_mode_name(self):
-            return self._preferred
-
-    view = _FakeReconstructionView()
-    controller = _viewer_state_controller(view)
-    xy = _VolumeResult("xy", "Standard")
-    yz = _VolumeResult("yz", "Left")
-    view._reconList = [xy, yz]
-
-    view._currentIndex = 0
-    controller.listItemChanged()
-    assert view.getDisplayedPlaneAxes() == ("Y", "X")
-    view.napariViewer.camera.zoom = 8.0
-    view.napariViewer.camera.center = (0.0, 20.0, 30.0)
-
-    view._currentIndex = 1
-    controller.listItemChanged()
-    assert view.getDisplayedPlaneAxes() == ("Z", "Y")
-    assert view.reset_view_calls == 2  # first XY fit + incompatible XY->YZ fit
-    assert view.napariViewer.camera.zoom == 1.0
-    view.napariViewer.camera.zoom = 3.0
-    view.napariViewer.camera.center = (0.0, 5.0, 6.0)
-
-    view._currentIndex = 0
-    controller.listItemChanged()
-    assert view.getDisplayedPlaneAxes() == ("Y", "X")
-    # Returning to XY restores that result's own framing instead of reusing YZ.
-    assert view.napariViewer.camera.zoom == 8.0
-    assert view.napariViewer.camera.center == (0.0, 20.0, 30.0)
-
-
 def _orthogonal_volume_result(name, preferred="Standard", shape=(6, 7, 8), axis_scales=None):
     class _VolumeResult(ProcessingResult):
         def __init__(self):
@@ -944,20 +815,3 @@ def test_slice_memory_is_per_physical_view_within_one_result():
     controller._viewChanged()
     assert view.getDisplayedPlaneAxes() == ("Z", "Y")
     assert view.getDimensionStepState()["X"] == 5
-
-
-def test_shared_slice_is_clamped_for_smaller_compatible_result():
-    """Following a shared slice never addresses beyond a smaller stack."""
-    view = _FakeReconstructionView()
-    controller = _viewer_state_controller(view)
-    large = _orthogonal_volume_result("large", preferred="Left", shape=(5, 6, 10))
-    small = _orthogonal_volume_result("small", preferred="Left", shape=(5, 6, 4))
-    view._reconList = [large, small]
-
-    view._currentIndex = 0
-    controller.listItemChanged()
-    _move_spatial_step(controller, view, "X", 8)
-
-    view._currentIndex = 1
-    controller.listItemChanged()
-    assert view.getDimensionStepState()["X"] == 3

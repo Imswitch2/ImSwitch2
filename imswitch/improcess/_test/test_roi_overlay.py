@@ -303,7 +303,7 @@ def test_group_members_share_a_colour(overlay):
 # --------------------------------------------------------------------------
 
 def test_overlay_layer_is_not_an_image_source():
-    from imswitch.improcess.layer_selection import is_image_layer
+    from imswitch.imcommon.algorithms.layer_selection import is_image_layer
 
     layer = _ImageLayer()
     layer.name = "ROI Manager"

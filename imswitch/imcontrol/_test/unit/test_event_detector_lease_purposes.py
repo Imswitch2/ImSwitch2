@@ -13,7 +13,7 @@ failing loudly:
   KEEPS the lease. A release guarded on that connection flag therefore skips a
   paused run and leaks the handle for the rest of the session.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 from imswitch.imcontrol.controller.controllers.EtSnoutyController import (
@@ -86,17 +86,6 @@ def test_signal_driven_mode_leases_event_stream():
     EtSnoutyController._acquireDetectorFastLease(ctrl)
 
     assert manager.acquired == [(('FAST',), LeasePurpose.EVENT_STREAM, 'handle-1')]
-
-
-def test_lease_is_taken_after_the_clock_mode_is_decided():
-    """Source guard: the purpose depends on ClockWidefield, so acquiring
-    before that branch would always pick the wrong one."""
-    import inspect
-
-    source = inspect.getsource(EtSnoutyController.initiate)
-    clockDecision = source.index('self.ClockWidefield = True')
-    leaseCall = source.index('self._acquireDetectorFastLease()')
-    assert leaseCall > clockDecision
 
 
 def test_etsnouty_release_is_idempotent():

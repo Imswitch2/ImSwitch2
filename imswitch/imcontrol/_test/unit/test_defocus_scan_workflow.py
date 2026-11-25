@@ -12,6 +12,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("defocus_scan", "widefield_starss")
+
 
 @pytest.mark.nohardware
 def test_defocus_scan_basic():

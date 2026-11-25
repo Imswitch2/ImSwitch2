@@ -13,7 +13,7 @@ show up on hardware as a frozen GUI or a lost final frame:
 Every test here has a hard deadline: a deadlock shows up as a failure, never
 as a hung suite.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import threading

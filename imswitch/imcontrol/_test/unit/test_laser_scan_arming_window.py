@@ -32,14 +32,11 @@ never publish a part terminal and are unaffected.
 
 
 
-import inspect
+from types import SimpleNamespace
 
 import pytest
 
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController
-from imswitch.imcontrol.controller.controllers._triggerscope_scan_lifecycle import (
-    TriggerScopeScanLifecycleMixin,
-)
 from imswitch.imcontrol.controller.controllers.LaserController import (
     LaserController,
 )
@@ -49,6 +46,7 @@ from imswitch.imcontrol.controller.controllers.EventTriggeredBaseController impo
 from imswitch.imcontrol.model import (
     LaserPowerContext, LaserPowerMode, LaserScanPowerControl, LaserScanState,
 )
+from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
 
 
 class _Laser:
@@ -679,23 +677,16 @@ def test_a_laser_that_cannot_be_armed_is_reported_as_not_emitting():
     assert any(level == 'warning' for level, _ in ctrl._logger.messages)
 
 
-def test_device_list_is_published_before_arming():
-    """Arming after arm() would put the writes back inside the busy window."""
-    source = inspect.getsource(SuperScanController._armScanIteration)
-    publish = source.index('sigScanDevicesResolved')
-    arm = source.index('_scanCoordinator.arm(')
-    assert publish < arm
+def test_participation_is_the_ttl_list_not_the_daq_channel_list():
+    """Reverting to the AO/DO list makes AOTF lasers invisible again (no DAQ
+    channel of their own), which is the defect that started this."""
+    signalDict = {
+        'scanSignalsDict': {'X': [0.0, 1.0], 'Y': [0.0, 1.0]},
+        'TTLCycleSignalsDict': {'561AOTF': [1, 0], '488': [0, 1]},
+    }
 
-
-def test_participation_is_resolved_from_the_ttl_list_not_the_daq_channels():
-    """Source guard: reverting to the AO/DO list makes AOTF lasers invisible
-    again, which is the defect that started this."""
-    from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
-
-    source = inspect.getsource(NidaqManager.resolveScanTTLDevices)
-    assert "'TTLCycleSignalsDict'" in source
-    assert 'getAnalogChannel' not in source
-    assert 'getDigitalLine' not in source
+    assert NidaqManager.resolveScanTTLDevices(signalDict) == ['561AOTF', '488']
+    assert NidaqManager.resolveScanTTLDevices({'scanSignalsDict': {'X': [0.0]}}) == []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
@@ -1028,62 +1019,186 @@ def test_laser_mutations_are_rejected_while_scan_is_active():
 
     assert ctrl._master.lasersManager['488'].calls == []
 
-def test_nidaq_prearm_boundary_enforces_laser_preparation_veto():
-    source = inspect.getsource(SuperScanController._armScanIteration)
-    checks = [
-        pos for pos in range(len(source))
-        if source.startswith('_raiseIfLaserScanPreparationFailed()', pos)
-    ]
-    publish = source.index('sigScanDevicesResolved')
-    arm = source.index('_scanCoordinator.arm(')
-    assert len(checks) >= 2
-    assert checks[0] < publish < checks[-1] < arm
+
+# --------------------------------------------------------------------------- #
+# The scan controllers' pre-arm boundary                                       #
+# --------------------------------------------------------------------------- #
+#
+# LaserController arms the lasers in its sigScanDevicesResolved slot. A slot
+# that raises does not reach the emitter in Qt, so a laser that cannot be
+# prepared can only stop the scan through the veto it publishes, which the
+# scan controller has to read after publishing and before the DAQ is armed.
+
+_SCAN = {'TTLCycleSignalsDict': {'488': [0, 1, 0]}}
 
 
-def test_triggerscope_prearm_boundary_enforces_laser_preparation_veto():
-    source = inspect.getsource(TriggerScopeScanLifecycleMixin._startTriggerScopeScan)
-    checks = [
-        pos for pos in range(len(source))
-        if source.startswith('_raiseIfLaserScanPreparationFailed()', pos)
-    ]
-    publish = source.index('sigScanDevicesResolved')
-    firmware = source.index('def startFirmware')
-    assert len(checks) >= 2
-    assert checks[0] < publish < checks[-1] < firmware
+class _QtSignal:
+    """A slot's exception stays with the slot, as it does in Qt."""
+
+    def __init__(self, events, name):
+        self.events = events
+        self.name = name
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        self.events.append(self.name)
+        for slot in self.slots:
+            try:
+                slot(*args)
+            except Exception:
+                pass
 
 
-def test_nidaq_membership_resolution_failure_is_mode_dependent_before_arm():
-    source = inspect.getsource(SuperScanController._armScanIteration)
-    resolve = source.index('resolveScanTTLDevices')
-    refusal = source.index(
-        'Could not resolve scan laser/device membership before arming.'
+def _lasers(*, mode='separated', failPower=False):
+    """The real LaserController at the start of a run."""
+    lasers = _controller(names=('488',), mode=mode)
+    lasers._scanPowerValues['488'] = 30.0
+    if failPower:
+        def refuse(value):
+            raise RuntimeError('serial timeout')
+        lasers._master.lasersManager['488'].setValue = refuse
+    LaserController.scanChanged(lasers, True)
+    return lasers
+
+
+def _wire(lasers, events):
+    channel = lasers._commChannel
+    channel.sigScanDevicesResolved = _QtSignal(events, 'devices-resolved')
+    channel.sigScanDevicesResolved.connect(
+        lambda devices: LaserController.scanDevicesResolved(lasers, devices)
     )
-    coupled_log = source.index(
-        'membership consumers are not being notified'
+    return channel
+
+
+class _NidaqArming:
+    """SuperScanController's own arming code on a shell."""
+
+    _armScanIteration = SuperScanController._armScanIteration
+    _raiseIfLaserScanPreparationFailed = (
+        SuperScanController._raiseIfLaserScanPreparationFailed
     )
-    arm = source.index('_scanCoordinator.arm(')
-    assert 'separatedLaserPower' in source
-    assert resolve < refusal < coupled_log < arm
-    # Separated raises; coupled logs and falls through to normal arming.
-    branch = source[resolve:arm]
-    assert 'if separatedLaserPower:' in branch
-    assert 'raise RuntimeError(' in branch
+    _laserScanPreparationError = SuperScanController._laserScanPreparationError
+
+    def __init__(self, lasers, *, resolve=NidaqManager.resolveScanTTLDevices):
+        self.events = []
+        self._lasers = lasers
+        self._logger = _Logger()
+        self._setupInfo = lasers._setupInfo
+        self._commChannel = _wire(lasers, self.events)
+        self._master = SimpleNamespace(
+            nidaqManager=SimpleNamespace(resolveScanTTLDevices=resolve)
+        )
+        self._scanCoordinator = SimpleNamespace(arm=self._arm)
+
+    def _publishScanActuators(self):
+        pass
+
+    def emitScanSignal(self, signal, *args):
+        signal.emit(*args)
+
+    def _arm(self, signalDict, scanInfoDict, owner):
+        self.events.append(('arm', tuple(self._lasers._scanArmedLasers)))
+        return 'iteration'
 
 
-def test_event_triggered_membership_resolution_failure_is_mode_dependent():
-    source = inspect.getsource(EventTriggeredControllerBase.runSlowScan)
-    resolve = source.index('resolveScanTTLDevices')
-    refusal = source.index('laser ownership is undefined')
-    coupled_log = source.index('membership consumers are')
-    trigger = source.index('_triggeredScanRunner.trigger')
-    assert 'separatedLaserPower' in source
-    assert resolve < refusal < coupled_log < trigger
-    branch = source[resolve:trigger]
-    assert 'if separatedLaserPower:' in branch
-    assert 'return False' in branch
-    # Coupled has no return in its logging branch and continues to trigger.
-    coupled_branch = branch[branch.index('membership consumers are'): ]
-    assert 'return False' not in coupled_branch.split('else:', 1)[0]
+def _unresolvable(signalDict):
+    raise KeyError('TTLCycleSignalsDict')
+
+
+def test_the_lasers_are_armed_before_the_daq_is():
+    """Arming after arm() would put the laser writes inside the busy window,
+    where the NI-DAQ refuses every one-shot output."""
+    scan = _NidaqArming(_lasers())
+
+    assert scan._armScanIteration(_SCAN, {}) == 'iteration'
+    assert scan.events == ['devices-resolved', ('arm', ('488',))]
+
+
+def test_a_laser_that_cannot_be_prepared_stops_the_daq_scan_before_it_arms():
+    scan = _NidaqArming(_lasers(failPower=True))
+
+    with pytest.raises(RuntimeError, match='Laser preparation failed'):
+        scan._armScanIteration(_SCAN, {})
+    assert scan.events == ['devices-resolved']
+
+
+def test_a_standing_laser_veto_stops_the_daq_scan_before_the_lasers_are_asked():
+    lasers = _lasers()
+    lasers._commChannel.scanWorkflow.set_laser_scan_preparation_error('AOTF offline')
+    scan = _NidaqArming(lasers)
+
+    with pytest.raises(RuntimeError, match='AOTF offline'):
+        scan._armScanIteration(_SCAN, {})
+    assert scan.events == []
+    assert lasers._scanArmedLasers == []
+
+
+def test_an_unknown_device_list_refuses_a_separated_power_scan_before_it_arms():
+    """Separated power decides from the list which Live paths to suppress."""
+    scan = _NidaqArming(_lasers(), resolve=_unresolvable)
+
+    with pytest.raises(RuntimeError, match='membership before arming'):
+        scan._armScanIteration(_SCAN, {})
+    assert scan.events == []
+
+
+def test_an_unknown_device_list_only_skips_the_lasers_under_coupled_power():
+    """Coupled power keeps the behaviour from before the split: the scan arms."""
+    scan = _NidaqArming(_lasers(mode='coupled'), resolve=_unresolvable)
+
+    assert scan._armScanIteration(_SCAN, {}) == 'iteration'
+    assert scan.events == [('arm', ())]
+    assert any(
+        'not being notified' in message
+        for level, message in scan._logger.messages if level == 'error'
+    )
+
+
+def _slowScan(lasers, *, resolve=NidaqManager.resolveScanTTLDevices):
+    """EventTriggeredControllerBase.runSlowScan, the fifth NI-DAQ entry."""
+    events = []
+    shell = SimpleNamespace(
+        MODALITY_LABEL='etSTED',
+        _state=SimpleNamespace(
+            detLog={}, scanInitiationMode=SimpleNamespace(name='ScanWidget')
+        ),
+        _setupInfo=lasers._setupInfo,
+        _commChannel=_wire(lasers, events),
+        _master=SimpleNamespace(
+            nidaqManager=SimpleNamespace(resolveScanTTLDevices=resolve)
+        ),
+        signalDic=_SCAN,
+        scanInfoDict={},
+        _scanCoordinator=None,
+        _logger=_Logger(),
+        _triggeredScanRunner=SimpleNamespace(
+            trigger=lambda *args, **kwargs: (
+                events.append('trigger'),
+                SimpleNamespace(success=True, message=''),
+            )[1]
+        ),
+    )
+    return shell, events
+
+
+def test_a_laser_that_cannot_be_prepared_stops_the_event_triggered_slow_scan():
+    shell, events = _slowScan(_lasers(failPower=True))
+
+    assert EventTriggeredControllerBase.runSlowScan(shell) is False
+    assert events == ['devices-resolved']
+
+
+@pytest.mark.parametrize('mode, started', [('separated', False), ('coupled', True)])
+def test_an_unknown_device_list_stops_the_slow_scan_only_under_separated_power(
+    mode, started
+):
+    shell, events = _slowScan(_lasers(mode=mode), resolve=_unresolvable)
+
+    assert EventTriggeredControllerBase.runSlowScan(shell) is started
+    assert events == (['trigger'] if started else [])
 
 
 def test_coupled_laser_mutations_remain_allowed_while_scan_is_active():

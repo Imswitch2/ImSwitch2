@@ -26,7 +26,7 @@ class BSC203StageManager(PositionerManager):
         # increases the displayed position) on every axis. If an axis physically
         # moves the wrong way / the displayed value changes opposite to the
         # command, add its label here to flip the jog direction. Confirm per rig
-        # with utility_scripts/bsc203_diag.py calibrate.
+        # with scripts/diagnostics/bsc203_diag.py calibrate.
         self._invertJogAxes = set(props.get('invertJogAxes', []))
 
         try:

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from imswitch.improcess.profile_helpers import (
+from imswitch.imcommon.algorithms.profile_fits import (
     ExponentialFit,
     TwoGaussianFit,
     build_profile_record,

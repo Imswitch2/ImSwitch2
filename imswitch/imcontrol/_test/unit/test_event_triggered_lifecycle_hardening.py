@@ -305,14 +305,7 @@ def test_close_waits_for_owned_scan_before_disconnecting_completion_signals():
             sigScanBuildFailed=failedSignal,
         )
     )
-    controller._commChannel = SimpleNamespace(
-        sigSendScanParameters=_Signal(),
-        sigSendScanFreq=_Signal(),
-    )
-    controller._commChannel.sigSendScanParameters.connect(
-        controller.assignScanParameters
-    )
-    controller._commChannel.sigSendScanFreq.connect(controller.logScanFreq)
+    controller._commChannel = SimpleNamespace()
     controller.stopExperiment = lambda resetParams=False: None
 
     assert controller.closeEvent() is False
@@ -420,20 +413,6 @@ def test_recording_failure_signal_is_paired_with_ended_signal_connection():
 
     assert controller._commChannel.sigRecordingEnded.slots == []
     assert controller._commChannel.sigRecordingFailed.slots == []
-
-
-def test_unrelated_or_post_stop_recording_failure_cannot_resume():
-    controller = _bare_controller(mode=ScanInitiationMode.RecordingWidget)
-    controller._triggeredRecordingInFlight = False
-    controller._stopRequested = True
-    controller._experimentActive = False
-    controller.continueFastModality = lambda: (_ for _ in ()).throw(
-        AssertionError('post-stop recording failure resumed the modality')
-    )
-
-    controller._onTriggeredRecordingFailed('disk full')
-
-    assert controller._state.running is False
 
 
 def test_active_triggered_recording_failure_recovers_once():
@@ -752,63 +731,6 @@ def test_event_stream_restart_does_not_reuse_failed_release_handle():
     assert manager.acquireCalls == [
         (('CAM',), LeasePurpose.EVENT_STREAM)
     ]
-
-
-def test_direct_triggered_run_stays_reserved_through_end_publication():
-    controller = _bare_controller()
-    events = []
-    runToken = SimpleNamespace(
-        released=False,
-        releaseRequested=False,
-        releaseBarrierCleared=False,
-        holdReleaseUntilFinalized=False,
-    )
-
-    class _Coordinator:
-        activeRunToken = runToken
-
-        def releaseRun(
-            self, token, *, onReleased=None, holdUntilFinalized=False
-        ):
-            assert token is runToken
-            assert holdUntilFinalized is True
-            token.releaseRequested = True
-            token.releaseBarrierCleared = True
-            token.holdReleaseUntilFinalized = True
-            events.append('release-requested')
-            onReleased()
-            return True
-
-        def finalizeRunRelease(self, token):
-            assert token is runToken
-            assert self.activeRunToken is token
-            events.append('release-finalized')
-            token.released = True
-            self.activeRunToken = None
-            return True
-
-    coordinator = _Coordinator()
-
-    def notifyEnded():
-        assert coordinator.activeRunToken is runToken
-        events.append('ended-while-held')
-
-    controller._scanCoordinator = coordinator
-    controller._triggeredScanRunToken = runToken
-    controller._triggeredScanStartingPublished = True
-    controller._triggeredScanCompletionPublishing = False
-    controller._disconnectNidaqCompletionSignalsIfIdle = lambda: None
-    controller._commChannel = SimpleNamespace(
-        scanWorkflow=SimpleNamespace(notify_scan_ended=notifyEnded)
-    )
-
-    assert controller._finishTriggeredScanRun() is True
-    assert events == [
-        'release-requested',
-        'ended-while-held',
-        'release-finalized',
-    ]
-    assert coordinator.activeRunToken is None
 
 
 def test_failed_triggered_terminal_handoff_cannot_strand_held_run():

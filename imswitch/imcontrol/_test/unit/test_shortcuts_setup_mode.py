@@ -3,7 +3,7 @@ from unittest.mock import Mock, MagicMock, patch, call
 from qtpy import QtWidgets
 
 from imswitch.imcontrol.controller.controllers.SetupModesController import SetupModesController
-from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
+from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
 
 
 @pytest.fixture

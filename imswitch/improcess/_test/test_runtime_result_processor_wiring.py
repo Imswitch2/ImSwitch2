@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from imswitch.improcess.controller.ImProcessMainController import ImProcessMainController
-from imswitch.improcess.controller.runtime_result_processors import (
+from imswitch.improcess.model.runtime_tools import (
     runtime_result_processor_ids,
 )
 
@@ -85,17 +85,6 @@ def test_runtime_graph_widget_gets_graph_controller():
     assert factory.created[0][0].__name__ == "GraphController"
     assert factory.created[0][1] is widget
     assert controller.mainViewController.graphController is not None
-
-
-def test_startup_wires_producing_panels_without_saved_layout():
-    """A fresh profile has no saved layout, so the persistence adapter hook
-    never fires; __init__ must wire producing panels unconditionally or their
-    run buttons stay dead until the first layout save/restore cycle."""
-    import inspect
-
-    source = inspect.getsource(ImProcessMainController.__init__)
-
-    assert "self._wire_runtime_result_processors()" in source
 
 
 _PLUGIN_SOURCE = """

@@ -317,7 +317,6 @@ def _scan_legacy_managers(
         "InstrumentManager",
         "PulseGeneratorManager",
         "StandManager",
-        "SLMManager",
     }
     
     infos: list[ManagerInfo] = []

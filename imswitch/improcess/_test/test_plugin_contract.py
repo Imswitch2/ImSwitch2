@@ -7,7 +7,7 @@ Acceptance criteria of the pre-push cleanup, one test each:
 2. GUI provenance from it is non-replayable with a clear reason;
 3. an explicit ``return {}`` is a valid contract (the Invert example);
 4. every example's widget and defaults match (see test_plugin_param_contract);
-5. the Gaussian example accepts and records ``sigma`` in a workflow;
+5. a declared example accepts and records its parameters in a workflow (see 6.);
 6. Photophysics records every effective parameter, hidden ones included;
 7. Photophysics saving returns a receipt with the CSV and the companion;
 8. the author-facing helper detects a mismatch.
@@ -224,26 +224,6 @@ def test_an_explicit_empty_declaration_is_valid(registry, examples, tmp_path):
     with run(wf, registry=registry, out_dir=tmp_path) as report:
         node = output_node(report.result("inv"))
         assert node["replayable"] is True and node["params"] == {}
-
-
-# 5. the Gaussian example accepts and records sigma ----------------------------------------------------
-
-def test_gaussian_workflows_accept_and_record_sigma(registry, tmp_path):
-    pytest.importorskip("scipy")
-    raw = _h5(tmp_path / "a.h5")
-    wf = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"]),
-                        Process("blur", "example.gaussian-blur", {"sigma": 3.0}, inputs=["rec"])])
-    assert validate(wf, registry) == []
-    with run(wf, registry=registry, out_dir=tmp_path) as report:
-        node = output_node(report.result("blur"))
-        assert node["params"] == {"sigma": 3.0} and node["replayable"] is True
-    wf_default = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"]),
-                                Process("blur", "example.gaussian-blur", inputs=["rec"])])
-    with run(wf_default, registry=registry, out_dir=tmp_path) as report:
-        assert output_node(report.result("blur"))["params"] == {"sigma": 2.0}     # the widget default, recorded
-    typo = Workflow("w", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"]),
-                          Process("blur", "example.gaussian-blur", {"sigm": 3.0}, inputs=["rec"])])
-    assert any("unknown parameter" in str(i) for i in validate(typo, registry))
 
 
 # 6./7. Photophysics records every effective parameter and saves through the protocol ---------------

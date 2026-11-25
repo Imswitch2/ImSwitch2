@@ -212,7 +212,7 @@ def _make_controller(cls=_HarnessController, *, enabled=True, endless=False,
     # Stub the triggered-scan runner so initiateSlowScan does not touch hardware.
     controller._triggeredScanRunner = SimpleNamespace(
         prepare=lambda *a, **k: SimpleNamespace(
-            success=True, signal_dict={}, scan_info_dict={}, message=''
+            success=True, signal_dict={}, scan_info_dict={}, message='', scan_freq=None
         )
     )
     controller._commChannel = SimpleNamespace()
@@ -334,6 +334,47 @@ def test_initiate_slow_scan_applies_event_before_scan_prepare():
 
     assert controller._smartModeService.applyCalls == [('EtHarness', 'event')]
     assert ('role', 'event') in controller.calls
+
+
+def test_initiate_slow_scan_logs_the_scan_frequency_the_runner_returns():
+    # The frequency used to arrive through sigSendScanFreq; now the runner
+    # hands it back with the prepared scan and the controller logs it.
+    controller = _make_controller(enabled=False)
+    controller._triggeredScanRunner = SimpleNamespace(
+        prepare=lambda *a, **k: SimpleNamespace(
+            success=True, signal_dict={}, scan_info_dict={}, message='',
+            scan_freq=2.5,
+        )
+    )
+
+    assert controller.initiateSlowScan(position=(1, 2)) is True
+
+    assert controller._state.detLog['scan_period'] == 2.5
+
+
+def test_get_scan_parameters_assigns_what_the_workflow_returns():
+    controller = _make_controller(enabled=False)
+    assigned = []
+    controller.assignScanParameters = lambda *args: assigned.append(args)
+    controller._commChannel = SimpleNamespace(
+        scanWorkflow=SimpleNamespace(
+            request_scan_parameters=lambda: ({'a': 1}, {'d': 2}, ['X'])
+        )
+    )
+
+    controller.getScanParameters()
+
+    assert assigned == [({'a': 1}, {'d': 2}, ['X'])]
+
+
+def test_get_scan_parameters_leaves_state_alone_when_no_controller_answers():
+    controller = _make_controller(enabled=False)
+    controller.assignScanParameters = lambda *args: pytest.fail('assigned')
+    controller._commChannel = SimpleNamespace(
+        scanWorkflow=SimpleNamespace(request_scan_parameters=lambda: None)
+    )
+
+    controller.getScanParameters()
 
 
 def test_event_apply_failure_blocks_scan_and_recovers_to_idle():
@@ -499,21 +540,19 @@ def test_monalisa_stand_hook_suppressed_when_smart_mode_on():
 
     The scouting role still applies (and drives the LeicaStand setup-mode
     component), but switching the stand directly here would double-actuate, so
-    the legacy direct command is suppressed. ``sigInitiateEtMonalisa`` is UI
-    state and still fires.
+    the legacy direct command is suppressed.
     """
     controller = _make_controller(cls=_MonalisaHarness, enabled=True)
     standSub = _StandSubManager()
     controller._master = SimpleNamespace(
         standManager=SimpleNamespace(_subManager=standSub)
     )
-    controller._commChannel = SimpleNamespace(sigInitiateEtMonalisa=_Signal())
+    controller._commChannel = SimpleNamespace()
 
     controller.initiate()
 
     # The direct stand command did NOT run; only the scouting role applied.
     assert standSub.calls == []
-    assert controller._commChannel.sigInitiateEtMonalisa.emitted == [(True,)]
     assert controller._smartModeService.applyCalls == [('EtMonalisa', 'scouting')]
     assert controller._state.running is True
 
@@ -522,19 +561,17 @@ def test_monalisa_stand_hook_fires_on_arm_when_smart_mode_off():
     """With smart-mode switching OFF (legacy path), the direct stand hook fires.
 
     No smart-mode role is applied; the behavior is byte-for-byte the legacy one.
-    ``sigInitiateEtMonalisa`` fires regardless of the flag.
     """
     controller = _make_controller(cls=_MonalisaHarness, enabled=False)
     standSub = _StandSubManager()
     controller._master = SimpleNamespace(
         standManager=SimpleNamespace(_subManager=standSub)
     )
-    controller._commChannel = SimpleNamespace(sigInitiateEtMonalisa=_Signal())
+    controller._commChannel = SimpleNamespace()
 
     controller.initiate()
 
     # The direct stand command ran (legacy path); no smart-mode role applied.
     assert standSub.calls == ['setFLUO']
-    assert controller._commChannel.sigInitiateEtMonalisa.emitted == [(True,)]
     assert controller._smartModeService.applyCalls == []
     assert controller._state.running is True

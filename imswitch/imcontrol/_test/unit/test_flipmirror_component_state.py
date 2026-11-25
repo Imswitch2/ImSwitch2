@@ -8,7 +8,6 @@ Tests the StatefulComponentMixin implementation on FlipMirrorController:
 - describeComponentState returns human-readable summaries
 - getComponentStateHazards returns [] for both modes
 - FlipMirror appears in setup mode component discovery when devices exist
-- FlipMirror not registered when no devices exist
 """
 
 import pytest
@@ -281,69 +280,6 @@ def test_get_component_state_hazards_returns_empty_for_both_modes(flip_mirror_co
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
     )
     assert hazards_apply == []
-
-
-def test_flipmirror_registered_when_devices_exist():
-    """FlipMirror is registered when flip mirror devices exist."""
-    # Test that registration happens in __init__ when devices exist
-    # This is verified by checking the actual controller code
-    # The registration line is: getWidgetStatePersistence().register('FlipMirror', self)
-    # This is only called when manager exists and hasDevices() returns True
-    
-    import inspect
-    source = inspect.getsource(FlipMirrorController.__init__)
-    
-    # Check that registration happens
-    assert "getWidgetStatePersistence().register('FlipMirror', self)" in source
-    
-    # Check that there's a guard for no devices with early return
-    assert 'if self._manager is None or not self._manager.hasDevices():' in source
-    
-    # Check that the early return exists within reasonable distance of the check
-    # (account for setAllEnabled call between the check and return)
-    lines = source.split('\n')
-    device_check_idx = None
-    register_line_idx = None
-    return_idx = None
-    
-    for idx, line in enumerate(lines):
-        if 'if self._manager is None or not self._manager.hasDevices():' in line:
-            device_check_idx = idx
-        if "register('FlipMirror'" in line:
-            register_line_idx = idx
-        if 'return' in line and device_check_idx is not None and idx > device_check_idx and idx < device_check_idx + 5:
-            # Return within 5 lines of device check (accounts for setAllEnabled)
-            return_idx = idx
-    
-    # Registration should happen after the conditional block with early return
-    assert register_line_idx is not None, "Registration call not found"
-    assert device_check_idx is not None, "Device check not found"
-    assert return_idx is not None, "Early return not found"
-    assert register_line_idx > return_idx, "Registration happens before early return"
-
-
-def test_flipmirror_not_registered_when_no_devices():
-    """FlipMirror is NOT registered when no flip mirror devices exist."""
-    # The early return in __init__ prevents registration when no devices
-    # This is verified by checking the code structure
-    
-    import inspect
-    source = inspect.getsource(FlipMirrorController.__init__)
-    
-    # Check that there's an early return when no devices
-    assert 'if self._manager is None or not self._manager.hasDevices():' in source
-    assert 'return' in source.split('hasDevices()')[1].split('getWidgetStatePersistence()')[0]
-
-
-def test_flipmirror_not_registered_when_manager_has_no_devices():
-    """FlipMirror is NOT registered when manager exists but hasDevices() returns False."""
-    # Same as above - the hasDevices() check guards registration
-    
-    import inspect
-    source = inspect.getsource(FlipMirrorController.__init__)
-    
-    # Check that hasDevices() is part of the guard condition
-    assert 'not self._manager.hasDevices()' in source
 
 
 def test_flipmirror_in_setup_mode_discovery(flip_mirror_controller):

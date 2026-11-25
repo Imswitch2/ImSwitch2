@@ -13,6 +13,10 @@ from imswitch.imcontrol.model.workflows import (
     build_mock_facade,
 )
 
+from ._no_waits import no_waits
+
+_skip_workflow_waits = no_waits("calibration")
+
 
 def test_calibration_params_defaults():
     """CalibrationParams should have sensible defaults."""

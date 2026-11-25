@@ -48,7 +48,7 @@ This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch
 
 **42+ hardware managers out of the box** — sCMOS cameras, photon counters, lasers, piezo stages, motorized rotators, FLIM time taggers, SLMs, microcontroller pulse generators.
 
-**Pluggable architecture** — every device type has an abstract base; adding a new driver is one new file + one entry in your setup JSON.
+**Pluggable architecture** — every device type has an abstract base; a new driver is one manager class, selected by name in your setup JSON (plus its config schema and docs card, which CI checks — see [adding device support](docs/adding-device-support.rst)).
 
 **Hardware-free dev mode** — every manager has a documented mock fallback so you can develop, test, and configure without any device plugged in.
 
@@ -94,51 +94,45 @@ Having trouble, or want to build one yourself?  See [`docs/packaging.rst`](docs/
 
 ### Install with Python
 
-> Requires **Python 3.10+** and **PyQt5**.  Windows / macOS / Linux all supported.
-
-`pip install imswitch2`, then run `imswitch`.  This is the right choice for a
-microscope: a `pip` install can load device plugins and vendor SDKs, and a
-bundled one cannot.
-
-Clone instead to develop on Imswitch2 itself, or for the newest fixes — PyPI releases trail `main`:
+> Requires **Python 3.10+**.  Windows / macOS / Linux.
 
 ```bash
-# 1. Clone and install (core install — UI + file I/O, no hardware drivers)
-git clone https://github.com/Imswitch2/ImSwitch2.git
-cd Imswitch2
-pip install -e .
+pip install imswitch2
+imswitch
+```
 
-# 2. Launch
+This is the right choice for a microscope: a `pip` install can load device
+plugins and vendor SDKs, and a bundled one cannot.  The first start takes a
+minute while Imswitch2 creates `~/ImSwitchConfig/`; then a setup picker opens.
+**No microscope connected? Keep `example_no_hardware.json`** — every device in
+it is simulated.
+
+**New to Imswitch2?**  [The essentials](docs/essentials.rst) is a two-minute
+read, and [your first image](docs/first-image.rst) goes click by click to a
+live image and a saved recording without a microscope.
+
+To develop on Imswitch2 itself, or for fixes newer than the last PyPI release:
+
+```bash
+git clone https://github.com/Imswitch2/ImSwitch2.git
+cd ImSwitch2
+pip install -e .
 python -m imswitch
 ```
 
-Imswitch2 creates `~/ImSwitchConfig/` on first launch and opens a setup-picker dialog:
-
-<p align="center">
-  <img
-    src="https://raw.githubusercontent.com/Imswitch2/Imswitch2/main/docs/images/auto/setup-picker.png"
-    alt="ImSwitch2 hardware setup picker"
-    width="500"
-  />
-</p>
-
-> **No microscope hardware connected? Choose `example_no_hardware.json`.**
-> Other bundled example setups demonstrate configurations for specific hardware 
-> and may show unavailable devices or use mock fallbacks when that hardware is 
-> not present.You can change the active setup later from  **Hardware → Pick hardware setup…**.
-
-
-> **The first launch is slow — give it a minute.**  Before the window appears, Imswitch2 creates its `~/ImSwitchConfig/` folder structure and copies the example setups and scripts into it, and Python, napari and matplotlib build their caches.  Later launches skip all of this and start much faster.
-
-A fresh install loads three modules, one tab each down the left edge of the window: **Hardware Control** (ImControl, the microscope), **Image Processing** (ImProcess, reconstruction and analysis) and **Scripting** (ImScripting, the script editor).  To change which ones load, use **Preferences > Set active modules…** or edit `~/ImSwitchConfig/config/modules.json`.  A `modules.json` you changed is kept when you update Imswitch2 (see *Updates to the shipped files* below).
-
-For real hardware:
+Optional extras (details in [installation](docs/installation.rst)):
 
 ```bash
-pip install -e ".[hardware]"   # NI-DAQ, Lantz, pyVISA
-pip install -e ".[full]"       # also napari, OpenCV, vispy
+pip install -e ".[hardware]"   # NI-DAQmx, pylablib, pyVISA, python-microscope
+pip install -e ".[imagej]"     # ImageJ/Fiji ROI import/export
+pip install -e ".[full]"       # OpenCV, plus [imagej]
+pip install -e ".[storm]"      # napari-storm point-cloud viewer for SMLM results
+pip install -e ".[comet]"      # COMET drift correction for SMLM results
 ```
-     
+
+Some vendor SDKs are not on PyPI (for example the Thorlabs camera SDK); see
+[installation](docs/installation.rst).  Which modules load (Hardware Control,
+Image Processing, Scripting) is set under **Preferences > Set active modules…**.
 
 ---
 
@@ -157,7 +151,7 @@ The full documentation lives under [`docs/`](docs/) and is rendered with [Sphinx
 | [`docs/scripting.rst`](docs/scripting.rst) | Scripting / API reference |
 | [`docs/devices/`](docs/devices/) | **Per-device JSON config reference** — every manager, every field, with defaults |
 | [`docs/how-to/`](docs/how-to/) | **Task-oriented guides** — wire a Teensy, add a backend, port a driver, auto-screenshot widgets |
-| [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) | Full architecture map (managers, controllers, signal flow, startup) |
+| [`docs/architecture.rst`](docs/architecture.rst) | Architecture map (package layout, startup, managers, signal buses, recording path) |
 | [`docs/design/plans/`](docs/design/plans/) | Integration plans (active + historical) |
 
 ### Build the docs locally
@@ -223,7 +217,7 @@ Imswitch2 ships managers for **42+ devices** across five categories. Every manag
 </tr>
 </table>
 
-> **Don't see your hardware?** Adding a new driver is one file plus one JSON entry — see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst) for the canonical recipe, and [`docs/adding-device-support.rst`](docs/adding-device-support.rst) for the abstract-base reference.
+> **Don't see your hardware?** A new driver is one manager class plus its setup-JSON entry, and CI asks for its config schema and docs card too — see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst) for the canonical recipe, and [`docs/adding-device-support.rst`](docs/adding-device-support.rst) for the abstract-base reference.
 
 ---
 
@@ -248,7 +242,7 @@ Open it from a running ImSwitch under **Hardware > Edit hardware configuration..
 or standalone without starting the microscope:
 
 ```bash
-python utility_scripts/imswitch_config_editor.py
+python scripts/utilities/imswitch_config_editor.py
 ```
 
 <!-- TODO: config editor screenshot, docs/images/auto/config-editor.png.  Suggested 1000×600 px.
@@ -306,33 +300,31 @@ Imswitch2/
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
 │   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
-├── utility_scripts/                # Config editor GUI + device templates
-├── tools/                          # Maintenance scripts (screenshots, codegen, …)
+├── scripts/
+│   ├── diagnostics/                # Hardware probes (BSC203, TIS camera, NI-DAQ, …)
+│   └── utilities/                  # Operator tools (config editor launcher, AOTF calibration, ScopeAId KB)
+├── tools/                          # Developer generators (screenshots, codegen, …)
+├── examples/                       # Device plugin packages, ImProcess plugins and workflow examples
+├── release/                        # Installer / bundle build files (PyInstaller, macOS, Windows)
 ├── docs/                           # Sphinx site (architecture, how-tos, device ref)
 └── .github/workflows/              # CI pipeline
 ```
 
-Deep dive: [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md).
-
-<!-- TODO: architecture diagram.  Suggested 1100×600 px, docs/images/architecture.svg.
-     Source: docs/imswitch_architecture_map.svg (export to PNG for README). -->
+Deep dive: [`docs/architecture.rst`](docs/architecture.rst).
 
 ---
 
 ## AI agent workflow
 
-Imswitch2 uses AI agents as development assistants under strict human oversight:
+Imswitch2 is developed with AI coding agents under human review: every pull
+request is reviewed by a maintainer, who tests it on their own microscope
+before it merges.
 
-```
-GitHub Issue → Agent plans → Isolated branch/worktree → Tests → PR → Human review → Merge
-```
-
-- All agent code changes require human review — **no automatic merges**.
-- Red-zone files (hardware timing, laser control, DAQ) require explicit maintainer approval.
-- Agents work in isolated branches or worktrees; parallel agents don't share state.
-- Every claim in the docs is grounded in source code — agents are explicitly forbidden from inventing fields, defaults, or vendor library calls.
-
-See [`AGENTS.md`](AGENTS.md) for the full rules and templates.
+Agents start at [`AGENTS.md`](AGENTS.md): where to find what, the red zone
+(hardware timing, lasers, scanning, DAQ, stage motion) as concrete paths,
+the files and guard tests for each kind of change, test commands and
+pitfalls. Prompt templates are in
+[agent task templates](docs/agent-task-templates.rst).
 
 ---
 

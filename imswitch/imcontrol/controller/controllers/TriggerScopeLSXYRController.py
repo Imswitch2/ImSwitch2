@@ -99,10 +99,6 @@ class TriggerScopeLSXYRController(
 
         getWidgetStatePersistence().register('Scan', self)
 
-    def sendScanParameters(self):
-        triggerscopeParameters = self.getTriggerscopeParameters()
-        self._commChannel.sigSendScanParameters.emit(triggerscopeParameters)
-
     def saveScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Save scan', self.scanDir, isSaving=True)
         if not fileName:
@@ -521,4 +517,3 @@ class TriggerScopeLSXYRController(
 
 
 _attrCategoryScan = 'LSXYR_Scan'
-_attrCategoryDevices = 'LSXYR_Dev'

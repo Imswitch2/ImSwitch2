@@ -192,7 +192,7 @@ def test_beta_centered_scan_stays_in_voltage_range():
 
 
 # --- convFactors follow target_device, not positioner order (see
-# --- docs/galvo-designer-single-axis-findings.md, defect 4) ---
+# --- docs/galvo-designer-single-axis-findings.md (retired; see git history), defect 4) ---
 
 
 def _beta_setup_sted():

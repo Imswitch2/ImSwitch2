@@ -9,10 +9,10 @@ mirror images. The rule now: traversal is chronology only, ``direction`` is a
 sign applied exactly once by one imcommon helper.
 
 These tests run the same negative-direction recording through the three
-consumers and assert every frame lands in the same pixel, that both producers
-of layouts (the scan-source builder and the legacy adapter) emit ``forward``
-for a monotonically stepped negative axis, and that the fast-Gauss paths no
-longer refuse such a layout as "reversed".
+consumers and assert every frame lands in the same pixel, that the legacy
+adapter emits ``forward`` for a monotonically stepped negative axis (the
+scan-source builder is pinned in imcontrol's test_acquisition_layout_adapters),
+and that the fast-Gauss paths no longer refuse such a layout as "reversed".
 """
 
 from __future__ import annotations
@@ -45,27 +45,6 @@ from imswitch.improcess.reconstructors.monalisa.reconstructor import (
 from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
     scan_params_from_layout,
 )
-
-
-class _OnePulseEach(dict):
-    """Test stand-in for getNumCamTTL(): every detector is gated, one pulse per position.
-
-    The builders no longer default an undeclared detector to one pulse -- that
-    default is what let the recording gate compare a number with itself -- so
-    a test that means "plain camera, one exposure per position" says so.
-    """
-
-    def __contains__(self, key):
-        return True
-
-    def __getitem__(self, key):
-        return 1
-
-    def get(self, key, default=None):
-        return 1
-
-
-ONE_PULSE_EACH = _OnePulseEach()
 
 
 ROWS, COLS = 4, 5
@@ -139,31 +118,6 @@ def test_placement_beadrec_and_dialog_put_every_frame_in_the_same_pixel():
     assert via_placement[0] == (ROWS - 1, 0)
     assert via_placement[COLS] == (ROWS - 2, 0)
     assert via_placement[-1] == (0, COLS - 1)
-
-
-def test_the_scan_source_builder_emits_forward_for_a_negative_axis():
-    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
-        build_point_scan_layouts,
-    )
-
-    # The ScanInfoContract shape the point-scan builder reads.
-    scan_info = {
-        'img_dims': [COLS, ROWS],
-        'img_axes_phys': ['x', 'y'],
-        'pixel_sizes': [0.05, 0.05],
-        'n_linesteps': 1,
-    }
-    layout = build_point_scan_layouts(
-        scan_info,
-        ('Cam',),
-        scan_source='ScanControllerPointScan',
-        directions={'scan_x': 1, 'scan_y': -1, 'scan_z': 1},
-        pulse_counts=ONE_PULSE_EACH,
-    )['Cam']
-
-    by_kind = {loop.kind: loop for loop in layout.event_loops}
-    assert by_kind['scan_y'].direction == -1
-    assert all(rule.order == 'forward' for rule in layout.traversal)
 
 
 def test_the_legacy_adapter_emits_forward_for_a_negative_axis():

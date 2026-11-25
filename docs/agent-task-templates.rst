@@ -10,16 +10,14 @@ General Rules
 -------------
 
 Every agent task should be narrow enough to review in one pass. Prefer one
-file or one tightly related group of files. The agent must not merge, push, or
-deploy without human review.
+file or one tightly related group of files. Nothing an agent
+writes merges without a maintainer's review.
 
-Agents must follow the red-zone rules in :ref:`red-zone-work`. In particular:
-
-1. No direct hardware execution
-2. No hardware timing changes unless explicitly requested
-3. No API-breaking changes without maintainer approval
-4. Tests or documentation checks are required
-5. Red-zone files require explicit risk notes
+The rules an agent follows -- the red zone, the files a change must touch,
+generated files, test commands -- live in one place, ``AGENTS.md`` at the
+repository root (and the ``AGENTS.md`` of the package being changed); point
+the agent there rather than restating them in a prompt.  This page only
+holds prompt templates.
 
 Standard Prompt Format
 ----------------------
@@ -73,7 +71,7 @@ Doc-Only Task Template
    - Inspect nearby docs for style and cross-link conventions
    - Add the new documentation page or update the existing one
    - Link it from docs/index.rst only if it is user/developer facing
-   - Update ROADMAP.md if the task completes a roadmap item
+   - Update docs/current-state-and-known-issues.rst if the task closes an open item
 
    Do NOTs
    - Do not change source code
@@ -87,7 +85,7 @@ Doc-Only Task Template
    4. Use Markdown only for internal design docs that are not in the Sphinx toctree.
 
    Sanity checks
-   - git diff --check -- docs/path.rst docs/index.rst ROADMAP.md
+   - git diff --check -- docs/path.rst docs/index.rst
    - python -m sphinx -b html -W docs /tmp/imswitch-docs-build (Read the Docs fails on any warning)
 
    Commit instructions

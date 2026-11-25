@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from qtpy import QtCore, QtWidgets, QtGui
 
-from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
+from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
 from imswitch.imcontrol.view.widgets.ShortcutEditorDialog import ShortcutEditorDialog
 from imswitch.imcommon.model import ShortcutAction, ShortcutScope
 

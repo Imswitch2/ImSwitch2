@@ -8,8 +8,7 @@ yet, the most efficient path is usually to wrap it as an ImSwitch2
 manager rather than rewrite from scratch.
 
 This guide distills the patterns we used porting five managers from
-the WidefieldStarss project — see the repository's `WidefieldStarss
-integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_ for the full history.
+the WidefieldStarss project.
 
 
 When porting is the right call
@@ -196,9 +195,7 @@ layers.
 Worked example: WidefieldStarss ports
 =====================================
 
-The full plan with per-port code review lives in the repository's
-`WidefieldStarss integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_.  Quick summary of what each
-port involved:
+Quick summary of what each port involved:
 
 ============================  =============================  =====================================
 Port                          Hardest part                   Pattern that made it work
@@ -221,5 +218,3 @@ Cross-references
   backend, including the abstract-base lessons.
 - :doc:`/adding-device-support` — base-class reference for detectors,
   lasers, positioners.
-- `WidefieldStarss integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_ (repository note) — full
-  plan with per-port analysis and architectural decisions.

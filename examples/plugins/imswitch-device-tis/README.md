@@ -24,8 +24,8 @@ actual fix. It also makes the hardware trigger a software-settable property, so 
 scan can arm and disarm it instead of relying on a manual step in the vendor's
 properties dialog.
 
-Full rationale, the verified vendor-API details, and the rig-validation plan:
-`docs/design/plans/tis-camera-ic4-migration.md` in the ImSwitch repository.
+Full rationale and the verified vendor-API details: the retired migration plan
+(`tis-camera-ic4-migration.md`, see the ImSwitch repository's git history).
 
 ## Status
 

@@ -28,7 +28,6 @@ from imswitch.imcommon.model.acquisition_layout import (
     AcquisitionLayout,
     AcquisitionLoop,
     RecordedEventSpan,
-    UnconsumedLoopError,
 )
 from imswitch.improcess.live.sources import _frames_per_stack_from_layout
 from imswitch.improcess.model.acquisition_layout_resolver import (
@@ -36,9 +35,6 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
 )
 from imswitch.improcess.reconstructors.beadrec.reconstructor import (
     raster_geometry_from_layout,
-)
-from imswitch.improcess.reconstructors.monalisa.coeffs_to_image import (
-    placement_from_layout,
 )
 from imswitch.improcess.reconstructors.monalisa.reconstructor import (
     MonalisaReconstructor,
@@ -94,11 +90,6 @@ TWO_PULSE = _layout(
     AcquisitionLoop('scan_x', 'scan_x', 4),
     AcquisitionLoop('repeat', 'repeat', 2),
 )
-
-
-def test_monalisa_placement_refuses_a_loop_it_cannot_place():
-    with pytest.raises(UnconsumedLoopError, match="MoNaLISA placement.*'repeat'"):
-        placement_from_layout(TWO_PULSE)
 
 
 @pytest.mark.parametrize('authoritative', [True, False], ids=['declared', 'inferred'])

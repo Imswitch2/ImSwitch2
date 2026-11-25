@@ -113,7 +113,7 @@ def test_element_size_um_zyx_for_hdf5():
     assert m2.element_size_um() == [1.0, 0.2, 0.1]
 
 # --- 1-axis (single-line) scans: the YX-compat + provenance contract ----------
-# See docs/galvo-designer-single-axis-findings.md, phase C item 6.
+# See docs/galvo-designer-single-axis-findings.md (retired; see git history), phase C item 6.
 
 
 def test_axes_for_single_line_scan_stay_compat_yx():

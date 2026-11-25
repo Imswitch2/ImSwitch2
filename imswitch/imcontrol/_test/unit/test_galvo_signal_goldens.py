@@ -1,6 +1,6 @@
 """Golden tests for GalvoScanDesigner.make_signal.
 
-Phase A of docs/galvo-designer-single-axis-findings.md refactors the smooth
+Phase A of docs/galvo-designer-single-axis-findings.md (retired; see git history) refactors the smooth
 fast-axis generation (period slicing instead of the tiled middle). These
 tests pin the designer's complete output — every emitted waveform plus the
 load-bearing scanInfo fields — for the successful multi-axis baseline

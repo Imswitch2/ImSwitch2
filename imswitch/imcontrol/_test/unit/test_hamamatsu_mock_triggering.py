@@ -48,10 +48,10 @@ def _minimal_simulated_setup():
         'lasers': {},
         'positioners': {},
         'scan': {
-            'scanWidgetType': 'PointScan',
+            'scanWidgetType': 'Advanced',
             'scanDesigner': 'GalvoScanDesigner',
             'scanDesignerParams': {},
-            'TTLCycleDesigner': 'PointScanTTLCycleDesigner',
+            'TTLCycleDesigner': 'AdvancedScanTTLCycleDesigner',
             'TTLCycleDesignerParams': {},
             'sampleRate': 100000,
         },
