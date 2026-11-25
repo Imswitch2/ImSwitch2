@@ -23,6 +23,7 @@ from .laser_power import (
     UNSUPPORTED_CALIB_CSV_PATH,
     CalibrationResolution,
     LaserPowerTable,
+    fit_monotone,
     format_power,
     laser_value_scale,
     power_table_of,

@@ -70,7 +70,8 @@ def validate_laser_power(record: Calibration, *, drive_unit: str = '') -> List[s
     if float(power.max()) <= float(power.min()):
         problems.append('the measured power is constant: the curve has no span to scale to 0-100 %')
     if np.unique(drive).size != drive.size:
-        problems.append('the same drive value appears more than once')
+        problems.append('the same drive value appears more than once (keep one row per drive '
+                        'value, or import the file with "Fit a monotonic curve")')
     order = np.argsort(drive, kind='stable')
     falling = np.nonzero(np.diff(power[order]) < 0)[0]
     if falling.size:
@@ -78,7 +79,9 @@ def validate_laser_power(record: Calibration, *, drive_unit: str = '') -> List[s
         problems.append(
             f'power falls from {power[order][i]:g} to {power[order][i + 1]:g} as the drive '
             f'rises from {drive[order][i]:g} to {drive[order][i + 1]:g}: the curve is not '
-            f'monotonic, so a percentage would not name one drive value')
+            f'monotonic, so a percentage would not name one drive value. Remove or re-measure '
+            f'the reversing points, or import the file with "Fit a monotonic curve" (the '
+            f'isotonic fit measureLaserPowerLut uses, recorded as fitted on import)')
     unit = (record.input.unit or '').strip()
     if drive_unit and unit and unit != drive_unit:
         problems.append(
@@ -199,6 +202,41 @@ class LaserPowerTable:
 
     def format_power(self, power: Optional[float]) -> str:
         return format_power(power, self.powerUnit)
+
+
+def fit_monotone(record: Calibration):
+    """``(fitted record, largest correction)``: power fitted as a monotone
+    non-decreasing function of the drive with the isotonic fit of
+    ``imcommon/algorithms/power_lut.py`` (repeated drive values averaged
+    first), plateaus collapsed to their lowest drive -- what
+    ``measureLaserPowerLut`` exports -- and recorded in the provenance as
+    fitted on import. The largest correction is in the record's power unit;
+    the caller shows it before anything is stored."""
+    from dataclasses import replace
+
+    from imswitch.imcommon.algorithms.power_lut import isotonic_increasing
+
+    rows = np.asarray([row[:2] for row in record.table], dtype=float)
+    if rows.ndim != 2 or rows.shape[0] < 2 or not np.all(np.isfinite(rows)):
+        raise CalibrationInvalid('the rows cannot be fitted (fewer than two, or non-finite)')
+    drives, inverse, counts = np.unique(rows[:, 0], return_inverse=True, return_counts=True)
+    power = np.bincount(inverse, weights=rows[:, 1]) / counts
+    fitted = isotonic_increasing(power, counts)
+    correction = float(np.max(np.abs(fitted - power))) if power.size else 0.0
+    keep = np.ones(drives.size, dtype=bool)
+    keep[1:] = fitted[1:] > fitted[:-1]
+    table = [[float(d), float(p)] for d, p in zip(drives[keep], fitted[keep])]
+    if len(table) < 2:
+        raise CalibrationInvalid('after the fit the power is constant: nothing to calibrate')
+    columns = (record.columns or ['drive', 'power'])[:2]
+    header = tuple(record.provenance.header) + (
+        ('fitted on import', f'isotonic fit of {len(rows)} rows to {len(table)}, largest '
+                             f'correction {correction:.4g} {record.output.unit}'.rstrip()),)
+    fittedRecord = replace(
+        record, data={'columns': columns, 'table': table},
+        validRange=(table[0][0], table[-1][0]),
+        provenance=replace(record.provenance, header=header))
+    return fittedRecord, correction
 
 
 def format_power(power: Optional[float], unit: str) -> str:

@@ -259,3 +259,44 @@ def test_details_and_screenshots(dialog, qtbot):
         painter.drawPixmap(140, rows.height() + 4, tipImage)
         painter.end()
         canvas.save(os.path.join(folder, 'laser-tooltip.png'))
+
+
+NOISY = """# laser: 488
+# setting unit: V
+# laser wavelength nm: 488
+# columns: setting power_W
+0 0.0
+1 0.0021
+2 0.0019
+3 0.006
+3 0.0062
+5 0.0124
+"""
+
+
+def test_a_noisy_file_is_refused_with_the_way_out_or_fitted_when_asked(dialog):
+    path = dialog.tmp / 'noisy.csv'
+    path.write_text(NOISY)
+    dialog.asked.answer = False
+    assert dialog.controller.importCsv(str(path)) is None
+    assert 'isotonic fit' in dialog.asked.confirm[-1]
+    assert 'largest correction' in dialog.asked.confirm[-1]
+    assert 'Fit a monotonic curve' in dialog.widget.statusLabel.text()
+    dialog.asked.answer = True
+    record_id = dialog.controller.importCsv(str(path))
+    record = dialog.store.get(record_id).record
+    power = [row[1] for row in record.table]
+    assert power == sorted(power) and len(set(power)) == len(power)
+    assert any(key == 'fitted on import' for key, _ in record.provenance.header)
+    assert path.read_text() == NOISY                            # the file is left alone
+
+
+def test_the_script_api_fits_only_when_asked(dialog):
+    from imswitch.imcontrol.model.calibrations import CalibrationError
+
+    path = dialog.tmp / 'noisy2.csv'
+    path.write_text(NOISY)
+    with pytest.raises(CalibrationError, match='not monotonic'):
+        dialog.controller.importLaserCalibration(str(path))
+    record_id = dialog.controller.importLaserCalibration(str(path), fitMonotone=True)
+    assert dialog.store.get(record_id) is not None

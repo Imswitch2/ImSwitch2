@@ -33,6 +33,7 @@ from imswitch.imcontrol.model.calibrations import (
     LaserDescriptor,
     LaserPowerTable,
     export_legacy_csv,
+    fit_monotone,
     format_power,
     match_to_laser,
     read_legacy_csv,
@@ -429,17 +430,23 @@ class CalibrationsController(ImConWidgetController):
         return True
 
     @APIExport(runOnUIThread=True)
-    def importLaserCalibration(self, path: str, laserName: str = '') -> str:
+    def importLaserCalibration(self, path: str, laserName: str = '',
+                               fitMonotone: bool = False) -> str:
         """ Import a calibration CSV (for example the ``lut_file`` of
         :meth:`measureLaserPowerLut`) into the global calibration store and
         return its id. ``laserName`` names the laser it was made for when
-        the file does not say. Nothing is activated. """
-        record_id = self.importCsv(path, laserName=laserName or None, interactive=False)
+        the file does not say. A file whose power is not monotonic in the
+        drive is refused unless ``fitMonotone``: then the isotonic fit of
+        ``measureLaserPowerLut`` is applied and recorded as "fitted on
+        import". Nothing is activated. """
+        record_id = self.importCsv(path, laserName=laserName or None, interactive=False,
+                                   fitMonotone=bool(fitMonotone))
         if record_id is None:
             raise CalibrationError(self._lastError)
         return record_id
 
-    def importCsv(self, path=None, *, laserName=None, interactive=True) -> Optional[str]:
+    def importCsv(self, path=None, *, laserName=None, interactive=True,
+                  fitMonotone=False) -> Optional[str]:
         """Import a CSV into the store; returns the new id (None: not imported)."""
         self._lastError = ''
         if path in (None, False, ''):
@@ -484,6 +491,24 @@ class CalibrationsController(ImConWidgetController):
         elif not record.device.name:
             record = replace(record, device=replace(record.device, name=str(target)))
         problems = validate_laser_power(record)
+        fittable = problems and all('monotonic' in p or 'more than once' in p for p in problems)
+        if fittable:
+            try:
+                fitted, correction = fit_monotone(record)
+            except CalibrationError as exc:
+                return self._importFailed(f'{path} not imported: {exc}')
+            unit = record.output.unit or '(relative)'
+            if not fitMonotone and interactive and self._widget is not None:
+                fitMonotone = self._confirm(
+                    'Fit a monotonic curve?',
+                    'The measured power is not monotonic in the drive:\n\n'
+                    + '\n'.join(problems)
+                    + f'\n\nFit a monotonic curve (the isotonic fit measureLaserPowerLut '
+                      f'uses: repeated drives averaged, reversals pooled, plateaus collapsed)? '
+                      f'The largest correction would be {correction:.4g} {unit}; the import '
+                      f'records "fitted on import" and the original file stays as it is.')
+            if fitMonotone:
+                record, problems = fitted, validate_laser_power(fitted)
         if problems:
             return self._importFailed(f'{path} not imported: ' + '; '.join(problems))
         try:
