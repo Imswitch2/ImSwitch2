@@ -264,6 +264,14 @@ class UserFileDirs(FileDirs):
     Sessions = os.path.join(_baseUserFilesDir, 'sessions')
 
 
+def getCalibrationsDir():
+    """ The global calibration store, shared by every setup on this computer
+    (``imcontrol/model/calibrations/store.py``). Not in :class:`UserFileDirs`
+    on purpose: those folders are created at startup, while this one is
+    created by the store's first write. """
+    return os.path.join(_baseUserFilesDir, 'calibrations')
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

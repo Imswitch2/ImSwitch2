@@ -31,10 +31,11 @@ SUFFIX = '.calib.json'
 
 
 def default_store_root() -> Path:
-    """``<ImSwitchConfig>/calibrations``, resolved through dirtools."""
+    """``<ImSwitchConfig>/calibrations``, resolved through dirtools when used
+    (never at import time)."""
     from imswitch.imcommon.model import dirtools
 
-    return Path(dirtools.UserFileDirs.Calibrations)
+    return Path(dirtools.getCalibrationsDir())
 
 
 @dataclass(frozen=True)
