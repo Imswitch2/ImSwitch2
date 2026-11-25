@@ -45,6 +45,7 @@ from imswitch.imcontrol.model.managers.lasers.LaserManager import UNSUPPORTED_CA
 
 #: ``Laser:<name>:Calibration`` -- the key PR #98 reserves.
 CALIBRATION_ATTR = 'Calibration'
+_LASER = 'Laser'
 
 
 class CalibrationSwapRefused(RuntimeError):
@@ -179,7 +180,14 @@ class LaserCalibrationMixin:
             self._requireLaserEditsAllowed()
         except Exception as exc:
             raise CalibrationSwapRefused(f'{laserName}: {exc}') from exc
-        if self._widget.isLaserActive(laserName):
+        sharedAttrs = getattr(self._commChannel, 'sharedAttrs', {})
+        try:
+            appliedOn = bool(sharedAttrs[(_LASER, laserName, 'Enabled')])
+        except (KeyError, TypeError):
+            appliedOn = False
+        # Either view of "on" refuses: the panel's toggle, or the state the
+        # controller last applied (what getLaserActive reports).
+        if self._widget.isLaserActive(laserName) or appliedOn:
             raise CalibrationSwapRefused(
                 f'{laserName} is on. Switch it off first: a new calibration changes the '
                 f'drive a percentage means.')

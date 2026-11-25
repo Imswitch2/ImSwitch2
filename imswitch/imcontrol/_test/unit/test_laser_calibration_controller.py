@@ -166,6 +166,15 @@ def test_swap_is_refused_while_the_laser_is_on(rig488):
     assert manager.powerCalibration is before and len(daq.analog) == writes
 
 
+def test_swap_is_refused_while_the_applied_state_is_on(rig488):
+    controller, widget, manager, daq = rig488
+    controller.toggleLaser('488', True)
+    assert controller.getLaserActive('488')
+    widget.setLaserActive('488', False, emitSignal=False)   # panel out of step
+    with pytest.raises(CalibrationSwapRefused, match='Switch it off first'):
+        controller.setLaserCalibrationTable('488', _table())
+
+
 def test_swap_is_refused_during_a_scan(rig488):
     controller, widget, manager, daq = rig488
     controller.is_scanning = True
