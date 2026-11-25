@@ -2057,6 +2057,17 @@ no panel can help with.  The panel and ImProcess's own Log panel are two views
 of one log, so a recording in ImControl and ImProcess reacting to it appear in
 both.
 
+**When the window stops responding.**  Start ImSwitch2 with
+``imswitch --gui-stall-seconds 2`` (or set ``IMSWITCH_GUI_STALL_SECONDS=2``;
+off by default).  Whenever the window has not handled events for that long, the
+stack of the GUI thread -- the call it is stuck in -- and of every other thread
+is appended to ``ImSwitchConfig/logs/gui_stall.log``, again every 2 s while it
+lasts, followed by a line saying how long it was; each stall also puts a
+WARNING in the normal log.  Stopping a scan additionally logs one line per step
+of the stop (``[scan stop] step "..." took N ms on thread ...``, and the same for
+``scan finish`` and ``scan end``) at INFO level in ``imswitch.log``, so one log
+from a rig shows where the time of a stop went.
+
 File watcher
 ------------
 
