@@ -48,7 +48,7 @@ This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch
 
 **42+ hardware managers out of the box** — sCMOS cameras, photon counters, lasers, piezo stages, motorized rotators, FLIM time taggers, SLMs, microcontroller pulse generators.
 
-**Pluggable architecture** — every device type has an abstract base; adding a new driver is one new file + one entry in your setup JSON.
+**Pluggable architecture** — every device type has an abstract base; a new driver is one manager class, selected by name in your setup JSON (plus its config schema and docs card, which CI checks — see [adding device support](docs/adding-device-support.rst)).
 
 **Hardware-free dev mode** — every manager has a documented mock fallback so you can develop, test, and configure without any device plugged in.
 
@@ -94,51 +94,45 @@ Having trouble, or want to build one yourself?  See [`docs/packaging.rst`](docs/
 
 ### Install with Python
 
-> Requires **Python 3.10+** and **PyQt5**.  Windows / macOS / Linux all supported.
-
-`pip install imswitch2`, then run `imswitch`.  This is the right choice for a
-microscope: a `pip` install can load device plugins and vendor SDKs, and a
-bundled one cannot.
-
-Clone instead to develop on Imswitch2 itself, or for the newest fixes — PyPI releases trail `main`:
+> Requires **Python 3.10+**.  Windows / macOS / Linux.
 
 ```bash
-# 1. Clone and install (core install — UI + file I/O, no hardware drivers)
-git clone https://github.com/Imswitch2/ImSwitch2.git
-cd Imswitch2
-pip install -e .
+pip install imswitch2
+imswitch
+```
 
-# 2. Launch
+This is the right choice for a microscope: a `pip` install can load device
+plugins and vendor SDKs, and a bundled one cannot.  The first start takes a
+minute while Imswitch2 creates `~/ImSwitchConfig/`; then a setup picker opens.
+**No microscope connected? Keep `example_no_hardware.json`** — every device in
+it is simulated.
+
+**New to Imswitch2?**  [The essentials](docs/essentials.rst) is a two-minute
+read, and [your first image](docs/first-image.rst) goes click by click to a
+live image and a saved recording without a microscope.
+
+To develop on Imswitch2 itself, or for fixes newer than the last PyPI release:
+
+```bash
+git clone https://github.com/Imswitch2/ImSwitch2.git
+cd ImSwitch2
+pip install -e .
 python -m imswitch
 ```
 
-Imswitch2 creates `~/ImSwitchConfig/` on first launch and opens a setup-picker dialog:
-
-<p align="center">
-  <img
-    src="https://raw.githubusercontent.com/Imswitch2/Imswitch2/main/docs/images/auto/setup-picker.png"
-    alt="ImSwitch2 hardware setup picker"
-    width="500"
-  />
-</p>
-
-> **No microscope hardware connected? Choose `example_no_hardware.json`.**
-> Other bundled example setups demonstrate configurations for specific hardware 
-> and may show unavailable devices or use mock fallbacks when that hardware is 
-> not present.You can change the active setup later from  **Hardware → Pick hardware setup…**.
-
-
-> **The first launch is slow — give it a minute.**  Before the window appears, Imswitch2 creates its `~/ImSwitchConfig/` folder structure and copies the example setups and scripts into it, and Python, napari and matplotlib build their caches.  Later launches skip all of this and start much faster.
-
-A fresh install loads three modules, one tab each down the left edge of the window: **Hardware Control** (ImControl, the microscope), **Image Processing** (ImProcess, reconstruction and analysis) and **Scripting** (ImScripting, the script editor).  To change which ones load, use **Preferences > Set active modules…** or edit `~/ImSwitchConfig/config/modules.json`.  A `modules.json` you changed is kept when you update Imswitch2 (see *Updates to the shipped files* below).
-
-For real hardware:
+Optional extras (details in [installation](docs/installation.rst)):
 
 ```bash
-pip install -e ".[hardware]"   # NI-DAQ, Lantz, pyVISA
-pip install -e ".[full]"       # also napari, OpenCV, vispy
+pip install -e ".[hardware]"   # NI-DAQmx, pylablib, pyVISA, python-microscope
+pip install -e ".[imagej]"     # ImageJ/Fiji ROI import/export
+pip install -e ".[full]"       # OpenCV, plus [imagej]
+pip install -e ".[storm]"      # napari-storm point-cloud viewer for SMLM results
+pip install -e ".[comet]"      # COMET drift correction for SMLM results
 ```
-     
+
+Some vendor SDKs are not on PyPI (for example the Thorlabs camera SDK); see
+[installation](docs/installation.rst).  Which modules load (Hardware Control,
+Image Processing, Scripting) is set under **Preferences > Set active modules…**.
 
 ---
 
@@ -223,7 +217,7 @@ Imswitch2 ships managers for **42+ devices** across five categories. Every manag
 </tr>
 </table>
 
-> **Don't see your hardware?** Adding a new driver is one file plus one JSON entry — see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst) for the canonical recipe, and [`docs/adding-device-support.rst`](docs/adding-device-support.rst) for the abstract-base reference.
+> **Don't see your hardware?** A new driver is one manager class plus its setup-JSON entry, and CI asks for its config schema and docs card too — see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst) for the canonical recipe, and [`docs/adding-device-support.rst`](docs/adding-device-support.rst) for the abstract-base reference.
 
 ---
 
