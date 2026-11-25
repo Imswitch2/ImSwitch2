@@ -120,7 +120,12 @@ Each laser requires (these have no default):
 
 Optional:
 
-* ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
+* ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted.
+  For ``NidaqLaserManager`` and ``AAAOTFLaserManager`` this includes the power
+  calibration: ``calibrationId`` (a calibration in the global store
+  ``ImSwitchConfig/calibrations``, or ``"raw"``) takes precedence over
+  ``calibCsvPath`` (a file, used as it is); see *Power calibrations* in
+  :doc:`devices/lasers`
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
 * ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the

@@ -4,6 +4,7 @@
     "managerName": "AAAOTFLaserManager",
     "managerProperties": {
       "calibCsvPath": "example",
+      "calibrationId": "example",
       "channel": 1,
       "frequencyMHz": 1.5,
       "protocolProfile": "aa.compatibility",

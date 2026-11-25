@@ -20,8 +20,9 @@ Three ideas run through everything:
   editor's widget preference -- is inferred from anything, while its
   *constraint* -- what validation may reject -- is emitted only where the code
   proves it (``Path(...)``, a string-keyed nested subscript, ``.items()``).
-* **A subscript is not "required".** ``AAAOTFLaserManager`` reads
-  ``calibCsvPath`` inside ``try/except KeyError``; a shipped setup omits it.
+* **A subscript is not "required".** A manager may read a key inside
+  ``try/except KeyError`` (``AAAOTFLaserManager`` did, for ``calibCsvPath``);
+  a shipped setup omits it.
   Requiredness is decided over every read of a key, guards included, and what
   the analysis cannot classify is reported as ``uncertain`` rather than guessed.
 * **What cannot be read is reported, not dropped.** A key that is a variable

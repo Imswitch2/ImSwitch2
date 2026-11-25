@@ -41,6 +41,7 @@ from imswitch.imcontrol.model.calibrations.display import (
     laser_calibration_tooltip,
 )
 from imswitch.imcontrol.model.devices.status import device_usable, not_connected_reason
+from imswitch.imcontrol.model.managers.lasers.LaserManager import UNSUPPORTED_CALIB_CSV_PATH
 
 #: ``Laser:<name>:Calibration`` -- the key PR #98 reserves.
 CALIBRATION_ATTR = 'Calibration'
@@ -59,10 +60,21 @@ def powerTableOf(manager) -> Optional[LaserPowerTable]:
 
 
 def resolutionOf(manager) -> CalibrationResolution:
+    """What ``manager`` runs on; a ``calibCsvPath`` naming a file on a
+    manager that does not apply calibrations counts as failed (reported)."""
     resolve = getattr(manager, 'powerCalibrationResolution', None)
     resolution = resolve() if callable(resolve) else None
-    return resolution if isinstance(resolution, CalibrationResolution) \
-        else CalibrationResolution('raw')
+    if not isinstance(resolution, CalibrationResolution):
+        return CalibrationResolution('raw')
+    if resolution.requested == UNSUPPORTED_CALIB_CSV_PATH:
+        path = str(manager.getProperty('calibCsvPath') or '').strip()
+        if not path:
+            return CalibrationResolution('raw')
+        return CalibrationResolution(
+            'failed', requested=f'calibCsvPath {path}',
+            error=f'{type(manager).__name__} does not apply power calibrations; this '
+                  f'laser runs on raw units ({manager.rawValueUnits}).')
+    return resolution
 
 
 class LaserCalibrationMixin:

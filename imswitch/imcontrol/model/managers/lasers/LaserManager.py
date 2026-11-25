@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union
 
 from imswitch.imcontrol.model.calibrations import (
-    RAW_UNITS_ID,
     CalibrationInvalid,
     CalibrationRangeError,
     CalibrationResolution,
@@ -47,6 +46,11 @@ def normalise_ports(value) -> list:
         pass
     # Comma-separated or bare string
     return [p.strip() for p in s.split(',') if p.strip()]
+
+
+#: ``CalibrationResolution.requested`` of a manager that does not apply
+#: calibrations although its setup names a ``calibCsvPath``.
+UNSUPPORTED_CALIB_CSV_PATH = 'calibCsvPath (not applied by this manager)'
 
 
 class RawDriveError(RuntimeError):
@@ -211,15 +215,13 @@ class LaserManager(DeviceManagerStatusMixin, ABC):
         resolution = self.__dict__.get('_powerCalibrationResolution')
         if resolution is not None:
             return resolution
-        csvPath = str(self.getProperty('calibCsvPath') or '').strip()
-        calibrationId = str(self.getProperty('calibrationId') or '').strip()
-        if csvPath or (calibrationId and calibrationId != RAW_UNITS_ID):
-            return CalibrationResolution(
-                'failed',
-                requested=f'calibrationId {calibrationId}' if calibrationId
-                else f'calibCsvPath {csvPath}',
-                error=f'{type(self).__name__} does not apply power calibrations; '
-                      f'this laser runs on raw units ({self.__valueUnits}).')
+        # Managers that do not apply calibrations run on raw units. A
+        # calibCsvPath their setup names is flagged here (``requested``) and
+        # reported by the Laser panel when it names a file; it no longer flips
+        # the panel to percent. Only presence is read in the manager, as
+        # before, so these managers' config-editor schemas do not change.
+        if self.hasProperty("calibCsvPath"):
+            return CalibrationResolution('raw', requested=UNSUPPORTED_CALIB_CSV_PATH)
         return CalibrationResolution('raw')
 
     @property

@@ -378,6 +378,74 @@ do not.
    :align: center
    :width: 561px
 
+**Units and power calibrations.**  A laser's setpoint is a 0–100 % value
+while a power calibration is in force for it, and otherwise the laser's own
+unit and range (volts, AOTF amplitude, mW, ...) — the unit is always in the
+*Setpoint [...]* label.  Hovering the setpoint shows what it means: with a
+calibration, the optical power the curve predicts at the current value and
+where that was measured ("7.44 mW at back focal plane"), the drive behind
+it, the calibration's comment, id and date; without one, "Raw units — no
+calibration".  A laser whose setup names a calibration that did not load
+runs on raw units and shows a red *calibration not loaded* badge; the
+tooltip gives the reason.  See :doc:`devices/lasers` (Power calibrations).
+
+.. image:: ./images/laser-calibration-tooltip.png
+   :alt: Three laser rows: 488 in percent under a calibration, 561 in volts
+         with a red "calibration not loaded" badge, and a Cobolt in mW; below,
+         the tooltip of the 488 setpoint with the predicted power, drive,
+         comment and calibration id.
+   :align: center
+   :width: 561px
+
+.. _calibrations-window:
+
+Calibrations window
+~~~~~~~~~~~~~~~~~~~
+
+**Hardware → Calibrations…** shows, for each laser of the setup, the power
+calibrations in the global store (``ImSwitchConfig/calibrations``) that
+match it — same laser name, wavelength and drive unit — and which one is
+active (or the ``calibCsvPath`` file in use, or raw units).  Calibrations
+made for other devices are listed apart and not offered by default.
+Selecting one shows what it maps and in which units, its range and number
+of points, the power span, when and with which meter it was measured,
+where, its comment, the file it came from, and its curve.
+
+* **Activate for <laser>** puts the selected calibration in force for this
+  session.  It is refused while the laser is on (switch it off first: a new
+  calibration changes the drive a percentage means) or a scan runs; the
+  setpoint then goes to 0 % — the lowest measured power — exactly as at
+  startup.  A calibration made for a differently named laser asks for
+  confirmation ("made for '488 (EXC)', applying to 'Ex488'"); one measured
+  at another wavelength or on another kind of device warns more strongly;
+  one with a different drive unit cannot be used.
+* **Run <laser> on raw units** drops the calibration for this session.
+* **Save selection to setup file** writes, for each laser whose selection
+  differs from the setup file, ``managerProperties.calibrationId`` — and
+  nothing else — into the current setup file, so the choice survives a
+  restart.  A banner says when this session's selection differs from the
+  file.
+* **Import CSV…** adds a calibration file (the two-column format with a
+  ``#`` header, e.g. the ``lut_file`` of ``measureLaserPowerLut``) to the
+  store; when the file does not name its laser, you are asked which one.
+  **Import referenced file into store** does that for the ``calibCsvPath``
+  file the selected laser uses — the file and the setup stay as they are.
+* **Export CSV…** writes the selected calibration back as such a file, with
+  its header — the way to take calibrations to another computer, since they
+  do not travel with a setup file.
+* **Measured at** and **Comment** are editable; saving them does not change
+  the calibration's content hash, so values saved under it still match.
+
+A laser that is not connected, or whose manager does not apply calibrations,
+offers no actions that would touch it; the files can still be imported,
+exported and annotated.
+
+.. image:: ./images/calibrations-window.png
+   :alt: The Calibrations window: lasers with their calibrations on the
+         left, details, curve, location and comment on the right.
+   :align: center
+   :width: 700px
+
 
 SLM widget
 ----------
