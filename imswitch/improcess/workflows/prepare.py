@@ -364,7 +364,10 @@ def control_states(recipe: Workflow, registry=None, reason_for=None) -> tuple[di
             seen.add(text)
             step = by_id.get(step_id)
             if step is None:
-                issues.append(Issue(where, f"control {name!r}: target {text!r} names no step"))
+                inside = next((m.id for m in recipe.steps if isinstance(m, Map) and step_id in m.body_ids), None)
+                hint = (f"; {step_id!r} is a step in the body of {inside!r}, and a control sets top-level "
+                        "steps only") if inside else ""
+                issues.append(Issue(where, f"control {name!r}: target {text!r} names no step{hint}"))
                 continue
             if not isinstance(step, (Reconstruct, Process)):
                 issues.append(Issue(step_id, f"control {name!r}: {text!r} is a {step.kind} step; a control "

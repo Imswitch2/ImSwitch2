@@ -497,7 +497,9 @@ names each value when they do not (``its targets disagree (smooth.radius =
 ``int``, ``float``, ``bool``, ``text``, ``select`` or ``path`` (not ``code``,
 ``json`` or ``multiselect``), and not a Python step's ``ports``, which are its
 outputs. A parameter is the target of at most one control. Sources are set by
-bindings and Save paths by ``--out``, so neither can be a target.
+bindings and Save paths by ``--out``, so neither can be a target; nor can a
+``map`` or ``fold`` or any step in a body (see *Maps and folds* under
+Bypass).
 
 **The control's field** combines its targets' fields: the same type and, for
 a ``select``, the same choices; the same unit; bounds that all of them
@@ -662,6 +664,19 @@ port (``smooth`` or ``smooth.out``). A split's ``C0`` or a Python step's named
 outputs have nothing to stand for them (``split: cannot be bypassed:
 'smooth' reads its port 'C0', which nothing would stand for``). A binding
 cannot name a bypassed step; bind the step it passes through instead.
+
+**Maps and folds.** A ``map`` or ``fold`` step cannot be bypassed, and neither
+can a step in its body: it has no single result to pass through, and its body
+is one unit that runs once per index (``bypass`` on any of them is refused
+when the file loads). A map or fold *can read* a bypassed step, and then reads
+what that step passes through: its ``input``, a read of an outer step in its
+body, and a fold's ``carry.init`` are all pointed at the bypassed step's own
+input, so the run is the one of the workflow written without the step (and
+the map's recorded body names the step that really made the data). A body
+read of a port other than the main one keeps the step from being bypassed,
+like any other reader. Controls follow the same line: a control sets a
+parameter of a top-level ``reconstruct`` or ``process`` step, including one
+that feeds a map; it cannot name a map, a fold or a step in a body.
 
 ``bypass`` must be ``true`` or ``false``: any other value (``"false"``,
 ``0``, ``null``) is refused naming the step, so nothing becomes a bypass by

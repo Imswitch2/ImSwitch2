@@ -717,3 +717,28 @@ Review 1 (2026-11-02) of draft 1, against the code with probes.
 | — | Per-row API and precedence | `ManifestRow` keeps bindings and values together; file → run-wide → row; run-wide and column problems refuse the batch, a bad cell fails its row (4.7). |
 | — | Combined field specification | Section 4.4: nullability needs every target, bounds intersect, units must match, finest precision, reset value only when shared. |
 | — | Schema parsing edge cases | Section 7: omitted schema is 1; booleans refused; new keys need schema 2 even when empty or false; `bypass` must be a boolean. |
+
+## 16. Maps and folds (added when schema 2 met the step-type registry)
+
+This plan was written when a workflow had five step kinds. `map` and `fold`
+(group of steps per index; the fold designed, not yet runnable) arrived
+separately, and the two were reconciled in the merge of the editor-2 branch
+into the ImProcess bundle:
+
+- **Bypass is not offered for a map or a fold, nor for a step in a body.** The
+  rules of 5.4 give a bypassed step one input to pass through and one result
+  to stand for; a map has an input and a body that reads outer steps, and
+  stands for the stacked output of a body run per index. A body is one unit
+  (provenance records it once, replay re-runs it), so a step inside it cannot
+  be switched off on its own either. `bypass` on a map, fold or body step is
+  refused at load.
+- **A map or fold may read a bypassed step.** Stage 2 rewrites the map's
+  `input`, every outer read in its body and a fold's `carry.init` as it does
+  a processing step's `inputs`, so the run equals the run of the workflow
+  written without the step, and the recorded body names the real producer.
+  A body read of a bypassed step's non-default port blocks that bypass (5.4).
+- **Controls target top-level `reconstruct` and `process` steps only**; a map,
+  a fold or a body step is refused with the reason (4.5). A control on a step
+  that feeds a map works as on any other step.
+- Provenance and replay are unchanged: the map node records the body as
+  prepared, and replay writes schema 1.
