@@ -27,6 +27,14 @@
         "code:optional(get)",
         "docs:string"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "A stage that cannot be opened (or loses its USB link) is reported",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "PIStageManager managerProperties",

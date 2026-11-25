@@ -838,6 +838,14 @@ optional analog joystick (e.g. C-819.20).
      - ``500``
      - Positive runtime command timeout in milliseconds, applied to both
        daisy-chain axes after PI startup completes.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - A stage that cannot be opened (or loses its USB link) is reported
+       **not connected**: it keeps its last known position, moves are refused
+       with the stage's name, and a reconnect from Hardware status brings the
+       real stage back without moving it. ``true`` runs a reported mock that
+       does move.
 
 **PositionerInfo fields used**
 
@@ -864,10 +872,10 @@ None.
 
 ``imswitch.imcontrol.model.interfaces.pipython.pidevice.GCSDevice``
 and ``pidevice.gcs2.gcs2pitools`` (PI Python wrapper bundled with
-ImSwitch2), imported at module top.  No mock fallback — if USB
-enumeration or connection fails the manager logs a warning and sets
-``self.device = None``; subsequent ``move`` / ``setPosition`` calls
-return without doing anything.
+ImSwitch2), imported at module top.  If USB enumeration or connection fails the stage
+is reported not connected: ``move`` / ``setPosition`` raise
+``PIStageUnavailableError`` naming the stage until it is reconnected in
+Hardware status (a reported mock only with ``useMockOnFailure``).
 
 **Source**
 
