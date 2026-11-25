@@ -47,6 +47,7 @@
       ]
     },
     "click_role": {
+      "description": "The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.",
       "x-imswitch-alias-of": "photon_input",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
@@ -150,6 +151,7 @@
       ]
     },
     "measurement": {
+      "description": "``\"flim\"`` or ``\"counting\"`` (see above). Shown as a read-only parameter.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -180,6 +182,7 @@
       ]
     },
     "photon_input": {
+      "description": "The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.",
       "x-imswitch-aliases": [
         "click_role"
       ],
@@ -199,7 +202,7 @@
       ]
     },
     "start_role": {
-      "description": "Role whose input receives the TCSPC start (laser sync).",
+      "description": "Input or role that receives the TCSPC start (laser sync). FLIM only; a FLIM detector on a card without a sync is refused at startup (use ``measurement: \"counting\"``).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",

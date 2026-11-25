@@ -630,12 +630,8 @@ consumer needs it.
      - ``"flim"`` or ``"counting"`` (see above). Shown as a read-only parameter.
    * - ``photon_input``
      - str
-     - ``click_role``
-     - The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. Wins over ``click_role``. On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs).
-   * - ``click_role``
-     - str
      - ``"photons"``
-     - The older name of ``photon_input``. The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.
+     - The input this detector images: an input name of the ``timeTagger`` block's ``inputs`` map, or a role. ``click_role`` is its older spelling (``photon_input`` wins when both are given). On a card with several detector inputs it must be given (the ``photons`` role is then ambiguous; the error lists the inputs). The resolved input shows as the read-only ``click_role`` parameter, its channel as ``click_channel``, and its dead time and delay as ``click_deadtime_ps`` / ``click_delay_ps``: every recording stores these per detector, so a file says which card input it came from and how that input was conditioned.
    * - ``start_role``
      - str
      - ``"laser_sync"``
