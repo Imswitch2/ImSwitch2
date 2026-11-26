@@ -84,9 +84,17 @@ class MasterController:
         # Any further generators by name, each through the registry (a
         # plugin's too); a scan engine or laser names the one it drives.
         from imswitch.imcontrol.model.managers.pulsegen.loader import build_pulse_generators
-        self.pulseGenerators = build_pulse_generators(
+        # One that cannot be built is left out and reported (the application
+        # still starts); a consumer that names it is refused by name.
+        from imswitch.imcontrol.model.managers.pulsegen.loader import PulseGenerators
+        self.pulseGenerators = self._startDevice(
+            'pulseGenerators', build_pulse_generators,
             self.__setupInfo, lowLevelManagers={'nidaqManager': self.nidaqManager,
                                                 'rs232sManager': self.rs232sManager})
+        if self.pulseGenerators is None:
+            self.pulseGenerators = PulseGenerators()
+        for name, reason in self.pulseGenerators.failures.items():
+            self._recordStartupFailure(f'pulseGenerators:{name}', reason, 'pulse generator')
 
         # Swabian Time Tagger: one card shared by every time-resolved
         # detector and by scripts. Built only when the setup declares it;
@@ -97,7 +105,8 @@ class MasterController:
             from imswitch.imcontrol.model.managers.TimeTaggerManager import (
                 TimeTaggerManager,
             )
-            self.timeTaggerManager = TimeTaggerManager(
+            self.timeTaggerManager = self._startDevice(
+                'timeTaggerManager', TimeTaggerManager,
                 self.__setupInfo.timeTagger, self.__setupInfo, self.nidaqManager
             )
 
@@ -172,11 +181,26 @@ class MasterController:
         # What runs a scan: the NI-DAQ and any scanEngines of the setup
         # (docs/design/plans/scan-engines-and-expert-scan.md). A channel two
         # engines claim fails the setup here, by name.
-        from imswitch.imcontrol.model.managers.scan_engines.loader import build_scan_engines
-        self.scanEngines = build_scan_engines(
+        # An engine that cannot be built stays as one that refuses its scans;
+        # a section that cannot be read at all leaves the NI-DAQ alone. Either
+        # way the application starts and the failure is reported.
+        from imswitch.imcontrol.model.managers.scan_engines.loader import (
+            build_scan_engines, nidaq_only_scan_engines,
+        )
+        self.scanEngines = self._startDevice(
+            'scanEngines', build_scan_engines,
             self.__setupInfo, nidaqManager=self.nidaqManager,
             lowLevelManagers=lowLevelManagers,
         )
+        if self.scanEngines is None:
+            self.scanEngines = nidaq_only_scan_engines(
+                self.__setupInfo, nidaqManager=self.nidaqManager,
+                lowLevelManagers=lowLevelManagers,
+                reason=str(self.startupFailures['scanEngines'].connectionStatusDetails
+                           or 'the scanEngines section could not be built'))
+        for name, reason in self.scanEngines.failures.items():
+            if name != 'scanEngines':
+                self._recordStartupFailure(f'scanEngines:{name}', reason, 'scan engine')
         self.scanEngine = self.scanEngines.engine
 
         # Generate scanManager type according to setupInfo
@@ -280,6 +304,14 @@ class MasterController:
             self.startupFailures[attrName] = FailedDeviceManager(
                 attrName, error, managerName=label)
             return None
+
+    def _recordStartupFailure(self, key, reason, label):
+        """Report a part that was built but is left unavailable (one pulse
+        generator or scan engine of several): the supervisor lists it as an
+        error and the startup report names it."""
+        from imswitch.imcontrol.model.devices.status import FailedDeviceManager
+        self.startupFailures[key] = FailedDeviceManager(
+            key.partition(':')[2] or key, str(reason), managerName=label)
 
     def _cleanupAfterInitializationFailure(self):
         """Best-effort cleanup without masking the startup exception."""

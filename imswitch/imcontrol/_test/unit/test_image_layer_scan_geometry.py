@@ -44,6 +44,7 @@ def _widget(ndisplay=2, data=None):
     widget.__dict__.update(
         imgLayers={'APD': _Layer(np.zeros((3, 4)) if data is None else data)},
         napariViewer=SimpleNamespace(dims=SimpleNamespace(ndisplay=ndisplay)),
+        _liveSourceRegistrations={},
     )
     return widget
 

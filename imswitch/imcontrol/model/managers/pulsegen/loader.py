@@ -14,6 +14,7 @@ rule for finding it.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional
 
@@ -28,6 +29,10 @@ LEGACY_GENERATOR = 'pulseGeneratorManager'
 @dataclass
 class PulseGenerators:
     generators: Dict[str, object] = field(default_factory=dict)
+    #: ``{name: reason}`` for every declared generator that could not be built;
+    #: the application starts without it and a consumer that names it is refused
+    #: by name (``pulse_generator_named``).
+    failures: Dict[str, str] = field(default_factory=dict)
 
     def finalize(self):
         """Close every generator; ``False`` when one did not close."""
@@ -49,13 +54,20 @@ def build_pulse_generators(setupInfo, *, lowLevelManagers: Mapping = None,
     registry = registry or get_default_registry()
     lowLevel = dict(lowLevelManagers or {})
     generators = {}
+    failures = {}
     for name, info in declared.items():
-        cls = registry.load_manager_class('pulse_generator', info.managerName)
-        if cls is None:
-            raise SetupError(registry.format_resolution_error('pulse_generator',
-                                                              info.managerName))
-        generators[name] = cls(info, name, **lowLevel)
-    return PulseGenerators(generators)
+        try:
+            cls = registry.load_manager_class('pulse_generator', info.managerName)
+            if cls is None:
+                raise SetupError(registry.format_resolution_error('pulse_generator',
+                                                                  info.managerName))
+            generators[name] = cls(info, name, **lowLevel)
+        except Exception as error:      # a generator that is not there must not stop startup
+            failures[name] = f'{type(error).__name__}: {error}'
+            logging.getLogger('imswitch').error(
+                'Pulse generator %s did not start and is left out: %s', name, failures[name],
+                exc_info=error)
+    return PulseGenerators(generators, failures)
 
 
 def pulse_generator_named(lowLevelManagers: Mapping, name: Optional[str]):
@@ -67,6 +79,10 @@ def pulse_generator_named(lowLevelManagers: Mapping, name: Optional[str]):
     generators = dict(built.generators) if isinstance(built, PulseGenerators) else {}
     legacy = lowLevelManagers.get(LEGACY_GENERATOR)
     available = sorted(generators) + ([LEGACY_GENERATOR] if legacy is not None else [])
+    failed = built.failures if isinstance(built, PulseGenerators) else {}
+    if name in failed:
+        # said in the consumer's own words: it names a generator that did not start
+        available = [f'{name} (did not start: {failed[name]})'] + available
     if name is None or name == LEGACY_GENERATOR:
         return legacy, available
     return generators.get(name), available

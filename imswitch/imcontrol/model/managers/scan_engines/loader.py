@@ -21,6 +21,7 @@ an engine runs on ``scan.engine``. The panels that build sampled waveforms
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Tuple
 
@@ -29,6 +30,9 @@ from imswitch.imcontrol.model.scan_program.engine import (
     ScanEngine, SetupError, assign_owners, setup_channels,
 )
 from .NidaqScanEngine import NidaqScanEngine
+from .UnavailableScanEngine import UnavailableScanEngine
+
+_log = logging.getLogger('imswitch')
 
 NIDAQ = 'nidaq'
 
@@ -40,6 +44,9 @@ class ScanEngines:
     owners: Dict[str, Optional[str]] = field(default_factory=dict)
     #: The selected engine with the engines that follow it, when any do.
     composite: Optional[ScanEngine] = None
+    #: ``{engine: reason}`` for every engine that could not be built; each is
+    #: in ``engines`` as an UnavailableScanEngine that refuses its scans.
+    failures: Dict[str, str] = field(default_factory=dict)
 
     @property
     def engine(self) -> ScanEngine:
@@ -119,6 +126,30 @@ def program_channels(program) -> Dict[str, set]:
     return used
 
 
+def _claimed_channels(info, setupInfo):
+    """The channels an engine that did not start would have driven, as far as
+    the setup says: its ``channels``, else -- for an engine on a pulse generator
+    -- every integer digital line of the setup (the generators' lines)."""
+    props = dict(getattr(info, 'managerProperties', None) or {})
+    if props.get('channels') is not None:
+        return [str(c) for c in props['channels']]
+    if 'pulseGenerator' in props:
+        return [entry.digital for entry in setup_channels(setupInfo).values()
+                if entry.digital is not None and str(entry.digital).isdigit()]
+    return []
+
+
+def nidaq_only_scan_engines(setupInfo, *, nidaqManager, lowLevelManagers: Mapping = None,
+                            reason: str = '') -> 'ScanEngines':
+    """The engines of a setup whose engine section could not be built at all:
+    the NI-DAQ alone, with the reason kept in ``failures`` under ``scanEngines``."""
+    lowLevel = dict(lowLevelManagers or {})
+    engine = NidaqScanEngine(
+        None, NIDAQ, nidaqManager=nidaqManager, setupInfo=setupInfo,
+        laserPowerCalibration=lowLevel.get('laserPowerCalibration'))
+    return ScanEngines({NIDAQ: engine}, NIDAQ, {}, None, {'scanEngines': reason})
+
+
 def _engine_class(managerName, registry):
     cls = registry.load_manager_class('scan_engine', managerName)
     if cls is None:
@@ -139,8 +170,16 @@ def build_scan_engines(setupInfo, *, nidaqManager, lowLevelManagers: Mapping = N
         engines[NIDAQ] = NidaqScanEngine(
             None, NIDAQ, nidaqManager=nidaqManager, setupInfo=setupInfo,
             laserPowerCalibration=lowLevel.get('laserPowerCalibration'))
+    failures: Dict[str, str] = {}
     for name, info in declared.items():
-        engines[name] = _engine_class(info.managerName, registry)(info, name, **lowLevel)
+        try:
+            engines[name] = _engine_class(info.managerName, registry)(info, name, **lowLevel)
+        except Exception as error:      # a board that is not there must not stop startup
+            failures[name] = f'{type(error).__name__}: {error}'
+            engines[name] = UnavailableScanEngine(
+                name, failures[name], _claimed_channels(info, setupInfo))
+            _log.error('Scan engine %s did not start and is left unavailable: %s',
+                       name, failures[name], exc_info=error)
 
     owners = assign_owners(list(engines.values()), setup_channels(setupInfo))
 
@@ -150,12 +189,15 @@ def build_scan_engines(setupInfo, *, nidaqManager, lowLevelManagers: Mapping = N
     if selected not in engines:
         raise SetupError(f'scan.engine names {selected!r}; the setup has the scan engines '
                          f'{", ".join(sorted(engines))}.')
-    followers = _followers(declared, engines, selected)
+    followers = {name: pair for name, pair in _followers(declared, engines, selected).items()
+                 if name not in failures}
+    if selected in failures:
+        followers = {}
     composite = None
     if followers:
         from .CompositeScanEngine import CompositeScanEngine
         composite = CompositeScanEngine(engines[selected], followers)
-    return ScanEngines(engines, selected, owners, composite)
+    return ScanEngines(engines, selected, owners, composite, failures)
 
 
 def _followers(declared, engines, selected):
@@ -178,7 +220,7 @@ def _followers(declared, engines, selected):
     return out
 
 
-__all__ = ['NIDAQ', 'EngineChoice', 'ScanEngines', 'build_scan_engines', 'program_channels',
+__all__ = ['NIDAQ', 'nidaq_only_scan_engines', 'EngineChoice', 'ScanEngines', 'build_scan_engines', 'program_channels',
            'program_devices']
 
 

@@ -68,7 +68,8 @@ def test_auto_resolves_independent_square_grid_indexing(
     assert resolution.resolved is expected_reindexing
     assert not resolution.reflection
     assert resolution.pair_count == len(indices)
-    np.testing.assert_allclose(reference - moving, [2.0, -3.0], atol=1e-10)
+    np.testing.assert_allclose(
+        reference - moving, np.broadcast_to([2.0, -3.0], moving.shape), atol=1e-10)
 
 
 def test_manual_override_keeps_only_genuinely_measured_pairs():
@@ -94,7 +95,8 @@ def test_manual_override_keeps_only_genuinely_measured_pairs():
     assert resolution.resolved is GridOrdering.ROTATE_180
     assert resolution.pair_count == 17
     assert len(moving) == len(reference) == 17
-    np.testing.assert_allclose(reference - moving, [1.0, 4.0], atol=1e-10)
+    np.testing.assert_allclose(
+        reference - moving, np.broadcast_to([1.0, 4.0], moving.shape), atol=1e-10)
 
 
 def test_invalid_manual_transpose_is_rejected_for_non_square_grid():

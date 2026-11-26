@@ -220,9 +220,8 @@ def test_ulenses_grid_auto_correspondence_resolves_flip_x(monkeypatch):
 
     assert result.metadata["correspondence"]["requested"] == "auto"
     assert result.metadata["correspondence"]["resolved"] == "flip_x"
-    np.testing.assert_allclose(
-        result.target_points - result.source_points, np.array([2.0, -3.0])
-    )
+    offsets = result.target_points - result.source_points
+    np.testing.assert_allclose(offsets, np.broadcast_to(np.array([2.0, -3.0]), offsets.shape))
 
 
 def test_ulenses_grid_manual_correspondence_override_is_respected(monkeypatch):
@@ -256,9 +255,8 @@ def test_ulenses_grid_manual_correspondence_override_is_respected(monkeypatch):
 
     assert result.metadata["correspondence"]["requested"] == "rotate_180"
     assert result.metadata["correspondence"]["resolved"] == "rotate_180"
-    np.testing.assert_allclose(
-        result.target_points - result.source_points, np.array([1.0, 4.0])
-    )
+    offsets = result.target_points - result.source_points
+    np.testing.assert_allclose(offsets, np.broadcast_to(np.array([1.0, 4.0]), offsets.shape))
 
 
 def test_ulenses_grid_correspondence_parameter_is_separate_from_localization():

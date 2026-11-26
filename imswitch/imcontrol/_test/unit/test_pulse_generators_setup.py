@@ -78,9 +78,11 @@ def test_a_plugins_generator_is_built_by_its_contribution():
     assert fpga.info.managerProperties == {'card': 2} and fpga.lowLevel == {'rs232sManager': 'rs232'}
 
 
-def test_an_unknown_manager_fails_the_setup_with_what_is_installed():
-    with pytest.raises(SetupError, match="pulse_generator manager 'NoSuchPulser'"):
-        build_pulse_generators(_setup(g={'managerName': 'NoSuchPulser'}))
+def test_an_unknown_manager_is_reported_with_what_is_installed_and_the_setup_goes_on():
+    # (it used to raise SetupError and abort startup; see test_startup_construction_failures)
+    built = build_pulse_generators(_setup(g={'managerName': 'NoSuchPulser'}))
+    assert built.generators == {}
+    assert "pulse_generator manager 'NoSuchPulser'" in built.failures['g']
 
 
 def test_the_teensypulse_name_cannot_be_reused():

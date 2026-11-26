@@ -21,7 +21,25 @@ _IMPROCESS_IMCONTROL_ALLOWLIST = {"imswitch/improcess/model/processing_config.py
 
 
 def _module_path(dotted: str) -> Path:
-    return _REPO_ROOT.joinpath(*dotted.split(".")).with_suffix(".py")
+    base = _REPO_ROOT.joinpath(*dotted.split("."))
+    # A subpackage (e.g. algorithms.grid_localization) is checked by its __init__;
+    # its own modules are enumerated separately by _algorithm_modules().
+    return base / "__init__.py" if base.is_dir() else base.with_suffix(".py")
+
+
+def _algorithm_modules() -> list[str]:
+    """Every module under imcommon.algorithms, subpackage members included."""
+    root = _REPO_ROOT.joinpath("imswitch", "imcommon", "algorithms")
+    modules = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(_REPO_ROOT).with_suffix("")
+        parts = list(rel.parts)
+        if parts[-1] == "__init__":
+            parts.pop()
+        if "_test" in parts:
+            continue
+        modules.append(".".join(parts))
+    return modules
 
 
 def _top_level_imports(dotted_module: str) -> set[str]:
@@ -67,14 +85,7 @@ def test_imcommon_algorithms_have_no_app_module_imports():
     added to imcommon.algorithms is covered without anyone remembering to
     extend this test.
     """
-    import pkgutil
-
-    from imswitch.imcommon import algorithms
-
-    modules = [
-        f"imswitch.imcommon.algorithms.{info.name}"
-        for info in pkgutil.iter_modules(algorithms.__path__)
-    ]
+    modules = _algorithm_modules()
     assert modules, "expected to discover imcommon.algorithms modules"
 
     for module in modules:
@@ -89,12 +100,7 @@ def test_imcommon_algorithms_do_not_import_the_viewer_stack():
     They are imported by headless code paths and by both apps, so a viewer
     import here would drag a GUI dependency into places that have none.
     """
-    import pkgutil
-
-    from imswitch.imcommon import algorithms
-
-    for info in pkgutil.iter_modules(algorithms.__path__):
-        module = f"imswitch.imcommon.algorithms.{info.name}"
+    for module in _algorithm_modules():
         for imported in _top_level_imports(module):
             assert not imported.startswith("napari"), (module, imported)
             assert not imported.startswith("qtpy"), (module, imported)
