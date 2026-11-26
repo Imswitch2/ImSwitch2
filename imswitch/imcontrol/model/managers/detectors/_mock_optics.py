@@ -436,6 +436,26 @@ class PointScanSignal:
         """Whether no excitation light reaches the sample in this scan."""
         return self._light is not None and not np.any(self._light > 0)
 
+    def prebuild(self) -> None:
+        """Build the sample's views this scan will look at (one per distinct
+        PSF width, as ``__call__`` takes them). The first view of a sample takes
+        about a second; done when the scan is armed, it is not paid inside the
+        run, where a Stop would have to wait for it. Cached for the process."""
+        if not self._n:
+            return
+        index = np.arange(self._n)
+        light = None
+        if self._light is not None:
+            light = self._light[np.minimum(index, self._light.size - 1)].astype(float)
+        sigma = np.full(self._n, self.optics.psf_sigma_um)
+        if self._z is not None:
+            sigma, _ = defocus(self._z[np.minimum(index, self._z.size - 1)],
+                               self.optics.psf_sigma_um, self.optics.rayleigh_um)
+        if light is not None and self.optics.physics is not None:
+            sigma = sigma * self.optics.physics.widening(light)
+        for width in np.unique(np.round(sigma, 4)):
+            self.sample.view(float(width))
+
     def __call__(self, start: int, count: int) -> np.ndarray:
         count = int(count)
         index = np.arange(int(start), int(start) + count) // self._per

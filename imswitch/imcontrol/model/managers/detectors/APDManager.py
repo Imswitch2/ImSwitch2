@@ -1171,6 +1171,14 @@ class ScanWorker(Worker):
             )
             if mockSignal.usable:
                 self._mock_signal = mockSignal
+                # The first view of a sample is built lazily and takes about a
+                # second (cells drawn, then blurred); built here, while the scan
+                # is being armed, it is not paid inside the run, where a Stop
+                # has to wait for it. Cached for the process, so once.
+                try:
+                    mockSignal.prebuild()
+                except Exception:
+                    self.__logger.debug('Could not prebuild the mock sample', exc_info=True)
             if mockSignal.unlit:
                 self.__logger.warning(unlit_message(self._manager._mock_optics.excitation))
 
