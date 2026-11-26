@@ -52,7 +52,7 @@ BASELINES = ("first-n", "running-median", "running-percentile", "ema")
 THRESHOLD_METHODS = ("otsu", "manual", "triangle", "yen", "local")
 
 #: Pixels outside every ROI used for a background estimate (a strided subset).
-BACKGROUND_SAMPLE = 200_000
+BACKGROUND_SAMPLE = 20_000
 
 COLUMNS = ("label", "area", "bbox_y0", "bbox_x0", "bbox_y1", "bbox_x1", "F", "F0", "dff", "triggered", "valid")
 _BOOL_COLUMNS = ("triggered", "valid")
@@ -127,7 +127,7 @@ class RoiDffProcessor(Processor):
                        help="mean or median of the ROI's pixels (median is slower)"),
             ParamField("background", "select", "none", label="Background", options=BACKGROUNDS, group="Signal",
                        help="Subtracted from F: none, a constant, or the mean / a percentile of the pixels "
-                            "outside every ROI (from a fixed subset of up to 200000 of them)"),
+                            "outside every ROI (from a fixed subset of up to 20000 of them)"),
             ParamField("background_value", "float", 0.0, label="Background value", decimals=3, group="Signal"),
             ParamField("background_percentile", "float", 10.0, label="Background percentile", min=0, max=100,
                        decimals=1, group="Signal"),
