@@ -1169,6 +1169,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self._digitalParameterDict,
             self._positionersScan,
             scan_manager=self._master.scanManager,
+            scan_source=self._resolveScanSource(),
             comm_channel=self._commChannel,
             positioners_manager=self._master.positionersManager,
             apply_fast_axis_shift=self._widget.fastaxisshiftCheck.isChecked(),
@@ -1181,6 +1182,25 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self._logger.error(result.message)
             self._set_status('error', result.message)
         return result.success
+
+    def _resolveScanSource(self):
+        """The scan controller whose panel supplied the loaded parameters.
+
+        None when there is none to name (bare channels in tests, or several
+        scan panels with no canonical ``Scan`` one); the runner then falls
+        back to the scan manager.
+        """
+        resolve = getattr(self._commChannel, 'getScanSource', None)
+        if not callable(resolve):
+            return None
+        try:
+            return resolve()
+        except Exception:
+            self._logger.warning(
+                'No single scan source to build the triggered scan; '
+                'using the scan manager.', exc_info=True,
+            )
+            return None
 
     def runSlowScan(self) -> bool:
         self._state.detLog['scan_start'] = _now_us_tag()

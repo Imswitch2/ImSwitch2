@@ -34,6 +34,7 @@ class EtSTEDTriggeredScanRunner:
         positioners_manager=None,
         apply_fast_axis_shift: bool = False,
         fast_axis_shift_fn: Callable[[float], float] | None = None,
+        scan_source=None,
     ) -> EtSTEDTriggeredScanResult:
         """Prepare a triggered slow scan without starting unsupported hardware paths."""
         position = self._validate_position(position)
@@ -48,12 +49,19 @@ class EtSTEDTriggeredScanRunner:
         )
 
         if scan_initiation_mode == self.scan_widget_mode:
-            if scan_manager is None:
+            builder = getattr(scan_source, 'buildTriggeredScanSignals', None)
+            if builder is None and scan_manager is None:
                 return EtSTEDTriggeredScanResult(False, 'ScanWidget initiation requires a scan manager.')
             try:
-                signal_dict, scan_info_dict = scan_manager.makeFullScan(
-                    analog_params, digital_params, False
-                )
+                # The active scan source builds with its own designers, so the
+                # triggered scan equals what its panel would play; without one
+                # (bare managers), the scan manager's generic design.
+                if builder is not None:
+                    signal_dict, scan_info_dict = builder(analog_params, digital_params)
+                else:
+                    signal_dict, scan_info_dict = scan_manager.makeFullScan(
+                        analog_params, digital_params, False
+                    )
             except Exception as e:
                 return EtSTEDTriggeredScanResult(False, f'Error when initiating ScanWidget scan: {e}')
             return EtSTEDTriggeredScanResult(

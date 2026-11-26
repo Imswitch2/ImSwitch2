@@ -1420,8 +1420,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             )
 
     def _capturePositionersBeforeScan(self):
+        self._analogParameterDict['axis_position_before_scan'] = (
+            self._positionsBeforeScan(self._analogParameterDict)
+        )
+
+    def _positionsBeforeScan(self, analogParameterDict):
         positionsBeforeScan = []
-        for positionerName in self._analogParameterDict.get( 'target_device', []):
+        for positionerName in analogParameterDict.get( 'target_device', []):
             if not positionerName or positionerName == 'None':
                 positionsBeforeScan.append([])
                 continue
@@ -1429,7 +1434,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             info = self._setupInfo.positioners[positionerName]
             axes = list(getattr(info, 'axes', None) or manager.axes)
             positionsBeforeScan.append([manager.position[axis]for axis in axes])
-        self._analogParameterDict['axis_position_before_scan'] = positionsBeforeScan
+        return positionsBeforeScan
 
     def _forgetPositionersBeforeScan(self):
         self._analogParameterDict.pop('axis_position_before_scan', None)
@@ -1496,6 +1501,26 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return self._master.scanManager.makeFullScan(
                 self._analogParameterDict, self._digitalParameterDict
             )
+
+    def buildTriggeredScanSignals(self, analogParameterDict, digitalParameterDict):
+        """Signals for one externally triggered scan (event-triggered etSTED).
+
+        ``analogParameterDict`` / ``digitalParameterDict`` are the parameter
+        dictionaries this panel sent with ``sigSendScanParameters``, with the
+        scan-axis centres already replaced by the event position. A scan
+        source builds them with its OWN designer chain, so a triggered scan
+        carries exactly the signals the panel would play for the same
+        parameters; callers must not assume that the scan manager's generic
+        ``makeFullScan`` interprets them the same way (the Advanced designers
+        do not). The default is the Base path: the scan manager, moving
+        axes (``staticPositioner=False``).
+
+        Returns ``(signalDict, scanInfoDict)``; raises ScanDesignRefusedError
+        with the reason when the design is refused (voltage range, duration).
+        """
+        return self._master.scanManager.makeFullScan(
+            analogParameterDict, digitalParameterDict, False
+        )
 
     def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
                                 recalculateSignals):
