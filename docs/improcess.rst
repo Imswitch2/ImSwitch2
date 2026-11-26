@@ -636,7 +636,8 @@ segmentation            Processor      Threshold + connected-component labels an
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
 threshold               Processor      Otsu or absolute threshold to connected-component labels, per plane
 regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
-pick                    Processor      One point out of many: largest, brightest, first or nearest
+pick                    Processor      One point out of many: largest, brightest, first, nearest or max-column (by a named column, optionally only where another is true)
+roi-dff                 Processor      dF/F per ROI of a frozen cell mask with per-ROI baseline and trigger flag, as ``points``
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
 psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
 bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane

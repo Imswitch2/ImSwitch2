@@ -31,6 +31,7 @@ from .psf_bead_select import PSFBeadSelectProcessor
 from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .regionprops import RegionPropsProcessor
+from .roi_dff import RoiDffProcessor
 from .bead_fwhm import BeadFwhmProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
@@ -71,6 +72,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'regionprops': RegionPropsProcessor,
     'bead-fwhm': BeadFwhmProcessor,
     'resize': ResizeProcessor,
+    'roi-dff': RoiDffProcessor,
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
     'threshold': ThresholdProcessor,
