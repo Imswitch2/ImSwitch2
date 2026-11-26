@@ -14,6 +14,7 @@ _MODE_TIPS = {
     'experiment': 'Actions are dispatched to the hardware. Roles are applied.',
 }
 _MAX_LOG_LINES = 2000
+THRESHOLD_METHODS = ('otsu', 'triangle', 'yen', 'local', 'manual')
 
 
 class SmartPipelineWidget(Widget):
@@ -27,8 +28,20 @@ class SmartPipelineWidget(Widget):
     sigStopClicked = QtCore.Signal()
     sigSaveLogClicked = QtCore.Signal()
     sigModeChanged = QtCore.Signal(str)
+    # The ROIs
+    sigSegmentClicked = QtCore.Signal()
+    sigDrawClicked = QtCore.Signal(str)                # rectangle / ellipse / polygon
+    sigDeleteRoisClicked = QtCore.Signal()
+    sigClearRoisClicked = QtCore.Signal()
+    sigSaveRoisClicked = QtCore.Signal()
+    sigLoadRoisClicked = QtCore.Signal()
+    sigShowRoisToggled = QtCore.Signal(bool)
+    sigUseRoisToggled = QtCore.Signal(bool)
+    sigRoiSelectionChanged = QtCore.Signal(object)     # [ids]
+    sigShapeDrawn = QtCore.Signal(str, object)         # (kind, vertices in displayed pixels)
+    sigRoiClicked = QtCore.Signal(int)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, napariViewer=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.pipelineLabel = QtWidgets.QLabel()
@@ -91,8 +104,19 @@ class SmartPipelineWidget(Widget):
         layout.addWidget(self.summaryLabel)
         layout.addWidget(self.issuesLabel)
         layout.addLayout(runRow)
+        layout.addWidget(self._buildRoiBox())
         layout.addLayout(logRow)
         layout.addWidget(self.logView, 1)
+
+        # The ROIs on the live view (outlines, ids, a layer to draw on); none
+        # without a viewer (a headless panel).
+        self.roiOverlay = None
+        if napariViewer is not None:
+            from ._roi_overlay import RoiOverlay
+
+            self.roiOverlay = RoiOverlay(napariViewer, self)
+            self.roiOverlay.sigShapeDrawn.connect(self.sigShapeDrawn)
+            self.roiOverlay.sigRoiClicked.connect(self.sigRoiClicked)
 
         # The overlay sink's marks on the live view (added to the viewer by
         # the controller while a pipeline runs).
@@ -111,6 +135,183 @@ class SmartPipelineWidget(Widget):
         )
 
         self.setPipelinePath(None)
+
+    # ------------------------------------------------------------------ #
+    # The ROIs                                                            #
+    # ------------------------------------------------------------------ #
+    def _buildRoiBox(self):
+        box = QtWidgets.QGroupBox('ROIs')
+        box.setToolTip('The cells the pipeline measures: see them on the camera image before arming, '
+                       're-segment, draw, delete, save and load them.')
+        self.roiSummaryLabel = QtWidgets.QLabel('No ROIs yet: segment the camera image or draw them.')
+        self.roiSummaryLabel.setWordWrap(True)
+        self.showRoisCheck = QtWidgets.QCheckBox('Show on image')
+        self.showRoisCheck.setChecked(True)
+        self.useRoisCheck = QtWidgets.QCheckBox('Use these ROIs when arming')
+        self.useRoisCheck.setToolTip('Checked: the pipeline measures exactly these ROIs (their ids stay the '
+                                     'same in the log and the files). Unchecked: the pipeline segments at arm '
+                                     'as its document says.')
+
+        self.thresholdBox = QtWidgets.QComboBox()
+        self.thresholdBox.addItems(THRESHOLD_METHODS)
+        self.thresholdValue = QtWidgets.QDoubleSpinBox()
+        self.thresholdValue.setRange(-1e9, 1e9)
+        self.thresholdValue.setDecimals(2)
+        self.thresholdValue.setToolTip('Manual threshold (counts); used when the method is "manual"')
+        self.smoothSigma = QtWidgets.QDoubleSpinBox()
+        self.smoothSigma.setRange(0, 100)
+        self.smoothSigma.setDecimals(2)
+        self.smoothSigma.setToolTip('Gaussian smoothing before the threshold, pixels')
+        self.minArea = QtWidgets.QSpinBox()
+        self.minArea.setRange(1, 10 ** 7)
+        self.minArea.setToolTip('Smallest ROI kept, pixels')
+        self.averageFrames = QtWidgets.QSpinBox()
+        self.averageFrames.setRange(1, 1000)
+        self.averageFrames.setToolTip('Camera frames averaged into the image that is segmented')
+        self.fillHolesCheck = QtWidgets.QCheckBox('Fill holes')
+        self.clearBorderCheck = QtWidgets.QCheckBox('Drop ROIs on the border')
+        self.segmentButton = guitools.BetterPushButton('Segment now')
+        self.segmentButton.setToolTip('Segment the next camera frames with these settings; drawn ROIs are kept, '
+                                      'the segmented ones are replaced (with new ids)')
+
+        self.drawRectButton = guitools.BetterPushButton('Rectangle')
+        self.drawEllipseButton = guitools.BetterPushButton('Ellipse')
+        self.drawPolygonButton = guitools.BetterPushButton('Polygon')
+        for button, kind in ((self.drawRectButton, 'rectangle'), (self.drawEllipseButton, 'ellipse'),
+                             (self.drawPolygonButton, 'polygon')):
+            button.setToolTip(f'Draw a {kind} ROI on the camera image (a polygon ends with a double click)')
+            button.clicked.connect(lambda _checked=False, kind=kind: self.sigDrawClicked.emit(kind))
+        self.deleteRoisButton = guitools.BetterPushButton('Delete selected')
+        self.deleteRoisButton.setToolTip('Delete the ROIs selected in the list or clicked on the image; '
+                                         'the other ROIs keep their ids')
+        self.clearRoisButton = guitools.BetterPushButton('Clear')
+        self.saveRoisButton = guitools.BetterPushButton('Save…')
+        self.loadRoisButton = guitools.BetterPushButton('Load…')
+
+        self.roiList = QtWidgets.QListWidget()
+        self.roiList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.roiList.setMaximumHeight(110)
+
+        form = QtWidgets.QGridLayout()
+        form.addWidget(QtWidgets.QLabel('Threshold:'), 0, 0)
+        form.addWidget(self.thresholdBox, 0, 1)
+        form.addWidget(self.thresholdValue, 0, 2)
+        form.addWidget(QtWidgets.QLabel('Smooth σ:'), 1, 0)
+        form.addWidget(self.smoothSigma, 1, 1)
+        form.addWidget(QtWidgets.QLabel('Min area:'), 1, 2)
+        form.addWidget(self.minArea, 1, 3)
+        form.addWidget(QtWidgets.QLabel('Average frames:'), 2, 0)
+        form.addWidget(self.averageFrames, 2, 1)
+        form.addWidget(self.fillHolesCheck, 2, 2)
+        form.addWidget(self.clearBorderCheck, 2, 3)
+
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(self.roiSummaryLabel, 1)
+        top.addWidget(self.showRoisCheck)
+        segmentRow = QtWidgets.QHBoxLayout()
+        segmentRow.addWidget(self.segmentButton)
+        segmentRow.addStretch(1)
+        segmentRow.addWidget(self.useRoisCheck)
+        drawRow = QtWidgets.QHBoxLayout()
+        drawRow.addWidget(QtWidgets.QLabel('Draw:'))
+        for button in (self.drawRectButton, self.drawEllipseButton, self.drawPolygonButton):
+            drawRow.addWidget(button)
+        drawRow.addStretch(1)
+        editRow = QtWidgets.QHBoxLayout()
+        for button in (self.deleteRoisButton, self.clearRoisButton, self.saveRoisButton, self.loadRoisButton):
+            editRow.addWidget(button)
+
+        boxLayout = QtWidgets.QVBoxLayout(box)
+        boxLayout.addLayout(top)
+        boxLayout.addLayout(form)
+        boxLayout.addLayout(segmentRow)
+        boxLayout.addLayout(drawRow)
+        boxLayout.addWidget(self.roiList)
+        boxLayout.addLayout(editRow)
+
+        self.segmentButton.clicked.connect(self.sigSegmentClicked)
+        self.deleteRoisButton.clicked.connect(self.sigDeleteRoisClicked)
+        self.clearRoisButton.clicked.connect(self.sigClearRoisClicked)
+        self.saveRoisButton.clicked.connect(self.sigSaveRoisClicked)
+        self.loadRoisButton.clicked.connect(self.sigLoadRoisClicked)
+        self.showRoisCheck.toggled.connect(self.sigShowRoisToggled)
+        self.useRoisCheck.toggled.connect(self.sigUseRoisToggled)
+        self.roiList.itemSelectionChanged.connect(
+            lambda: self.sigRoiSelectionChanged.emit(self.getSelectedRois()))
+        return box
+
+    def getSegmentationParameters(self):
+        return {'threshold_method': self.thresholdBox.currentText(),
+                'threshold_value': float(self.thresholdValue.value()),
+                'smooth_sigma': float(self.smoothSigma.value()), 'min_area': int(self.minArea.value()),
+                'fill_holes': self.fillHolesCheck.isChecked(), 'clear_border': self.clearBorderCheck.isChecked(),
+                'reference_frames': int(self.averageFrames.value())}
+
+    def setSegmentationParameters(self, params):
+        params = dict(params or {})
+        if params.get('threshold_method') in THRESHOLD_METHODS:
+            self.thresholdBox.setCurrentText(params['threshold_method'])
+        for key, spin, cast in (('threshold_value', self.thresholdValue, float),
+                                ('smooth_sigma', self.smoothSigma, float), ('min_area', self.minArea, int),
+                                ('reference_frames', self.averageFrames, int)):
+            if key in params:
+                spin.setValue(cast(params[key]))
+        if 'fill_holes' in params:
+            self.fillHolesCheck.setChecked(bool(params['fill_holes']))
+        if 'clear_border' in params:
+            self.clearBorderCheck.setChecked(bool(params['clear_border']))
+
+    def setRois(self, rows, summary, selected=()):
+        """The ROI list (rows of ``id``, ``source``, ``area``) and the summary line."""
+        selected = set(int(i) for i in selected)
+        blocker = QtCore.QSignalBlocker(self.roiList)
+        self.roiList.clear()
+        for row in rows:
+            item = QtWidgets.QListWidgetItem(f"{row['id']:>4}  {row['source']:<8} {row['area']} px")
+            item.setData(QtCore.Qt.UserRole, int(row['id']))
+            self.roiList.addItem(item)
+            item.setSelected(int(row['id']) in selected)
+        del blocker
+        self.roiSummaryLabel.setText(summary)
+
+    def getSelectedRois(self):
+        return [int(item.data(QtCore.Qt.UserRole)) for item in self.roiList.selectedItems()]
+
+    def setRoiControlsEnabled(self, enabled, toolTip=''):
+        for widget in (self.segmentButton, self.drawRectButton, self.drawEllipseButton, self.drawPolygonButton,
+                       self.loadRoisButton):
+            widget.setEnabled(enabled)
+        if toolTip:
+            self.segmentButton.setToolTip(toolTip)
+
+    def setSegmenting(self, segmenting):
+        self.segmentButton.setEnabled(not segmenting)
+        self.segmentButton.setText('Collecting frames…' if segmenting else 'Segment now')
+
+    def isShowRois(self):
+        return self.showRoisCheck.isChecked()
+
+    def isUseRois(self):
+        return self.useRoisCheck.isChecked()
+
+    def setUseRois(self, use):
+        self.useRoisCheck.setChecked(bool(use))
+
+    def askForRoisPath(self, defaultFolder, saving):
+        return guitools.askForFilePath(self, 'Save ROIs' if saving else 'Load ROIs', defaultFolder=defaultFolder,
+                                       nameFilter='ROI sets (*.tif *.tiff *.json *.npy)', isSaving=saving)
+
+    def showRoiOverlay(self, liveLayerName, outline, centres, ids, selected=()):
+        if self.roiOverlay is not None:
+            self.roiOverlay.show(liveLayerName, outline, centres, ids, selected)
+
+    def hideRoiOverlay(self):
+        if self.roiOverlay is not None:
+            self.roiOverlay.hide()
+
+    def startDrawingRoi(self, kind):
+        if self.roiOverlay is not None:
+            self.roiOverlay.startDrawing(kind)
 
     def askForPipelinePath(self, defaultFolder):
         return guitools.askForFilePath(self, 'Choose pipeline', defaultFolder=defaultFolder,

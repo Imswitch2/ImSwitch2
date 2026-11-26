@@ -1,6 +1,9 @@
 import json
 import os
+import threading
 import time
+
+import numpy as np
 
 from qtpy import QtCore
 
@@ -23,6 +26,9 @@ _pipelinesFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'smart_pipelines
 _calibrationsFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'calibrations')
 _stateFilePath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipeline.json')
 _editorPreferencesPath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipeline_editor.json')
+_roisFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'smart_pipelines', 'rois')
+#: Seconds to wait for camera frames when segmenting before saying none come.
+_SEGMENT_FRAMES_TIMEOUT_S = 5.0
 
 _STATUS_PERIOD_MS = 500
 _CLOSE_JOIN_S = 5.0
@@ -57,6 +63,11 @@ class SmartPipelineController(ImConWidgetController):
         self._editor = None
         self._closing = False
         self._recorder = None         # the run's TriggeredScanRecorder (saves the triggered scans)
+        self._rois = None             # the RoiSet the user controls (see the ROIs section)
+        self._roiSelection = set()
+        self._collect = None          # frames being averaged for a segmentation
+        self._roiFile = None          # the file the running pipeline reads its ROIs from
+        self._roiStep = None          # (step id, generation) of the running pipeline's roi-dff step
         self._saveWarnings = []       # why an Experiment run could not save, shown in a dry run
         self._shownGeometry = {}      # detector -> the scan geometry the live view shows (axes), or None
         self._marksGeometry = None    # the geometry the overlay's marks belong to
@@ -76,8 +87,21 @@ class SmartPipelineController(ImConWidgetController):
         self._widget.sigStopClicked.connect(self.stop)
         self._widget.sigSaveLogClicked.connect(self.saveLog)
         self._widget.sigModeChanged.connect(lambda _mode: (self._saveState(), self._updateButtons()))
+        for name, slot in (('sigSegmentClicked', self.segmentRois), ('sigDrawClicked', self.drawRoi),
+                           ('sigDeleteRoisClicked', self.deleteSelectedRois), ('sigClearRoisClicked', self.clearRois),
+                           ('sigSaveRoisClicked', self.saveRoisAs), ('sigLoadRoisClicked', self.loadRoisFrom),
+                           ('sigShowRoisToggled', lambda _shown: self._showRois()),
+                           ('sigUseRoisToggled', lambda _use: self._saveState()),
+                           ('sigRoiSelectionChanged', self._onRoiListSelection),
+                           ('sigShapeDrawn', self.addDrawnRoi), ('sigRoiClicked', self._onRoiClicked)):
+            signal = getattr(self._widget, name, None)
+            if signal is not None:
+                signal.connect(slot)
+        self._commChannel.sigUpdateImage.connect(self._onPreviewImage)
 
         state = _loadState()
+        if hasattr(self._widget, 'setUseRois'):
+            self._widget.setUseRois(state.get('use_rois', True))
         if state.get('mode') in ('visualize', 'validate', 'experiment'):
             self._widget.setMode(state['mode'])
         if state.get('path'):
@@ -125,6 +149,7 @@ class SmartPipelineController(ImConWidgetController):
             self._widget.setSummary(self._summaryOf(document))
         self._widget.setIssues(self._issues)
         self._updateButtons()
+        self._onDocumentForRois()
         return self._document is not None
 
     def _check(self, document):
@@ -280,6 +305,13 @@ class SmartPipelineController(ImConWidgetController):
             scan = {'controllers': self._commChannel.controllerRegistry, 'workflow': workflow,
                     'capture': source.capture_latest, 'recorder': recorder}
         saveProblems = self._saveProblems(document, recorder)
+        saving = recorder is not None and mode == RunMode.EXPERIMENT and self._savesScans(document) \
+            and not saveProblems
+        document, roiProblems = self._documentWithRois(document, recorder.folder if saving else None)
+        if roiProblems:
+            self._widget.setIssues([f'not armed: {problem}' for problem in roiProblems])
+            self._widget.setStatus('not armed')
+            return
         self._saveWarnings = []
         if saveProblems:
             if mode == RunMode.EXPERIMENT:
@@ -333,6 +365,332 @@ class SmartPipelineController(ImConWidgetController):
         self._refreshStatus()
 
     # ------------------------------------------------------------------ #
+    # The ROIs                                                            #
+    # ------------------------------------------------------------------ #
+    def _camera(self):
+        document = self._document
+        source = getattr(document, 'source', None) if document is not None else None
+        return source.detector if isinstance(source, Live) and source.detector else None
+
+    def _roiDffSteps(self, document=None):
+        document = document or self._document
+        if document is None:
+            return []
+        return [step for step in document.workflow.steps
+                if isinstance(step, Process) and step.processor == 'roi-dff']
+
+    def _cameraIdentity(self, camera):
+        from imswitch.imcontrol.model.smartpipeline.live_source import frame_identity_of
+
+        try:
+            return frame_identity_of(self._master.detectorsManager[camera]).to_dict()
+        except Exception:
+            return None
+
+    def _displayTransform(self, camera):
+        from imswitch.imcontrol.controller.display_transform import display_transform_from_properties
+
+        info = (getattr(self._setupInfo, 'detectors', None) or {}).get(camera)
+        return display_transform_from_properties(getattr(info, 'managerProperties', None))
+
+    def _roisAutosavePath(self, camera):
+        return os.path.join(_roisFolderPath, f'{camera}_current')
+
+    def _onDocumentForRois(self):
+        """ A (re)loaded pipeline: its segmentation settings fill the form,
+        the last ROIs of its camera come back. """
+        camera = self._camera()
+        steps = self._roiDffSteps()
+        if not hasattr(self._widget, 'setRois'):
+            return
+        enabled = camera is not None and bool(steps)
+        self._widget.setRoiControlsEnabled(enabled, '' if enabled else
+                                           'The pipeline has no live camera and roi-dff step to give ROIs to')
+        if steps:
+            params = dict(steps[0].params)
+            params.setdefault('reference_frames', 1)
+            self._widget.setSegmentationParameters(params)
+        if camera is not None and (self._rois is None or self._rois.detector != camera):
+            self._rois = None
+            path = self._roisAutosavePath(camera) + '.tif'
+            if os.path.isfile(path):
+                try:
+                    from imswitch.imcontrol.model.smartpipeline.roi_set import RoiSet
+
+                    self._rois = RoiSet.load(path)
+                except Exception:
+                    self.__logger.warning('Smart pipeline: the last ROIs could not be read', exc_info=True)
+        self._roiSelection = set()
+        self._roisChanged(autosave=False, push=False)
+
+    def _roisChanged(self, autosave=True, push=True):
+        """ The ROI set changed: list, overlay, autosave, the running pipeline
+        (``push``; a selection is not a change of the ROIs). """
+        rois = self._rois
+        if hasattr(self._widget, 'setRois'):
+            if rois is None or not len(rois):
+                summary = 'No ROIs yet: segment the camera image or draw them.'
+                if self._roiDffSteps() and not self._widget.isUseRois():
+                    summary += ' (The pipeline segments at arm.)'
+                self._widget.setRois([], summary)
+            else:
+                table = rois.table()
+                drawn = sum(1 for row in table if row['source'] == 'drawn')
+                summary = (f'{len(table)} ROIs ({len(table) - drawn} segmented, {drawn} drawn) on '
+                           f'{rois.shape[1]}x{rois.shape[0]} px of {rois.detector or "?"}')
+                problems = rois.grid_problems(self._cameraIdentity(rois.detector)) if rois.detector else []
+                if problems:
+                    summary += ' -- ' + problems[0]
+                self._widget.setRois(table, summary, self._roiSelection)
+        if autosave and rois is not None and rois.detector:
+            try:
+                rois.save(self._roisAutosavePath(rois.detector))
+            except Exception:
+                self.__logger.warning('Smart pipeline: the ROIs could not be kept for the next start', exc_info=True)
+        self._showRois()
+        if push:
+            self._pushRoisToRun()
+
+    def _showRois(self):
+        rois = self._rois
+        if not hasattr(self._widget, 'showRoiOverlay'):
+            return
+        if rois is None or not len(rois) or not self._widget.isShowRois():
+            self._widget.hideRoiOverlay()
+            return
+        from imswitch.imcontrol.controller.display_transform import apply_display_transform
+        from imswitch.imcontrol.model.smartpipeline.roi_set import detector_points_to_display
+
+        transform = self._displayTransform(rois.detector)
+        outline, _ = apply_display_transform(rois.outline(), None, transform)
+        table = rois.table()
+        centres = detector_points_to_display([row['centroid'] for row in table], rois.shape, transform)
+        self._widget.showRoiOverlay(rois.detector, outline, centres, [row['id'] for row in table],
+                                    self._roiSelection)
+
+    def _ensureRois(self):
+        """ The ROI set to change, made empty on the camera's grid when there is none. """
+        from imswitch.imcontrol.model.smartpipeline.roi_set import RoiSet
+
+        camera = self._camera()
+        if camera is None:
+            raise ValueError('the pipeline has no live camera to put ROIs on')
+        identity = self._cameraIdentity(camera)
+        if self._rois is None or self._rois.detector != camera:
+            if identity is None:
+                raise ValueError(f'no camera {camera!r} in this setup')
+            self._rois = RoiSet.empty(identity['shape'], detector=camera, identity=identity,
+                                      stage_position_um=self._stagePosition())
+        return self._rois
+
+    def segmentRois(self):
+        """ Average the next N frames of the camera and segment them with the
+        form's settings (in the background); drawn ROIs are kept. """
+        camera = self._camera()
+        if camera is None or self._collect is not None:
+            return
+        params = self._widget.getSegmentationParameters()
+        self._collect = {'camera': camera, 'need': max(1, int(params.get('reference_frames', 1))), 'n': 0,
+                         'sum': None, 'params': params, 'started': time.monotonic()}
+        self._widget.setSegmenting(True)
+        QtCore.QTimer.singleShot(int(_SEGMENT_FRAMES_TIMEOUT_S * 1000), self._segmentTimedOut)
+
+    def _segmentTimedOut(self):
+        collect = self._collect
+        if collect is None or time.monotonic() - collect['started'] < _SEGMENT_FRAMES_TIMEOUT_S - 0.1:
+            return
+        self._collect = None
+        self._widget.setSegmenting(False)
+        self._widget.setIssues([f'No frames from {collect["camera"]} in {_SEGMENT_FRAMES_TIMEOUT_S:g} s '
+                                f'({collect["n"]} of {collect["need"]}): start its live view, then Segment now.'])
+
+    def _onPreviewImage(self, detectorName, image, init=False, scale=None, isCurrentDetector=False):
+        """ GUI thread, every frame: nothing unless a segmentation is collecting frames. """
+        collect = self._collect
+        if collect is None or str(detectorName) != collect['camera']:
+            return
+        array = np.asarray(image, dtype=np.float64)
+        if array.ndim != 2:
+            return
+        if collect['sum'] is not None and collect['sum'].shape != array.shape:
+            collect['sum'], collect['n'] = None, 0
+        collect['sum'] = array.copy() if collect['sum'] is None else collect['sum'] + array
+        collect['n'] += 1
+        if collect['n'] < collect['need']:
+            return
+        self._collect = None
+        average = collect['sum'] / collect['n']
+        params = collect['params']
+
+        def work():
+            from imswitch.imcontrol.model.smartpipeline.roi_set import segment
+
+            try:
+                labels, error = segment(average, params), None
+            except Exception as e:
+                labels, error = None, f'{type(e).__name__}: {e}'
+            self._invokeOnControllerThreadIfNeeded(lambda: self._segmented(collect['camera'], labels, params, error))
+
+        threading.Thread(target=work, name='smart-pipeline-segment', daemon=True).start()
+
+    def _segmented(self, camera, labels, params, error):
+        self._widget.setSegmenting(False)
+        if error is not None:
+            self._widget.setIssues([f'Segmentation failed: {error}'])
+            return
+        try:
+            rois = self._ensureRois()
+            if rois.shape != labels.shape:
+                rois = self._rois = None
+                rois = self._ensureRois()
+            rois.stage_position_um = self._stagePosition()
+            new = rois.replace_segmented(labels, params)
+        except ValueError as e:
+            self._widget.setIssues([str(e)])
+            return
+        self._widget.setIssues([] if new else ['The segmentation found no ROI: lower the threshold or min area, '
+                                               'or draw the ROIs.'])
+        self._roisChanged()
+
+    def drawRoi(self, kind):
+        try:
+            self._ensureRois()
+        except ValueError as e:
+            self._widget.setIssues([str(e)])
+            return
+        self._showRois()
+        self._widget.startDrawingRoi(kind)
+
+    def addDrawnRoi(self, kind, vertices):
+        """ A shape drawn on the live view (displayed pixels) becomes a ROI. """
+        from imswitch.imcontrol.model.smartpipeline.roi_set import display_polygon_to_detector, shape_polygon
+
+        try:
+            rois = self._ensureRois()
+            polygon = shape_polygon(kind, vertices)
+        except ValueError as e:
+            self._widget.setIssues([str(e)])
+            return None
+        detector = display_polygon_to_detector(polygon, rois.shape, self._displayTransform(rois.detector))
+        new = rois.add_polygon(detector, kind=kind)
+        if new is None:
+            self._widget.setIssues(['The drawn shape holds no pixel: draw it larger.'])
+            return None
+        self._roiSelection = {new}
+        self._roisChanged()
+        return new
+
+    def deleteSelectedRois(self):
+        if self._rois is None:
+            return
+        removed = self._rois.remove(self._roiSelection or self._widget.getSelectedRois())
+        self._roiSelection -= set(removed)
+        if removed:
+            self._roisChanged()
+
+    def clearRois(self):
+        if self._rois is not None and len(self._rois):
+            self._rois.clear()
+            self._roiSelection = set()
+            self._roisChanged()
+
+    def _onRoiListSelection(self, ids):
+        self._roiSelection = set(int(i) for i in ids)
+        self._showRois()
+
+    def _onRoiClicked(self, roiId):
+        if not roiId:
+            return
+        self._roiSelection ^= {int(roiId)}
+        self._roisChanged(autosave=False, push=False)
+
+    def saveRoisAs(self, path=None):
+        if self._rois is None or not len(self._rois):
+            return None
+        os.makedirs(_roisFolderPath, exist_ok=True)
+        path = path or self._widget.askForRoisPath(_roisFolderPath, True)
+        if not path:
+            return None
+        return self._rois.save(path)
+
+    def loadRoisFrom(self, path=None):
+        from imswitch.imcontrol.model.smartpipeline.roi_set import RoiSet
+
+        camera = self._camera()
+        os.makedirs(_roisFolderPath, exist_ok=True)
+        path = path or self._widget.askForRoisPath(_roisFolderPath, False)
+        if not path:
+            return None
+        try:
+            rois = RoiSet.load(path)
+        except Exception as e:
+            self._widget.setIssues([f'Cannot read the ROIs: {e}'])
+            return None
+        if camera is not None:
+            rois.detector = rois.detector or camera
+            if rois.identity is None:
+                rois.identity = self._cameraIdentity(camera)
+            problems = rois.grid_problems(self._cameraIdentity(camera))
+            self._widget.setIssues(problems)
+        self._rois, self._roiSelection = rois, set()
+        self._roisChanged()
+        return rois
+
+    def _documentWithRois(self, document, folder):
+        """ The document to arm: with the ROI set in use, its roi-dff step
+        reads exactly these ROIs (``mask_source: file``, a new generation),
+        saved where the run's records go (or with the ROIs kept for the next
+        start). Returns (document, problems). """
+        steps = self._roiDffSteps(document)
+        rois = self._rois
+        self._roiFile = self._roiStep = None
+        if not steps or rois is None or not len(rois) or not self._widget.isUseRois():
+            return document, []
+        camera = self._camera()
+        if rois.detector and camera and rois.detector != camera:
+            return document, [f'the ROIs are of {rois.detector}, the pipeline watches {camera}: draw or segment '
+                              f'them on {camera}, or uncheck "Use these ROIs when arming"']
+        problems = rois.grid_problems(self._cameraIdentity(camera))
+        if problems:
+            return document, problems
+        copy = SmartPipelineDocument.from_dict(document.to_dict())
+        step = self._roiDffSteps(copy)[0]
+        path = self._writeRoisForRun(folder)
+        generation = int(step.params.get('generation', 0) or 0) + 1
+        step.params.update(mask_source='file', labels_path=path, generation=generation)
+        self._roiFile, self._roiStep = (folder, path), (step.id, generation)
+        self._pushedVersion = rois.version
+        return copy, []
+
+    def _writeRoisForRun(self, folder):
+        rois = self._rois
+        if folder:
+            return rois.save(os.path.join(folder, f'rois_R{rois.region}_v{rois.version}'))
+        return rois.save(os.path.join(_roisFolderPath, f'{rois.detector}_armed'))
+
+    def _pushRoisToRun(self):
+        """ The ROIs changed while the pipeline runs on them: it reads the new
+        set from the next frame on (a new generation: baselines start over). """
+        run, step = self._run, self._roiStep
+        if run is None or step is None or run.state not in (ARMED, RUNNING) or self._rois is None:
+            return
+        if not len(self._rois) or self._rois.version == getattr(self, '_pushedVersion', None):
+            return
+        self._pushedVersion = self._rois.version
+        folder = self._roiFile[0] if self._roiFile else None
+        path = self._writeRoisForRun(folder)
+        stepId, generation = step
+        generation += 1
+        engine = run.engine
+        with engine._lock:
+            for candidate in engine.workflow.steps:
+                if candidate.id == stepId:
+                    candidate.params.update(mask_source='file', labels_path=path, generation=generation)
+        self._roiStep = (stepId, generation)
+        run.log.append(engine._tick, time.monotonic(), stepId, 'rois-changed', rois=len(self._rois),
+                       version=self._rois.version, file=path, why='new ROI set: the baselines start over')
+
+    # ------------------------------------------------------------------ #
     # Saving the triggered scans                                          #
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -360,7 +718,14 @@ class SmartPipelineController(ImConWidgetController):
         """ Where the stage positioners are now: {positioner: {axis: um}},
         the positioners that position (not those that only scan). """
         found = {}
-        for name, positioner in self._master.positionersManager:
+        try:
+            positioners = list(self._master.positionersManager)
+        except Exception:
+            return found
+        for item in positioners:
+            if not isinstance(item, tuple) or len(item) != 2:
+                continue
+            name, positioner = item
             if getattr(positioner, 'forScanning', False) or not getattr(positioner, 'forPositioning', True):
                 continue
             try:
@@ -636,7 +1001,8 @@ class SmartPipelineController(ImConWidgetController):
         try:
             os.makedirs(os.path.dirname(_stateFilePath), exist_ok=True)
             with open(_stateFilePath, 'w', encoding='utf-8') as file:
-                json.dump({'path': self._path, 'mode': self._widget.getMode()}, file, indent=2)
+                json.dump({'path': self._path, 'mode': self._widget.getMode(),
+                           'use_rois': bool(getattr(self._widget, 'isUseRois', lambda: True)())}, file, indent=2)
         except OSError:
             self.__logger.warning('Could not save the smart pipeline state', exc_info=True)
 

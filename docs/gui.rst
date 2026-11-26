@@ -1958,6 +1958,43 @@ triggered cell only) → gates ``triggered`` (at least one row), ``rest``
 #. Arm in *Experiment*. Scans are started automatically: keep ``budget`` low
    for the first run.
 
+*Your ROIs (the panel's ROIs box).* Segmentation fails on real samples --
+dim, touching or out-of-focus cells, structured background -- so the ROIs are
+yours to see and fix before arming:
+
+* **Segment now** averages the next *Average frames* camera frames (the live
+  view of the pipeline's camera must be running) and segments them with the
+  form's *Threshold* (otsu, triangle, yen, local, or manual with its value),
+  *Smooth σ*, *Min area*, *Fill holes* and *Drop ROIs on the border* -- the
+  form starts with the pipeline's own ``roi-dff`` settings. Drawn ROIs are
+  kept; the segmented ones are replaced.
+* The outlines and the id of every ROI are drawn on the live camera image
+  (*Show on image*); the summary line counts them (segmented / drawn).
+* **Draw:** *Rectangle*, *Ellipse* or *Polygon* (end a polygon with a double
+  click) on the camera image adds a ROI; it takes its pixels from a ROI under
+  it. The shape is mapped back through the live view's rotation and flips
+  (``displayRotation`` / ``displayFlipX`` / ``displayFlipY``) to the camera's
+  own pixels: a pixel is in the ROI when its centre is inside the shape.
+* Click a ROI on the image (or select it in the list) and **Delete selected**;
+  **Clear** removes all. Ids never change: deleting ROI 3 leaves 1, 2, 4; a new
+  ROI or a re-segmentation gets ids never used before -- the ids in the log,
+  the event files and the summary are these.
+* **Save…** / **Load…** a ROI set: ``<name>.tif`` (the labels) and
+  ``<name>.json`` (ids, where each came from, the drawn shapes, the camera's
+  frame size, binning and ROI offset, the region and stage position). Any
+  label image (``.tif``/``.npy``) loads too. The last set of each camera is kept
+  in ``smart_pipelines/rois/<camera>_current.tif`` and comes back at the next
+  start.
+* **Use these ROIs when arming** (on by default when there are ROIs): the
+  pipeline's ``roi-dff`` step measures exactly this set (it is armed with
+  ``mask_source: file`` on a copy saved with the run's records,
+  ``rois_R0_v<n>.tif`` -- the pipeline file is not changed). A set made on
+  another camera frame size, binning or ROI offset is refused at arm, with
+  what to do. Unchecked, the pipeline segments by itself at arm.
+* Editing the ROIs while armed takes effect at the next frame: ``roi-dff`` gets
+  the new set as a new generation (logged ``rois-changed``), so the baselines
+  start over and the run warms up again.
+
 *The ROI step (``roi-dff``).* ``mask_source``: ``segment`` (Otsu etc. on the
 average of the first ``reference_frames`` frames), ``input`` (labels wired in
 as second input on the first tick) or ``file`` (a ``.npy``/``.tif`` label
