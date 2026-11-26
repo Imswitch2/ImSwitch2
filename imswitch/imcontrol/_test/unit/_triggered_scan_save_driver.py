@@ -220,11 +220,51 @@ def arm_scenario(controller, out):
     return report
 
 
+def preflight_scenario(controller, out):
+    """Arm-time checks on the real panels: ROIs drawn in and far outside the scan range, the lasers."""
+    sp = controller.controllers['SmartPipeline']
+    rec = controller.controllers['Recording']
+    rec.setRecFolder(os.path.join(out, 'preflight'))
+    from imswitch.imcommon.model import dirtools
+    from imswitch.imcommon.model.smartpipeline import ScaleFlip
+    with open(os.path.join(dirtools.UserFileDirs.Root, 'calibrations', 'cam_to_scan.json'), 'w') as handle:
+        json.dump(ScaleFlip('cam_to_scan', 'detector:Camera', 'scanner:galvo', pixel_size=(1.0, 1.0),
+                            origin=(400, 400)).to_dict(), handle)     # 1 um per camera pixel: row 15 is -385 um
+    sp.clearRois()
+    inside = sp.addDrawnRoi('rectangle', [[390, 390], [390, 410], [410, 410], [410, 390]])
+    outside = sp.addDrawnRoi('ellipse', [[5, 5], [5, 25], [25, 25], [25, 5]])
+    report = {'rois': [inside, outside]}
+    sp._widget.setMode('validate')
+    sp.arm()
+    report['validate'] = {'armed': sp._run is not None, 'preflight': sp._widget.getPreflightText(),
+                          'log': [line for line in sp._widget.logView.toPlainText().splitlines()
+                                  if 'preflight' in line]}
+    sp.stop()
+    _pump(1.0)
+    with open(sp._path, encoding='utf-8') as handle:
+        document = json.load(handle)
+    for step in document['steps']:
+        if step['id'] == 'scan':
+            step['params']['lasers'] = ['560 nm']
+    path = os.path.join(out, 'wrong_laser.json')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump(document, handle)
+    original = sp._path
+    sp.setPipelinePath(path)
+    sp.arm()
+    report['wrong_laser'] = {'armed': sp._run is not None and sp._run.state in ('armed', 'running'),
+                             'issues': sp._widget.issuesLabel.text()}
+    sp.setPipelinePath(original)
+    sp.clearRois()
+    return report
+
+
 def experiment_scenario(controller, out):
     import glob
 
     sp = controller.controllers['SmartPipeline']
-    sp._applyMode = lambda name: None
+    # the shipped roles are "(unchanged)": no setup mode needed, nothing patched
+    sp.__dict__.pop('_applyMode', None)
     rec = controller.controllers['Recording']
     folder = os.path.join(out, 'experiment')
     rec.setRecFolder(folder)
@@ -247,6 +287,7 @@ def experiment_scenario(controller, out):
         json.dump(ScaleFlip('cam_to_scan', 'detector:Camera', 'scanner:galvo', pixel_size=(0.05, 0.05),
                             origin=(400, 400)).to_dict(), handle)
     sp.setPipelinePath(path)
+    sp._widget.setUseRois(False)                  # this run segments by itself
     sp._widget.setMode('experiment')
     sp.arm()
     report = {'armed': sp._run is not None, 'issues': sp._widget.issuesLabel.text()}
@@ -276,8 +317,9 @@ def main(out):
     tiscamera_mock.MockCameraTIS.grabFrame = _cells_frame
     controller = _boot()
     _pump(0.5)
-    result = {'adapter': adapter_scenario(controller, out), 'arm': arm_scenario(controller, out),
-              'experiment': experiment_scenario(controller, out)}
+    result = {'adapter': adapter_scenario(controller, out), 'arm': arm_scenario(controller, out)}
+    result['preflight'] = preflight_scenario(controller, out)
+    result['experiment'] = experiment_scenario(controller, out)
     print('RESULT ' + json.dumps(result, default=str))
 
 

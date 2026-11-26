@@ -312,6 +312,14 @@ class SmartPipelineController(ImConWidgetController):
             self._widget.setIssues([f'not armed: {problem}' for problem in roiProblems])
             self._widget.setStatus('not armed')
             return
+        from imswitch.imcontrol.model.smartpipeline.preflight import errors
+
+        checks = self._preflight(document, mode, recorder, saveProblems)
+        self._widget.setPreflight([(c.level, f'{c.topic}: {c.text}') for c in checks])
+        if errors(checks):
+            self._widget.setIssues([f'not armed: {c.topic}: {c.text}' for c in errors(checks)])
+            self._widget.setStatus('not armed')
+            return
         self._saveWarnings = []
         if saveProblems:
             if mode == RunMode.EXPERIMENT:
@@ -337,6 +345,8 @@ class SmartPipelineController(ImConWidgetController):
             on_overlay=self._onOverlay,
         )
         self._widget.clearLog()
+        for check in checks:
+            log.append(0, time.monotonic(), 'preflight', check.level, topic=check.topic, text=check.text)
         try:
             run.arm()
         except ArmError as e:
@@ -689,6 +699,179 @@ class SmartPipelineController(ImConWidgetController):
         self._roiStep = (stepId, generation)
         run.log.append(engine._tick, time.monotonic(), stepId, 'rois-changed', rois=len(self._rois),
                        version=self._rois.version, file=path, why='new ROI set: the baselines start over')
+
+    # ------------------------------------------------------------------ #
+    # Preflight: what arming checks                                       #
+    # ------------------------------------------------------------------ #
+    def _preflight(self, document, mode, recorder, saveProblems):
+        """ Every check of the arm, as a list the panel shows and the log keeps;
+        an ``error`` refuses the arm. Runs on the GUI thread, touches no device. """
+        from imswitch.imcommon.model.smartpipeline import FrameIdentity, Gate, Transform
+        from imswitch.imcontrol.model.smartpipeline.boxes import transform_record
+        from imswitch.imcontrol.model.smartpipeline.calibrations import identity_problems
+        from imswitch.imcontrol.model.smartpipeline.catalog import RUN_SCAN
+        from imswitch.imcontrol.model.smartpipeline.live_actions import RunScanAdapter, scan_panel_busy
+        from imswitch.imcontrol.model.smartpipeline.preflight import (
+            ERROR, OK, WARN, Check, classify_rois, roi_checks, scan_time_check,
+        )
+
+        experiment = mode == RunMode.EXPERIMENT
+        checks = []
+        camera = self._camera()
+        identity = self._cameraIdentity(camera) if camera else None
+        if camera is not None:
+            if identity is None:
+                checks.append(Check(ERROR, 'Camera', f'no detector {camera!r} in this setup'))
+            else:
+                checks.append(Check(OK, 'Camera', f'{camera}: {identity["shape"][1]}x{identity["shape"][0]} px, '
+                                                  f'binning {identity["binning"][0]}, ROI offset (row, col) '
+                                                  f'{tuple(identity["offset"])}'))
+        try:
+            transforms = self._transforms()
+        except ValueError as e:
+            transforms = None
+            checks.append(Check(ERROR, 'Calibrations', str(e)))
+        transform = None
+        for step in document.workflow.steps:
+            if not isinstance(step, Transform) or transforms is None:
+                continue
+            found = transforms.get(step.transform)
+            if found is None:
+                checks.append(Check(ERROR, 'Calibration', f'{step.transform!r} not found in calibrations/'))
+                continue
+            transform = transform or found
+            record = transform_record(found)
+            residual = record.get('residual')
+            text = f'{step.transform!r} ({record.get("type") or "?"})' + (
+                f', residual {residual}' if residual is not None else ', no residual recorded')
+            problems = identity_problems(found, FrameIdentity.from_dict(identity) if identity else None)
+            if problems:
+                recorded = getattr(found, 'calibrated_on', None) or {}
+                checks.append(Check(ERROR, 'Calibration', '; '.join(problems) + ': set the camera ROI/binning to '
+                                    f'{recorded.get("shape")} / binning {recorded.get("binning")} / offset '
+                                    f'{recorded.get("offset")}, or recalibrate (Hardware > Camera -> scan '
+                                    'calibration...)'))
+            else:
+                checks.append(Check(OK, 'Calibration', text + (', made on this camera grid'
+                                                               if getattr(found, 'calibrated_on', None) else '')))
+        scanSteps = self._scanSteps(document)
+        registry = self._commChannel.controllerRegistry() or {}
+        classified = []
+        for step in scanSteps:
+            params = {**RUN_SCAN.params, **step.params}
+            sourceName = str(params.get('source') or 'Scan')
+            panel = registry.get(sourceName)
+            if panel is None:
+                checks.append(Check(ERROR, 'Scan', f'no scan panel {sourceName!r} in this setup'))
+                continue
+            advanced = not hasattr(panel, 'applyAcquisitionPlan')
+            busy = scan_panel_busy(panel)
+            if busy:
+                checks.append(Check(ERROR if experiment else WARN, 'Scan',
+                                    f'the {sourceName!r} panel is busy ({busy}): stop its scan first'))
+            else:
+                checks.append(Check(OK, 'Scan', f'{sourceName!r} panel ({"Advanced" if advanced else "simple"}), '
+                                                'idle'))
+            checks.extend(self._laserChecks(params, experiment))
+            rois = self._rois if (self._rois is not None and len(self._rois)
+                                  and self._widget.isUseRois()) else None
+            widget = getattr(panel, '_widget', None)
+            if rois is not None and transform is not None and advanced and widget is not None:
+                axes = [str(a) for a in (params.get('axes') or ['Y', 'X'])]
+                try:
+                    steps = {axis: (float(params.get('pixel_um') or 0.0) or float(widget.getScanStepSize(axis)))
+                             for axis in axes[:2]}
+                    adapter = RunScanAdapter(lambda: registry, None)
+                    ranges = adapter._scanner_ranges(panel, axes[:2], params)
+                    classified = classify_rois(rois.table(), transform, axes=axes, params=params, steps=steps,
+                                               ranges=ranges)
+                    checks.extend(roi_checks(classified))
+                    dwell = float(params.get('dwell_s') or 0.0) or (
+                        float(widget.getSeqTimePar()) if hasattr(widget, 'getSeqTimePar') else None)
+                    timeCheck = scan_time_check(classified, dwell)
+                    if timeCheck is not None:
+                        checks.append(timeCheck)
+                except Exception as e:
+                    checks.append(Check(WARN, 'ROIs', f'could not plan their scans: {type(e).__name__}: {e}'))
+            elif rois is None and self._roiDffSteps(document):
+                checks.append(Check(WARN, 'ROIs', 'the pipeline segments the cells itself at arm: press Segment '
+                                                  'now (ROIs box) to see them, and their scans, before arming'))
+        if scanSteps:
+            detectors = list(getattr(recorder, 'detectors', ()) or ())
+            checks.append(Check(OK if detectors else (ERROR if experiment else WARN), 'Scan detectors',
+                                ', '.join(detectors) or 'none (no APD/PMT in this setup)'))
+        for step in document.workflow.steps:
+            if isinstance(step, Gate) and step.rule == 'min-interval':
+                checks.append(Check(OK, 'Interval', f'{step.id}: at most one scan per '
+                                                    f'{float(step.params.get("seconds", 0)):g} s'))
+            elif isinstance(step, Gate) and step.rule == 'count-limit':
+                checks.append(Check(OK, 'Budget', f'{step.id}: at most {int(step.params.get("count", 0))} scans '
+                                                  'per run (a skipped trigger does not count)'))
+        if scanSteps and self._savesScans(document):
+            if saveProblems:
+                for problem in saveProblems:
+                    checks.append(Check(ERROR if experiment else WARN, 'Saving',
+                                        f'the triggered scans could not be saved -- {problem}'))
+            elif recorder is not None:
+                import shutil
+
+                free = None
+                probe = recorder.folder
+                while probe and not os.path.isdir(probe):
+                    probe = os.path.dirname(probe)
+                try:
+                    free = shutil.disk_usage(probe).free if probe else None
+                except OSError:
+                    pass
+                where = recorder.folder if experiment else f'(Experiment would save to) {recorder.folder}'
+                checks.append(Check(OK, 'Saving', where + (f', {free / 1e9:.1f} GB free' if free else '')))
+        return checks
+
+    def _laserChecks(self, params, experiment):
+        from imswitch.imcontrol.model.smartpipeline.preflight import ERROR, OK, WARN, Check
+
+        checks = []
+        lasers = [str(name) for name in (params.get('lasers') or [])]
+        manager = getattr(self._master, 'lasersManager', None)
+        names = []
+        try:
+            names = list(manager.getAllDeviceNames()) if manager is not None else []
+        except Exception:
+            names = []
+        controller = (self._commChannel.controllerRegistry() or {}).get('Laser')
+        if not lasers:
+            checks.append(Check(WARN, 'Lasers', 'the scan names no laser: it fires what the panel\'s first '
+                                                'line step holds'))
+        for name in lasers:
+            if manager is not None and name not in names:
+                checks.append(Check(ERROR, 'Laser', f'{name!r} is not a laser of this setup (have: '
+                                                    f'{", ".join(names) or "none"}): fix the scan step\'s lasers'))
+                continue
+            device = None
+            try:
+                device = manager[name] if manager is not None else None
+            except Exception:
+                pass
+            usable = getattr(device, 'isUsable', True)
+            mode = str(getattr(getattr(device, 'runtimeMode', None), 'value', '') or '')
+            if mode == 'absent' or usable is False:
+                checks.append(Check(ERROR if experiment else WARN, 'Laser',
+                                    f'{name!r} is {"absent" if mode == "absent" else "not usable"}: reconnect it '
+                                    '(Hardware) before arming'))
+                continue
+            value = None
+            if controller is not None and hasattr(controller, 'getLaserValue'):
+                try:
+                    value = controller.getLaserValue(name)
+                except Exception:
+                    value = None
+            units = getattr(device, 'valueUnits', '') or ''
+            text = f'{name!r}' + (f' at {value:g} {units}'.rstrip() if isinstance(value, (int, float)) else '')
+            if isinstance(value, (int, float)) and value <= 0:
+                checks.append(Check(WARN, 'Laser', text + ': its power is 0, the scan will be dark'))
+            else:
+                checks.append(Check(OK, 'Laser', text + (' (mock)' if mode == 'mock' else '')))
+        return checks
 
     # ------------------------------------------------------------------ #
     # Saving the triggered scans                                          #

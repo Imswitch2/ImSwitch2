@@ -1878,6 +1878,21 @@ file name; **Reload** reads the file again after an edit.
   that name in the Setup modes panel (**More → Save as...**), or set the role
   to ``"(unchanged)"``.
 
+**What arming checks.** Before anything is reserved, every arm (Validate and
+Experiment) shows one list under the mode row -- green checked, amber to read,
+red refuses the arm with what to do -- and writes it to the event log
+(``preflight``): the camera and its frame (size, binning, ROI offset); each
+calibration, its residual, and whether it was made on this camera grid (if
+not: the grid to set back, or recalibrate); the scan panel (Advanced or not,
+idle -- busy refuses Experiment); each laser the scan names (not in the setup:
+refused, with the names it has; absent or unusable: refused in Experiment;
+its current power, and a warning at 0); with the panel's ROIs, every ROI's
+scan box planned as the trigger will plan it -- scanned whole, clipped to the
+scan range, or **would be skipped** (outside the range), so you learn it
+before the experiment -- and the expected scan time per trigger (pixels x
+dwell); the scan detectors; the interval and budget gates; where the scans
+are saved and the free disk space.
+
 **Arm** reserves the devices (while the pipeline holds a stage, the
 Positioner panel and scripts are refused for it), applies the ``scouting``
 mode in Experiment, takes an event-stream lease on the detector -- no live

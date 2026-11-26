@@ -238,3 +238,24 @@ def test_scan_panel_busy_reads_the_scan_controllers_state():
     assert scan_panel_busy(SimpleNamespace(isRunning=False, _scanRunToken=object())) == 'a scan run is still open'
     assert scan_panel_busy(SimpleNamespace(isRunning=False, _repeatPending=True)) == 'a repeated scan is pending'
     assert scan_panel_busy(SimpleNamespace(isRunning=False, _isBusy=lambda: True)) == 'a scan is running'
+
+
+def test_arming_checks_the_rig_and_says_so_in_one_list(report):
+    preflight = report['preflight']
+    assert preflight['rois'] == [1, 2]
+    validate = preflight['validate']
+    assert validate['armed']
+    import html
+    import re
+
+    text = html.unescape(re.sub(r'<[^>]+>', '\n', validate['preflight']))
+    for expected in ("Camera: Camera: 800x800 px, binning 1", "Calibration: 'cam_to_scan'", "'Scan' panel (Advanced)",
+                     "Laser: '561 (EXC)'", '2 ROIs: 1 scan whole, 0 clipped to the scan range, 1 would be skipped',
+                     "Laser: '561 (EXC)' at 0 V: its power is 0, the scan will be dark",
+                     'ROI 2: would be SKIPPED at its trigger', 'Scan time: about', 'Interval: rest: at most one scan',
+                     'Budget: budget: at most 10 scans', 'Saving: (Experiment would save to)', 'Scan detectors: APD'):
+        assert expected in text, (expected, text)
+    assert validate['log']                         # and the run's log keeps them
+    wrong = preflight['wrong_laser']
+    assert not wrong['armed']
+    assert "'560 nm' is not a laser of this setup" in wrong['issues'] and '561 (EXC)' in wrong['issues']

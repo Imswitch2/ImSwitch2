@@ -120,3 +120,20 @@ def test_roi_dff_reads_a_saved_set_with_the_same_ids(tmp_path):
               "_state": state}
     out = proc.apply(ArrayProcessingResult("cam", _cells(), ["Y", "X"], metadata={"frame_index": 0}), params)
     assert sorted(int(v) for v in out.properties["label"]) == [1, 3]
+
+
+def test_preflight_classifies_each_roi_scan_before_the_experiment():
+    from imswitch.imcommon.model.smartpipeline import ScaleFlip
+    from imswitch.imcontrol.model.smartpipeline.preflight import ERROR, Check, classify_rois, errors, roi_checks
+
+    transform = ScaleFlip('t', 'detector:Camera', 'scanner:galvo', pixel_size=(0.5, 0.5), origin=(32.0, 32.0))
+    rows = [{'id': 1, 'centroid': (32.0, 32.0), 'bbox': (28.5, 28.5, 35.5, 35.5)},      # centre: fits
+            {'id': 5, 'centroid': (2.0, 32.0), 'bbox': (-0.5, 28.5, 4.5, 35.5)},        # -15 um: outside
+            {'id': 9, 'centroid': (50.0, 32.0), 'bbox': (46.5, 28.5, 53.5, 35.5)}]      # 9 um: partly outside
+    out = classify_rois(rows, transform, axes=['Y', 'X'], params={'margin_um': 0.5, 'min_overlap': 0.5},
+                        steps={'Y': 0.5, 'X': 0.5}, ranges={'Y': (-10.0, 10.0), 'X': (-10.0, 10.0)})
+    assert [(c['id'], c['status']) for c in out] == [(1, 'ok'), (5, 'skipped'), (9, 'clipped')]
+    checks = roi_checks(out)
+    assert '1 scan whole, 1 clipped to the scan range, 1 would be skipped' in checks[0].text
+    assert any('ROI 5' == c.topic and 'SKIPPED' in c.text for c in checks)
+    assert errors(checks + [Check(ERROR, 'x', 'y')])[0].topic == 'x' and not errors(checks)

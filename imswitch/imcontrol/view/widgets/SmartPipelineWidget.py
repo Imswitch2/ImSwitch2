@@ -58,6 +58,11 @@ class SmartPipelineWidget(Widget):
         self.issuesLabel.setWordWrap(True)
         self.issuesLabel.setStyleSheet('color: #d9534f;')
         self.issuesLabel.hide()
+        # What arming checked: one line per check, coloured by its level.
+        self.preflightLabel = QtWidgets.QLabel()
+        self.preflightLabel.setWordWrap(True)
+        self.preflightLabel.setTextFormat(QtCore.Qt.RichText)
+        self.preflightLabel.hide()
 
         self.modeBox = QtWidgets.QComboBox()
         for mode in RUN_MODES:
@@ -103,6 +108,7 @@ class SmartPipelineWidget(Widget):
         layout.addLayout(fileRow)
         layout.addWidget(self.summaryLabel)
         layout.addWidget(self.issuesLabel)
+        layout.addWidget(self.preflightLabel)
         layout.addLayout(runRow)
         layout.addWidget(self._buildRoiBox())
         layout.addLayout(logRow)
@@ -338,6 +344,20 @@ class SmartPipelineWidget(Widget):
         issues = list(issues or [])
         self.issuesLabel.setText('\n'.join(f'• {issue}' for issue in issues))
         self.issuesLabel.setVisible(bool(issues))
+
+    def setPreflight(self, checks):
+        """``checks``: (level, text) pairs, level ok / warn / error."""
+        import html
+
+        colours = {'ok': '#3c9a3c', 'warn': '#c88a00', 'error': '#d9534f'}
+        marks = {'ok': '✔', 'warn': '⚠', 'error': '✖'}
+        lines = [f'<span style="color:{colours.get(level, "#888")}">{marks.get(level, "•")} {html.escape(text)}</span>'
+                 for level, text in checks]
+        self.preflightLabel.setText('<br>'.join(lines))
+        self.preflightLabel.setVisible(bool(lines))
+
+    def getPreflightText(self):
+        return self.preflightLabel.text()
 
     def getMode(self):
         return self.modeBox.currentData()
