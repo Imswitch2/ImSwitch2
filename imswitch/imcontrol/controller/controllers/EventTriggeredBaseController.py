@@ -55,6 +55,9 @@ from imswitch.imcontrol.model.EtSTEDAutoCalibration import (
     AutoCalibrationResult,
     auto_calibrate,
 )
+from imswitch.imcontrol.model.EtSTEDEventSaver import (
+    EtSTEDEventSaver, event_attributes, utc_iso,
+)
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
@@ -132,6 +135,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     _maxTriggeredScans: int = 0
     _triggeredScanCount: int = 0
     _lastTriggeredScanEnd: Optional[float] = None
+    # Saving of triggered scans (ScanWidget initiation, Experiment mode).
+    _eventSaver = None
+    _eventIndex: int = 0
+    _eventSessionId: Optional[str] = None
+    _pendingEvent = None
+    _publishedEventKeys: tuple = ()
     FAST_AXIS_SHIFT_COEFFICIENTS = (
         -5.06873628,
         -80.6978355,
@@ -384,6 +393,8 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         """Stop safely and report whether the owned scan barrier has drained."""
         self._closed = True
         self.stopExperiment(resetParams=True)
+        if self._eventSaver is not None:
+            self._eventSaver.close(30)
         # Disconnect the comm-channel slots wired in __init__.
         self._safeDisconnect(self._commChannel.sigSendScanParameters, self.assignScanParameters)
         self._safeDisconnect(self._commChannel.sigSendScanFreq, self.logScanFreq)
@@ -480,6 +491,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if self._state.runMode == RunMode.Experiment:
             self._validate_pre_run()
             self._validate_recording_widget_mode()
+            self._setupEventSaver()
 
         if self._state.runMode in (RunMode.Validate, RunMode.Visualize):
             self.launchHelpWidget()
@@ -518,6 +530,151 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
                 return (f'cooldown: {elapsed:.1f} s since the last triggered scan, '
                         f'{self._cooldownS:g} s required')
         return None
+
+    # -- saving the triggered scan ----------------------------------------- #
+
+    def _snapSaveFormat(self):
+        from imswitch.imcontrol.model import SaveFormat
+        getFormat = getattr(self._commChannel, 'getSnapSaveFormat', None)
+        saveFormat = getFormat() if callable(getFormat) else None
+        return saveFormat if saveFormat is not None else SaveFormat.HDF5
+
+    def _setupEventSaver(self) -> None:
+        """Experiment runs with ScanWidget initiation save every triggered
+        scan; arming is refused when that is not possible."""
+        if self._eventSaver is not None:
+            self._eventSaver.close(10)
+        self._eventSaver = None
+        self._eventIndex = 0
+        self._pendingEvent = None
+        if self._state.scanInitiationMode != ScanInitiationMode.ScanWidget:
+            return
+        manager = getattr(self._master, 'recordingManager', None)
+        saveImage = getattr(manager, 'snapImagePrev', None)
+        if not callable(saveImage):
+            return   # nothing to save with: the display snap, as before
+        saveFormat = self._snapSaveFormat()
+        saver = EtSTEDEventSaver(
+            self._logsDir,
+            lambda detector, base, frame, attrs: saveImage(
+                detector, base, saveFormat, frame, attrs),
+            self._logger,
+        )
+        sessionId = _now_utc_fileus()
+        try:
+            saver.begin_session(sessionId)
+        except OSError as error:
+            raise RuntimeError(
+                f'Cannot save triggered scans: the folder {self._logsDir} is '
+                f'not writable ({error}). Nothing is armed.'
+            ) from error
+        try:
+            participants = self._scanCoordinator.composeParticipants()
+        except Exception:
+            participants = None
+        if participants is not None and not list(participants):
+            saver.close(0)
+            raise RuntimeError(
+                'Cannot save triggered scans: no scan detector is selected, so '
+                'the scan would have no image to save. Select the scan detector '
+                '(for example the APD) in the Image panel or Recording widget.'
+            )
+        self._eventSaver = saver
+        self._eventSessionId = sessionId
+
+    def _publishEventAttributes(self, event: dict) -> None:
+        """The event as ``EtSTED:*`` shared attributes: any recording started
+        for this scan (RecordingWidget initiation) carries them."""
+        analog = self._analogParameterDict
+        axes = [d for d in analog['target_device'] if d != 'None'][:2]
+        attrs = event_attributes(
+            event_index=event['index'], session_id=self._eventSessionId or '',
+            coords_px=event['coords_px'][:2], n_candidates=event['n_candidates'],
+            scan_center_um=event['centre'][:2], scan_axes=axes,
+            pipeline_name=self._pipelineRunner.name or '',
+            pipeline_params=dict(zip(self._pipelineRunner.get_user_parameter_names(),
+                                     self._param_vals)),
+            transform_name=self._transformService.name or '',
+            coefficients_name=self.getTransformCoefName(),
+            coefficients=self._transformService.coefficients,
+            detector_fast=self._state.detectorFast,
+            trigger_time=event['trigger_time'], scan_start_time=utc_iso(),
+        )
+        event['attrs'] = attrs
+        keys = []
+        for flat, value in attrs.items():
+            category, key = flat.split(':', 1)
+            self._commChannel.sharedAttrs[(category, key)] = value
+            keys.append((category, key))
+        self._publishedEventKeys = tuple(keys)
+
+    def _clearEventAttributes(self) -> None:
+        for key in self._publishedEventKeys:
+            self._commChannel.sharedAttrs[key] = 'null'
+        self._publishedEventKeys = ()
+
+    def _saveTriggeredScan(self) -> None:
+        """Save the APD (scan detector) frames of the scan that just ended."""
+        event, self._pendingEvent = self._pendingEvent, None
+        saver = self._eventSaver
+        if event is None or saver is None:
+            return
+        try:
+            scanInfo = {'frame_geometry': event.get('geometry')}
+            names = [n for n in event.get('detectors', [])
+                     if n in self._master.detectorsManager.getAllDeviceNames()]
+            if not names:
+                raise RuntimeError('the scan had no detector to save')
+            frames = {}
+            for name in names:
+                frame = self._master.detectorsManager[name].getLatestFrameShared(is_save=True)
+                self._checkFrameIsThisScan(name, frame, scanInfo)
+                frames[name] = frame
+            attrs = self._eventFileAttributes(event)
+            saver.submit(event['index'], event['stamp'], frames,
+                         {name: attrs for name in frames})
+        except Exception as error:
+            self._logger.error('Could not save the triggered scan', exc_info=True)
+            saver.fail(f'event {event["index"]}: {error}')
+
+    @staticmethod
+    def _checkFrameIsThisScan(name, frame, scanInfo) -> None:
+        from imswitch.imcontrol.model.scan_frame import FRAME_GEOMETRY_KEY, frame_geometry_of
+        geometry = frame_geometry_of(frame)
+        expected = scanInfo.get(FRAME_GEOMETRY_KEY)
+        if geometry is None or not expected:
+            return
+        for axis, wanted in zip(geometry.axes, expected.get('axes', ())):
+            if abs(axis.first_um - float(wanted['first_um'])) > 1e-6:
+                raise RuntimeError(
+                    f'the {name} frame is not the triggered scan\'s (its first pixel is at '
+                    f'{axis.first_um:g} um, the scan\'s at {float(wanted["first_um"]):g} um)')
+
+    def _eventFileAttributes(self, event: dict) -> dict:
+        """The standard recording attributes with the event's centres and times."""
+        attrs = dict(self._commChannel.sharedAttrs.getHDF5Attributes())
+        analog = self._analogParameterDict
+        centres = np.asarray(analog['axis_centerpos'], dtype=float)
+        old = np.asarray(attrs.get('ScanStage:axis_centerpos', centres), dtype=float)
+        if old.shape == centres.shape:
+            attrs['ScanStage:axis_centerpos'] = centres
+            start = attrs.get('ScanStage:axis_startpos')
+            if start is not None:
+                start = np.asarray(start, dtype=float)
+                attrs['ScanStage:axis_startpos'] = (
+                    start + (centres - old).reshape((-1,) + (1,) * (start.ndim - 1)))
+        attrs['Rec:Mode'] = 'ScanOnce'
+        attrs.update(event['attrs'])
+        attrs['EtSTED:scan_end_time_utc'] = event.get('scan_end_time') or utc_iso()
+        return attrs
+
+    def _stopAfterSaveFailure(self) -> None:
+        saver = self._eventSaver
+        message = (f'Saving a triggered scan failed ({saver.failure}); etSTED '
+                   f'stopped so that no scan runs unsaved.')
+        self._logger.error(message)
+        self.stopExperiment(resetParams=True)
+        self._set_status('error', message)
 
     def _validate_recording_widget_mode(self) -> None:
         """RecordingWidget initiation runs the scan THROUGH the Recording
@@ -1128,6 +1285,15 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self.setBusyFalse()
             return
 
+        saver = self._eventSaver
+        if saver is not None:
+            saver.wait_idle(5.0)
+            if saver.failure:
+                self._state.busy = False
+                self._stopAfterSaveFailure()
+                return
+
+        triggerTime = utc_iso()
         coords_wf = np.copy(self._first_coord(coords_detected))
         self.setDetLogLine('prepause', _now_us_tag())
         self.setDetLogLine('fastscan_x_center', coords_wf[0])
@@ -1160,8 +1326,26 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
                 )
 
             self._set_status('scanning')
+            event = None
+            if (self._eventSaver is not None
+                    or self._state.scanInitiationMode == ScanInitiationMode.RecordingWidget):
+                event = {
+                    'index': self._eventIndex + 1, 'stamp': _now_utc_fileus(),
+                    'coords_px': np.asarray(coords_wf, dtype=float),
+                    'n_candidates': int(np.size(coords_detected) // 2),
+                    'centre': np.asarray(coords_scan, dtype=float),
+                    'trigger_time': triggerTime,
+                }
+                self._publishEventAttributes(event)
             if not self.runSlowScan():
                 raise RuntimeError('Failed to trigger slow scan.')
+            self._eventIndex += 1
+            if self._eventSaver is not None:
+                # what the arm decided, read now: the run's end clears it
+                info = self.scanInfoDict or {}
+                event['detectors'] = list(info.get('participants') or [])
+                event['geometry'] = copy.deepcopy(info.get('frame_geometry'))
+                self._pendingEvent = event
             if (
                 self._state.scanInitiationMode
                 == ScanInitiationMode.RecordingWidget
@@ -1182,6 +1366,8 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
                     'Failed to surface slow-scan trigger error',
                     exc_info=True,
                 )
+            self._pendingEvent = None
+            self._clearEventAttributes()
             try:
                 self._finishTriggeredScanRun()
             except Exception:
@@ -1739,11 +1925,18 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             # A filesystem/UI bookkeeping exception must not retain ownership.
             self._finishTriggeredScanRun()
             self.setDetLogLine('scan_end', _now_us_tag())
+            if self._pendingEvent is not None:
+                self._pendingEvent['scan_end_time'] = utc_iso()
+            if (self._state.scanInitiationMode == ScanInitiationMode.ScanWidget
+                    and self._eventSaver is not None):
+                self._saveTriggeredScan()
+            self._clearEventAttributes()
             if (self.__dict__.get('_closed', False)
                     or self.__dict__.get('_stopRequested', False)
                     or not self.__dict__.get('_experimentActive', True)):
                 return
-            if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
+            if (self._state.scanInitiationMode == ScanInitiationMode.ScanWidget
+                    and self._eventSaver is None):
                 self._commChannel.sigSnapImg.emit()
                 try:
                     samples = self.scanInfoDict['scan_samples_total']
@@ -1779,9 +1972,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         finally:
             self._state.busy = False
             self._state.frame = 0
-            self._continueFastModalitySafely(
-                'triggered scan terminal recovery'
-            )
+            if self._eventSaver is not None and self._eventSaver.failure:
+                self._stopAfterSaveFailure()
+            else:
+                self._continueFastModalitySafely(
+                    'triggered scan terminal recovery'
+                )
 
     def _onTriggeredRecordingFailed(self, message: str) -> None:
         """Recover one RecordingWidget-triggered slow-scan failure.

@@ -245,6 +245,9 @@ def test_recording_widget_initiation_records_the_triggered_advanced_scan(rig, ne
             assert handle['APD/data'].shape == (1, 50, 50)
             assert int(handle['APD/stream_complete'][0]) == 1
             assert handle['APD/data'][...].max() > 0
+            event = dict(handle['APD/metadata/EtSTED'].attrs)
+            assert int(event['event_index']) == 1 and event['pipeline_name'] == 'dff_event'
+            np.testing.assert_allclose(event['event_coords_px'], [302.0, 202.0])
         analog = rig.etsted._analogParameterDict
         assert analog['axis_centerpos'][0] == pytest.approx(0.05 * (302 - 256), abs=1e-6)
     finally:
@@ -268,3 +271,102 @@ def test_mock_rehearsal_switching_the_laser_on_triggers_a_scan_on_the_sample(rig
     assert rig.wait_for(lambda: session.apd_frames, 40)
     centres = rig.etsted._analogParameterDict['axis_centerpos'][:2]
     assert all(abs(c) < 0.05 * 256 for c in centres)       # on the camera's field
+
+
+# ---- the triggered scan is saved -----------------------------------------------
+
+def _event_files(rig):
+    from pathlib import Path
+    folder = Path(rig.etsted._eventSaver.session_dir)
+    return sorted(p for p in folder.iterdir() if p.name.startswith('event_'))
+
+
+def test_a_triggered_scan_is_saved_as_its_own_apd_frame_with_the_event(rig, new_session):
+    import h5py
+    session = new_session()
+    session.start_detecting()
+    session.trigger()
+    assert rig.wait_for(lambda: session.apd_frames, 40), session.statuses
+    assert rig.wait_for(lambda: not rig.etsted._experimentActive, 30)
+    assert rig.etsted._eventSaver.wait_idle(20)
+    files = _event_files(rig)
+    assert len(files) == 1 and 'APD' in files[0].name, files      # no camera image
+    with h5py.File(files[0]) as handle:
+        data = handle['APD/data'][...]
+        assert data.shape == (1, 50, 50)
+        # the frame of the scan that ran: one of the images the APD published for it
+        assert any(np.array_equal(data[0], frame) for frame in session.apd_frames)
+        event = dict(handle['APD/metadata/EtSTED'].attrs)
+        stage = dict(handle['APD/metadata/ScanStage'].attrs)
+        rec = dict(handle['APD/metadata/Rec'].attrs)
+    assert int(event['event_index']) == 1 and event['route'] == 'etsted'
+    np.testing.assert_allclose(event['event_coords_px'], [302.0, 202.0])
+    np.testing.assert_allclose(event['scan_center_um'], [0.05 * 46, -0.05 * 54], atol=1e-9)
+    np.testing.assert_allclose(np.asarray(stage['axis_centerpos'])[:2],
+                               [0.05 * 46, -0.05 * 54], atol=1e-9)
+    assert event['pipeline_name'] == 'dff_event' and 'dff_threshold' in event['pipeline_params']
+    assert event['transform_coefficients_name'] == 'mock_rehearsal_only'
+    assert len(event['transform_coefficients']) == 20
+    assert (event['trigger_frame_time_utc'] <= event['scan_start_time_utc']
+            <= event['scan_end_time_utc'])
+    assert rec['Mode'] == 'ScanOnce'
+
+
+def test_two_events_give_two_distinct_files_in_endless_mode(rig, new_session):
+    import h5py
+    session = new_session(endless=True)
+    session.start_detecting()
+    pulse(rig, session, 1)
+    assert rig.wait_for(lambda: len(session.apd_frames) >= 1, 40)
+    pulse(rig, session, 2)
+    assert rig.wait_for(lambda: len(session.apd_frames) >= 2, 40)
+    assert rig.wait_for(lambda: len(_event_files(rig)) == 2, 30)
+    assert rig.etsted._eventSaver.wait_idle(20)
+    indices = []
+    for path in _event_files(rig):
+        with h5py.File(path) as handle:
+            indices.append(int(handle['APD/metadata/EtSTED'].attrs['event_index']))
+    assert indices == [1, 2]
+    assert len({p.name for p in _event_files(rig)}) == 2
+
+
+def test_a_failed_save_stops_the_triggering(rig, new_session):
+    session = new_session(endless=True)
+    session.start_detecting()
+
+    def broken(detector, base, frame, attrs):
+        raise OSError('disk full')
+
+    rig.etsted._eventSaver._save_image = broken
+    pulse(rig, session, 1)
+    assert rig.wait_for(lambda: len(session.apd_frames) >= 1, 40)
+    assert rig.wait_for(lambda: rig.etsted._eventSaver.failure, 20)
+    # the next event is refused: no second scan, and the run is stopped with the reason
+    rig.wait_for(lambda: rig.etsted._state.running, 40) or None
+    session.event.on = True
+    assert rig.wait_for(lambda: not rig.etsted._experimentActive, 60), session.statuses
+    assert len(session.armed) == 1
+    assert 'error' in session.statuses
+    assert 'disk full' in rig.widget.statusMessageLabel.text()
+    assert session.digital.get('488 (EXC)') is False
+
+
+def test_arming_without_a_writable_folder_is_refused(rig, new_session, monkeypatch):
+    session = new_session()
+
+    def unwritable(self, session_id):
+        raise PermissionError('read-only file system')
+
+    monkeypatch.setattr('imswitch.imcontrol.model.EtSTEDEventSaver.EtSTEDEventSaver.begin_session',
+                        unwritable)
+    rig.etsted.initiate()
+    assert 'error' in session.statuses
+    assert 'not writable' in rig.widget.statusMessageLabel.text()
+    assert not rig.etsted._experimentActive and session.armed == []
+
+
+def test_testmodes_do_not_save_scans(rig, new_session):
+    session = new_session(mode='TestValidate')
+    rig.etsted.initiate()
+    assert rig.etsted._eventSaver is None
+    rig.etsted.stopExperiment(resetParams=True)
