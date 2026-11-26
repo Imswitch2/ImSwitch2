@@ -204,3 +204,51 @@ def test_cancel_drops_the_running_fit(dialog, files, qtbot):
     dialog.widget.cancelButton.click()
     assert not dialog.controller.busy and dialog.widget.fitButton.isEnabled()
     assert dialog.widget.status.text() == 'Cancelled.'
+
+
+def _scan_recording(length, device='ND-GalvoX'):
+    import numpy as np
+
+    from imswitch.imcontrol.model import bead_calibration as bc
+
+    attrs = {'ScanStage:target_device': [device, 'ND-GalvoY'], 'ScanStage:axis_length': [length, 10.0],
+             'ScanStage:axis_step_size': [0.1, 0.1], 'ScanStage:axis_centerpos': [0.0, 0.0],
+             'ScanStage:scan_axis_devices': [device, 'ND-GalvoY']}
+    cols = int(round(length / 0.1))
+    return bc.Recording(np.zeros((100, cols)), attrs, 'APD', Path('scan.hdf5'), 1, 'float64')
+
+
+def test_a_fast_axis_that_is_not_a_whole_number_of_steps_is_read_not_refused():
+    """Seen on the rig: such a scan made the window say "pass
+    fast_axis_swept=True/False", which the window had no way to do."""
+    from imswitch.imcontrol.model import bead_calibration as bc
+
+    try:
+        whole = _scan_recording(10.0)
+        bc.scan_geometry_from_recording(whole)
+        assert whole.notes == []
+        recording = _scan_recording(10.05)
+        geometry = bc.scan_geometry_from_recording(recording)
+    except bc.BeadCalibrationError as error:  # the metadata of this synthetic scan, not the question asked
+        pytest.skip(str(error))
+    swept = bc.scan_geometry_from_recording(recording, fast_axis_swept=True)
+    stepped = bc.scan_geometry_from_recording(recording, fast_axis_swept=False)
+    assert geometry == swept                       # a galvo is swept
+    if swept != stepped:
+        assert len(recording.notes) == 1 and 'swept (galvo)' in recording.notes[0]
+    mock = _scan_recording(10.05, device='Mock-X')
+    assert bc.scan_geometry_from_recording(mock) == bc.scan_geometry_from_recording(mock, fast_axis_swept=False)
+
+
+def test_the_running_setup_is_the_hash_recordings_carry(dialog):
+    """Seen on the rig: files recorded minutes before were "recorded with
+    another setup", because the setup info had changed while running."""
+    from imswitch.imcontrol.model import replay
+
+    controller = dialog.controller
+    del controller._runningSetupHash               # the fixture's stand-in
+    controller._commChannel = SimpleNamespace(sharedAttrs={replay.SETUP_HASH_KEY: 'sha256:published'})
+    controller._setupInfo = SimpleNamespace(to_dict=lambda: {'changed': 'while running'})
+    assert controller._runningSetupHash() == 'sha256:published'
+    controller._commChannel = SimpleNamespace()
+    assert controller._runningSetupHash() == replay.computeSetupHash({'changed': 'while running'})

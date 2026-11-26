@@ -172,12 +172,19 @@ class BeadCalibrationWidget(Widget):
         self.tolerance = self._spin(0.0, 0.0, 10.0, 0.05, suffix=' µm', special='auto')
         self.allowMirror = QtWidgets.QCheckBox('Allow a mirrored camera')
         self.allowMirror.setChecked(True)
+        self.fastAxis = QtWidgets.QComboBox()
+        for label, value in (('Auto (as this setup scans it)', None), ('Swept (galvo)', True),
+                             ('Stepped (stage, piezo)', False)):
+            self.fastAxis.addItem(label, value)
+        self.fastAxis.setToolTip('How the fast scan axis moved. It only matters when the scan length is not a '
+                                 'whole number of steps: it then decides where the first pixel sits.')
         advanced = QtWidgets.QFormLayout(self.advancedBox)
         advanced.addRow('Camera detection threshold (noise units)', self.cameraThreshold)
         advanced.addRow('Scan detection threshold (noise units)', self.scanThreshold)
         advanced.addRow('Camera PSF sigma (px)', self.cameraSigma)
         advanced.addRow('Scan PSF sigma (px)', self.scanSigma)
         advanced.addRow('Pairing tolerance', self.tolerance)
+        advanced.addRow('Fast axis', self.fastAxis)
         advanced.addRow('Largest accepted residual', self.maxResidual)
         advanced.addRow('', self.allowMirror)
         self.advancedBox.hide()
@@ -288,7 +295,8 @@ class BeadCalibrationWidget(Widget):
                 'camera_threshold': self.cameraThreshold.value(), 'scan_threshold': self.scanThreshold.value(),
                 'camera_sigma_px': self.cameraSigma.value(), 'scan_sigma_px': self.scanSigma.value(),
                 'tolerance_um': self.tolerance.value(), 'max_residual_um': self.maxResidual.value(),
-                'allow_mirror': self.allowMirror.isChecked()}
+                'allow_mirror': self.allowMirror.isChecked(),
+                'fast_axis_swept': self.fastAxis.currentData()}
 
     # -- what the controller shows -------------------------------------------
     def setPairWarnings(self, warnings):

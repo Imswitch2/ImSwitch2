@@ -95,6 +95,7 @@ class BeadCalibrationController(ImConWidgetController):
         w.sigCopyReport.connect(lambda: w.copyText(w.resultText.toPlainText()))
         w.sigVerify.connect(self.verifyWithFiles)
         w.sigPredict.connect(self.predict)
+        w.fastAxis.currentIndexChanged.connect(self._fastAxisChanged)
         self._refreshFitEnabled()
 
     def finalize(self):
@@ -141,7 +142,8 @@ class BeadCalibrationController(ImConWidgetController):
         self._lastFolder = str(path.parent)
         field = self._widget.field(role)
         try:
-            summary = bc.summarize_recording(path, role, detector)
+            swept = self._fastAxisSwept(path) if role == 'scan' else None
+            summary = bc.summarize_recording(path, role, detector, fast_axis_swept=swept)
         except Exception as error:  # noqa: BLE001 - shown in the field
             self._summaries[role] = None
             field.show_error(path, f'cannot be read: {error}')
@@ -185,11 +187,48 @@ class BeadCalibrationController(ImConWidgetController):
         self._submit(work, done)
 
     def _runningSetupHash(self) -> Optional[str]:
+        """The setup hash this session writes into its recordings. The
+        published one is used, not a fresh hash of the setup info: panels
+        and settings changed while running alter the setup info, and a file
+        recorded minutes ago would then look like another setup's."""
+        try:
+            from imswitch.imcontrol.model import replay
+
+            published = self._commChannel.sharedAttrs[replay.SETUP_HASH_KEY]
+            if published:
+                return str(published)
+        except Exception:  # noqa: BLE001 - not published: hash the setup info
+            pass
         try:
             from imswitch.imcontrol.model import replay
 
             return replay.computeSetupHash(self._setupInfo.to_dict())
         except Exception:  # noqa: BLE001 - the comparison is best effort
+            return None
+
+    def _fastAxisChanged(self, *_):
+        scan = self._summaries['scan']
+        if scan is not None:
+            self.setFile('scan', scan.path, scan.detector)
+
+    def _fastAxisSwept(self, scan_file=None) -> Optional[bool]:
+        """How the fast axis of the scan file moved: what the window says,
+        else what this setup does with that device, else ``None`` (the
+        model's default)."""
+        chosen = self._widget.options().get('fast_axis_swept')
+        if chosen is not None:
+            return bool(chosen)
+        try:
+            from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import is_smooth_scan_axis
+
+            if scan_file is None:
+                recording = self._summaries['scan'].recording
+            else:
+                recording = bc.read_recording(scan_file)
+            names = [str(d) for d in bc._seq(recording.attrs.get('ScanStage:scan_axis_devices')) if str(d) != 'None']
+            info = self._setupInfo.positioners[names[0]]
+            return bool(is_smooth_scan_axis(names[0], info.managerProperties))
+        except Exception:  # noqa: BLE001 - a device this setup lacks, or no file yet
             return None
 
     def _currentCameraIdentity(self, detector: str):
@@ -250,13 +289,15 @@ class BeadCalibrationController(ImConWidgetController):
         options = self.registrationOptions()
         folder = self._folder
         cam_path, cam_det = camera.path, camera.detector
+        swept = self._fastAxisSwept()
         scan_path, scan_det = scan.path, scan.detector
 
         def work():
             # Fit without saving first: a refused fit writes nothing and
             # leaves an existing calibration untouched.
             result = bc.calibrate_from_files(cam_path, scan_path, calibration_id, camera_detector=cam_det,
-                                             scan_detector=scan_det, options=options, folder=folder, save=False)
+                                             scan_detector=scan_det, options=options, folder=folder, save=False,
+                                             fast_axis_swept=swept)
             archived = bc.archive_calibration(calibration_id, folder) if keep_old else None
             result.paths = bc.save_bead_calibration(result, folder=folder, overwrite=overwrite or keep_old)
             return result, archived
@@ -361,9 +402,11 @@ class BeadCalibrationController(ImConWidgetController):
         cam_det = self.result.camera.detector
         scan_det = self.result.scan.detector
 
+        swept = self._fastAxisSwept(scan_file)
+
         def work():
             return bc.verify_from_files(transform, camera_file, scan_file, camera_detector=_ifIn(camera_file, cam_det),
-                                        scan_detector=_ifIn(scan_file, scan_det))
+                                        scan_detector=_ifIn(scan_file, scan_det), fast_axis_swept=swept)
 
         def done(report, error):
             self._widget.setBusy(False, '')

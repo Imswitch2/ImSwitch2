@@ -230,15 +230,31 @@ def scan_geometry_from_recording(recording: Recording, *, fast_axis_swept: bool 
                                        f"({rows} x {cols}): {error}") from None
     firsts = {s: [a["first_um"] for a in g["axes"]] for s, g in candidates.items()}
     if fast_axis_swept is None:
+        fast_axis_swept = fast_axis_swept_default(recording, names[0])
         if not np.allclose(firsts[True], firsts[False], atol=1e-9):
-            raise BeadCalibrationError(
-                f"{recording.path.name}: the fast axis length is not a whole number of steps, so its first pixel "
-                "depends on whether it was swept (a galvo, smooth) or stepped; pass fast_axis_swept=True/False")
-        fast_axis_swept = True
+            shift = float(np.max(np.abs(np.subtract(firsts[True], firsts[False]))))
+            note = (f"{recording.path.name}: the fast axis length is not a whole number of steps; its first pixel "
+                    f"is placed as for a {'swept (galvo)' if fast_axis_swept else 'stepped'} fast axis "
+                    f"({names[0]}). The other choice moves the scan by {shift:.3g} µm; set 'Fast axis' if it is wrong")
+            if note not in recording.notes:
+                recording.notes.append(note)
     geometry = candidates[bool(fast_axis_swept)]
     geometry.pop("run", None)
     geometry.pop("iteration", None)
     return geometry
+
+
+def fast_axis_swept_default(recording: Recording, fast_device: str) -> bool:
+    """Whether the fast axis of a recording was swept, when nobody says:
+    ``ScanStage:smooth_axes`` if the recording has it, else the scan
+    designer's own default (``is_smooth_scan_axis`` without properties:
+    swept unless the device is a mock)."""
+    from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import is_smooth_scan_axis
+
+    recorded = _seq(recording.attrs.get("ScanStage:smooth_axes"))
+    if recorded:
+        return bool(recorded[0])
+    return is_smooth_scan_axis(fast_device, None)
 
 
 def _check_layout(recording: Recording, names: Sequence[str]) -> None:
@@ -677,7 +693,8 @@ class RecordingSummary:
     geometry: dict | None = None
 
 
-def summarize_recording(path, role: str, detector: str | None = None) -> RecordingSummary:
+def summarize_recording(path, role: str, detector: str | None = None, *,
+                        fast_axis_swept: bool | None = None) -> RecordingSummary:
     """Read ``path`` and describe it for ``role`` (``"camera"``/``"scan"``):
     file, time, detector, and the camera grid or the scan settings."""
     path = Path(path)
@@ -723,7 +740,9 @@ def summarize_recording(path, role: str, detector: str | None = None) -> Recordi
         if "advanced" not in panel.lower():
             warnings.append(f"the scan panel was {panel!r}, not the Advanced scan")
         try:
-            geometry = scan_geometry_from_recording(recording)
+            known = len(recording.notes)
+            geometry = scan_geometry_from_recording(recording, fast_axis_swept=fast_axis_swept)
+            warnings.extend(recording.notes[known:])
             summary.geometry = geometry
             fast, slow = geometry["axes"]
             lengths = dict(zip(_seq(attrs.get("ScanStage:target_device")), _seq(attrs.get("ScanStage:axis_length"))))
