@@ -365,6 +365,11 @@ class BeadCalibration:
     def transform(self) -> SpatialTransform:
         return self.registration.transform
 
+    def camera_context_pixel(self) -> float | None:
+        """The camera's configured pixel size (µm), when recorded."""
+        pixel = self.transform.source_context.pixel_size_um
+        return float(np.mean(pixel)) if pixel else None
+
     def report(self) -> str:
         lines = [f"bead calibration {self.calibration_id!r}: {self.transform.source_frame} -> "
                  f"{self.transform.target_frame}",
@@ -591,6 +596,254 @@ def verify_from_files(calibration, camera_file, scan_file, *, camera_detector=No
     ref = SpatialTransformRef.of(transform, "verify")
     report["grid_problems"] = identity_problems(ref, frame_identity_of_context(context))
     return report
+
+
+# --------------------------------------------------------------------------
+# what a file holds (for the Camera -> scan calibration dialog)
+# --------------------------------------------------------------------------
+
+#: Detector managers that build their image from a scan.
+_SCAN_DETECTOR_MANAGERS = ("APD", "PMT", "TimeTagger", "Swabian", "Photon", "Counter")
+
+
+def list_detectors(path) -> list[str]:
+    """The detector datasets of a recording, without reading the pixels."""
+    path = Path(path)
+    if path.suffix.lower() in (".h5", ".hdf5"):
+        import h5py
+
+        with h5py.File(str(path), "r") as handle:
+            return [str(k) for k in handle.keys()]
+    if path.suffix.lower() == ".zarr" or path.is_dir():
+        import zarr
+
+        return [str(k) for k in zarr.open(str(path), mode="r").keys()]
+    raise BeadCalibrationError(f"{path.name}: record the bead images as HDF5 or Zarr")
+
+
+def _inventory(recording: Recording) -> dict:
+    inventory = recording.attrs.get("setup:inventory")
+    if isinstance(inventory, (str, bytes)):
+        try:
+            inventory = json.loads(inventory)
+        except ValueError:
+            inventory = None
+    return inventory if isinstance(inventory, dict) else {}
+
+
+def is_scan_detector(recording: Recording, detector: str | None = None) -> bool:
+    """Whether ``detector`` (default: the recording's) builds its image from
+    a scan, by its manager class in the recorded setup inventory."""
+    detector = detector or recording.detector
+    manager = str(((_inventory(recording).get("detectors") or {}).get(detector) or {}).get("managerClass") or "")
+    return any(key.lower() in manager.lower() for key in _SCAN_DETECTOR_MANAGERS)
+
+
+def preferred_detector(path, role: str) -> tuple[list[str], str | None]:
+    """The detectors of a file and the one to pre-select for ``role``
+    (``"camera"`` or ``"scan"``): the first of the right kind, else the first."""
+    detectors = list_detectors(path)
+    if len(detectors) <= 1:
+        return detectors, (detectors[0] if detectors else None)
+    try:
+        probe = read_recording(path, detectors[0])
+    except Exception:  # noqa: BLE001 - pre-selection is a convenience
+        return detectors, detectors[0]
+    for name in detectors:
+        if is_scan_detector(probe, name) == (role == "scan"):
+            return detectors, name
+    return detectors, detectors[0]
+
+
+def _fmt_um(value) -> str:
+    return f"{float(value):.3g} µm"
+
+
+@dataclass
+class RecordingSummary:
+    """What a dialog shows of one picked file: ``lines`` (label, value),
+    ``warnings``, and the facts compared across files."""
+
+    role: str
+    path: Path
+    detector: str
+    detectors: list
+    lines: list
+    warnings: list
+    setup_name: str | None
+    setup_hash: str | None
+    recording: Recording
+    context: AcquisitionContext | None = None
+    geometry: dict | None = None
+
+
+def summarize_recording(path, role: str, detector: str | None = None) -> RecordingSummary:
+    """Read ``path`` and describe it for ``role`` (``"camera"``/``"scan"``):
+    file, time, detector, and the camera grid or the scan settings."""
+    path = Path(path)
+    detectors, preferred = preferred_detector(path, role)
+    recording = read_recording(path, detector or preferred)
+    attrs = recording.attrs
+    lines = [("File", path.name),
+             ("Recorded", str(_plain(attrs.get("acquisition:start_time")) or "not recorded")),
+             ("Detector", recording.detector),
+             ("Recording mode", str(_plain(attrs.get("Rec:Mode")) or "not recorded"))]
+    warnings = list(recording.notes)
+    setup_name = _plain(attrs.get("setup:name"))
+    setup_hash = _plain(attrs.get("setup:hash"))
+    lines.append(("Setup", f"{setup_name or 'not recorded'}"
+                           + (f" ({str(setup_hash).split(':')[-1][:8]}…)" if setup_hash else "")))
+    rows, cols = recording.image.shape
+    summary = RecordingSummary(role, path, recording.detector, detectors, lines, warnings, setup_name,
+                               setup_hash, recording)
+    if role == "camera":
+        if is_scan_detector(recording):
+            warnings.append(f"{recording.detector} is a scan detector, not a camera")
+        context, notes = camera_context_from_recording(recording)
+        summary.context = context
+        warnings.extend(notes)
+        roi = context.roi
+        units = (((_inventory(recording).get("detectors") or {}).get(recording.detector) or {})
+                 .get("parameters", {}).get("exposure", {}) or {}).get("units", "")
+        exposure = attrs.get(f"Detector:{recording.detector}:Param:exposure")
+        lines += [("Frame", f"{rows} × {cols} px"),
+                  ("ROI offset (x, y)", f"{roi[0]}, {roi[1]}" if roi else "not recorded"),
+                  ("Binning", str(context.binning) if context.binning else "not recorded"),
+                  ("Pixel size", (f"{context.pixel_size_um[1]:.4g} µm" if context.pixel_size_um else "not recorded")),
+                  ("Exposure", f"{_plain(exposure)} {units}".strip() if exposure is not None else "not recorded"),
+                  ("Frames averaged", str(recording.frames))]
+    else:
+        if not is_scan_detector(recording):
+            warnings.append(f"{recording.detector} does not look like a scan detector (APD/PMT)")
+        mode = str(_plain(attrs.get("Rec:Mode")) or "")
+        if mode and mode not in ("ScanOnce", "ScanLapse"):
+            warnings.append(f"recorded in mode {mode!r}, not a scan recording (Scan once)")
+        scan = _inventory(recording).get("scan") or {}
+        panel = str(scan.get("scanWidgetType") or scan.get("controller") or "not recorded")
+        if "advanced" not in panel.lower():
+            warnings.append(f"the scan panel was {panel!r}, not the Advanced scan")
+        try:
+            geometry = scan_geometry_from_recording(recording)
+            summary.geometry = geometry
+            fast, slow = geometry["axes"]
+            lengths = dict(zip(_seq(attrs.get("ScanStage:target_device")), _seq(attrs.get("ScanStage:axis_length"))))
+            centres = dict(zip(_seq(attrs.get("ScanStage:target_device")), _seq(attrs.get("ScanStage:axis_centerpos"))))
+            lines += [("Scan axes", f"fast {fast['device']}, slow {slow['device']}"),
+                      ("Field", f"{fast['device']} {_fmt_um(lengths.get(fast['device'], 0))} × "
+                                f"{slow['device']} {_fmt_um(lengths.get(slow['device'], 0))}"),
+                      ("Step", f"{fast['device']} {_fmt_um(fast['step_um'])}, {slow['device']} {_fmt_um(slow['step_um'])}"),
+                      ("Centre", f"{fast['device']} {_fmt_um(centres.get(fast['device'], 0))}, "
+                                 f"{slow['device']} {_fmt_um(centres.get(slow['device'], 0))}"),
+                      ("Pixels", f"{cols} (fast) × {rows} (slow)")]
+        except BeadCalibrationError as error:
+            warnings.append(str(error))
+            lines.append(("Scan geometry", "cannot be read"))
+        dwell = attrs.get("ScanStage:sequence_time")
+        lines.append(("Dwell", f"{float(_plain(dwell)) * 1e6:.3g} µs" if dwell is not None else "not recorded"))
+        phase = attrs.get("ScanStage:phase_delay")
+        lines.append(("Phase delay", f"{_plain(phase)}" if phase is not None else "not recorded"))
+        lines.append(("Scan panel", panel))
+        lines.append(("Lasers", _lasers_used(attrs)))
+        lines.append(("Frames averaged", str(recording.frames)))
+    image = recording.image
+    lines.append(("Counts", f"min {image.min():.0f}, max {image.max():.0f}"))
+    if np.issubdtype(np.dtype(recording.dtype), np.integer) and recording.frames == 1 \
+            and image.max() >= np.iinfo(np.dtype(recording.dtype)).max:
+        warnings.append(f"saturated pixels (max {image.max():.0f} = the {recording.dtype} maximum): "
+                        "saturated beads are left out")
+    summary.lines = lines
+    return summary
+
+
+def _lasers_used(attrs: Mapping) -> str:
+    enabled = attrs.get("ScanTTL:linestep_enable")
+    names = [str(n) for n in _seq(attrs.get("ScanTTL:target_device"))]
+    used = []
+    for name in names:
+        on = True
+        if isinstance(enabled, dict) and name in enabled:
+            on = any(bool(v) for v in _seq(enabled[name]))
+        if on:
+            value = attrs.get(f"Laser:{name}:Value")
+            units = attrs.get(f"Laser:{name}:Units") or ""
+            state = attrs.get(f"Laser:{name}:Enabled")
+            text = name
+            if value is not None:
+                text += f" ({_plain(value)} {_plain(units)}".rstrip() + ")"
+            if state is not None and str(state) in ("False", "0"):
+                text += " off"
+            used.append(text)
+    return ", ".join(used) or "none recorded"
+
+
+def compare_summaries(camera: RecordingSummary | None, scan: RecordingSummary | None, *,
+                      running_setup_hash: str | None = None, current_camera_identity=None) -> list[str]:
+    """Warnings that need both files, the running setup or the camera's
+    current grid."""
+    warnings = []
+    if camera and scan and camera.setup_hash and scan.setup_hash and camera.setup_hash != scan.setup_hash:
+        warnings.append(f"the two files come from different setups ({camera.setup_name} / {scan.setup_name})")
+    for summary in (camera, scan):
+        if summary and running_setup_hash and summary.setup_hash and summary.setup_hash != running_setup_hash:
+            warnings.append(f"{summary.path.name} was recorded with another setup ({summary.setup_name}) "
+                            "than the one running")
+    if camera and camera.context is not None and current_camera_identity is not None:
+        reasons = frame_identity_of_context(camera.context).differs_from(current_camera_identity)
+        if reasons:
+            warnings.append(f"the camera's grid now differs from the recorded one ({'; '.join(reasons)}): a "
+                            "pipeline on the current grid would refuse this calibration at arm")
+    return warnings
+
+
+def plain_reason(error: Exception) -> tuple[str, str]:
+    """A refusal in plain words, and what to do about it."""
+    text = str(error)
+    lowered = text.lower()
+    if "too few beads" in lowered:
+        return "Too few beads were found.", ("Use a denser bead sample, check focus and exposure, or lower the "
+                                             "detection threshold (Advanced).")
+    if "ambiguous" in lowered:
+        return "The bead pattern is regular, so it matches in more than one way.", (
+            "Image a sparse, random bead field (not a grid or rows of beads).")
+    if "pair up" in lowered or "no bead pattern" in lowered:
+        return "The two images do not show the same beads.", (
+            "Record both at the same stage position and focus, and check that you picked the right files.")
+    if "residuals too large" in lowered:
+        return "The beads do not line up well enough.", (
+            "Check for drift between the two recordings, field distortion, or wrong pairs; record again.")
+    return "The calibration could not be made.", "See the details below."
+
+
+def record_path(calibration_id: str, folder=None) -> Path:
+    from imswitch.imcontrol.model.smartpipeline.calibrations import _file_name
+
+    return calibrations_root(folder) / TRANSFORMS_DIRNAME / f"{_file_name(calibration_id)}.json"
+
+
+def archive_calibration(calibration_id: str, folder=None) -> str:
+    """Keep an existing calibration under a dated id
+    (``<id>_<YYYYmmdd-HHMMSS>``): its record, figure and report are renamed
+    and its pipeline entry rewritten to the new id. Returns the new id."""
+    from imswitch.imcontrol.model.smartpipeline.calibrations import _file_name
+
+    root = calibrations_root(folder)
+    name = _file_name(calibration_id)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    new_id = f"{name}_{stamp}"
+    transforms = root / TRANSFORMS_DIRNAME
+    for suffix in (".json", "_qc.png", "_report.txt"):
+        old = transforms / f"{name}{suffix}"
+        if old.exists():
+            old.rename(transforms / f"{new_id}{suffix}")
+    entry = root / f"{name}.json"
+    if entry.exists():
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        payload["id"] = new_id
+        if payload.get("path"):
+            payload["path"] = f"{TRANSFORMS_DIRNAME}/{new_id}.json"
+        (root / f"{new_id}.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        entry.unlink()
+    return new_id
 
 
 # --------------------------------------------------------------------------

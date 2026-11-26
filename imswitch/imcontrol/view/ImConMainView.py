@@ -330,6 +330,17 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.calibrationsAction.triggered.connect(self.showCalibrations)
         hardware.addAction(self.calibrationsAction)
 
+        from .widgets.BeadCalibrationWidget import BeadCalibrationWidget
+        self.beadCalibrationWidget = self.factory.createWidget(BeadCalibrationWidget)
+        self.beadCalibrationWidget.hide()
+        self.beadCalibrationAction = QtWidgets.QAction('Camera → scan calibration…', self)
+        self.beadCalibrationAction.setToolTip(
+            'Map camera pixels to Advanced scan positions from a camera and an APD'
+            ' recording of the same beads (for smart-pipeline scans).'
+        )
+        self.beadCalibrationAction.triggered.connect(self.showBeadCalibration)
+        hardware.addAction(self.beadCalibrationAction)
+
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
         self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
@@ -691,6 +702,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.hardwareStatusWidget.show()
         self.hardwareStatusWidget.raise_()
         self.hardwareStatusWidget.activateWindow()
+
+    def showBeadCalibration(self):
+        """Show and raise the Camera → scan calibration window."""
+        self.beadCalibrationWidget.show()
+        self.beadCalibrationWidget.raise_()
+        self.beadCalibrationWidget.activateWindow()
 
     def showCalibrations(self):
         """Show and raise the Calibrations window."""

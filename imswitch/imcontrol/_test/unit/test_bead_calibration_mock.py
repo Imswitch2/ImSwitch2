@@ -28,53 +28,14 @@ from imswitch.imcontrol.model import bead_calibration as bc
 from imswitch.imcontrol.model.smartpipeline.boxes import map_boxes, transform_record
 from imswitch.imcontrol.model.smartpipeline.calibrations import identity_problems, load_calibrations
 
-_DRIVER = 'imswitch.imcontrol._test.unit._bead_recording_driver'
-_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), *(['..'] * 4)))
-
-#: The camera geometry the test renders: camera (row, col) -> sample (Y, X) um.
-_THETA = math.radians(30.0)
-_A = 0.097 * np.array([[math.cos(_THETA), -math.sin(_THETA)], [math.sin(_THETA), math.cos(_THETA)]]) \
-    @ np.diag([1.0, -1.0])
-_T = np.array([-1.0, 2.0]) - _A @ np.array([399.5, 399.5])
-#: Points inside the recorded scan field (centre (Y, X) = (-2, 3) um, 20 x 24 um).
-_FIELD = np.array([[y, x] for y in np.linspace(-11, 7, 5) for x in np.linspace(-8, 14, 5)])
-
-
-def _camera_image(shape=(800, 800)):
-    from imswitch.imcontrol.model.managers.detectors._mock_sample import MockSample
-
-    rows, cols = np.mgrid[0:shape[0], 0:shape[1]]
-    yx = np.stack([rows.ravel(), cols.ravel()], 1) @ _A.T + _T
-    sample = MockSample(axes=(('X', 5.0), ('Y', 5.0)), preset='beads')
-    brightness = sample.brightness(yx[:, 1], yx[:, 0], 0.15).reshape(shape)
-    return np.random.default_rng(0).poisson(100 + 2000 * brightness).astype(np.uint16)
-
+from ._bead_recordings import FIELD, A, T, record_mock_bead_files
 
 @pytest.fixture(scope='module')
 def files(tmp_path_factory):
-    out = tmp_path_factory.mktemp('bead_rec')
-    env = dict(os.environ, HOME=str(out / 'home'), QT_QPA_PLATFORM='offscreen', MPLBACKEND='Agg',
-               PYTHONUSERBASE=site.getuserbase(),
-               PYTHONPATH=_REPO + os.pathsep + os.environ.get('PYTHONPATH', ''))
-    os.makedirs(env['HOME'], exist_ok=True)
-    proc = subprocess.run([sys.executable, '-m', _DRIVER, str(out)], env=env, cwd=_REPO,
-                          capture_output=True, text=True, timeout=170)
-    assert proc.returncode == 0, proc.stderr[-4000:]
-    line = next(l for l in proc.stdout.splitlines() if l.startswith('FILES '))
-    paths = json.loads(line[len('FILES '):])
-    image = _camera_image()
-    import h5py
-    import zarr
+    return record_mock_bead_files(tmp_path_factory.mktemp('bead_rec'))
 
-    beads_h5 = out / 'camera_beads.h5'
-    shutil.copy(paths['camera_h5'], beads_h5)
-    with h5py.File(beads_h5, 'r+') as handle:
-        handle['Camera/data'][0] = image
-    beads_zarr = out / 'camera_beads.zarr'
-    shutil.copytree(paths['camera_zarr'], beads_zarr)
-    zarr.open(str(beads_zarr), mode='r+')['Camera']['data'][0] = image
-    paths.update(camera_beads_h5=str(beads_h5), camera_beads_zarr=str(beads_zarr), out=str(out))
-    return paths
+
+_A, _T, _FIELD = A, T, FIELD
 
 
 def _field_error(transform):

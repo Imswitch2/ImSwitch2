@@ -195,6 +195,12 @@ class ImConMainController(MainController):
             resolve_controller('CalibrationsController'), self.__mainView.calibrationsWidget,
             laserController=self.controllers.get('Laser'),
         )
+        # Camera → scan calibration window (Hardware menu): files in, a
+        # calibration record out; no hardware.
+        self.beadCalibrationController = self.__factory.createController(
+            resolve_controller('BeadCalibrationController'), self.__mainView.beadCalibrationWidget,
+            recordingController=self.controllers.get('Recording'),
+        )
 
         # Generate API
         self.__api = None
@@ -1012,6 +1018,11 @@ class ImConMainController(MainController):
             except Exception as e:
                 self.__logger.warning(f'Failed to auto-save widget states: {e}')
         
+        try:   # the Camera → scan calibration window's worker thread
+            self.beadCalibrationController.finalize()
+        except Exception as e:
+            self.__logger.warning(f'Failed to stop the bead calibration worker: {e}')
+
         # Stop server thread before closing hardware managers. A server that is
         # still executing can retain API access into controllers and hardware,
         # so its bounded join is a hard prerequisite for manager finalization.

@@ -27,6 +27,7 @@ _WIDGET_MODULES = {
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
     "HardwareStatusWidget": "HardwareStatusWidget",
+    "BeadCalibrationWidget": "BeadCalibrationWidget",
     "CalibrationsWidget": "CalibrationsWidget",
     "InstrumentsWidget": "InstrumentsWidget",
     "LaserWidget": "LaserWidget",
