@@ -6,6 +6,14 @@ registry types let hosts register workflow-specific localizers without making
 ``imcommon`` depend on those hosts.
 """
 
+from .beads import (
+    BeadDetections,
+    BeadMatch,
+    BeadMatchError,
+    bead_strategy_spec,
+    detect_beads,
+    match_point_sets,
+)
 from .foci_grid import (
     detect_spot_centers,
     estimate_grid_angle,
@@ -32,6 +40,12 @@ from .registry import (
 )
 
 __all__ = [
+    "BeadDetections",
+    "BeadMatch",
+    "BeadMatchError",
+    "bead_strategy_spec",
+    "detect_beads",
+    "match_point_sets",
     "GridCorrespondence",
     "GridCorrespondenceResolution",
     "GridOrdering",

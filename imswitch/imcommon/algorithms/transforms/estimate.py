@@ -132,6 +132,20 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
         ),
         parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
+    "similarity_reflect": EstimatorSpec(
+        name="similarity_reflect",
+        label="Similarity, mirror allowed (4 DOF)",
+        dof=4,
+        min_samples=2,
+        description=(
+            "Rotation, one uniform scale and translation, of either handedness: "
+            "the better of a similarity and a mirrored similarity. For two "
+            "detectors whose images may be mirror images of each other (a "
+            "camera against a point scanner, through a different number of "
+            "reflections). The stored affine's negative determinant says so."
+        ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
+    ),
     "rigid": EstimatorSpec(
         name="rigid",
         label="Rigid (3 DOF)",
@@ -417,6 +431,23 @@ def _fit_similarity(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     return _umeyama(source, target, with_scale=True)
 
 
+def _fit_similarity_reflect(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """The better of a proper and a mirrored similarity (least squares).
+
+    The mirrored fit is a proper Umeyama fit of the source with its column
+    axis negated, followed by that negation: ``A = (s R) @ diag(1, -1)``.
+    """
+    proper = _fit_similarity(source, target)
+    flip = np.diag([1.0, -1.0, 1.0])
+    mirrored = _fit_similarity(source * np.array([1.0, -1.0]), target) @ flip
+
+    def cost(matrix: np.ndarray) -> float:
+        mapped = source @ matrix[:2, :2].T + matrix[:2, 2]
+        return float(np.sum((mapped - target) ** 2))
+
+    return proper if cost(proper) <= cost(mirrored) else mirrored
+
+
 def _fit_rigid(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     return _umeyama(source, target, with_scale=False)
 
@@ -430,6 +461,7 @@ def _fit_translation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
 _CLOSED_FORM: dict[str, Callable[[np.ndarray, np.ndarray], np.ndarray]] = {
     "affine": _fit_affine,
     "similarity": _fit_similarity,
+    "similarity_reflect": _fit_similarity_reflect,
     "rigid": _fit_rigid,
     "translation": _fit_translation,
 }
