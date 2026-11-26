@@ -1279,8 +1279,13 @@ class ImageWindow(QtWidgets.QWidget):
     # ResultDisplay: view modes
     # ------------------------------------------------------------------
 
-    def setViewModes(self, viewModes) -> None:
+    def setViewModes(self, viewModes, selectedName=None) -> None:
         self._setViewModesQuietly(viewModes)
+        names = [mode.name for mode in self._view_modes]
+        if selectedName in names:
+            self._modeCombo.blockSignals(True)
+            self._modeCombo.setCurrentIndex(names.index(selectedName))
+            self._modeCombo.blockSignals(False)
 
     def getViewName(self):
         mode = self._currentMode()

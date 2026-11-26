@@ -71,8 +71,9 @@ class ResultDisplay(Protocol):
 
     # --- view modes ----------------------------------------------------------
 
-    def setViewModes(self, viewModes) -> None:
-        """Offer these ``ViewMode`` objects; None or empty restores the defaults."""
+    def setViewModes(self, viewModes, selectedName=None) -> None:
+        """Offer these ``ViewMode`` objects; None or empty restores the defaults.
+        ``selectedName`` is the one to show (the first when it is not offered)."""
 
     def getViewName(self):
         """Name of the selected view mode."""

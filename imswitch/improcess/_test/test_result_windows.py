@@ -182,7 +182,7 @@ class _ListPane(QtCore.QObject):
     def getViewName(self):
         return "standard"
 
-    def setViewModes(self, modes):
+    def setViewModes(self, modes, selectedName=None):
         pass
 
     def resetView(self):
