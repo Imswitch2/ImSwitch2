@@ -293,3 +293,20 @@ def test_a_roi_that_triggered_with_the_scanned_one_is_scanned_next_not_put_to_re
     engine, workflow, _ = _run(_frames(4, *events), dff={"refractory_frames": 3, "refractory_after": "trigger"},
                                gates={"rest": {"seconds": 0.5}}, interval=1.0)
     assert [round(scan["centre"]["Y"], 2) for scan in workflow.scans] == [5.75, 5.75]
+
+
+def test_a_skipped_trigger_uses_neither_the_budget_nor_the_interval():
+    # tick 5: A (outside +-8 um) is the only cell over threshold -> skipped; tick 6: B -> scanned at once,
+    # although 'rest' wants 5 s between scans (1 s per frame here) and 'budget' allows one scan
+    frames = _frames(4, (3.0, 1.0), (3.0, 2.0))
+    gates = {"budget": {"count": 1}}
+    engine, workflow, _ = _run(frames, dff={"refractory_frames": 5}, gates=gates, interval=1.0,
+                               scan={"range_um": {"Y": [-8, 8], "X": [-8, 8]}})
+    assert [round(scan["centre"]["Y"], 2) for scan in workflow.scans] == [5.0]     # B, its box clipped to 8 um
+    given = engine.log.events("gates-given-back", step="scan")
+    assert len(given) == 1 and set(given[0].detail["gates"]) >= {"rest", "budget"}
+    # the dry run plans the same: the skip gives the gates back there too
+    engine, workflow, _ = _run(frames, mode="validate", dff={"refractory_frames": 5}, gates=gates, interval=1.0,
+                               scan={"range_um": {"Y": [-8, 8], "X": [-8, 8]}})
+    would = engine.log.events("would", step="scan")
+    assert [w.detail["scan_plan"][0]["skip"] is None for w in would] == [False, True]

@@ -258,6 +258,9 @@ def describe(value) -> Any:
 RAN = "ran"
 #: The key of a tick's values under which the frame's context travels.
 CONTEXT_KEY = "__context__"
+#: An action's result key saying it did nothing (every target was skipped):
+#: the gates its tick opened are given back, so a skip uses no budget or interval.
+NOTHING_DONE = "nothing_done"
 DROPPED_STALE = "dropped-stale"
 DROPPED_BUSY = "dropped-busy"
 TICK_FAILED = "failed"
@@ -340,6 +343,9 @@ class _Pending:
     tick: int
     values: dict            # the chain's values, captured when it started
     chain_index: int        # index of ``step`` in the chain
+    #: The gates the starting tick opened, with what they held before
+    #: (``(id, fired, last_t)``): given back when the action did nothing.
+    opened: list = field(default_factory=list)
 
 
 @dataclass
@@ -385,6 +391,7 @@ class Engine:
         self._last_sequence: int | None = None
         self._fresh_after: int | None = None
         self._source_step = source_step_of(self.workflow)
+        self._tick_opened: list = []
         self._default_ports = {step.id: ports[0] for step in self.workflow.steps
                                if (ports := getattr(step, "ports", None))}
         self._lock = threading.RLock()
@@ -588,6 +595,7 @@ class Engine:
                                 fresh_after=self._fresh_after)
                 return TickResult(tick, frame.sequence, DROPPED_STALE)
             self._last_sequence = frame.sequence
+            self._tick_opened = []
             result = TickResult(tick, frame.sequence, RAN, default_ports=self._default_ports)
             values = result.values
             # The frame this tick measured, for the records of an action it
@@ -627,7 +635,7 @@ class Engine:
                             continue
                         # The chain keeps the tick's values: a later action
                         # reads them, and the tick's result shows ``done``.
-                        self._start_action(step, inputs, values, tick, self._chain.index(step))
+                        self._start_action(step, inputs, values, tick, self._chain.index(step), from_tick=True)
                         result.started = step.id
                         continue
                     produced = self._run_step(step, inputs, frame, tick, now)
@@ -731,6 +739,7 @@ class Engine:
         else:
             raise CoordinateError(f"unknown gate rule {step.rule!r}")
         if open_:
+            self._tick_opened.append((step.id, state.fired, state.last_t))
             state.fired += 1
             state.last_t = now
             self.summary.gates_fired += 1
@@ -775,7 +784,8 @@ class Engine:
             checked.append(value)
         return checked
 
-    def _start_action(self, step: Action, inputs: list, values: dict, tick: int, chain_index: int) -> None:
+    def _start_action(self, step: Action, inputs: list, values: dict, tick: int, chain_index: int,
+                      from_tick: bool = False) -> None:
         now = self.clock()
         spec = self._spec(step)
         params = {**spec.params, **step.params}
@@ -798,13 +808,16 @@ class Engine:
                 except Exception as exc:  # noqa: BLE001 - a plan that cannot be made is itself the dry run's finding
                     planned = {"message": f"would {step.action}: no plan ({type(exc).__name__}: {exc})"}
             self.log.append(tick, now, step.id, "would", **summary, **{**_would(step.action, params, inputs), **planned})
-            completion = SimpleCompletion(self._epoch, result={"would": True}, done=True)
+            plan = planned.get("scan_plan") or []
+            nothing = bool(plan) and all(entry.get("skip") for entry in plan)
+            completion = SimpleCompletion(self._epoch, result={"would": True, NOTHING_DONE: nothing}, done=True)
         else:
             self.log.append(tick, now, step.id, "started", **summary)
             completion = self.actions.start(request)
         self.summary.actions_started += 1
         self._tell_consumed(inputs)
-        pending = _Pending(step, completion, now, tick, values, chain_index)
+        opened = list(self._tick_opened) if from_tick else []
+        pending = _Pending(step, completion, now, tick, values, chain_index, opened)
         self._pending = pending
         # Wake on the completion itself: between ticks nothing else polls
         # (a scan-driven source ticks only when a scan ran), and a wait or a
@@ -813,6 +826,20 @@ class Engine:
         if callable(subscribe):
             subscribe(lambda _completion: self._on_settled(pending))
         self._poll_completion()
+
+    def _give_back(self, pending: "_Pending", now: float) -> None:
+        """The action did nothing (every target skipped): the gates its tick
+        opened -- an interval, a budget -- are as if they had not opened."""
+        given = []
+        for gate_id, fired, last_t in pending.opened:
+            state = self._gates.get(gate_id)
+            if state is None:
+                continue
+            state.fired, state.last_t = fired, last_t
+            given.append(gate_id)
+        if given:
+            self.log.append(pending.tick, now, pending.step.id, "gates-given-back", gates=given,
+                            why="the action did nothing (every target skipped)")
 
     def _tell_consumed(self, inputs: list) -> None:
         """An action was started (or would be, or was skipped by the mode)
@@ -878,6 +905,8 @@ class Engine:
             return
         self.summary.actions_completed += 1
         result = completion.result
+        if isinstance(result, dict) and result.get(NOTHING_DONE):
+            self._give_back(pending, now)
         self.log.append(pending.tick, now, pending.step.id, "done", seconds=now - pending.started_at,
                         result=_plain(result) if not isinstance(result, dict) else _plain(result))
         values = pending.values

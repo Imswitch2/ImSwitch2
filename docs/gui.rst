@@ -1992,7 +1992,11 @@ is **skipped** with the reason logged and nothing is started. A trigger that
 finds the scan panel busy -- a scan running (yours, started from the panel),
 a Stop still taking the devices down, a run held between repeats -- waits up
 to 1 s for it and is otherwise skipped the same way (``the scan panel 'Scan'
-is busy: a scan is running``); the panel's scan is not disturbed. After the
+is busy: a scan is running``); the panel's scan is not disturbed. A trigger
+whose every target is skipped uses neither the scan budget nor the interval:
+the gates its frame opened (``rest``, ``budget``) are given back (logged as
+``gates-given-back``), so the next cell that triggers is scanned at once; a
+Validate run plans the same. After the
 scan the panel's centre, size, step, dwell and laser line steps are put back
 (``restore``).
 

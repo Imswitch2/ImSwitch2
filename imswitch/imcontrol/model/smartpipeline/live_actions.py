@@ -654,6 +654,7 @@ class RunScanAdapter:
                                          "reason": skip.get("reason"), "tick": request.tick,
                                          "stage_position_um": self.recorder.stage_position()})
                 completion.complete({"scanned": bool(scans), "scans": len(scans), "mode": mode, "skipped": skipped,
+                                     "nothing_done": not scans and bool(skipped),
                                      **(scans[-1] if scans else {}), "all": scans})
             except Exception as exc:  # noqa: BLE001 - the action failed
                 completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
