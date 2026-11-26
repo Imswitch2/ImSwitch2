@@ -38,11 +38,15 @@ def _run(module):
     assert done.returncode == 0, f'{module} failed:\n{tail}'
 
 
+# Each child takes ~2 minutes alone and more beside other subprocess tests: the
+# lane's 180 s default would kill the parent while the child is still healthy.
+@pytest.mark.timeout(900)
 @pytest.mark.ui
 def test_etsted_advanced_panel_whole_application():
     _run('etsted_e2e_advanced.py')
 
 
+@pytest.mark.timeout(900)
 @pytest.mark.ui
 @pytest.mark.redzone
 def test_etsted_base_panel_whole_application():
