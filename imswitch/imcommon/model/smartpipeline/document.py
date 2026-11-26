@@ -312,7 +312,7 @@ def validate_pipeline(workflow: Workflow, *, registry=None, actions: ActionCatal
                 issues.append(Issue(step.id, f"unknown transform {step.transform!r} (known: {', '.join(transforms.ids()) or 'none'})"))
             tag = declared_frame(workflow, step.inputs[0])
             transform = transforms.get(step.transform) if transforms is not None else None
-            if tag and transform is not None and str(transform.source_frame) != tag:
+            if tag and transform is not None and str(transform.source_frame) not in (tag, "any"):
                 issues.append(Issue(step.id, f"{step.transform!r} reads {transform.source_frame!r}, but the points "
                                              f"are measured in {tag!r}"))
             source = source_step_of(workflow)
@@ -327,6 +327,28 @@ def validate_pipeline(workflow: Workflow, *, registry=None, actions: ActionCatal
         # Not an error: the engine says so when asked to arm for real.
         pass
     return issues
+
+
+def consumer_frames(workflow: Workflow, actions) -> dict[str, str]:
+    """``{transform step id: frame}``: the frame the action reading each
+    transform step's points takes (what a 1:1 transform writes into)."""
+    frames: dict[str, str] = {}
+    for step in workflow.steps:
+        if not isinstance(step, Action):
+            continue
+        spec = actions.get(step.action) if actions is not None else None
+        try:
+            frame = spec.frame_of(step.params) if spec is not None else None
+            frame = str(FrameTag.parse(frame)) if frame else None
+        except CoordinateError:
+            frame = None
+        if not frame:
+            continue
+        for ref in step.inputs:
+            producer = _points_producer(workflow, ref)
+            if isinstance(producer, Transform):
+                frames.setdefault(producer.id, frame)
+    return frames
 
 
 def _action_issues(workflow, step: Action, kinds, actions, transforms) -> list[Issue]:
@@ -371,7 +393,7 @@ def _action_issues(workflow, step: Action, kinds, actions, transforms) -> list[I
             continue
         if transforms is not None and action_frame:
             transform = transforms.get(producer.transform)
-            if transform is not None and str(transform.target_frame) != str(FrameTag.parse(action_frame)):
+            if transform is not None and str(transform.target_frame) not in (str(FrameTag.parse(action_frame)), "any"):
                 issues.append(Issue(
                     step.id,
                     f"{producer.id!r} writes {transform.target_frame!r}, but {step.action!r} takes {action_frame!r}",

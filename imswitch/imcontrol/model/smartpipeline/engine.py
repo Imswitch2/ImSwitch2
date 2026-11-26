@@ -665,6 +665,12 @@ class Engine:
             if transform is None:
                 raise CoordinateError(f"unknown transform {step.transform!r}")
             context = {"frame": frame, "params": step.params}
+            if str(getattr(transform, "target_frame", "")) == "any":   # 1:1: into the frame the action takes
+                from imswitch.imcommon.model.smartpipeline.document import consumer_frames
+
+                target = consumer_frames(self.workflow, getattr(self.actions, "catalog", None)).get(step.id)
+                if target:
+                    context["target_frame"] = target
             moved = apply_transform(inputs[0], transform, context, name=step.id)
             map_boxes(inputs[0], moved, transform, context)   # a box column travels with its centroid
             record = transform_record(transform)

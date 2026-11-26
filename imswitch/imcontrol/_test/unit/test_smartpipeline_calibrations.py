@@ -143,3 +143,38 @@ def test_a_calibration_made_on_another_grid_refuses_the_arm_and_releases_everyth
     assert source.leased
     run.stop()
     assert registry.holder(positioner_key("Mock X")) is None
+
+
+def test_identity_is_always_there_and_maps_any_detector_one_to_one(tmp_path, monkeypatch):
+    """Asked for on the rig: whatever the detector, a pipeline can be run
+    1:1 (pixels as the action's units) without a calibration file."""
+    from imswitch.imcommon.model.smartpipeline import Points, apply_transform
+    from imswitch.imcommon.model.smartpipeline.document import consumer_frames
+    from imswitch.imcommon.model.smartpipeline.transforms import OneToOne
+    from imswitch.imcontrol.controller.controllers import SmartPipelineController as module
+
+    monkeypatch.setattr(module, "_calibrationsFolderPath", str(tmp_path))
+    transforms = module.SmartPipelineController._transforms()
+    assert "identity" in transforms and isinstance(transforms.get("identity"), OneToOne)
+
+    points = Points(np.array([[12.0, 30.0]]), frame="detector:AnyCamera")
+    moved = apply_transform(points, transforms.get("identity"), {"target_frame": STAGE})
+    assert moved.frame == STAGE and np.allclose(moved.coordinates, [[12.0, 30.0]])
+    assert apply_transform(points, transforms.get("identity")).frame == "detector:AnyCamera"
+
+    registry = ResourceRegistry()
+    positioners = FakePositioners({"Mock X": FakePositioner("Mock X", "X", registry),
+                                   "Mock Y": FakePositioner("Mock Y", "Y", registry)})
+    detectors = FakeDetectorsManager([FakeDetector(shape=(64, 64), binning=1, frameStart=(0, 0))])
+    document = _document()
+    for step in document.workflow.steps:
+        if isinstance(step, Transform):
+            step.transform = "identity"
+    backend = live_backend(positioners, executor=ControlExecutor())
+    assert consumer_frames(document.workflow, backend.catalog)
+    assert [str(i) for i in document.validate(actions=backend.catalog, transforms=transforms)] == []
+    run = PipelineRun(document, source=LiveFrameSource(detectors, "Camera"),
+                      steps=FunctionStepRunner({"centroid": centroid}), actions=backend, transforms=transforms,
+                      mode="validate", resource_registry=registry, executor=ControlExecutor())
+    run.arm()
+    run.stop()

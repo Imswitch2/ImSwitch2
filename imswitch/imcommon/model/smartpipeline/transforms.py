@@ -78,6 +78,41 @@ class Identity:
                    target_frame=payload.get("target_frame", ""))
 
 
+#: The frame of a transform that reads whatever it is given.
+ANY_FRAME = "any"
+
+
+@dataclass(frozen=True)
+class OneToOne:
+    """The numbers as they are, 1:1, from any frame into the frame the next
+    step takes: camera pixel (row, col) 120, 80 becomes 120, 80 in the units
+    of the action. No calibration -- for demonstrations and for points that
+    are already where the action wants them. Every pipeline has it as
+    ``identity``."""
+
+    id: str = "identity"
+    source_frame: str = ANY_FRAME
+    target_frame: str = ANY_FRAME
+
+    def apply(self, points, context=None) -> np.ndarray:
+        return np.array(points, dtype=np.float64, copy=True)
+
+    def to_dict(self) -> dict:
+        return {"type": "one-to-one", "id": self.id}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "OneToOne":
+        return cls(id=str(payload.get("id") or "identity"))
+
+
+def reads_any_frame(transform) -> bool:
+    return str(getattr(transform, "source_frame", "")) == ANY_FRAME
+
+
+def writes_any_frame(transform) -> bool:
+    return str(getattr(transform, "target_frame", "")) == ANY_FRAME
+
+
 @dataclass(frozen=True)
 class ScaleFlip:
     """Pixels of a detector into the units of a stage or scanner.
@@ -425,7 +460,7 @@ class SpatialTransformRef:
         return ref
 
 
-_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3, "scan-geometry": ScanGeometry,
+_TYPES = {"identity": Identity, "one-to-one": OneToOne, "scale-flip": ScaleFlip, "polynomial3": Polynomial3, "scan-geometry": ScanGeometry,
           "spatial-transform": SpatialTransformRef}
 
 
@@ -482,7 +517,10 @@ def apply_transform(obj, transform, context: Mapping[str, Any] | None = None, *,
     if coordinates is None:
         raise CoordinateError(f"transform {transform.id!r}: no coordinates in {type(obj).__name__}")
     have = frame_of(obj)
-    if have != transform.source_frame:
+    target = transform.target_frame
+    if writes_any_frame(transform):   # 1:1: into the frame the consumer takes, else where the points are
+        target = str((context or {}).get("target_frame") or have)
+    if not reads_any_frame(transform) and have != transform.source_frame:
         raise CoordinateError(
             f"transform {transform.id!r} reads {transform.source_frame!r}, but the points are in {have!r}"
         )
@@ -491,15 +529,19 @@ def apply_transform(obj, transform, context: Mapping[str, Any] | None = None, *,
         raise CoordinateError(f"transform {transform.id!r} returned shape {moved.shape} for {coordinates.shape}")
     in_frame = getattr(obj, "in_frame", None)
     if callable(in_frame):
-        return in_frame(transform.target_frame, moved, name=name)
-    return Points(moved, frame=transform.target_frame, frame_index=getattr(obj, "frame_index", None),
+        return in_frame(target, moved, name=name)
+    return Points(moved, frame=target, frame_index=getattr(obj, "frame_index", None),
                   name=name or getattr(obj, "name", "points"))
 
 
 __all__ = [
     "POLYNOMIAL3_COEFFICIENTS",
     "CoordinateTransform",
+    "ANY_FRAME",
     "Identity",
+    "OneToOne",
+    "reads_any_frame",
+    "writes_any_frame",
     "Polynomial3",
     "ScaleFlip",
     "ScanGeometry",

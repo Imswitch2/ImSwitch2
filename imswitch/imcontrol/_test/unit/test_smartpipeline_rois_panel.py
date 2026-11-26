@@ -171,7 +171,7 @@ def test_the_overlay_layers_sit_on_the_live_layer_and_a_drawn_shape_comes_back(q
     class Viewer:
         def __init__(self):
             self.layers = LayerList()
-            self.layers.append(Image(np.zeros((64, 48)), name='Camera', scale=(0.1, 0.1), translate=(5.0, 7.0)))
+            self.layers.append(Image(np.zeros((64, 48)), name='Live: Camera', scale=(0.1, 0.1), translate=(5.0, 7.0)))
 
         def _add(self, layer):
             self.layers.append(layer)

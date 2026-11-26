@@ -43,8 +43,12 @@ class RoiOverlay(QtCore.QObject):
     def _placement(self):
         layers = getattr(self._viewer, 'layers', [])
         layer = None
-        if self._liveName is not None and self._liveName in [getattr(lay, 'name', None) for lay in layers]:
-            layer = layers[self._liveName]
+        present = [getattr(lay, 'name', None) for lay in layers]
+        # the image view names a detector's live layer "Live: <detector>"
+        for name in (f'Live: {self._liveName}', self._liveName):
+            if self._liveName is not None and name in present:
+                layer = layers[name]
+                break
         if layer is None:
             return {}
         scale = tuple(float(v) for v in tuple(layer.scale)[-2:])

@@ -47,7 +47,7 @@ def classify_rois(rows, transform, *, axes, params, steps, ranges, context=None)
     rows = list(rows)
     if not rows:
         return []
-    source = Points(np.array([row["centroid"] for row in rows], dtype=float), frame=str(transform.source_frame),
+    source = Points(np.array([row["centroid"] for row in rows], dtype=float), frame=("unknown" if str(transform.source_frame) == "any" else str(transform.source_frame)),
                     properties={key: np.array([row["bbox"][i] for row in rows], dtype=float)
                                 for i, key in enumerate(BOX_COLUMNS)})
     context = dict(context or {})

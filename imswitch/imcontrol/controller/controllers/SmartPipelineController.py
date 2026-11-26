@@ -227,10 +227,18 @@ class SmartPipelineController(ImConWidgetController):
 
     @staticmethod
     def _transforms():
+        """ The calibrations folder's transforms, and always ``identity``:
+        the numbers 1:1 from any detector into the frame the action takes
+        (a calibration file of that id replaces it). """
+        from imswitch.imcommon.model.smartpipeline.transforms import OneToOne
+
         try:
-            return load_calibrations(_calibrationsFolderPath)
+            registry = load_calibrations(_calibrationsFolderPath)
         except CalibrationError as e:
             raise ValueError(str(e)) from e
+        if 'identity' not in registry:
+            registry.register(OneToOne())
+        return registry
 
     def _catalog(self):
         from imswitch.imcontrol.model.smartpipeline.catalog import catalog
