@@ -1426,8 +1426,8 @@ class ScanWorker(Worker):
         if self._manager._simulation_mode:
             # the simulated counter continues where the last fetch ended,
             # not where the worker has consumed to
-            data = self.randomInput(count, start=reader.fetched,
-                                    base=self.__dict__.get('_fetchedLast', 0))
+            data = self._simulatedInput(count, reader.fetched,
+                                        self.__dict__.get('_fetchedLast', 0))
         else:
             data = self._manager._nidaqManager.readInputTask(
                 self._name, count,
@@ -1438,6 +1438,28 @@ class ScanWorker(Worker):
             self.__dict__['_fetchedLast'] = data[-1]
         self._pending_read = None
         return data
+
+    #: Samples the simulated counter makes between looks at the stop flag.
+    _SIMULATED_SLICE = 20_000
+
+    def _simulatedInput(self, count, start, base):
+        """``randomInput`` for ``count`` samples, made in slices so a stop is
+        noticed between them. One read-ahead chunk is a whole live-update
+        interval of samples, about a second's work for the virtual sample, and
+        the stop waited for all of it (a real driver read is ended by closing
+        the task; a simulated one has none to close). After a stop the rest is
+        held flat: the unfinished frame is dropped anyway."""
+        parts, done, last = [], 0, base
+        while done < count:
+            if not getattr(self, 'scanning', True):
+                parts.append(np.full(count - done, last, dtype=np.int64))
+                break
+            n = min(self._SIMULATED_SLICE, count - done)
+            part = self.randomInput(n, start=start + done, base=last)
+            parts.append(part)
+            last = part[-1]
+            done += n
+        return parts[0] if len(parts) == 1 else np.concatenate(parts)
 
     def throwdata(self, datalen):
         """ Throw away data with length datalen, save the last value,
