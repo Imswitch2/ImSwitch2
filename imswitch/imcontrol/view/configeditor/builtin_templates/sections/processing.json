@@ -30,7 +30,7 @@
       ],
       "req": false,
       "grp": "Processors",
-      "tip": "Tick the processing steps this setup offers. This list picks which built-ins are registered; the projection and frc panels register their processor themselves, and any other can still be loaded at runtime from the Load tool box of the Tools toolbar. Drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning.",
+      "tip": "Tick the processing steps this setup offers. This list picks which built-ins are registered; the projection and frc panels register their processor themselves, and any other can still be loaded at runtime from Tools > Analysis tools (or the Tools button of the Tools toolbar). Drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning.",
       "opts": [
         "__improcess_processors__"
       ]

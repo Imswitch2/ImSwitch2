@@ -648,7 +648,7 @@ def test_a_multiselect_shows_name_id_and_description_but_returns_ids(qapp):
     rows = _rows(fw)
     name, ident, description = rows["monalisa"]
     assert name == "MoNaLISA" and ident == "monalisa"
-    assert description == "Point-scanning SIM reconstruction with pattern-based signal extraction"
+    assert description == "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices"
     # untouched: the file's value, as it was
     original = ["view-only"]
     fw = editor.FieldWidget(_field("reconstructors"), original)
@@ -760,7 +760,7 @@ def test_processors_sit_under_their_category_header(qapp):
         else:
             check = widget.findChild(editor.QCheckBox)
             seen[next(k for k, v in box._boxes.items() if v is check)] = current
-    assert seen["resize"] == "Transform" and seen["drift-correct"] == "Restoration"
+    assert seen["resize"] == "Transform" and seen["drift-correct"] == "Registration"
     assert len(box._boxes) == len(box.option_ids()) == len(_field("processors")["opts"]), \
         "one check box per option; the headers are labels, not choices"
 

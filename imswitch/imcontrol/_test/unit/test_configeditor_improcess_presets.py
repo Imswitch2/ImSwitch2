@@ -272,7 +272,7 @@ def test_the_picker_names_the_selected_presets_reconstructors_with_their_descrip
     assert "Reconstructors" in labels
     assert "MoNaLISA" in labels and "monalisa" in labels, "the display name, the id muted beside it"
     assert "View only" in labels
-    assert "Point-scanning SIM reconstruction with pattern-based signal extraction" in labels
+    assert "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices" in labels
     assert "Display raw frames without any reconstruction" in labels
     # the list's tooltip carries the names too
     row = dlg._list.currentRow()
@@ -293,10 +293,13 @@ def test_the_picker_groups_processors_by_category_with_display_names(qapp):
     dlg = _picker_on("monalisa_processor")
     labels = _labels(dlg)
     assert "Processors" in labels
-    assert "Restoration" in labels and "Drift Correction" in labels
+    assert "Registration" in labels and "Drift Correction" in labels
     assert "Measurement" in labels
-    measurement = next(t for t in labels if "FRC Resolution" in t and "PSF / Bead Resolution" in t)
-    assert "Colocalization" in measurement
+    # FRC and the PSF tools sit in "Resolution and PSF" now; Colocalization stays in Measurement
+    resolution = next(t for t in labels if "FRC Resolution" in t and "PSF / Bead Resolution" in t)
+    assert "Colocalization" not in resolution
+    assert "Resolution and PSF" in labels
+    assert any("Colocalization" in t for t in labels)
     assert not any("drift-correct" == t for t in labels), "ids are not the primary text"
 
 

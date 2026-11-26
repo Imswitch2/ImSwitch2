@@ -175,7 +175,7 @@ def test_the_processors_tip_names_the_self_registering_panels_and_the_runtime_me
     for panel in ("projection", "frc"):
         assert panel in tip
         assert f"registers the '{panel}' processor" in _tip(f"{panel}Panel")
-    assert "Load tool" in tip
+    assert "Tools > Analysis tools" in tip
 
 
 def test_the_runtime_loading_paths_named_in_the_tips_exist_in_improcess():
@@ -183,6 +183,6 @@ def test_the_runtime_loading_paths_named_in_the_tips_exist_in_improcess():
 
     source = (Path(editor.__file__).resolve().parents[3] / "improcess" / "view"
               / "ImProcessMainView.py").read_text(encoding="utf-8")
-    assert "'Load tool: '" in source
+    assert "QtWidgets.QMenu('Analysis tools'" in source
     assert "addMenu('Load reconstructor')" in source
     assert "Tools > Load reconstructor" in _tip("reconstructors")
