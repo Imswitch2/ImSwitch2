@@ -12,6 +12,9 @@ polynomial of EtSTED, an affine from a click calibration -- implement the
 same protocol and are registered by id; the file format
 (:func:`transform_from_dict`) keeps ``type`` for the class and the rest for
 its fields, so a calibration file is one of these dicts.
+:class:`SpatialTransformRef` (``spatial-transform``) wraps a record of the
+shared transform module (``imswitch.imcommon.algorithms.transforms``), such
+as the camera -> scanner bead calibration.
 
 Column order: a points result's columns are in the order its frame's
 ``axis_order`` says (``yx`` for an image: row, column). A transform keeps the
@@ -286,7 +289,130 @@ class ScanGeometry:
         return cls(id=str(payload["id"]), source_frame=payload["source_frame"], target_frame=payload["target_frame"])
 
 
-_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3, "scan-geometry": ScanGeometry}
+@dataclass(frozen=True)
+class SpatialTransformRef:
+    """A record of the shared transform module
+    (:mod:`imswitch.imcommon.algorithms.transforms`, ``imswitch.transform/1``)
+    used as a pipeline transform: the bead calibration's camera -> scanner
+    map, or anything the Transform Calibration panel saved.
+
+    The record is named by ``path`` (relative to the calibrations folder,
+    which :func:`~imswitch.imcontrol.model.smartpipeline.calibrations.load_calibrations`
+    passes as ``base``; or absolute) or embedded as ``record``.
+
+    Conventions: the module's points are ``(row, col)`` -- ``(..., y, x)``,
+    pixel centres -- which is a points result's ``yx`` column order, so
+    points go to ``map_points`` as they are. Its output columns are in the
+    order ``target_axes`` names (the record's
+    ``target_context.extra["axes"]``; positioner names, e.g. ``["Y", "X"]``),
+    in the record's ``units`` (``um`` for a bead calibration: Advanced scan
+    centres); a ``run-scan`` step after it takes ``axes`` in that order.
+    ``calibrated_on`` comes from the record's ``source_context`` (image
+    shape, binning, ROI ``[x0, y0, w, h]`` -> offset ``(y0, x0)``), so arming
+    on another camera grid is refused.
+    """
+
+    id: str
+    source_frame: str
+    target_frame: str
+    path: str = ""
+    record: dict | None = None
+    base: Any = field(default=None, compare=False, repr=False)
+    transform: Any = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "source_frame", str(FrameTag.parse(self.source_frame)))
+        object.__setattr__(self, "target_frame", str(FrameTag.parse(self.target_frame)))
+        if self.transform is None:
+            object.__setattr__(self, "transform", self._load())
+        model = self.transform
+        if getattr(model, "ndim", 2) != 2:
+            raise CoordinateError(f"transform {self.id!r}: the record is {model.ndim}-D, a pipeline maps 2-D points")
+
+    def _load(self):
+        from imswitch.imcommon.algorithms.transforms import io as transform_io
+
+        try:
+            if self.record is not None:
+                return transform_io.from_dict(self.record)
+            if not self.path:
+                raise CoordinateError(f"transform {self.id!r}: a spatial-transform needs 'path' or 'record'")
+            from pathlib import Path
+
+            path = Path(self.path)
+            if not path.is_absolute():
+                if self.base is None:
+                    raise CoordinateError(f"transform {self.id!r}: the relative path {self.path!r} needs the "
+                                          "calibrations folder")
+                path = Path(self.base) / path
+            return transform_io.load_json(path)
+        except CoordinateError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise CoordinateError(f"transform {self.id!r}: cannot read the transform record: {exc}") from exc
+
+    @classmethod
+    def of(cls, transform, transform_id: str, source_frame: str | None = None, target_frame: str | None = None):
+        """An embedded reference to an in-memory ``SpatialTransform``."""
+        from imswitch.imcommon.algorithms.transforms import io as transform_io
+
+        return cls(id=transform_id, source_frame=source_frame or transform.source_frame,
+                   target_frame=target_frame or transform.target_frame, record=transform_io.to_dict(transform),
+                   transform=transform)
+
+    @property
+    def target_axes(self) -> tuple[str, ...]:
+        return tuple(str(a) for a in (self.transform.target_context.extra.get("axes") or ()))
+
+    @property
+    def units(self) -> str:
+        return str(self.transform.units)
+
+    @property
+    def calibrated_on(self) -> dict | None:
+        context = self.transform.source_context
+        if context.image_shape is None:
+            return None
+        binning = int(context.binning or 1)
+        offset = [int(context.roi[1]), int(context.roi[0])] if context.roi else [0, 0]
+        identity = {"shape": [int(v) for v in context.image_shape[-2:]], "binning": [binning, binning],
+                    "offset": offset, "axis_order": "yx"}
+        if context.pixel_size_um:
+            identity["pixel_size_um"] = [float(v) for v in context.pixel_size_um]
+        return identity
+
+    def apply(self, points, context=None) -> np.ndarray:
+        array = np.array(points, dtype=np.float64, copy=True)
+        if array.size == 0:
+            return array
+        if array.ndim != 2 or array.shape[1] != 2:
+            raise CoordinateError(f"transform {self.id!r} maps (row, col) points, got shape {array.shape}")
+        return np.asarray(self.transform.map_points(array), dtype=np.float64)
+
+    def to_dict(self) -> dict:
+        payload = {"type": "spatial-transform", "id": self.id, "source_frame": self.source_frame,
+                   "target_frame": self.target_frame}
+        if self.path:
+            payload["path"] = self.path
+        else:
+            payload["record"] = self.record
+        if self.target_axes:
+            payload["target_axes"] = list(self.target_axes)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "SpatialTransformRef":
+        ref = cls(id=str(payload["id"]), source_frame=payload["source_frame"], target_frame=payload["target_frame"],
+                  path=str(payload.get("path") or ""), record=payload.get("record"), base=payload.get("_base"))
+        expected = payload.get("target_axes")
+        if expected and ref.target_axes and list(expected) != list(ref.target_axes):
+            raise CoordinateError(f"transform {ref.id!r}: target_axes {list(expected)} disagree with the record's "
+                                  f"{list(ref.target_axes)}")
+        return ref
+
+
+_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3, "scan-geometry": ScanGeometry,
+          "spatial-transform": SpatialTransformRef}
 
 
 def transform_from_dict(payload: dict):
@@ -363,6 +489,7 @@ __all__ = [
     "Polynomial3",
     "ScaleFlip",
     "ScanGeometry",
+    "SpatialTransformRef",
     "polynomial3_apply",
     "TransformRegistry",
     "apply_transform",

@@ -2,7 +2,10 @@
 under ``<ImSwitchConfig>/calibrations/``.
 
 A file is a transform's ``to_dict`` (``type`` picks the class: ``identity``,
-``scale-flip``, ``polynomial3``). :func:`load_calibrations` reads a folder
+``scale-flip``, ``polynomial3``, ``scan-geometry``, ``spatial-transform`` --
+the last points at a shared transform-module record, by a path relative to
+this folder, e.g. ``transforms/<id>.json`` from the bead calibration).
+Subfolders (``transforms/``) are not read as pipeline transforms. :func:`load_calibrations` reads a folder
 into a registry; :func:`save_calibration` writes one; :func:`et_polynomial`
 turns an EtSTED calibration -- the 20 coefficients its procedure writes to
 ``transform_pipelines/<timestamp>.csv`` and the setup's swap/invert flags --
@@ -56,6 +59,9 @@ def load_calibrations(folder=None) -> TransformRegistry:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            if isinstance(payload, dict) and payload.get("type") == "spatial-transform":
+                # A reference to a shared-module record, relative to here.
+                payload = {**payload, "_base": str(folder)}
             registry.register(transform_from_dict(payload))
         except (OSError, ValueError) as exc:
             raise CalibrationError(f"calibration {name}: {exc}") from exc
