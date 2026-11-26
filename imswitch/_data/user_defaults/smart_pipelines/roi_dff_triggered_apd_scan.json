@@ -1,0 +1,158 @@
+{
+  "name": "ROI dF/F triggered APD scan",
+  "schema": 1,
+  "description": "Widefield camera in, confocal APD scan out (Advanced scan panel). The first reference_frames frames are averaged and segmented ONCE into cell ROIs (Otsu); the mask is then frozen. Per ROI the pipeline measures F, a baseline F0 (mean of the first baseline_frames frames) and dF/F; ROIs at or above the threshold for K frames in a row trigger (a ROI that triggered rests for the refractory period); of the triggered ROIs only the strongest is kept; the gates pass at most one scan per min-interval and at most the count-limit scans per run; the ROI's bounding box goes through the named camera->scan calibration (all four corners) and the Advanced panel scans exactly that box, padded by the margin, clamped to the scanner range (skipped with a logged reason when it does not fit), with the panel's own settings put back afterwards. Set the placeholders marked in the user docs: the camera name (steps 'cam', 'dff.frame', 'tf' source), the calibration id (step 'tf'), the lasers and axes of the scan step, the threshold and the roles. Run it first in Validate mode (dry run): everything runs, the scan action only logs the rectangle it WOULD scan. Then in Experiment.",
+  "metadata": {
+    "smart_pipeline": {
+      "roles": {
+        "scouting": "pipeline-scouting",
+        "idle": "pipeline-idle"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": "live",
+      "id": "cam",
+      "detector": "Camera"
+    },
+    {
+      "step": "process",
+      "id": "dff",
+      "processor": "roi-dff",
+      "params": {
+        "frame": "detector:Camera",
+        "mask_source": "segment",
+        "reference_frames": 5,
+        "threshold_method": "otsu",
+        "smooth_sigma": 1.5,
+        "min_area": 30,
+        "fill_holes": true,
+        "clear_border": true,
+        "statistic": "mean",
+        "background": "outside-percentile",
+        "background_percentile": 10.0,
+        "baseline": "first-n",
+        "baseline_frames": 20,
+        "min_f0": 5.0,
+        "threshold": 0.3,
+        "min_consecutive": 2,
+        "refractory_frames": 100
+      },
+      "inputs": [
+        "cam"
+      ]
+    },
+    {
+      "step": "process",
+      "id": "best",
+      "processor": "pick",
+      "params": {
+        "rule": "max-column",
+        "column": "dff",
+        "where": "triggered"
+      },
+      "inputs": [
+        "dff"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "triggered",
+      "rule": "condition",
+      "params": {
+        "min_count": 1
+      },
+      "inputs": [
+        "best"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "rest",
+      "rule": "min-interval",
+      "params": {
+        "seconds": 5.0
+      },
+      "inputs": [
+        "triggered"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "budget",
+      "rule": "count-limit",
+      "params": {
+        "count": 10
+      },
+      "inputs": [
+        "rest"
+      ]
+    },
+    {
+      "step": "transform",
+      "id": "tf",
+      "transform": "cam_to_scan",
+      "inputs": [
+        "budget"
+      ]
+    },
+    {
+      "step": "action",
+      "id": "scan",
+      "action": "run-scan",
+      "params": {
+        "source": "Scan",
+        "mode": "acquisition",
+        "axes": [
+          "Y",
+          "X"
+        ],
+        "frame": "scanner:galvo",
+        "points": "first",
+        "max_points": 1,
+        "box": "auto",
+        "margin_um": 1.0,
+        "margin_frac": 0.1,
+        "min_size_um": 2.0,
+        "max_size_um": 40.0,
+        "min_overlap": 0.5,
+        "range_inset_um": 0.0,
+        "pixel_um": 0,
+        "dwell_s": 0,
+        "lasers": [
+          "561 (EXC)"
+        ],
+        "restore": true
+      },
+      "inputs": [
+        "tf"
+      ],
+      "timeout_s": 120
+    },
+    {
+      "step": "sink",
+      "id": "marks",
+      "sink": "overlay",
+      "inputs": [
+        "dff"
+      ]
+    },
+    {
+      "step": "sink",
+      "id": "log_rois",
+      "sink": "event-log",
+      "inputs": [
+        "dff"
+      ]
+    },
+    {
+      "step": "sink",
+      "id": "log_trigger",
+      "sink": "event-log",
+      "inputs": [
+        "tf"
+      ]
+    }
+  ]
+}

@@ -39,13 +39,19 @@ RUN_SCAN = ActionSpec(
     "run-scan", label="Run scan", accepts=("any",),
     params={"source": "Scan", "mode": "acquisition", "field_um": 60.0, "length_um": 8.0, "pixel_um": 0.1,
             "dwell_s": 0.0, "lasers": [], "axes": ["Y", "X"], "frame": "", "points": "all", "max_points": 0,
-            "overview_pixel_um": 0.25},
+            "overview_pixel_um": 0.25, "box": "auto", "margin_um": 0.0, "margin_frac": 0.0, "min_size_um": 0.0,
+            "max_size_um": 0.0, "min_overlap": 0.5, "range_um": {}, "range_inset_um": 0.0, "restore": True},
     frame_param="frame", hardware=True,
     description="Run a point scan: 'overview' of field_um around the centre at overview_pixel_um (the Advanced "
                 "panel; the simple page plans its own), or 'acquisition' of "
                 "length_um at pixel_um centred on the input points (their columns mapped to the scan axes by "
                 "'axes'): 'points' all (one scan after the other; max_points 0 = no limit) or first; 'lasers' "
-                "are the lasers of its one channel; dwell_s 0 keeps the plan's dwell.",
+                "are the lasers of its one channel; dwell_s 0 keeps the plan's dwell. On the Advanced panel, input points that "
+                "carry bbox_y0/bbox_x0/bbox_y1/bbox_x1 (scan um, after a transform) scan their box: padded by "
+                "margin_um + margin_frac, limited to min/max_size_um, a whole number of steps (the panel's step, or "
+                "pixel_um), fitted to the scanner range (range_um per axis, else the positioner's volts x "
+                "conversionFactor, inset by range_inset_um) or skipped with a reason when its centre is outside it or "
+                "less than min_overlap of it is inside; the panel's own parameters are put back afterwards (restore).",
 )
 
 WAIT = ActionSpec(

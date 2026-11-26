@@ -23,7 +23,7 @@ from imswitch.improcess.model.points_result import UNKNOWN_FRAME, PointsResult
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.base import Processor
 
-PICK_RULES = ("largest", "brightest", "first", "nearest")
+PICK_RULES = ("largest", "brightest", "first", "nearest", "max-column")
 
 
 class PickProcessor(Processor):
@@ -37,7 +37,7 @@ class PickProcessor(Processor):
 
     @classmethod
     def default_params(cls) -> dict:
-        return {"rule": "largest", "x": 0.0, "y": 0.0}
+        return {"rule": "largest", "x": 0.0, "y": 0.0, "column": "", "where": ""}
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -46,7 +46,8 @@ class PickProcessor(Processor):
                 "rule", "select", "largest", label="Rule", options=PICK_RULES,
                 help=(
                     "largest by area; brightest by mean_intensity (then max_intensity); "
-                    "first in row order; nearest to (x, y)"
+                    "first in row order; nearest to (x, y); max-column by the largest value "
+                    "of the property named in Column"
                 ),
             ),
             ParamField(
@@ -56,6 +57,16 @@ class PickProcessor(Processor):
             ParamField(
                 "y", "float", 0.0, label="Y", decimals=3,
                 help="Row coordinate the nearest rule measures distance to",
+            ),
+            ParamField(
+                "column", "text", "", label="Column",
+                help="max-column: the property column whose largest value wins (e.g. dff)",
+            ),
+            ParamField(
+                "where", "text", "",
+                label="Where",
+                help="Any rule: only rows where this property column is true / non-zero are candidates "
+                     "(e.g. triggered); none left gives no points",
             ),
         )
 
@@ -90,11 +101,23 @@ class PickProcessor(Processor):
         y_spin.setToolTip("Row coordinate the nearest rule measures distance to")
         layout.addRow("Y:", y_spin)
 
+        column_edit = QtWidgets.QLineEdit()
+        column_edit.setToolTip("max-column: the property column whose largest value wins (e.g. dff)")
+        layout.addRow("Column:", column_edit)
+
+        where_edit = QtWidgets.QLineEdit()
+        where_edit.setToolTip(
+            "Any rule: only rows where this property column is true / non-zero are candidates (e.g. triggered)"
+        )
+        layout.addRow("Where:", where_edit)
+
         def get_values():
             return {
                 "rule": rule_combo.currentText(),
                 "x": float(x_spin.value()),
                 "y": float(y_spin.value()),
+                "column": column_edit.text().strip(),
+                "where": where_edit.text().strip(),
             }
 
         widget.get_values = get_values
@@ -121,6 +144,18 @@ class PickProcessor(Processor):
         }
         metadata["pick_rule"] = rule
 
+        where = str(params.get("where") or "").strip()
+        keep_rows = None
+        if where and coordinates.shape[0]:
+            if where not in properties:
+                raise ValueError(
+                    f"Pick where={where!r}: the points have no such column (available: {sorted(properties) or 'none'})"
+                )
+            keep_rows = np.flatnonzero(np.asarray(properties[where]).astype(bool))
+            coordinates = coordinates[keep_rows]
+            properties = {key: column[keep_rows] for key, column in properties.items()}
+            metadata["pick_where"] = where
+
         if coordinates.shape[0] == 0:
             chosen = np.zeros((0, coordinates.shape[1]), dtype=np.float64)
             kept = {key: column[:0] for key, column in properties.items()}
@@ -128,10 +163,11 @@ class PickProcessor(Processor):
             index = pick_index(
                 coordinates, properties, rule,
                 x=float(params.get("x", 0.0)), y=float(params.get("y", 0.0)),
+                by=str(params.get("column") or ""),
             )
             chosen = coordinates[[index]]
             kept = {key: column[[index]] for key, column in properties.items()}
-            metadata["picked_row"] = int(index)
+            metadata["picked_row"] = int(index if keep_rows is None else keep_rows[index])
 
         return PointsResult(
             f"{result.name} (pick {rule})",
@@ -153,6 +189,7 @@ def pick_index(
     *,
     x: float = 0.0,
     y: float = 0.0,
+    by: str = "",
 ) -> int:
     """Row index ``rule`` selects among ``coordinates`` (at least one row).
 
@@ -185,6 +222,13 @@ def pick_index(
             order = np.lexsort((-peak, -mean))
             return int(order[0])
         return int(np.argmax(mean))
+    if rule == "max-column":
+        if not by:
+            raise ValueError("Pick rule 'max-column' needs a Column naming the property to maximise")
+        values = column(by)
+        if np.isnan(values).all():
+            return 0
+        return int(np.nanargmax(values))
     if rule == "nearest":
         # The last two coordinate columns are (y, x), as in napari, whatever
         # leads them.

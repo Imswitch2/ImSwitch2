@@ -380,6 +380,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "python",
     "regionprops",
     "resize",
+    "roi-dff",
     "segmentation",
     "smlm-drift",
     "smlm-drift-comet",

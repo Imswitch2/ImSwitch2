@@ -707,6 +707,9 @@
    "8590b0a7ae53f20cfc3d7bead3c4b5425fffc48a375c7555fed464c67cbab323",
    "8ea0d028ca64dfc2b355f18e22070b186fddc6fb5de336ca17958244984d5275"
   ],
+  "smart_pipelines/roi_dff_triggered_apd_scan.json": [
+   "f8ff09e4e7671766f063be28c460df41ebd8ea39b075fa544f1bf57a04cc741c"
+  ],
   "smart_pipelines/threshold_move_demo.json": [
    "4e6e9aaaca9836d00b380646dbb6806a3c3f5d98e9b597e2d20bc896925e8fb2",
    "86adfe352e2d9180886e54b72c4d5be1bc236eec099b37072f4d8cb47012d206"

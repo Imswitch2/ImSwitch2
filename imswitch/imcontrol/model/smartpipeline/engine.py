@@ -79,6 +79,7 @@ from imswitch.imcommon.model.smartpipeline import (
 from imswitch.imcommon.model.smartpipeline.frames import finite_value
 from imswitch.imcommon.model.smartpipeline.steps import DEFAULT_COUNT, DEFAULT_INTERVAL_S, DONE_PORT, FIRED_PORT
 from imswitch.imcommon.model.workflow.steps import DEFAULT_PORT, SOURCE_PORT, Ref, Save, Source, Workflow
+from imswitch.imcontrol.model.smartpipeline.boxes import map_boxes, transform_record
 from imswitch.imcontrol.model.smartpipeline.ports import (
     CANCELLED,
     FAILED,
@@ -224,6 +225,13 @@ def describe(value) -> Any:
         summary: dict[str, Any] = {"kind": "points", "count": int(coordinates.shape[0]), "frame": frame_of(value)}
         if coordinates.shape[0]:
             summary["first"] = [round(float(v), 3) for v in coordinates[0]]
+            properties = getattr(value, "properties", None) or {}
+            if properties:
+                summary["first_row"] = {str(k): _plain(np.asarray(v)[0]) for k, v in properties.items()
+                                        if np.asarray(v).shape[:1] == (coordinates.shape[0],)}
+        meta = getattr(value, "metadata", None)
+        if isinstance(meta, dict) and meta.get("transform"):
+            summary["transform"] = meta["transform"]
         return summary
     if kind == "value":
         return {"kind": "value", "value": value_of(value), "unit": str(getattr(value, "unit", "") or "")}
@@ -636,7 +644,13 @@ class Engine:
             transform = self.transforms.get(step.transform)
             if transform is None:
                 raise CoordinateError(f"unknown transform {step.transform!r}")
-            moved = apply_transform(inputs[0], transform, {"frame": frame, "params": step.params}, name=step.id)
+            context = {"frame": frame, "params": step.params}
+            moved = apply_transform(inputs[0], transform, context, name=step.id)
+            map_boxes(inputs[0], moved, transform, context)   # a box column travels with its centroid
+            record = transform_record(transform)
+            meta = getattr(moved, "metadata", None)
+            if isinstance(meta, dict):
+                meta["transform"] = record
             return {DEFAULT_PORT: moved}
         if isinstance(step, Gate):
             return self._gate(step, inputs[0], tick, now)
@@ -766,7 +780,14 @@ class Engine:
             self.log.append(tick, now, step.id, "skipped", **summary)
             completion = SimpleCompletion(self._epoch, result={"skipped": True}, done=True)
         elif effect == "log":
-            self.log.append(tick, now, step.id, "would", **summary, **_would(step.action, params, inputs))
+            planned = {}
+            planner = getattr(self.actions, "plan", None)
+            if callable(planner):
+                try:
+                    planned = dict(planner(request) or {})
+                except Exception as exc:  # noqa: BLE001 - a plan that cannot be made is itself the dry run's finding
+                    planned = {"message": f"would {step.action}: no plan ({type(exc).__name__}: {exc})"}
+            self.log.append(tick, now, step.id, "would", **summary, **{**_would(step.action, params, inputs), **planned})
             completion = SimpleCompletion(self._epoch, result={"would": True}, done=True)
         else:
             self.log.append(tick, now, step.id, "started", **summary)

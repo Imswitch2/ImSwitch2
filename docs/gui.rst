@@ -1826,6 +1826,86 @@ with *Run on arm* set runs once before any frame -- the first overview. The
 shipped ``apd_scan_cells_demo.json`` does overview → segment → fine scan at
 the largest cell → overview on ``galvo_apd_simple_mock_scan_setup.json``.
 
+**Scan a cell when it lights up (ROI dF/F, Advanced scan panel).** The shipped
+``roi_dff_triggered_apd_scan.json`` reacts to a change of signal on a camera
+image and scans exactly that cell's box with the APD, on the **Advanced** scan
+panel (NI-DAQ galvo). The chain: ``live`` camera → ``roi-dff`` (segments the
+cells **once** from the first ``reference_frames`` frames and freezes the mask;
+per cell F, the baseline F0 and dF/F, and a ``triggered`` flag) → ``pick``
+(rule ``max-column``, column ``dff``, where ``triggered``: the strongest
+triggered cell only) → gates ``triggered`` (at least one row), ``rest``
+(``min-interval``: at most one scan per ``seconds``) and ``budget``
+(``count-limit``: at most ``count`` scans per run) → ``transform`` (the camera
+→ scan calibration) → ``run-scan``.
+
+*Set up, step by step.*
+
+#. Have a calibration record in ``calibrations/`` that maps camera (row,
+   column) to scan micrometres (``source_frame`` ``detector:<camera>``,
+   ``target_frame`` ``scanner:galvo``). Put its id in step ``tf`` (the shipped
+   id is ``cam_to_scan``). A box is mapped through the same transform by its
+   four corners; the scan rectangle is their axis-aligned bounding box, so with
+   a rotation or shear it is larger than the cell's own box, never smaller.
+#. Put your camera's name in the ``cam`` step and in ``dff`` → ``frame``
+   (``detector:<camera>``); the calibration must read that same frame.
+#. In ``scan``: ``source`` (the Advanced scan panel's name, ``Scan`` by
+   default), ``axes`` (the two scanner axes: column 0 = camera rows drives the
+   first, column 1 the second), ``lasers`` (the lasers the scan fires; they are
+   switched on in the panel's first line step and put back afterwards), and,
+   if you want to override the panel, ``pixel_um`` and ``dwell_s`` (0 keeps
+   the panel's own step and dwell -- the shipped document keeps them).
+#. Tell the pipeline the setup modes it enters on arm (``roles``) and, in the
+   Smart Pipeline panel, load the document.
+#. **Dry run first.** Choose the *Validate* mode and arm. Everything runs --
+   segmentation, baselines, gates, transform -- but the scan action only
+   logs what it WOULD do: ``would scan ROI 7 (dff 0.52): centre/half-size um
+   Y=5.750+/-3.500, X=5.750+/-3.500`` or ``would SKIP ...: <reason>`` (the
+   event log's ``would`` line carries the whole plan: box in camera pixels and
+   scan micrometres, the padded and the clamped rectangle, the notes). Check on
+   a known bright cell that the rectangle lies where the cell is -- that
+   validates the transform -- and tune ``threshold`` against the logged dF/F of
+   resting cells. No laser fires and no panel field changes.
+#. Arm in *Experiment*. Scans are started automatically: keep ``budget`` low
+   for the first run.
+
+*The ROI step (``roi-dff``).* ``mask_source``: ``segment`` (Otsu etc. on the
+average of the first ``reference_frames`` frames), ``input`` (labels wired in
+as second input on the first tick) or ``file`` (a ``.npy``/``.tif`` label
+image); the mask is frozen -- change ``generation`` or re-arm to start over,
+and a frame of another shape or pixel grid resets it with a message. ``F`` is
+the ``mean`` (or ``median``) of the cell's pixels minus the ``background``
+(none, a constant, or the mean/percentile of the pixels outside all cells).
+``baseline``: ``first-n`` (mean of the first ``baseline_frames`` frames, fixed),
+``running-median`` / ``running-percentile`` (over the last N frames excluding
+the newest ``baseline_exclude_frames``) or ``ema`` (time constant
+``ema_tau_frames``, frozen while the cell is above threshold). dF/F = (F -
+F0) / F0; a cell with F0 at or below ``min_f0`` is invalid and never
+triggers. A cell triggers after ``min_consecutive`` frames at or above
+``threshold`` and then rests for ``refractory_frames`` / ``refractory_s``.
+Nothing triggers during warm-up (the result says ``warming up, n of N``).
+
+*The scan rectangle (``run-scan`` on box points).* The box is padded by
+``margin_um`` plus ``margin_frac`` of its length on each side, raised/cut to
+``min_size_um`` / ``max_size_um``, and made a whole number of the panel's
+steps (rounded up). The scanner range of each axis is ``range_um`` if given,
+else the positioner's ``minVolt`` / ``maxVolt`` times its ``conversionFactor``
+(narrowed by ``range_inset_um`` -- keep an inset for the galvo's turnaround).
+A box partly outside is clipped and the clip is logged; a box whose centre is
+outside, or of which less than ``min_overlap`` of the padded area is inside,
+is **skipped** with the reason logged and nothing is started. After the scan
+the panel's centre, size, step, dwell and laser line steps are put back
+(``restore``).
+
+*What is recorded.* Every trigger is in the event log: the ``started`` line
+holds the picked row (ROI label, ``dff``, ``F``, ``F0``, the box in camera
+pixels as ``src_bbox_*`` and in scan micrometres as ``bbox_*``) and the
+transform (id, type and, when its record states one, the calibration
+residual); the ``done`` line holds the scan summary (centre, size, pixels,
+lasers, notes) and the latencies of the action. Save the log from the panel.
+The APD data itself is the Advanced panel's own scan (the panel's recording
+settings apply); the smart pipeline does not start a recording, so pair the
+files with the log by time.
+
 **Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
 your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,
 ``scale-flip`` (a pixel size per axis, an origin, swap, invert, offset, and
