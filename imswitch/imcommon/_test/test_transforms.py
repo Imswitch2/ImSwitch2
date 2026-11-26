@@ -678,7 +678,9 @@ def test_every_advertised_estimator_is_fittable():
     assert names == set(estimator_names())
     assert names == {
         "affine",
+        "polynomial",
         "similarity",
+        "similarity_reflect",
         "rigid",
         "translation",
         "rotation90",

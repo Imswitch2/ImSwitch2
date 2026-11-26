@@ -511,4 +511,11 @@ def builtin_correspondence_specs() -> tuple[CorrespondenceStrategySpec, ...]:
             localize_handler=_localize_foci_grid,
             match_handler=_match_foci_grid,
         ),
+        _bead_strategy_spec(),
     )
+
+
+def _bead_strategy_spec() -> CorrespondenceStrategySpec:
+    from .beads import bead_strategy_spec
+
+    return bead_strategy_spec()
