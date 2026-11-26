@@ -1871,6 +1871,12 @@ file name; **Reload** reads the file again after an edit.
   is checked and logged as ``would move-to … to (y, x)``; nothing moves.
 - *Experiment* -- actions are dispatched. The pipeline must name its
   ``scouting`` and ``idle`` roles (setup modes applied at arm and at stop).
+  A role set to ``"(unchanged)"`` applies no setup mode: the microscope stays
+  as you set it (the shipped ``roi_dff_triggered_apd_scan.json`` does this, so
+  it arms on a setup without setup modes). A role that names a setup mode the
+  setup does not have refuses the arm and says how to make it: save a mode of
+  that name in the Setup modes panel (**More → Save as...**), or set the role
+  to ``"(unchanged)"``.
 
 **Arm** reserves the devices (while the pipeline holds a stage, the
 Positioner panel and scripts are refused for it), applies the ``scouting``
@@ -1936,8 +1942,10 @@ triggered cell only) → gates ``triggered`` (at least one row), ``rest``
    switched on in the panel's first line step and put back afterwards), and,
    if you want to override the panel, ``pixel_um`` and ``dwell_s`` (0 keeps
    the panel's own step and dwell -- the shipped document keeps them).
-#. Tell the pipeline the setup modes it enters on arm (``roles``) and, in the
-   Smart Pipeline panel, load the document.
+#. The shipped roles are ``"(unchanged)"``: set the lasers, camera and scan
+   panel as the experiment needs before arming. To switch setup modes at arm
+   and stop instead, name them in ``roles``. In the Smart Pipeline panel, load
+   the document.
 #. **Dry run first.** Choose the *Validate* mode and arm. Everything runs --
    segmentation, baselines, gates, transform -- but the scan action only
    logs what it WOULD do: ``would scan ROI 7 (dff 0.52): centre/half-size um

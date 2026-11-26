@@ -1,12 +1,12 @@
 {
   "name": "ROI dF/F triggered APD scan",
   "schema": 1,
-  "description": "Widefield camera in, confocal APD scan out (Advanced scan panel). The first reference_frames frames are averaged and segmented ONCE into cell ROIs (Otsu); the mask is then frozen. Per ROI the pipeline measures F, a baseline F0 (mean of the first baseline_frames frames) and dF/F; ROIs at or above the threshold for K frames in a row trigger (a ROI that triggered rests for the refractory period); of the triggered ROIs only the strongest is kept; the gates pass at most one scan per min-interval and at most the count-limit scans per run; the ROI's bounding box goes through the named camera->scan calibration (all four corners) and the Advanced panel scans exactly that box, padded by the margin, clamped to the scanner range (skipped with a logged reason when it does not fit), with the panel's own settings put back afterwards. Set the placeholders marked in the user docs: the camera name (steps 'cam', 'dff.frame', 'tf' source), the calibration id (step 'tf'), the lasers and axes of the scan step, the threshold and the roles. Run it first in Validate mode (dry run): everything runs, the scan action only logs the rectangle it WOULD scan. Then in Experiment.",
+  "description": "Widefield camera in, confocal APD scan out (Advanced scan panel). The first reference_frames frames are averaged and segmented ONCE into cell ROIs (Otsu); the mask is then frozen. Per ROI the pipeline measures F, a baseline F0 (mean of the first baseline_frames frames) and dF/F; ROIs at or above the threshold for K frames in a row trigger (a ROI that triggered rests for the refractory period); of the triggered ROIs only the strongest is kept; the gates pass at most one scan per min-interval and at most the count-limit scans per run; the ROI's bounding box goes through the named camera->scan calibration (all four corners) and the Advanced panel scans exactly that box, padded by the margin, clamped to the scanner range (skipped with a logged reason when it does not fit), with the panel's own settings put back afterwards. The roles are '(unchanged)': arming applies no setup mode and Stop puts nothing back, so set the lasers, camera and scan panel as you want them before arming (or name your own setup modes there). Set the placeholders marked in the user docs: the camera name (steps 'cam', 'dff.frame', 'tf' source), the calibration id (step 'tf'), the lasers and axes of the scan step, the threshold and the roles. Run it first in Validate mode (dry run): everything runs, the scan action only logs the rectangle it WOULD scan. Then in Experiment.",
   "metadata": {
     "smart_pipeline": {
       "roles": {
-        "scouting": "pipeline-scouting",
-        "idle": "pipeline-idle"
+        "scouting": "(unchanged)",
+        "idle": "(unchanged)"
       }
     }
   },

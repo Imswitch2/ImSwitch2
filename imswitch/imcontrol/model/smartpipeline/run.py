@@ -142,8 +142,15 @@ class PipelineRun:
     # -- roles -------------------------------------------------------------------
 
     def _apply_role(self, role: str, *, required: bool) -> None:
+        from imswitch.imcommon.model.smartpipeline.document import UNCHANGED
+
         mode_name = self.settings.roles.get(role)
         if not mode_name:
+            return
+        if mode_name == UNCHANGED:
+            # Named on purpose: nothing to apply, the microscope stays as set.
+            self.roles_applied.append(role)
+            self.log.append(self.engine._tick, self._clock(), "pipeline", "role", role=role, mode=UNCHANGED)
             return
         if self._apply_mode is None:
             if required:

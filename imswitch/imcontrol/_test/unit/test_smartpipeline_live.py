@@ -418,3 +418,30 @@ def test_stop_is_idempotent_and_safe_from_another_thread(registry, positioners):
     assert run.join(3) and run.state == STOPPED and not source.leased
     run.stop()   # after the end: nothing happens
     assert run.state == STOPPED
+
+
+def test_unchanged_roles_arm_in_experiment_without_any_setup_mode(registry, positioners):
+    from imswitch.imcommon.model.smartpipeline.document import UNCHANGED
+
+    document = _document()
+    document.settings = PipelineSettings(roles={"scouting": UNCHANGED, "idle": UNCHANGED})
+    run, source, manager, applied = _run(document, registry, positioners)
+    run.arm()
+    assert run.state == ARMED and applied == []           # nothing was asked of the setup modes
+    assert [(e.event, e.detail.get("mode")) for e in run.log.events(step="pipeline") if e.event == "role"] == \
+        [("role", UNCHANGED)]
+    run.start()
+    run.stop()
+    assert run.join(3) and run.state == STOPPED and applied == []
+
+
+def test_the_shipped_roi_dff_document_needs_no_setup_mode():
+    import imswitch
+    from pathlib import Path
+
+    from imswitch.imcommon.model.smartpipeline.document import UNCHANGED
+
+    path = Path(imswitch.__file__).parent / "_data" / "user_defaults" / "smart_pipelines" / \
+        "roi_dff_triggered_apd_scan.json"
+    settings = SmartPipelineDocument.load(path).settings
+    assert settings.arms_live and settings.roles == {"scouting": UNCHANGED, "idle": UNCHANGED}

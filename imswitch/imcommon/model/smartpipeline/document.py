@@ -55,6 +55,10 @@ PIPELINE_METADATA_KEY = "smart_pipeline"
 
 #: The smart-microscopy roles a pipeline may name a setup mode for.
 ROLES = ("scouting", "event", "resume", "idle")
+#: A role's value that names no setup mode: the run enters the role with the
+#: microscope as the user left it (nothing is applied). The shipped
+#: pipelines use it, so they arm on a setup that has no setup modes yet.
+UNCHANGED = "(unchanged)"
 
 
 @dataclass
@@ -62,8 +66,9 @@ class PipelineSettings:
     """What the pipeline needs beyond its steps.
 
     ``roles`` maps a role (:data:`ROLES`) to the setup mode applied when the
-    pipeline enters it; without a ``scouting``/``idle`` pair the engine arms
-    only in Visualize. ``replay_interval_s`` is the simulated time between
+    pipeline enters it, or to :data:`UNCHANGED` (apply nothing: the
+    microscope stays as the user set it); without a ``scouting``/``idle``
+    pair the engine arms only in Visualize. ``replay_interval_s`` is the simulated time between
     two frames of a replayed recording (0: the recording's own timestamps,
     else one frame per index).
     """

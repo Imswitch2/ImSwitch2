@@ -557,7 +557,9 @@ class SmartPipelineController(ImConWidgetController):
         def apply():
             available = list(controller.listSetupModes() or [])
             if modeName not in available:
-                return f'no setup mode {modeName!r} (have: {", ".join(available) or "none"})'
+                return (f'no setup mode {modeName!r} (have: {", ".join(available) or "none"}). Save one with '
+                        f'that name in the Setup modes panel (More > Save as...), or set the role to '
+                        f'"(unchanged)" in the pipeline to leave the microscope as it is')
             outcome = controller.applySetupMode(modeName)
             failed = list(getattr(outcome, 'failedComponents', None) or getattr(outcome, 'failed', None) or [])
             return f'components failed: {", ".join(map(str, failed))}' if failed else None
