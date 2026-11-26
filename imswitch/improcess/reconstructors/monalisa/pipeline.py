@@ -41,7 +41,8 @@ from .extraction import (
     ExtractionResult,
     calibrate_haze_sigma,
 )
-from .lattice import Lattice, detect_lattice
+from .lattice import Lattice
+from .localization_common_adapter import detect_lattice_shared
 from .localization_settings import LocalizationSettings
 from .dll_equivalent import DllFastExtractionOperator
 from .placement import (
@@ -765,10 +766,8 @@ def choose_calibration_image(
     failure = None
     for name, image in candidates:
         try:
-            found = lattice or detect_lattice(
-                image, min_period=band[0], max_period=band[1],
-                num_candidate_peaks=int(settings.num_candidate_peaks),
-                min_peak_significance=float(settings.min_peak_significance),
+            found = lattice if lattice is not None else detect_lattice_shared(
+                image, settings=settings, band=band,
             )
             x, y = found.points_in_frame(*image.shape)
             fit = shared_sigma_fit(image, x, y, radius=_default_radius(x, y, 2.0))
@@ -924,11 +923,8 @@ def find_localization(
     first_failure = None
     if found is None:
         try:
-            found = detect_lattice(
-                chosen_image,
-                min_period=band[0], max_period=band[1],
-                num_candidate_peaks=int(settings.num_candidate_peaks),
-                min_peak_significance=float(settings.min_peak_significance),
+            found = detect_lattice_shared(
+                chosen_image, settings=settings, band=band,
             )
         except ValueError as exc:
             first_failure = exc
@@ -937,11 +933,8 @@ def find_localization(
             chosen_name = "variance-fast"
             chosen_image = np.asarray(modulation_frame, dtype=float)
             try:
-                found = detect_lattice(
-                    chosen_image,
-                    min_period=band[0], max_period=band[1],
-                    num_candidate_peaks=int(settings.num_candidate_peaks),
-                    min_peak_significance=float(settings.min_peak_significance),
+                found = detect_lattice_shared(
+                    chosen_image, settings=settings, band=band,
                 )
             except ValueError:
                 raise first_failure

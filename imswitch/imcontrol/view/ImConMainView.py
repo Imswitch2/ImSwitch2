@@ -1029,6 +1029,7 @@ _DOCK_DISPLAY_NAMES = {
     'Recording': 'Recording',
     'Console': 'Console',
     'Image': 'Image Display',
+    'TransformCalibration': 'Transform Calibration',
 }
 
 # Default dock layout, mirroring the previous hard-coded behaviour exactly.
@@ -1054,6 +1055,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'AlignAverage':  _DockInfo(name='Axial Alignment Tool',          yPosition=3),
     'AlignXY':       _DockInfo(name='Rotational Alignment Tool',     yPosition=3),
     'ULenses':       _DockInfo(name='uLenses Tool',                  yPosition=3),
+    'TransformCalibration': _DockInfo(name='Transform Calibration',   yPosition=3),
     'FFT':           _DockInfo(name='FFT Tool',                      yPosition=3),
     'FlipMirror':    _DockInfo(name='Flip Mirrors',                  yPosition=0),
     'Watcher':               _DockInfo(name='File Watcher',           yPosition=3),

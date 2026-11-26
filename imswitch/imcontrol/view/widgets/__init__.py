@@ -63,6 +63,7 @@ _WIDGET_MODULES = {
     "TriggerScopeScanWidget": "TriggerScopeScanWidget",
     "TriggerScopeGalvoDetectionWidget": "TriggerScopeGalvoDetectionWidget",
     "ULensesWidget": "ULensesWidget",
+    "TransformCalibrationWidget": "TransformCalibrationWidget",
     "ViewWidget": "ViewWidget",
     "ViewerToolsWidget": "ViewerToolsWidget",
     "WatcherWidget": "WatcherWidget",

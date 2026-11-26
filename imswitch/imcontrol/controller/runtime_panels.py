@@ -58,6 +58,14 @@ def extraKwargsFor(key: str, viewWidgets: Dict[str, object]) -> dict:
             'imageWidget': viewWidgets.get('Image'),
             'lineProfileWidget': viewWidgets.get('LineProfile'),
         }
+    if key == 'ULenses':
+        return {'imageWidget': viewWidgets.get('Image')}
+    if key == 'TransformCalibration':
+        # Its uLens-grid strategy takes its guesses from the uLenses panel.
+        return {
+            'imageWidget': viewWidgets.get('Image'),
+            'ulensesWidget': viewWidgets.get('ULenses'),
+        }
     return {}
 
 

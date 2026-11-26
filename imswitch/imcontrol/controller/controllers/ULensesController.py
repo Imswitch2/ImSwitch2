@@ -1,14 +1,24 @@
 import numpy as np
 
 from ..basecontrollers import ImConWidgetController
-from imswitch.imcontrol.model.ulenses_localizer import localizer
+from imswitch.imcontrol.model.ulenses_localizer import localize_grid, localizer
+
+
+def _image_source(widget):
+    getter = getattr(widget, 'getImageSource', None)
+    return getter() if getter is not None else 'detector'
 
 
 class ULensesController(ImConWidgetController):
-    """ Linked to ULensesWidget. """
+    """Linked to ULensesWidget."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, imageWidget=None, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._imageWidget = imageWidget
+        self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
 
         # Register the grid overlay with the image viewbox (like the other
         # overlays) so it is tracked in the viewbox's overlay list and receives
@@ -20,51 +30,315 @@ class ULensesController(ImConWidgetController):
         self._widget.sigULensesClicked.connect(self.updateGrid)
         self._widget.sigUShowLensesChanged.connect(self.toggleULenses)
         self._widget.sigLocalizeBtnClicked.connect(self.localize)
+        self._widget.sigLocalizationMethodChanged.connect(self._localizationMethodChanged)
+        self._widget.sigImageSourceChanged.connect(self._imageSourceChanged)
+        if self._imageWidget is not None:
+            try:
+                selected = self._imageWidget.napariViewer.layers.selection
+                selected.events.active.connect(self._activeLayerChanged)
+            except AttributeError:
+                pass  # Older Napari releases may not expose this event.
+        self._commChannel.sigDetectorSwitched.connect(self._detectorSwitched)
+
+        self._syncPixelSizeFromDetector()
+
+    def _imageSourceChanged(self, source):
+        # The new source needs a fresh localization. Never project geometry
+        # from one detector/imported image onto another.
+        self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
+        self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+        if source == 'napari':
+            self._widget.setPixelSizeManualFallback(
+                'Imported Napari image: enter its effective pixel size in nm.'
+            )
+            self._widget.setLocalizationStatus(
+                'Select a 2-D Image layer in Napari, set its pixel size, then Auto Localize.'
+            )
+        else:
+            self._syncPixelSizeFromDetector()
+            self._widget.setLocalizationStatus('Run Auto Localize for this detector.')
+
+    def _activeLayerChanged(self, *_args):
+        if _image_source(self._widget) != 'napari':
+            return
+        # A new selected layer is not the image on which the cached lattice
+        # was localized. Avoid showing potentially misleading grid positions.
+        self._gridLocalizationResult = None
+        self._napariSourceLayer = None
+        self._napariImageShape = None
+        self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+        self._widget.setLocalizationStatus(
+            'Active Napari layer changed — run Auto Localize on the selected image.'
+        )
+
+    @staticmethod
+    def _napariWorldCoordinates(layer, points_rc):
+        """Convert (row, col) image coordinates to Napari world-space (x, y).
+
+        Unlike detector overlays, imported layers may be translated, rotated,
+        or scaled independently of the current detector.  Mapping the output
+        through the layer transform ensures the overlay follows the image.
+        """
+        points_rc = np.asarray(points_rc, dtype=np.float64).reshape(-1, 2)
+        if len(points_rc) == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        world_rc = np.asarray(
+            [layer.data_to_world(tuple(point)) for point in points_rc],
+            dtype=np.float64,
+        )
+        return world_rc[:, [1, 0]]
+
+    def _showGridPoints(self, points_rc):
+        if _image_source(self._widget) == 'napari':
+            if self._napariSourceLayer is None:
+                self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+                return
+            xy = self._napariWorldCoordinates(self._napariSourceLayer, points_rc)
+            # The points are already in world coordinates. Do not let live
+            # detector pixel-scale updates move this imported-image overlay.
+            self._widget.setWorldData(x=xy[:, 0], y=xy[:, 1])
+            return
+        points_rc = np.asarray(points_rc, dtype=np.float64)
+        self._widget.setData(x=points_rc[:, 1], y=points_rc[:, 0])
+
+    def _detectorSwitched(self, *_args):
+        if _image_source(self._widget) == 'napari':
+            return  # An imported layer is independent of detector selection.
+        # Grid geometry belongs to the image/detector it was localized on. Do
+        # not carry a finite tilted grid onto a newly selected detector.
+        self._gridLocalizationResult = None
+        self._syncPixelSizeFromDetector()
+        if self._widget.getLocalizationMethod() == 'grid':
+            self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+            self._widget.setLocalizationStatus(
+                'Detector changed — run Auto Localize for this image.'
+            )
+
+    def _detectorPixelSizeNm(self):
+        """Return effective current-frame pixel size in nm when representable.
+
+        DetectorManager.pixelSizeUm is the unbinned sample-plane calibration.
+        Camera binning changes the physical size represented by one delivered
+        array pixel, so it is applied here. The historical uLenses UI has one
+        scalar pixel-size field; anisotropic detector pixels therefore remain a
+        manual-fallback case rather than being silently collapsed.
+        """
+        detector_name = self._master.detectorsManager.getCurrentDetectorName()
+
+        def read(detector):
+            sizes = list(detector.pixelSizeUm)
+            if len(sizes) >= 2:
+                size_y_um, size_x_um = float(sizes[-2]), float(sizes[-1])
+            elif len(sizes) == 1:
+                size_y_um = size_x_um = float(sizes[0])
+            else:
+                raise ValueError('detector pixelSizeUm is empty')
+
+            binning = 1
+            if not bool(getattr(detector, 'isScanDriven', False)):
+                try:
+                    binning = max(1, int(getattr(detector, 'binning', 1) or 1))
+                except (TypeError, ValueError):
+                    binning = 1
+            size_y_um *= binning
+            size_x_um *= binning
+
+            source = None
+            try:
+                source_parameter = detector.parameters.get('Camera pixel size source')
+                if source_parameter is not None:
+                    source = str(source_parameter.value)
+            except Exception:
+                pass
+            return size_y_um, size_x_um, source
+
+        size_y_um, size_x_um, source = self._master.detectorsManager.execOnCurrent(read)
+        if source == 'assumed default':
+            raise ValueError(
+                'current detector only has the assumed default pixel size; '
+                'configure Camera pixel size or enter it manually here'
+            )
+        if not np.isfinite(size_y_um) or not np.isfinite(size_x_um):
+            raise ValueError('detector pixel size is not finite')
+        if size_y_um <= 0 or size_x_um <= 0:
+            raise ValueError('detector pixel size must be positive')
+
+        scale = max(abs(size_y_um), abs(size_x_um), 1e-12)
+        if abs(size_y_um - size_x_um) / scale > 1e-3:
+            raise ValueError(
+                'current detector has anisotropic pixels '
+                f'({size_y_um:.6g} x {size_x_um:.6g} um); '
+                'the uLenses tool currently uses one scalar pixel size'
+            )
+        return 1000.0 * 0.5 * (size_y_um + size_x_um), detector_name, source
+
+    def _syncPixelSizeFromDetector(self):
+        """Refresh uLenses pixel size from the currently displayed detector."""
+        if _image_source(self._widget) == 'napari':
+            return None  # Physical calibration of imported images is manual.
+        try:
+            pixel_size_nm, detector_name, source = self._detectorPixelSizeNm()
+        except Exception as error:
+            # Retain the existing field value so old setups still work. Manual
+            # entry is only a fallback when detector metadata cannot represent
+            # the current image pixel size.
+            if hasattr(self._widget, 'setPixelSizeManualFallback'):
+                self._widget.setPixelSizeManualFallback(str(error))
+            return None
+
+        if hasattr(self._widget, 'setPixelSizeFromDetector'):
+            self._widget.setPixelSizeFromDetector(pixel_size_nm, detector_name, source)
+        else:
+            self._widget.setParameters(px=pixel_size_nm)
+        return float(pixel_size_nm)
 
     def localize(self):
         """Localize the uLens grid in the current detector image."""
         try:
+            self._syncPixelSizeFromDetector()
             _, _, px, upx, upy = self._widget.getParameters()
             if px <= 0:
-                raise ValueError("Pixel size must be positive")
+                raise ValueError('Pixel size must be positive')
 
-            img_frame = self._commChannel.get_image()
-            loc_res = localizer(
-                img_frame,
-                xp_guess=upx / px,
-                yp_guess=upy / px,
-            )
+            source = _image_source(self._widget)
+            if source == 'napari':
+                if self._imageWidget is None:
+                    raise ValueError('the Image/Napari viewer is not available')
+                img_frame, source_layer = self._imageWidget.getActiveImageLayerSnapshot()
+            else:
+                img_frame = self._commChannel.get_image()
+                source_layer = None
+            method = self._widget.getLocalizationMethod()
+            if method == 'legacy':
+                loc_res = localizer(
+                    img_frame,
+                    xp_guess=upx / px,
+                    yp_guess=upy / px,
+                )
+                x_period = round(loc_res.xp * px, 2)
+                x_offset = round(loc_res.xo, 2)
+                y_period = round(loc_res.yp * px, 2)
+                y_offset = round(loc_res.yo, 2)
+
+                self._widget.setParameters(
+                    x=x_offset,
+                    y=y_offset,
+                    px=px,
+                    upx=x_period,
+                    upy=y_period,
+                )
+                self._widget.setLocalizationStatus(
+                    f'Legacy | X {x_period:g} nm | Y {y_period:g} nm'
+                )
+            elif method == 'grid':
+                n_cols, n_rows = self._widget.getGridSize()
+                settings = (
+                    self._widget.getGridLocalizationSettings()
+                    if hasattr(self._widget, 'getGridLocalizationSettings')
+                    else {}
+                )
+                grid = localize_grid(
+                    img_frame,
+                    xp_guess=upx / px,
+                    yp_guess=upy / px,
+                    n_cols=n_cols,
+                    n_rows=n_rows,
+                    **settings,
+                )
+                self._gridLocalizationResult = grid
+                x_period = round(grid.x_period_px * px, 2)
+                y_period = round(grid.y_period_px * px, 2)
+                self._widget.setParameters(
+                    px=px,
+                    upx=x_period,
+                    upy=y_period,
+                )
+                stagger = (
+                    'no stagger'
+                    if grid.stagger_axis is None
+                    else f'{grid.stagger_axis} stagger {grid.stagger_fraction:.2f}'
+                )
+                rms = grid.diagnostics.get('fit_rms_px')
+                rms_text = '' if rms is None else f' | RMS {float(rms):.2f} px'
+                measured_text = ''
+                if grid.missing_count:
+                    measured_text = (
+                        f' | {grid.matched_count}/{grid.n_cols * grid.n_rows} detected'
+                    )
+                self._widget.setLocalizationStatus(
+                    f'Grid {grid.n_cols}x{grid.n_rows} | tilt {grid.angle_deg:.1f} deg | '
+                    f'{stagger}{measured_text}{rms_text}'
+                )
+            else:
+                raise ValueError(f'Unknown localization method: {method}')
         except Exception as e:
-            self._logger.warning(
-                f"Auto localization failed - use manual mode: {e}"
-            )
+            method = getattr(self._widget, 'getLocalizationMethod', lambda: 'legacy')()
+            label = 'Grid localization' if method == 'grid' else 'Auto localization'
+            message = f'{label} failed: {e}'
+            self._logger.warning(message)
+            if hasattr(self._widget, 'setLocalizationStatus'):
+                self._widget.setLocalizationStatus(message, error=True)
+            # Keep the previous successful overlay/result visible for diagnosis.
             return
 
-        x_period = round(loc_res.xp * px, 2)
-        x_offset = round(loc_res.xo, 2)
-        y_period = round(loc_res.yp * px, 2)
-        y_offset = round(loc_res.yo, 2)
+        if source == 'napari':
+            self._napariSourceLayer = source_layer
+            self._napariImageShape = img_frame.shape
+        else:
+            self._napariSourceLayer = None
+            self._napariImageShape = None
+        self.updateGrid()
 
-        self._widget.setParameters(
-            x=x_offset,
-            y=y_offset,
-            px=px,
-            upx=x_period,
-            upy=y_period,
-        )
+    def _localizationMethodChanged(self, method):
+        """Switch displayed overlay without discarding either method's state."""
+        if method == 'grid' and self._gridLocalizationResult is None:
+            self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+            self._widget.setLocalizationStatus(
+                'Run Auto Localize to establish tilted/staggered grid geometry.'
+            )
+            return
         self.updateGrid()
 
     def updateGrid(self):
-        """ Updates plot with new parameters. """
+        """Update the overlay using the selected localization representation."""
+        self._syncPixelSizeFromDetector()
+        method = self._widget.getLocalizationMethod()
+        if method == 'grid':
+            grid_result = self._gridLocalizationResult
+            if grid_result is None:
+                self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+                self._widget.setLocalizationStatus(
+                    'Run Auto Localize to establish tilted/staggered grid geometry.'
+                )
+                return
+            points = np.asarray(grid_result.grid_points_rc, dtype=np.float64)
+            if _image_source(self._widget) == 'napari':
+                self._showGridPoints(points)
+            else:
+                self._widget.setData(x=points[:, 1], y=points[:, 0])
+            return
+
+        # Historical axis-aligned behavior remains unchanged.
         x, y, px, upx, upy = self._widget.getParameters()
-        size_x, size_y = self._master.detectorsManager.execOnCurrent(lambda c: c.shape)
+        if _image_source(self._widget) == 'napari':
+            if self._napariImageShape is None:
+                self._widget.setData(x=np.asarray([]), y=np.asarray([]))
+                return
+            size_y, size_x = self._napariImageShape
+        else:
+            size_x, size_y = self._master.detectorsManager.execOnCurrent(lambda c: c.shape)
         pattern_x = np.arange(x, size_x, upx / px)
         pattern_y = np.arange(y, size_y, upy / px)
         grid = np.array(np.meshgrid(pattern_x, pattern_y)).T.reshape(-1, 2)
-        self._widget.setData(x=grid[:, 0], y=grid[:, 1])
+        if _image_source(self._widget) == 'napari':
+            self._showGridPoints(grid[:, [1, 0]])
+        else:
+            self._widget.setData(x=grid[:, 0], y=grid[:, 1])
 
     def toggleULenses(self, show):
-        """ Shows or hides grid. """
+        """Show or hide grid."""
         self._widget.setULensesVisible(show)
 
 
