@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 
 import numpy as np
@@ -105,6 +106,50 @@ class LiveFrameSource:
         #: from the signal (which also carries the partial frames of a scan
         #: in progress); it needs no lease.
         self.scan_driven = False
+        #: The last frames delivered, kept for an event's records (the
+        #: frames before and after a trigger): references to the copies
+        #: already made, at most ``keep_frames`` of them; 0 keeps none.
+        self._history: deque = deque(maxlen=1)
+        self._history_cond = threading.Condition()
+        self._ended = False
+        self.keep_frames = 0
+
+    @property
+    def keep_frames(self) -> int:
+        return int(self._history.maxlen) if self._keep else 0
+
+    @keep_frames.setter
+    def keep_frames(self, count: int) -> None:
+        count = max(0, int(count))
+        self._keep = count > 0
+        with self._history_cond:
+            self._history = deque(self._history, maxlen=max(1, count))
+
+    def _remember(self, frame: Frame) -> None:
+        if not self._keep:
+            return
+        with self._history_cond:
+            self._history.append(frame)
+            self._history_cond.notify_all()
+
+    def recent_frames(self) -> list:
+        """The frames kept (oldest first)."""
+        with self._history_cond:
+            return list(self._history)
+
+    def frames_after(self, wall_time: float, count: int, timeout_s: float) -> list:
+        """The first ``count`` frames taken after ``wall_time`` (wall clock),
+        waiting at most ``timeout_s`` for them; fewer when they do not come."""
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._history_cond:
+            while True:
+                found = [f for f in self._history if (f.metadata or {}).get("wall_time", 0.0) > wall_time]
+                if len(found) >= count:
+                    return found[:count]
+                left = deadline - time.monotonic()
+                if left <= 0 or self._ended:
+                    return found
+                self._history_cond.wait(min(left, 0.2))
 
     # -- the lease --------------------------------------------------------------
 
@@ -189,6 +234,7 @@ class LiveFrameSource:
             scale=tuple(float(v) for v in (scale or ())), unit="um" if scale else "px",
             metadata={"init": bool(init), "current": bool(isCurrentDetector), "wall_time": time.time()},
         )
+        self._remember(frame)
         return self._inbox.push(frame)
 
     def _is_duplicate(self, array: np.ndarray) -> bool:
@@ -233,6 +279,9 @@ class LiveFrameSource:
 
     def stop(self) -> None:
         self._inbox.stop()
+        with self._history_cond:
+            self._ended = True        # no more frames: a wait for them ends now
+            self._history_cond.notify_all()
 
     def close(self) -> None:
         self._inbox.close()

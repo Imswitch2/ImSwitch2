@@ -53,6 +53,9 @@ THRESHOLD_METHODS = ("otsu", "manual", "triangle", "yen", "local")
 
 #: Pixels outside every ROI used for a background estimate (a strided subset).
 BACKGROUND_SAMPLE = 20_000
+#: Frames of per-ROI history (F, F0, dF/F) kept in the state for an event's
+#: records: a ring, so memory stays bounded (frames x ROIs x 3 float32).
+TRACE_FRAMES = 1000
 
 COLUMNS = ("label", "area", "bbox_y0", "bbox_x0", "bbox_y1", "bbox_x1", "F", "F0", "dff", "triggered", "valid")
 _BOOL_COLUMNS = ("triggered", "valid")
@@ -252,6 +255,7 @@ class RoiDffProcessor(Processor):
             return self._empty(image_result, p, "no ROIs in the mask", message)
         F = self._measure(image, rois, p)
         row = self._update(state, p, F, clock)
+        _record_trace(state, row, _frame_index(image_result), clock)
         return self._result(image_result, p, rois, row, message)
 
     # -------------------------------------------------------------- the mask
@@ -290,6 +294,10 @@ class RoiDffProcessor(Processor):
             raise ProcessorInputError(f"the mask has shape {labels.shape}, the frame {image.shape}")
         state.pop("ref_sum", None)
         state["rois"] = _freeze_rois(labels)
+        # The frozen mask itself, for the records of an event (read, never written, after this).
+        frozen = np.asarray(labels).astype(np.int32, copy=True)
+        frozen.setflags(write=False)
+        state["labels"] = frozen
         return ""
 
     # ---------------------------------------------------------- measurement
@@ -407,6 +415,40 @@ class RoiDffProcessor(Processor):
         )
 
 
+def _record_trace(state: dict, row: dict, frame_index, clock) -> None:
+    """One frame of F, F0 and dF/F per ROI into the state's bounded ring
+    (``trace``: arrays of TRACE_FRAMES rows, ``n`` rows written so far)."""
+    F = np.asarray(row["F"], dtype=np.float32)
+    n = F.shape[0]
+    trace = state.get("trace")
+    if trace is None or trace["F"].shape[1] != n:
+        trace = {key: np.full((TRACE_FRAMES, n), np.nan, dtype=np.float32) for key in ("F", "F0", "dff")}
+        trace.update(frame=np.full(TRACE_FRAMES, -1, dtype=np.int64), t=np.full(TRACE_FRAMES, np.nan), n=0)
+        state["trace"] = trace
+    slot = trace["n"] % TRACE_FRAMES
+    trace["F"][slot] = F
+    trace["F0"][slot] = np.broadcast_to(np.asarray(row["F0"], dtype=np.float32), (n,))
+    trace["dff"][slot] = np.asarray(row["dff"], dtype=np.float32)
+    trace["frame"][slot] = state.get("frames_in", 0) if frame_index is None else int(frame_index)
+    trace["t"][slot] = np.nan if clock is None else float(clock)
+    trace["n"] += 1
+
+
+def trace_snapshot(state: dict) -> dict | None:
+    """The state's trace in time order (oldest first), copied: ``F``, ``F0``,
+    ``dff`` (frames x ROIs), ``frame``, ``t`` and ``label`` (the ROI of each
+    column); None before the first measured frame."""
+    trace = state.get("trace")
+    rois = state.get("rois")
+    if trace is None or not rois or not rois.get("n"):
+        return None
+    count = min(trace["n"], TRACE_FRAMES)
+    order = np.arange(trace["n"] - count, trace["n"]) % TRACE_FRAMES
+    out = {key: trace[key][order].copy() for key in ("F", "F0", "dff", "frame", "t")}
+    out["label"] = np.asarray(rois["label"]).copy()
+    return out
+
+
 def _frame_index(result):
     value = (getattr(result, "metadata", None) or {}).get("frame_index")
     return None if value is None else int(value)
@@ -453,4 +495,4 @@ def _freeze_rois(labels: np.ndarray) -> dict:
             "centroid": np.column_stack([cy, cx]), "bbox": bbox, "bg_sel": outside}
 
 
-__all__ = ["RoiDffProcessor"]
+__all__ = ["TRACE_FRAMES", "RoiDffProcessor", "trace_snapshot"]

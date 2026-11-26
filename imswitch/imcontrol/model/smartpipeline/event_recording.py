@@ -76,9 +76,21 @@ def attr_value(value):
 
         if isinstance(value, np.generic):
             return value.item()
+        if isinstance(value, np.ndarray) and value.dtype.kind in "biuf":
+            return value          # a numeric array stays an array (as etSTED writes its centres)
     except ImportError:  # pragma: no cover
         pass
     return json.dumps(value, default=str)
+
+
+def utc_iso(timestamp: float | None = None) -> str:
+    """Wall-clock time as ISO-8601 UTC with microseconds -- the format of the
+    etSTED route's ``*_time_utc`` attributes."""
+    from datetime import timezone
+
+    moment = (datetime.now(timezone.utc) if timestamp is None
+              else datetime.fromtimestamp(float(timestamp), timezone.utc))
+    return moment.isoformat(timespec="microseconds")
 
 
 def event_attrs(fields: dict) -> dict:
@@ -162,6 +174,7 @@ class ScanRecording:
         self.message = ""
         self.started_wall: float | None = None
         self.ended_wall: float | None = None
+        self.event: int | None = None
         self._ended = threading.Event()
 
     def _on_ended(self, failed, message) -> None:
@@ -213,6 +226,10 @@ class TriggeredScanRecorder:
         self.events = 0
         self.saved: list[dict] = []
         self.failures: list[str] = []
+        #: An :class:`~.event_archive.EventArchive`: told when an event starts
+        #: and ends, it writes the camera frames, the ROIs and the traces next
+        #: to the scan and the run's summary.
+        self.archive = None
 
     def _registry(self) -> dict:
         registry = self._controllers() if callable(self._controllers) else self._controllers
@@ -248,11 +265,14 @@ class TriggeredScanRecorder:
             self.events += 1
             return self.events
 
-    def start(self, source: str, *, file_name: str, attrs: dict) -> ScanRecording:
+    def start(self, source: str, *, file_name: str, attrs: dict, event: int | None = None,
+              fields: dict | None = None, pre: list | None = None) -> ScanRecording:
         """Arm the recording of the scan panel ``source``'s next scan and
         start that scan (GUI thread, marshalled). Raises with the reason when
-        the Recording controller refuses."""
+        the Recording controller refuses. ``event`` and ``fields`` go to the
+        archive, which takes the frames before the trigger now."""
         recording = ScanRecording(self, self.detectors, file_name)
+        recording.event = event
         extra = {**self.base_attrs, **attrs}
 
         def begin():
@@ -271,8 +291,35 @@ class TriggeredScanRecorder:
             recording.savename = getattr(controller, "savename", None) or os.path.join(self.folder, file_name)
             recording.started_wall = time.time()
 
-        self._marshal(begin)
+        try:
+            self._marshal(begin)
+        except Exception as exc:
+            self._tell_archive("row", {**dict(fields or {}), "status": "failed",
+                                       "reason": f"not saved, not scanned: {exc}"})
+            raise
+        if event is not None:
+            self._tell_archive("started", event, file_name, dict(fields or {}), pre)
         return recording
+
+    def _tell_archive(self, what: str, *args) -> None:
+        archive = self.archive
+        if archive is None:
+            return
+        try:
+            if what == "started":
+                archive.event_started(*args)
+            elif what == "finished":
+                archive.event_finished(*args)
+            else:
+                archive.add_row(*args)
+        except Exception as exc:  # noqa: BLE001 - the records never stop the experiment
+            if self._logger is not None:
+                self._logger.warning("Smart pipeline records: %s", exc)
+
+    def failed(self, recording: ScanRecording, message: str) -> None:
+        """The recording of ``recording`` failed: the archive says so."""
+        if getattr(recording, "event", None) is not None:
+            self._tell_archive("finished", recording.event, {}, [], False, message)
 
     def stop(self) -> bool:
         def end():
@@ -294,6 +341,8 @@ class TriggeredScanRecorder:
             except Exception as exc:  # noqa: BLE001 - reported, the scan itself is saved
                 problems.append(f"could not add the event's end metadata to {path}: {exc}")
         self.saved.append({"paths": list(recording.paths), **attrs})
+        if getattr(recording, "event", None) is not None:
+            self._tell_archive("finished", recording.event, dict(attrs), list(recording.paths), True, "")
         return problems
 
 

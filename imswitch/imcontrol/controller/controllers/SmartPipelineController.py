@@ -26,6 +26,9 @@ _editorPreferencesPath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipel
 
 _STATUS_PERIOD_MS = 500
 _CLOSE_JOIN_S = 5.0
+#: Camera frames saved with a triggered event: before the trigger, after the scan.
+_EVENT_PRE_FRAMES = 5
+_EVENT_POST_FRAMES = 5
 
 
 class SmartPipelineController(ImConWidgetController):
@@ -321,6 +324,7 @@ class SmartPipelineController(ImConWidgetController):
         if recorder is not None and self._savesScans(document) and mode == RunMode.EXPERIMENT:
             log.append(0, time.monotonic(), 'pipeline', 'saving', folder=recorder.folder,
                        detectors=list(recorder.detectors), format=recorder.save_format)
+            recorder.archive = self._startArchive(run, document, source, recorder, transforms, log)
         self._commChannel.sigUpdateImage.connect(source.on_image)
         self._showOverlay(True)
         run.start()
@@ -388,6 +392,49 @@ class SmartPipelineController(ImConWidgetController):
             base_attrs=baseAttrs, logger=self.__logger, stage_position=self._stagePosition,
         )
 
+    def _startArchive(self, run, document, source, recorder, transforms, log):
+        """ The records of an Experiment run besides its scans: the armed
+        document, the run header, per event the camera frames, ROIs and
+        traces, the summary, the region file -- into the scans' folder. """
+        from imswitch.imcommon.model.smartpipeline import Transform
+        from imswitch.imcontrol.model.smartpipeline.boxes import transform_record
+        from imswitch.imcontrol.model.smartpipeline.event_archive import EventArchive, roi_snapshot
+
+        roiSteps = [step.id for step in document.workflow.steps
+                    if isinstance(step, Process) and step.processor == 'roi-dff']
+        engine = run.engine
+
+        def snapshot():
+            if not roiSteps:
+                return None
+            with engine._lock:
+                return roi_snapshot(engine._state.get(roiSteps[0]))
+
+        def report(message):
+            log.append(engine._tick, time.monotonic(), 'records', 'save-failed', error=message)
+
+        source.keep_frames = _EVENT_PRE_FRAMES + _EVENT_POST_FRAMES + 8
+        archive = EventArchive(recorder.folder, source=source, snapshot=snapshot, pre_frames=_EVENT_PRE_FRAMES,
+                               post_frames=_EVENT_POST_FRAMES, region=recorder.region,
+                               stage_position=self._stagePosition, report=report, logger=self.__logger)
+        records = {}
+        for step in document.workflow.steps:
+            if isinstance(step, Transform):
+                transform = transforms.get(step.transform)
+                if transform is not None:
+                    try:
+                        records[step.id] = transform_record(transform)
+                    except Exception:
+                        records[step.id] = {'id': step.transform}
+        identity = getattr(source, 'identity', None)
+        header = {'pipeline': document.name, 'pipeline_file': self._path, 'mode': RunMode.EXPERIMENT.value,
+                  'detector': source.detector, 'camera_grid': getattr(identity, '__dict__', None),
+                  'scan_detectors': list(recorder.detectors), 'transforms': records,
+                  'roi_steps': roiSteps, 'pre_frames': _EVENT_PRE_FRAMES, 'post_frames': _EVENT_POST_FRAMES,
+                  'setup': getattr(getattr(self, '_options', None), 'setupFileName', None)}
+        archive.start(header, document.to_json())
+        return archive
+
     def _saveProblems(self, document, recorder):
         """ Why the triggered scans of ``document`` could not be saved, or
         []. Checked at every arm: a refusal in Experiment, a note in a dry run. """
@@ -408,7 +455,16 @@ class SmartPipelineController(ImConWidgetController):
         self._updateButtons()
 
     def _onRunFinished(self, run):
-        # worker thread: hand over to the GUI thread
+        # worker thread: the run's records are completed here (the region
+        # file, the summary), then the GUI thread takes over
+        recorder = self._recorder if run is self._run else None
+        archive = getattr(recorder, 'archive', None)
+        if archive is not None:
+            try:
+                if not archive.close():
+                    self.__logger.warning('Smart pipeline: the run records were still being written at the end')
+            except Exception:
+                self.__logger.warning('Smart pipeline: closing the run records failed', exc_info=True)
         self._invokeOnControllerThread(lambda: self._finishRun(run))
 
     def _finishRun(self, run):

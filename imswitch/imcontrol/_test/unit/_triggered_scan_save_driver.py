@@ -12,7 +12,13 @@ panel, then:
   unsaved);
 * ``arm``: the Smart Pipeline panel arms a pipeline in Experiment with an
   unusable recordings folder (refused, nothing armed) and in Validate (armed,
-  with a note).
+  with a note);
+* ``experiment``: the shipped ROI dF/F document (shorter warm-up and rest)
+  armed in Experiment from the panel, on a mock camera whose frames show
+  four square "cells", the first of which doubles in brightness in bursts:
+  the run's folder must get the scans, each event's context file (camera
+  frames before/at/after, mask, ROI table, traces), the armed document,
+  the run header, the summary and the region file.
 
 Prints ``RESULT <json>``.
 """
@@ -51,6 +57,20 @@ def _boot():
     _, controller = imcontrol.getMainViewAndController(channel, overrideSetupInfo=setupInfo,
                                                       overrideOptions=options)
     return controller
+
+
+_FRAMES = {'n': 0}
+#: Square cells (row0, col0, size) on the mock camera; the first one fires.
+_CELLS = ((300, 300, 24), (300, 460, 24), (460, 300, 24), (460, 460, 24))
+
+
+def _cells_frame(self, **kwargs):
+    _FRAMES['n'] += 1
+    image = np.full(self.shape, 100.0)
+    for index, (r, c, size) in enumerate(_CELLS):
+        bright = 2.0 if index == 0 and _FRAMES['n'] % 30 >= 20 else 1.0
+        image[r:r + size, c:c + size] = 600.0 * bright
+    return np.random.default_rng(_FRAMES['n']).poisson(image).astype(np.uint16)
 
 
 def _pump(seconds):
@@ -181,10 +201,64 @@ def arm_scenario(controller, out):
     return report
 
 
+def experiment_scenario(controller, out):
+    import glob
+
+    sp = controller.controllers['SmartPipeline']
+    sp._applyMode = lambda name: None
+    rec = controller.controllers['Recording']
+    folder = os.path.join(out, 'experiment')
+    rec.setRecFolder(folder)
+    with open(sp._path, encoding='utf-8') as handle:
+        document = json.load(handle)
+    for step in document['steps']:
+        if step['id'] == 'dff':
+            step['params'].update(reference_frames=2, baseline_frames=4, refractory_frames=0, min_consecutive=1,
+                                  min_area=20, clear_border=False)
+        if step['id'] == 'rest':
+            step['params']['seconds'] = 0.5
+        if step['id'] == 'scan':
+            step['params'].update(lasers=['488 (EXC)'], max_size_um=6.0)
+    path = os.path.join(out, 'experiment_pipeline.json')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump(document, handle)
+    from imswitch.imcommon.model import dirtools
+    from imswitch.imcommon.model.smartpipeline import ScaleFlip
+    with open(os.path.join(dirtools.UserFileDirs.Root, 'calibrations', 'cam_to_scan.json'), 'w') as handle:
+        json.dump(ScaleFlip('cam_to_scan', 'detector:Camera', 'scanner:galvo', pixel_size=(0.05, 0.05),
+                            origin=(400, 400)).to_dict(), handle)
+    sp.setPipelinePath(path)
+    sp._widget.setMode('experiment')
+    sp.arm()
+    report = {'armed': sp._run is not None, 'issues': sp._widget.issuesLabel.text()}
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        _pump(0.25)
+        if len(glob.glob(os.path.join(folder, '**', '*_context.h5'), recursive=True)) >= 2:
+            break
+    sp.stop()
+    for _ in range(300):
+        _pump(0.1)
+        if glob.glob(os.path.join(folder, '**', 'region_R0.h5'), recursive=True):
+            break
+    _pump(0.5)
+    report['state'] = None if sp._run is None else sp._run.state
+    report['error'] = None if sp._run is None else sp._run.error
+    report['log'] = sp._widget.logView.toPlainText().splitlines()[-40:]
+    report['files'] = sorted(os.path.relpath(p, folder) for p in glob.glob(os.path.join(folder, '**', '*'),
+                                                                            recursive=True))
+    report['folder'] = folder
+    return report
+
+
 def main(out):
+    from imswitch.imcontrol.model.interfaces import tiscamera_mock
+
+    tiscamera_mock.MockCameraTIS.grabFrame = _cells_frame
     controller = _boot()
     _pump(0.5)
-    result = {'adapter': adapter_scenario(controller, out), 'arm': arm_scenario(controller, out)}
+    result = {'adapter': adapter_scenario(controller, out), 'arm': arm_scenario(controller, out),
+              'experiment': experiment_scenario(controller, out)}
     print('RESULT ' + json.dumps(result, default=str))
 
 

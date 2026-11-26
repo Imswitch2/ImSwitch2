@@ -203,3 +203,28 @@ def test_per_frame_cost_scales_with_roi_pixels_not_the_frame():
     for i in range(1, 11):
         _run(proc, state, image, index=i, baseline_frames=1)
     assert (time.perf_counter() - t0) / 10 < 0.05
+
+
+def test_the_frozen_mask_and_a_bounded_trace_are_kept_for_the_records():
+    from imswitch.improcess.processors.roi_dff.processor import TRACE_FRAMES, trace_snapshot
+
+    proc, state = RoiDffProcessor(), {}
+    assert trace_snapshot(state) is None
+    for i in range(5):
+        _run(proc, state, _scene(a=2.0 if i == 4 else 1.0), index=i, baseline_frames=2, threshold=0.2)
+    labels = state["labels"]
+    assert labels.shape == (64, 64) and set(np.unique(labels)) == {0, 1, 2, 3}
+    assert not labels.flags.writeable
+    trace = trace_snapshot(state)
+    assert trace["dff"].shape == (5, 3) and list(trace["frame"]) == [0, 1, 2, 3, 4]
+    column = int(np.flatnonzero(trace["label"] == labels[10, 10])[0])
+    assert trace["dff"][-1, column] == pytest.approx(1.0, rel=1e-3)     # the bright cell, last frame
+    assert trace["F0"][-1, column] == pytest.approx(200.0)
+    trace["dff"][:] = 0      # a copy: the state is not touched
+    assert trace_snapshot(state)["dff"][-1, column] == pytest.approx(1.0, rel=1e-3)
+    for i in range(5, TRACE_FRAMES + 20):                       # bounded: a ring of TRACE_FRAMES
+        _run(proc, state, _scene(), index=i, baseline_frames=2, threshold=0.2)
+    trace = trace_snapshot(state)
+    assert trace["dff"].shape == (TRACE_FRAMES, 3)
+    assert trace["frame"][0] == 20 and trace["frame"][-1] == TRACE_FRAMES + 19
+    assert np.all(np.diff(trace["frame"]) == 1)

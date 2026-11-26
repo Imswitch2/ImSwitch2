@@ -1929,7 +1929,37 @@ Validate run arms and shows the same reasons as a note, and saves nothing (its
 ``would`` line says where an Experiment run would save). A scan that cannot be
 recorded is not started, and the pipeline stops with the reason: it never
 goes on firing scans that are not saved. Set ``save`` to false on the
-``run-scan`` step to scan without saving.
+``run-scan`` step to scan without saving. The leaves the etSTED route also
+writes (as ``EtSTED:<leaf>``) have the same names and formats here, so one
+reader handles both: ``route`` (``smart-pipeline``), ``event_index``,
+``session_id`` (the run folder's name), ``event_coords_px`` with
+``event_coords_order`` ``column,row`` (the centre of the ROI's box),
+``scan_center_um`` and ``scan_axes``, ``pipeline_name``, ``transform_name``,
+``trigger_frame_time_utc``, ``scan_start_time_utc`` and ``scan_end_time_utc``
+(ISO-8601 UTC).
+
+*Everything around an event, and the run.* Next to the scans, in the same run
+folder, written off the GUI and engine threads (a failed write is logged as
+``records: save-failed`` and never stops the run):
+
+* ``pipeline.json`` -- the document as armed; ``run.json`` -- the run's header
+  (pipeline, camera and its pixel grid, scan detectors, the transforms with
+  their records, the stage position at arm, the region);
+* ``event0001_R0_roi12_context.h5`` per event: ``camera/frames`` -- the 5
+  camera frames before the trigger, the frame that triggered and the first 5
+  after the scan, with ``sequence``, ``wall_time`` and ``role``
+  (``pre``/``trigger``/``post``); ``rois/labels`` -- the frozen mask;
+  ``rois/table`` -- label, area, centroid and box in camera pixels and the
+  last F, F0, dF/F; ``traces/F``, ``F0``, ``dff`` -- every ROI's history up to
+  the event (the last 1000 frames, ``frame``/``t`` per row, ``label`` per
+  column); the event and the transform as attributes;
+* ``summary.csv`` / ``summary.json`` -- one row per scanned, skipped or failed
+  trigger: time, status, event, region, ROI id and label, dF/F, F, F0, the
+  ROI's camera centroid, the scan centre and size, the stage position, the
+  reason, the file names;
+* ``region_R0.h5`` (at Stop) -- the region's ROI set: mask, table and how
+  often each ROI triggered, was scanned or skipped, with the stage position
+  and the run header. A tiled run will write one per region.
 
 **Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
 your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,

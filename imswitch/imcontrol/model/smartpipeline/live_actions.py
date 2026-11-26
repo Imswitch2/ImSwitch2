@@ -20,9 +20,12 @@ a function there and returns its result.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Callable, Protocol
+
+import numpy as np
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
 from imswitch.imcontrol.model.smartpipeline.boxes import BOX_COLUMNS, SOURCE_BOX_COLUMNS, box_of_row, plan_box_scan
@@ -470,7 +473,7 @@ class RunScanAdapter:
         t2 = time.perf_counter()
         source = str(request.params.get("source") or "Scan")
         if self._records(request):
-            recording = self._start_recording(request, source, summary, info)
+            recording = self._start_recording(request, source, summary, info, state)
             state["current"] = ("recording", recording)
             t3 = time.perf_counter()
             state["latency"] = {"wait_idle": round(t1 - t0, 4), "set_parameters": round(t2 - t1, 4),
@@ -509,9 +512,28 @@ class RunScanAdapter:
             "decision_wall": context.get("decision_wall"), "tick": request.tick, "step": request.step_id,
             "stage_position_um": recorder.stage_position(),
         }
+        # The leaves the etSTED route writes too (``EtSTED:<leaf>``), same names
+        # and formats, so one reader handles the files of both routes.
+        from imswitch.imcontrol.model.smartpipeline.event_recording import utc_iso
+
+        axes = [str(a) for a in (request.params.get("axes") or RUN_SCAN.params["axes"])][:2]
+        centre = summary.get("centre_um") or {}
+        fields.update(route="smart-pipeline", event_index=event,
+                      session_id=os.path.basename(os.path.normpath(recorder.folder)),
+                      pipeline_name=str(recorder.base_attrs.get("SmartPipeline:pipeline", "")),
+                      scan_axes=",".join(axes),
+                      scan_center_um=(np.asarray([float(centre[a]) for a in axes], dtype=float)
+                                      if all(a in centre for a in axes) else None),
+                      trigger_frame_time_utc=(utc_iso(context["frame_wall"])
+                                              if context.get("frame_wall") else None))
+        if fields.get("bbox_camera_px"):
+            y0, x0, y1, x1 = (float(v) for v in fields["bbox_camera_px"])
+            fields.update(event_coords_px=np.asarray([(x0 + x1) / 2, (y0 + y1) / 2], dtype=float),
+                          event_coords_order="column,row")
         transform = info.get("transform")
         if isinstance(transform, dict):
             fields["transform_id"] = transform.get("id")
+            fields["transform_name"] = transform.get("id")
             fields["transform"] = transform
             for key in ("residual_rms_um", "residual_um", "residual"):
                 if transform.get(key) is not None:
@@ -519,18 +541,21 @@ class RunScanAdapter:
                     break
         return fields
 
-    def _start_recording(self, request: ActionRequest, source: str, summary: dict, info: dict | None):
-        from imswitch.imcontrol.model.smartpipeline.event_recording import event_attrs, event_file_name
+    def _start_recording(self, request: ActionRequest, source: str, summary: dict, info: dict | None,
+                         state: dict | None = None):
+        from imswitch.imcontrol.model.smartpipeline.event_recording import event_attrs, event_file_name, utc_iso
 
         recorder = self.recorder
         event = recorder.next_event()
         fields = self._event_fields(request, summary, info, event)
         fields["scan_start_wall"] = time.time()
+        fields["scan_start_time_utc"] = utc_iso(fields["scan_start_wall"])
         name = event_file_name(event, fields.get("roi_label"), recorder.region)
         summary["event"] = event
         summary["file_base"] = name
         try:
-            return recorder.start(source, file_name=name, attrs=event_attrs(fields))
+            return recorder.start(source, file_name=name, attrs=event_attrs(fields), event=event, fields=fields,
+                                  pre=state.get("pre") if state is not None else None)
         except Exception as exc:
             raise RuntimeError(f"the triggered scan was not started because it could not be saved: {exc}") from exc
 
@@ -552,6 +577,11 @@ class RunScanAdapter:
                     for c in ([None] if mode == "overview" else self._centres(request))]
         restore = bool(request.params.get("restore", True))
         source = str(request.params.get("source") or "Scan")
+        # The camera frames before the trigger, taken now, on the engine's
+        # thread at the decision (references): later they would be gone.
+        archive = getattr(self.recorder, "archive", None) if self._records(request) else None
+        state["pre"] = (archive.frames_before((request.context or {}).get("frame_sequence"))
+                        if archive is not None else None)
         axes = [str(a) for a in (request.params.get("axes") or RUN_SCAN.params["axes"])]
 
         def run_all():
@@ -582,11 +612,16 @@ class RunScanAdapter:
                     recording = request_completion if summary.get("file_base") is not None else None
                     if not request_completion.successful:
                         what = "the triggered scan was not saved" if recording is not None else "the scan failed"
+                        if recording is not None:
+                            self.recorder.failed(recording, request_completion.message or "the recording failed")
                         completion.fail(f"run-scan: {what}: {request_completion.message or 'no reason given'}"
                                         + (f" (scan {index + 1} of {len(runnable)})" if len(runnable) > 1 else ""))
                         return
                     if recording is not None:
-                        end = {"scan_end_wall": recording.ended_wall, "latency_s": dict(state.get("latency") or {})}
+                        from imswitch.imcontrol.model.smartpipeline.event_recording import utc_iso
+
+                        end = {"scan_end_wall": recording.ended_wall, "latency_s": dict(state.get("latency") or {}),
+                               "scan_end_time_utc": utc_iso(recording.ended_wall) if recording.ended_wall else None}
                         warnings = self.recorder.finish(recording, end)
                         summary["saved"] = list(recording.paths)
                         if warnings:
@@ -598,6 +633,13 @@ class RunScanAdapter:
                         except Exception as exc:  # noqa: BLE001 - reported in the result
                             captured = f"not captured: {exc}"
                     scans.append({**summary, "frame": captured, **({"latency_s": state["latency"]} if job["plan"] else {})})
+                if archive is not None:
+                    for skip in skipped:
+                        info = dict(skip.get("trigger") or {})
+                        archive.add_row({**{k: info.get(k) for k in ("dff", "F", "F0", "point")},
+                                         "roi_label": info.get("label"), "status": "skipped",
+                                         "reason": skip.get("reason"), "tick": request.tick,
+                                         "stage_position_um": self.recorder.stage_position()})
                 completion.complete({"scanned": bool(scans), "scans": len(scans), "mode": mode, "skipped": skipped,
                                      **(scans[-1] if scans else {}), "all": scans})
             except Exception as exc:  # noqa: BLE001 - the action failed

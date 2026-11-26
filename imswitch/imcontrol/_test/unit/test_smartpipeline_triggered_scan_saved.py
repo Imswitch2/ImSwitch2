@@ -135,3 +135,84 @@ def test_event_names_and_attrs(tmp_path):
     (tmp_path / 'e_rec_APD.hdf5').write_text('x')
     (tmp_path / 'e_rec_APD.hdf5.tmp').write_text('x')
     assert recorded_files(str(tmp_path / 'e')) == [str(tmp_path / 'e_rec_APD.hdf5')]
+
+
+def test_the_event_carries_the_keys_shared_with_the_etsted_route(report):
+    path = report['adapter']['events'][0]['result']['saved'][0]
+    attrs, _ = _attrs(path)
+    leaf = {key.rsplit(':', 1)[1]: value for key, value in attrs.items() if key.startswith('SmartPipeline:event:')}
+    assert leaf['route'] == 'smart-pipeline' and leaf['event_index'] == 1 and leaf['session_id'] == 'run1'
+    assert leaf['pipeline_name'] == 'driver' and leaf['transform_name'] == 'cam_to_scan'
+    assert leaf['scan_axes'] == 'Y,X' and np.asarray(leaf['scan_center_um']).shape == (2,)
+    assert leaf['event_coords_order'] == 'column,row'
+    np.testing.assert_allclose(leaf['event_coords_px'], [24.5, 14.5])       # (column, row) of the box centre
+    from datetime import datetime
+    times = [datetime.fromisoformat(leaf[k]) for k in
+             ('trigger_frame_time_utc', 'scan_start_time_utc', 'scan_end_time_utc')]
+    assert all(t.utcoffset().total_seconds() == 0 for t in times) and times == sorted(times)
+
+
+def test_an_experiment_run_saves_the_context_of_each_event_and_a_summary(report):
+    experiment = report['experiment']
+    assert experiment['armed'] and experiment['error'] is None, experiment
+    runs = sorted({f.split(os.sep)[1] for f in experiment['files'] if f.count(os.sep) >= 2})
+    assert len(runs) == 1
+    folder = os.path.join(experiment['folder'], 'smart_pipeline', runs[0])
+    names = set(os.listdir(folder))
+    assert {'pipeline.json', 'run.json', 'summary.csv', 'summary.json', 'region_R0.h5'} <= names
+    scans = sorted(n for n in names if n.endswith('_rec_APD.hdf5'))
+    contexts = sorted(n for n in names if n.endswith('_context.h5'))
+    assert len(scans) >= 2 and len(contexts) == len(scans)
+    with open(os.path.join(folder, 'pipeline.json'), encoding='utf-8') as handle:
+        assert json.load(handle)['name'] == 'ROI dF/F triggered APD scan'
+    with open(os.path.join(folder, 'run.json'), encoding='utf-8') as handle:
+        run = json.load(handle)
+    assert run['detector'] == 'Camera' and run['scan_detectors'] == ['APD'] and 'tf' in run['transforms']
+    with h5py.File(os.path.join(folder, contexts[0]), 'r') as handle:
+        roles = [r.decode() for r in handle['camera/role'][()]]
+        assert roles.count('trigger') == 1 and roles[0] == 'pre' and roles[-1] == 'post'
+        frames = handle['camera/frames']
+        assert frames.shape[0] == len(roles) and frames.shape[1:] == handle['rois/labels'].shape
+        event = json.loads(handle.attrs['SmartPipeline:event'])
+        label = event['roi_label']
+        table = handle['rois/table']
+        assert label in table['label'][()].tolist()
+        traces = handle['traces']
+        column = traces['label'][()].tolist().index(label)
+        assert traces['dff'].shape[1] == table['label'].shape[0]
+        # the trace reaches the triggering frame: its dF/F is the event's
+        assert np.any(np.isclose(traces['dff'][:, column], event['dff'], rtol=1e-4))
+        trigger_wall = handle['camera/wall_time'][roles.index('trigger')]
+        assert trigger_wall == pytest.approx(event['frame_wall'])
+        walls = handle['camera/wall_time'][()]
+        assert all(t > event['scan_end_wall'] for t, r in zip(walls, roles) if r == 'post')
+    with open(os.path.join(folder, 'summary.json'), encoding='utf-8') as handle:
+        summary = json.load(handle)
+    scanned = [row for row in summary['rows'] if row['status'] == 'scanned']
+    assert len(scanned) == len(scans)
+    assert {row['scan_file'] for row in scanned} == set(scans)
+    assert all(row['roi_id'] == f"R0-{row['roi_label']}" and row['centroid_y_px'] is not None for row in scanned)
+    with h5py.File(os.path.join(folder, 'region_R0.h5'), 'r') as handle:
+        table = handle['rois/table']
+        assert int(table['scanned'][()].sum()) == len(scans)
+        assert handle['rois/labels'].shape == (800, 800)
+
+
+def test_the_archive_writes_rows_and_reports_a_failed_write(tmp_path):
+    from imswitch.imcontrol.model.smartpipeline.event_archive import EventArchive
+
+    reports = []
+    blocker = tmp_path / 'file'
+    blocker.write_text('x')
+    archive = EventArchive(str(blocker / 'run'), report=reports.append)
+    archive.start({'pipeline': 'p'})
+    archive.add_row({'status': 'skipped', 'roi_label': 3, 'reason': 'outside the scan range'})
+    assert archive.close(10)
+    assert reports and archive.failures                  # reported, nothing raised
+    archive = EventArchive(str(tmp_path / 'run'), report=reports.append)
+    archive.start({'pipeline': 'p'}, '{"name": "p"}')
+    archive.add_row({'status': 'skipped', 'roi_label': 3, 'reason': 'outside the scan range'})
+    assert archive.close(10)
+    rows = json.loads((tmp_path / 'run' / 'summary.json').read_text())['rows']
+    assert rows[0]['roi_id'] == 'R0-3' and rows[0]['status'] == 'skipped'
+    assert (tmp_path / 'run' / 'pipeline.json').exists() and (tmp_path / 'run' / 'region_R0.h5').exists()
