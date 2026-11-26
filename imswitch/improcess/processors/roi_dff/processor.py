@@ -68,7 +68,6 @@ class RoiDffProcessor(Processor):
     output_kind = "points"
     min_inputs = 1
     max_inputs = 2
-    deterministic = False  # keeps its state between runs
 
     @classmethod
     def default_params(cls) -> dict:
@@ -113,12 +112,12 @@ class RoiDffProcessor(Processor):
                        help="Frames averaged into the image that is segmented (mask from segment)"),
             ParamField("labels_path", "text", "", label="Labels file", group="Mask",
                        help="Label image to load (.npy or .tif); mask from file"),
-            ParamField("generation", "int", 0, label="Generation", min=0, max=2**31 - 1, group="Mask",
+            ParamField("generation", "int", 0, label="Generation", min=0, group="Mask",
                        help="Change this number to discard the mask and every baseline and start over"),
             ParamField("threshold_method", "select", "otsu", label="Threshold", options=THRESHOLD_METHODS,
                        group="Mask"),
             ParamField("threshold_value", "float", 0.0, label="Manual value", decimals=6, group="Mask"),
-            ParamField("min_area", "int", 20, label="Min area", min=1, max=10**9, suffix="px", group="Mask"),
+            ParamField("min_area", "int", 20, label="Min area", min=1, suffix="px", group="Mask"),
             ParamField("smooth_sigma", "float", 1.0, label="Smooth sigma", min=0, max=1000, decimals=3, group="Mask"),
             ParamField("morphology_radius", "int", 0, label="Morph radius", min=0, max=9999, group="Mask"),
             ParamField("fill_holes", "bool", True, label="Fill holes", group="Mask"),
@@ -140,18 +139,18 @@ class RoiDffProcessor(Processor):
                        group="Baseline", help="running baselines only: the newest M frames are not in the baseline"),
             ParamField("baseline_percentile", "float", 20.0, label="Percentile", min=0, max=100, decimals=1,
                        group="Baseline", help="running-percentile baseline"),
-            ParamField("ema_tau_frames", "float", 50.0, label="EMA time constant", min=0.5, max=1e7, decimals=1,
+            ParamField("ema_tau_frames", "float", 50.0, label="EMA time constant", min=0.5, decimals=1,
                        suffix="frames", group="Baseline"),
-            ParamField("min_f0", "float", 1.0, label="Min F0", min=0, max=1e12, decimals=3, group="Baseline",
+            ParamField("min_f0", "float", 1.0, label="Min F0", min=0, decimals=3, group="Baseline",
                        help="A ROI whose baseline is at or below this is invalid (dff 0, never triggers): "
                             "the ratio of two near-zero numbers is not a signal"),
-            ParamField("threshold", "float", 0.3, label="Trigger dF/F", min=-1e6, max=1e6, decimals=4,
+            ParamField("threshold", "float", 0.3, label="Trigger dF/F", decimals=4,
                        group="Trigger", help="A ROI is above threshold when dF/F is at least this"),
             ParamField("min_consecutive", "int", 1, label="Consecutive frames K", min=1, max=100000, group="Trigger",
                        help="Frames in a row above threshold before the ROI triggers"),
-            ParamField("refractory_frames", "int", 0, label="Refractory", min=0, max=10**8, suffix="frames",
+            ParamField("refractory_frames", "int", 0, label="Refractory", min=0, suffix="frames",
                        group="Trigger", help="A ROI that triggered cannot trigger again for this many frames"),
-            ParamField("refractory_s", "float", 0.0, label="Refractory", min=0, max=1e7, decimals=2, suffix="s",
+            ParamField("refractory_s", "float", 0.0, label="Refractory", min=0, decimals=2, suffix="s",
                        group="Trigger", help="... and for this many seconds of the frame clock; both must pass"),
         )
 

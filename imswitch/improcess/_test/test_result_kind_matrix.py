@@ -128,10 +128,13 @@ LOCALIZATION_PROCESSOR_IDS = {
 #: from an image processor, not to stop a mask reaching the image it was drawn
 #: on. The other entries genuinely reinterpret the values as labels.
 #:
+#: ``roi-dff`` is here as ``regionprops`` is: a label mask is its optional second input
+#: (the cells to measure), the image its first.
+#:
 #: ``python`` is here because its code decides what the values mean: it is the
 #: escape hatch for the transformation no processor covers, and ``make_labels``
 #: exists so its outputs can be labels too.
-LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python", "regionprops"}
+LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python", "regionprops", "roi-dff"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():
