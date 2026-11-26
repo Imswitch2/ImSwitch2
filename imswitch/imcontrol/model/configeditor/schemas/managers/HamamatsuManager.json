@@ -43,7 +43,7 @@
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
         "code:optional(get)",
-        "docs:integer"
+        "example:integer"
       ]
     },
     "mockSample": {

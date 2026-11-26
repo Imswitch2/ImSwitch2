@@ -1,0 +1,186 @@
+{
+ "__comment__": "Hardware-free etSTED rehearsal: a widefield camera (fast, event detection) and an APD (slow, confocal scan) image the SAME virtual bead sample (mockSample, same seed, X/Y in the galvo's um per V), on a SIMULATED NI-DAQ with the ADVANCED scan panel (galvo scan designer). In the EtSTED panel the widefield detector is Camera, the scan detector is APD and the fast laser is 488 (EXC), which needs a non-zero power for the sample to be visible. The camera free-runs (internal trigger). Rehearsal steps: docs/gui.rst, 'etSTED first run'. Camera pixel 0.05 um, 512x512 px = 25.6 um, inside the galvo range of +-17.5 um (+-10 V at 1.75 um/V), so every event on the camera can be scanned.",
+ "detectors": {
+  "Camera": {
+   "analogChannel": null,
+   "digitalLine": null,
+   "managerName": "HamamatsuManager",
+   "managerProperties": {
+    "cameraListIndex": "mock-512",
+    "cameraPixelSizeUm": 0.05,
+    "hamamatsu": {
+     "exposure_time": 0.02,
+     "trigger_source": 1,
+     "subarray_hpos": 0,
+     "subarray_vpos": 0,
+     "subarray_hsize": 512,
+     "subarray_vsize": 512,
+     "image_width": 512,
+     "image_height": 512
+    },
+    "mockSample": {
+     "axes": {
+      "X": 1.75,
+      "Y": 1.75
+     },
+     "excitation": {
+      "488 (EXC)": 1.0
+     },
+     "preset": "beads",
+     "seed": 1
+    },
+    "mockRandomSeed": 1
+   },
+   "forAcquisition": true,
+   "forFocusLock": false
+  },
+  "APD": {
+   "managerName": "APDManager",
+   "managerProperties": {
+    "ctrInputLine": "Dev1/ctr0",
+    "terminal": "PFI0",
+    "displayRotation": "0",
+    "displayFlipX": "False",
+    "displayFlipY": "False",
+    "mockSample": {
+     "axes": {
+      "X": 1.75,
+      "Y": 1.75
+     },
+     "excitation": {
+      "488 (EXC)": 1.0
+     },
+     "preset": "beads",
+     "seed": 1,
+     "darkCountRate": 250
+    }
+   },
+   "analogChannel": null,
+   "digitalLine": null,
+   "forAcquisition": true,
+   "forFocusLock": false
+  }
+ },
+ "lasers": {
+  "405 (ON)": {
+   "analogChannel": null,
+   "digitalLine": "Dev1/port0/line2",
+   "managerName": "NidaqLaserManager",
+   "managerProperties": {},
+   "wavelength": 405,
+   "valueRangeMin": 0,
+   "valueRangeMax": 200
+  },
+  "488 (EXC)": {
+   "analogChannel": "Dev1/ao3",
+   "digitalLine": "Dev1/port0/line1",
+   "managerName": "NidaqLaserManager",
+   "managerProperties": {},
+   "wavelength": 488,
+   "valueRangeMin": 0,
+   "valueRangeMax": 10
+  }
+ },
+ "positioners": {
+  "X": {
+   "analogChannel": "Dev1/ao0",
+   "digitalLine": null,
+   "managerName": "NidaqPositionerManager",
+   "managerProperties": {
+    "conversionFactor": 1.75,
+    "minVolt": -10,
+    "maxVolt": 10,
+    "vel_max": 0.1,
+    "acc_max": 0.0001
+   },
+   "axes": [
+    "X"
+   ],
+   "forScanning": true,
+   "forPositioning": true
+  },
+  "Y": {
+   "analogChannel": "Dev1/ao1",
+   "digitalLine": null,
+   "managerName": "NidaqPositionerManager",
+   "managerProperties": {
+    "conversionFactor": 1.75,
+    "minVolt": -10,
+    "maxVolt": 10,
+    "vel_max": 0.1,
+    "acc_max": 0.0001
+   },
+   "axes": [
+    "Y"
+   ],
+   "forScanning": true,
+   "forPositioning": true
+  },
+  "Z": {
+   "analogChannel": "Dev1/ao2",
+   "digitalLine": null,
+   "managerName": "NidaqPositionerManager",
+   "managerProperties": {
+    "conversionFactor": 1.0,
+    "minVolt": 0,
+    "maxVolt": 10,
+    "vel_max": 1000.0,
+    "acc_max": 1000.0,
+    "smoothScan": false
+   },
+   "axes": [
+    "Z"
+   ],
+   "forScanning": true,
+   "forPositioning": true
+  }
+ },
+ "scan": {
+  "scanWidgetType": "Advanced",
+  "scanDesigner": "GalvoScanDesigner",
+  "scanDesignerParams": {},
+  "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+  "TTLCycleDesignerParams": {},
+  "sampleRate": 100000,
+  "maxScanTimeMin": 0,
+  "lineClockLine": null,
+  "frameStartClockLine": null,
+  "frameEndClockLine": null
+ },
+ "nidaq": {
+  "timerCounterChannel": null,
+  "startTrigger": false,
+  "simulation": true
+ },
+ "etSTED": {
+  "swapXY": false,
+  "invertX": false,
+  "invertY": false
+ },
+ "availableWidgets": [
+  "Settings",
+  "View",
+  "Recording",
+  "Image",
+  "Laser",
+  "Scan",
+  "EtSTED"
+ ],
+ "processing": {
+  "graphPanel": false,
+  "profilePanel": false,
+  "frcPanel": false,
+  "projectionPanel": false,
+  "roiStatsPanel": false,
+  "roiManagerPanel": false,
+  "segmentationPanel": false,
+  "psfResolutionPanel": false,
+  "colocalizationPanel": false,
+  "multicolorPanel": false,
+  "reconstructors": [
+   "monalisa",
+   "view-only"
+  ],
+  "processors": []
+ }
+}

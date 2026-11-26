@@ -505,8 +505,9 @@ def test_the_corpus_is_what_the_plan_says():
     # tiling mosaic). 30 with feat/timetagger-usability:
     # galvo_two_apd_counting_mock_setup.json and
     # galvo_two_colour_flim_mock_setup.json, several detectors on one Time
-    # Tagger card.
-    assert len(shipped_setups()) == 30
+    # Tagger card. 31: etsted_advanced_mock_setup.json, the etSTED rehearsal
+    # (camera + APD on one virtual sample, Advanced scan, EtSTED panel).
+    assert len(shipped_setups()) == 31
     # + the four scan engines, + the step-board positioner and laser managers;
     # + main's mock power meter, mock PAX, Thorlabs PM100 and PAX1000.
     assert len(generated_fixtures()) == 72
