@@ -1936,7 +1936,27 @@ needs, from one camera image and one APD scan of the same bead field.
    axes, step, dwell and **phase delay** -- over the beads; Recording panel,
    select the APD, **Scan once**, Record. The scan may cover only part of
    the camera field.
-#. *Calibrate.* Run ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``
+#. *Calibrate in the window.* **Hardware → Camera → scan calibration…**: pick
+   the two files (**Browse…** → an HDF5 file or a Zarr store folder). Each
+   shows at once what it holds -- detector (a choice when the file holds
+   several), time, setup, for the camera the frame, ROI offset, binning,
+   pixel size, exposure, frames averaged and counts, for the scan the fast
+   and slow axes, field, step, centre, pixels, dwell, phase delay, scan panel
+   and lasers -- and a thumbnail with the beads found. Warnings say when the
+   files come from different setups or from another setup than the one
+   running, when the camera's current ROI or binning differs from the
+   recorded one (the pipeline would then refuse the calibration), and when
+   the scan file is not an Advanced "Scan once" recording. Set the id
+   (``cam_to_scan``; an existing one is replaced or kept under a dated id),
+   the model, and, under *Advanced*, the detection; **Fit** runs in the
+   background (**Cancel** drops it). The result says accepted or refused
+   (why, in plain words, and what to do; a refused fit saves nothing), the
+   beads found and paired, the residuals, rotation, mirror, scale next to the
+   configured pixel size, translation, the model and why, and the ``axes``
+   for the pipeline's scan step; **Open QC figure**, **Open folder**, **Copy
+   report**, **Verify with another pair of files…** and **Predict scan
+   position** for a camera pixel are below it. No device is touched.
+#. *Or from a script or a terminal.* Run ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``
    (edit the two file names), or in a terminal
    ``python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5``
    (``--id`` sets the id, default ``cam_to_scan``; ``--camera-detector`` /
