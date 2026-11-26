@@ -1,5 +1,7 @@
 """Calibration files: the folder as a registry, EtSTED's polynomial as a
 pipeline transform, and the grid a calibration was made on checked at arm."""
+import json
+
 import numpy as np
 import pytest
 
@@ -46,6 +48,25 @@ def test_a_folder_of_calibrations_loads_and_saves(tmp_path):
     (folder / "broken.json").unlink()
     with pytest.raises(CalibrationError, match="exists"):
         save_calibration(scale, folder, overwrite=False)
+
+
+def test_laser_calibration_records_in_the_shared_folder_are_not_transforms(tmp_path):
+    """The laser-power store keeps its ``*.calib.json`` records in the same
+    folder; one of them must not stop the transforms from loading."""
+    (tmp_path / "488_488nm_20261125_5b0da4.calib.json").write_text(
+        json.dumps({"id": "488-20261125", "kind": "laser_power", "type": "laser-power"}),
+        encoding="utf-8")
+    (tmp_path / "cam_to_stage.json").write_text(
+        json.dumps({"type": "scale-flip", "id": "cam_to_stage",
+                    "source_frame": CAMERA, "target_frame": STAGE,
+                    "pixel_size": [0.15, 0.15], "origin": [0.0, 0.0],
+                    "swap_xy": False, "invert": [False, False],
+                    "offset": [0.0, 0.0], "relative": False}),
+        encoding="utf-8")
+
+    registry = load_calibrations(tmp_path)
+
+    assert tuple(registry.ids()) == ("cam_to_stage",)
 
 
 def test_an_etsted_calibration_file_becomes_a_polynomial_transform(tmp_path):

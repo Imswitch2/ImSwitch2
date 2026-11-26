@@ -39,13 +39,18 @@ def calibrations_folder(root=None) -> Path:
 
 def load_calibrations(folder=None) -> TransformRegistry:
     """Every ``*.json`` in ``folder`` as a transform, by id; a file that
-    cannot be read raises :class:`CalibrationError` naming it."""
+    cannot be read raises :class:`CalibrationError` naming it.
+
+    The folder is shared with the laser-power calibration store, whose
+    records are ``*.calib.json``; those are not transforms and are left
+    alone."""
     folder = Path(folder) if folder is not None else calibrations_folder()
     registry = TransformRegistry()
     if not folder.is_dir():
         return registry
     for name in sorted(os.listdir(folder)):
-        if not name.lower().endswith(".json"):
+        lowered = name.lower()
+        if not lowered.endswith(".json") or lowered.endswith(".calib.json"):
             continue
         path = folder / name
         try:
