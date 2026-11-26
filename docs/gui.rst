@@ -1902,9 +1902,34 @@ pixels as ``src_bbox_*`` and in scan micrometres as ``bbox_*``) and the
 transform (id, type and, when its record states one, the calibration
 residual); the ``done`` line holds the scan summary (centre, size, pixels,
 lasers, notes) and the latencies of the action. Save the log from the panel.
-The APD data itself is the Advanced panel's own scan (the panel's recording
-settings apply); the smart pipeline does not start a recording, so pair the
-files with the log by time.
+
+*The triggered scan is saved.* In *Experiment* every scan the pipeline
+starts is recorded, with nothing to set: ``run-scan`` (``save`` on, the
+default) starts it as a **Scan once** recording of the setup's scan-driven
+detectors (the APDs) -- the Recording panel's own transaction, so the writer
+is armed before the scan starts and the file is an ordinary ImSwitch
+recording (HDF5, the scan geometry and the setup's attributes) that ImProcess
+and *Load parameters from file* open like any other. The files go to
+``<Recording panel folder>/smart_pipeline/<YYYYmmdd-HHMMSS>_<pipeline>/``, one
+per event, named ``event0001_R0_roi12_rec_APD.hdf5`` (event number, region,
+ROI label). The Recording panel's own folder, name and format settings are
+not changed. Each file's ``APD`` group carries the event as
+``SmartPipeline:event:*`` attributes: ``roi_label`` and ``roi_id``
+(``R<region>-<label>``), ``dff``, ``F``, ``F0``, ``area_px``, the box in
+camera pixels (``bbox_camera_px``) and in scan µm (``bbox_scan_um``), the
+scanned centre/size/step and lasers, ``transform_id``, ``transform`` and
+``transform_residual``, the wall-clock times ``frame_wall`` (the camera frame
+that triggered), ``decision_wall``, ``scan_start_wall`` and ``scan_end_wall``,
+the action's latencies (``latency_s``) and ``stage_position_um`` (the stage
+positioners at the trigger); ``SmartPipeline:pipeline`` and
+``SmartPipeline:run_folder`` name the run. Arming in Experiment is refused
+when the files could not be written (no Recording panel, no scan-driven
+detector, a folder that cannot be made or written, less than 200 MB free); a
+Validate run arms and shows the same reasons as a note, and saves nothing (its
+``would`` line says where an Experiment run would save). A scan that cannot be
+recorded is not started, and the pipeline stops with the reason: it never
+goes on firing scans that are not saved. Set ``save`` to false on the
+``run-scan`` step to scan without saving.
 
 **Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
 your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,

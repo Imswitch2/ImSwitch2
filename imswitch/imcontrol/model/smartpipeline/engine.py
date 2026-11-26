@@ -256,6 +256,8 @@ def describe(value) -> Any:
 # --------------------------------------------------------------------------
 
 RAN = "ran"
+#: The key of a tick's values under which the frame's context travels.
+CONTEXT_KEY = "__context__"
 DROPPED_STALE = "dropped-stale"
 DROPPED_BUSY = "dropped-busy"
 TICK_FAILED = "failed"
@@ -588,6 +590,12 @@ class Engine:
             self._last_sequence = frame.sequence
             result = TickResult(tick, frame.sequence, RAN, default_ports=self._default_ports)
             values = result.values
+            # The frame this tick measured, for the records of an action it
+            # starts (no step reads this key: it has no port).
+            values[CONTEXT_KEY] = {
+                "frame_sequence": frame.sequence, "frame_t": frame.t,
+                "frame_wall": (frame.metadata or {}).get("wall_time"), "tick": tick,
+            }
             try:
                 values[f"{self._source_step.id}.{SOURCE_PORT}"] = self.steps.image_result(frame)
             except Exception as exc:
@@ -772,8 +780,10 @@ class Engine:
         spec = self._spec(step)
         params = {**spec.params, **step.params}
         inputs = self._checked_inputs(step, spec, inputs)
+        context = {**dict(values.get(CONTEXT_KEY) or {}), "decision_t": now, "decision_wall": time.time()}
         request = ActionRequest(step_id=step.id, action=step.action, params=params, inputs=inputs,
-                                mode=self.mode.value, tick=tick, epoch=self._epoch, timeout_s=step.timeout_s)
+                                mode=self.mode.value, tick=tick, epoch=self._epoch, timeout_s=step.timeout_s,
+                                context=context)
         effect = MODE_EFFECTS[self.mode]["actions"]
         summary = {"action": step.action, "params": params, "inputs": [describe(v) for v in inputs]}
         if effect == "skip":
