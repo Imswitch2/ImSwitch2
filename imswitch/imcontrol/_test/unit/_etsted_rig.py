@@ -18,24 +18,6 @@ ETSTED_ADVANCED_SETUP = SETUP_DIR / 'mock' / 'point_scanning' / 'etsted_advanced
 
 SHIPPED_ETSTED = SETUP_DIR.parent / 'imcontrol_etsted'
 
-POLY3_SOURCE = """from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
-
-
-def poly3(coords, coefficients):
-    return EtSTEDTransformService.poly_thirdorder_transform(coefficients, coords)
-"""
-
-
-def affine_coefficients(um_per_px_c1=0.0, um_per_px_c2=0.0, offsets=(0.0, 0.0)):
-    """20 poly3 coefficients of a diagonal map: out1 = a7*c1 + a9, out2 = a18*c2 + a19."""
-    coeffs = np.zeros(20)
-    coeffs[7] = um_per_px_c1
-    coeffs[9] = offsets[0]
-    coeffs[18] = um_per_px_c2
-    coeffs[19] = offsets[1]
-    return coeffs
-
-
 class EtSTEDRig:
     """Main controller + etSTED panel on a mock setup, in ``root``."""
 
@@ -117,6 +99,31 @@ class EtSTEDRig:
             time.sleep(0.01)
         self.process()
         return bool(predicate())
+
+    def switch_laser_on(self, name='488 (EXC)', fraction=0.5):
+        """The Laser panel's switch: what the mock camera and APD see."""
+        laser = self.main.controllers['Laser']
+        laser.toggleLaser(name, True)
+        laser.valueChanged(name, fraction * self.master.lasersManager[name].valueRangeMax)
+
+    def event_source(self, col=300, row=200, amplitude=1500.0, sigma_px=6.0):
+        """Make the mock camera show a bright spot once ``on`` is set."""
+        from types import SimpleNamespace
+        source = self.master.detectorsManager['Camera']._camera.mock_frame_source
+        original = source.liveFrame
+        event = SimpleNamespace(on=False, col=col, row=row)
+
+        def live(shape):
+            frame = original(shape).astype(np.float32)
+            if event.on:
+                yy, xx = np.mgrid[:shape[0], :shape[1]]
+                frame += amplitude * np.exp(
+                    -((yy - event.row) ** 2 + (xx - event.col) ** 2) / (2 * sigma_px ** 2))
+            return np.clip(frame, 0, 65535).astype(np.uint16)
+
+        source.liveFrame = live
+        event.restore = lambda: setattr(source, 'liveFrame', original)
+        return event
 
     def select(self, combo, options, wanted):
         combo.setCurrentIndex(list(options).index(wanted))

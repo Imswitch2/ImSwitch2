@@ -32,6 +32,7 @@ FOV-centre TXT file that ``loadTransform`` could not read back.
 
 from __future__ import annotations
 
+import copy
 import csv
 import os
 import sys
@@ -902,8 +903,10 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._state.busy = False
 
     def assignScanParameters(self, analogParams, digitalParams, positionersScan) -> None:
-        self._analogParameterDict = analogParams.copy()
-        self._digitalParameterDict = digitalParams.copy()
+        # Deep: the scan panel sent its own lists (axis_centerpos...), and the
+        # triggered scan overwrites the centres in place.
+        self._analogParameterDict = copy.deepcopy(analogParams)
+        self._digitalParameterDict = copy.deepcopy(digitalParams)
         self._positionersScan = positionersScan.copy()
         self.setScanParametersStatus(analogParams, positionersScan)
 

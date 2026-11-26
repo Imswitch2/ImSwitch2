@@ -1,0 +1,248 @@
+"""etSTED's triggered scan on the REAL Advanced scan panel.
+
+The other etSTED tests drive the controller with mock scan managers, which is
+how an Advanced scan, whose designers return a different shape of signals
+than the scan manager's generic design, went unnoticed. Here the whole
+application runs on ``etsted_advanced_mock_setup.json`` (simulated NI-DAQ,
+Advanced galvo scan, mock camera and APD on one virtual sample) and a bright
+spot is injected into the mock camera's frames.
+"""
+import copy
+
+import numpy as np
+import pytest
+
+from ._etsted_rig import EtSTEDRig
+
+#: The test only needs the baseline to settle for a few frames.
+WARMUP = 2
+
+
+def _same(a, b, path='root', atol=None):
+    """Deep equality of signal/info structures, arrays by value (exactly, or
+    within ``atol``)."""
+    if isinstance(a, dict):
+        assert isinstance(b, dict) and set(a) == set(b), f'{path}: keys differ'
+        for key in a:
+            _same(a[key], b[key], f'{path}.{key}', atol)
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b), f'{path}: length differs'
+        for index, (x, y) in enumerate(zip(a, b)):
+            _same(x, y, f'{path}[{index}]', atol)
+    elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        if atol is None or np.asarray(a).dtype.kind not in 'fc':
+            np.testing.assert_array_equal(np.asarray(a), np.asarray(b), err_msg=path)
+        else:
+            np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=0, atol=atol, err_msg=path)
+    elif isinstance(a, float) and atol is not None:
+        assert a == pytest.approx(b, abs=atol, rel=0), path
+    else:
+        assert a == b, f'{path}: {a!r} != {b!r}'
+
+
+class Session:
+    """Drives one etSTED run on the rig and records what the DAQ was asked."""
+
+    def __init__(self, rig, *, endless=False, mode='Experiment'):
+        self.rig = rig
+        self.et = rig.etsted
+        self.armed = []          # (signalDict, scanInfoDict) per scan armed
+        self.apd_frames = []
+        self.digital = {}        # laser line -> last level written
+        self.errors = []
+        widget = rig.widget
+        rig.select(widget.fastImgDetectorsPar, widget.fastImgDetectors, 'Camera')
+        rig.select(widget.fastImgLasersPar, widget.fastImgLasers, '488 (EXC)')
+        rig.select(widget.experimentModesPar, widget.experimentModes, mode)
+        rig.select(widget.transformCoefsPar, widget.transformCoefs, 'mock_rehearsal_only')
+        widget.endlessScanCheck.setChecked(endless)
+        self.et.loadPipeline()
+        names = self.et._pipelineRunner.get_user_parameter_names()
+        widget.param_edits[names.index('warmup_frames')].setText(str(WARMUP))
+        rig.switch_laser_on()
+        self.event = rig.event_source()
+        self.et.getScanParameters()
+        rig.process(0.3)
+
+        coordinator = self.et._scanCoordinator
+        arm = coordinator.arm
+
+        def recording_arm(signalDict, scanInfoDict, *args, **kwargs):
+            # as handed over: the NI-DAQ run adds its own keys to the info
+            self.armed.append(copy.deepcopy((signalDict, scanInfoDict)))
+            return arm(signalDict, scanInfoDict, *args, **kwargs)
+
+        self._coordinator = coordinator
+        self.statuses = []
+        set_status = self.et._set_status
+
+        def recording_status(status, message=''):
+            self.statuses.append(status)
+            return set_status(status, message)
+
+        self.et._set_status = recording_status
+        coordinator.arm = recording_arm
+        self._on_apd = lambda image, init, scale: self.apd_frames.append(np.array(image))
+        rig.master.detectorsManager['APD'].sigImageUpdated.connect(self._on_apd)
+        nidaq = rig.master.nidaqManager
+        set_digital = nidaq.setDigital
+
+        def recording_set_digital(name, level, *args, **kwargs):
+            self.digital[name] = bool(level)
+            return set_digital(name, level, *args, **kwargs)
+
+        self._nidaq = nidaq
+        nidaq.setDigital = recording_set_digital
+
+    def close(self):
+        """Leave the shared rig as found."""
+        rig = self.rig
+        if self.et._experimentActive or self.et._state.running:
+            self.et.stopExperiment(resetParams=True)
+        rig.wait_for(lambda: not rig.master.nidaqManager.busy, 20)
+        rig.process(0.3)
+        self.event.on = False
+        self.event.restore()
+        del self._coordinator.arm
+        del self.et._set_status
+        del self._nidaq.setDigital
+        rig.master.detectorsManager['APD'].sigImageUpdated.disconnect(self._on_apd)
+        rig.main.controllers['Laser'].toggleLaser('488 (EXC)', False)
+        rig.process(0.2)
+
+    def start_detecting(self, frames=WARMUP + 7):
+        self.et.initiate()
+        assert self.rig.wait_for(lambda: self.et._state.frame >= frames, 60), 'no camera frames'
+
+    def trigger(self):
+        self.event.on = True
+
+    def status(self):
+        return self.rig.widget.statusLabel.text()
+
+
+@pytest.fixture(scope='module')
+def rig(tmp_path_factory):
+    # One application per module: a second one booted in the same process
+    # while the first is garbage-collected crashes Qt.
+    coefficients = np.zeros(20)
+    coefficients[7] = coefficients[18] = 5.0      # 5 um per pixel: far out of range
+    rig = EtSTEDRig(tmp_path_factory.mktemp('etsted'), coefficients=coefficients)
+    yield rig
+    rig.close()
+
+
+@pytest.fixture
+def new_session(rig):
+    sessions = []
+
+    def make(**kwargs):
+        sessions.append(Session(rig, **kwargs))
+        return sessions[-1]
+
+    yield make
+    for session in sessions:
+        session.close()
+
+
+def test_the_triggered_scan_has_the_signals_the_advanced_panel_would_play(rig, new_session, monkeypatch):
+    session = new_session()
+    session.start_detecting()
+    session.trigger()
+    assert rig.wait_for(lambda: session.armed, 30), session.status()
+    triggered_signals, triggered_info = session.armed[0]
+    assert rig.wait_for(lambda: session.apd_frames and not rig.etsted._experimentActive, 30)
+
+    # The panel, given the very parameters etSTED built from, plays the same
+    # scan, bit for bit.
+    analog = rig.etsted._analogParameterDict
+    monkeypatch.setattr(rig.scan, '_analogParameterDict', copy.deepcopy(analog))
+    monkeypatch.setattr(rig.scan, '_digitalParameterDict',
+                        copy.deepcopy(rig.etsted._digitalParameterDict))
+    monkeypatch.setattr(rig.scan, 'getParameters', lambda: None)
+    panel_signals, panel_info = rig.scan._buildScanSignals()
+    for info in (triggered_info, panel_info):
+        info.pop('participants', None)
+        info.pop('excludedDetectors', None)
+    _same(triggered_signals, panel_signals)
+    _same(triggered_info, panel_info)
+    # ... and it is a scan centred on the event: (302, 202) px at 0.15 um/px
+    # from the frame centre (256, 256), as the binned pixel is reported.
+    centres = analog['axis_centerpos']
+    assert centres[0] == pytest.approx(0.15 * (302 - 256), abs=1e-6)
+    assert centres[1] == pytest.approx(0.15 * (202 - 256), abs=1e-6)
+
+
+def test_event_to_scan_one_shot_stops_with_the_laser_off(rig, new_session):
+    session = new_session()
+    session.start_detecting()
+    session.trigger()
+    assert rig.wait_for(lambda: session.apd_frames, 30), session.status()
+    assert rig.wait_for(lambda: not rig.etsted._experimentActive, 20)
+
+    frame = session.apd_frames[-1]
+    assert frame.shape == (50, 50) and frame.max() > 0
+    assert len(session.armed) == 1
+    assert session.digital.get('488 (EXC)') is False
+    assert not rig.master.nidaqManager.busy
+    assert rig.etsted._scanCoordinator.activeRunToken is None
+    assert rig.widget.initiateButton.text() != 'Stop'
+
+
+def test_endless_returns_to_detecting_and_scans_again(rig, new_session):
+    session = new_session(endless=True)
+    session.start_detecting()
+    session.trigger()
+    assert rig.wait_for(lambda: len(session.apd_frames) >= 2, 90), session.status()
+    assert rig.etsted._experimentActive
+    session.event.on = False
+    assert rig.wait_for(lambda: session.status().lower().startswith('detecting')
+                        and rig.etsted._state.running, 30), session.status()
+    rig.etsted.stopExperiment(resetParams=True)
+    rig.process(0.5)
+    assert session.digital.get('488 (EXC)') is False
+    assert not rig.master.nidaqManager.busy
+
+
+def test_a_centre_outside_the_scanner_range_is_refused_and_the_panel_stays_usable(rig, new_session):
+    # 5 um per pixel puts the event hundreds of um from the origin; the
+    # galvo's +-17.5 um range refuses it in the Advanced scan designer.
+    try:
+        session = new_session()
+        rig.select(rig.widget.transformCoefsPar, rig.widget.transformCoefs, 'rig')
+        session.start_detecting()
+        session.trigger()
+        assert rig.wait_for(lambda: 'error' in session.statuses, 30), session.statuses
+        rig.process(0.5)
+        assert session.armed == []          # nothing reached the DAQ
+        assert session.apd_frames == []
+        assert session.digital.get('488 (EXC)') is False
+        assert not rig.master.nidaqManager.busy
+        assert rig.etsted._scanCoordinator.activeRunToken is None
+
+        # the Advanced panel still runs its own scan
+        rig.scan.runScan()
+        assert rig.wait_for(lambda: session.apd_frames, 30)
+        assert rig.wait_for(lambda: not rig.scan.isRunning, 30)
+    finally:
+        rig.select(rig.widget.transformCoefsPar, rig.widget.transformCoefs, 'mock_rehearsal_only')
+
+
+def test_a_failed_arm_leaves_lasers_off_and_the_panel_usable(rig, new_session, monkeypatch):
+    session = new_session()
+    session.start_detecting()
+    coordinator = rig.etsted._scanCoordinator
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError('the DAQ refused')
+
+    monkeypatch.setattr(coordinator, 'arm', refuse)
+    session.trigger()
+    assert rig.wait_for(lambda: 'error' in session.statuses, 30), session.statuses
+    rig.process(0.5)
+    assert session.apd_frames == []
+    assert session.digital.get('488 (EXC)') is False
+    assert coordinator.activeRunToken is None
+    monkeypatch.undo()
+    rig.scan.runScan()
+    assert rig.wait_for(lambda: session.apd_frames, 30)
