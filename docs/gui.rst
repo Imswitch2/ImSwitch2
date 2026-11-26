@@ -1915,7 +1915,71 @@ procedure writes one of these next to its own files). ``source_frame`` and
 ``target_frame`` say what it reads and writes (``detector:<name>``,
 ``stage:<name>``, ``scanner:<name>``); an optional ``calibrated_on`` records
 the detector grid (shape, binning, ROI offset) the calibration was made on,
-and arming on a different grid is refused.
+and arming on a different grid is refused. A file of type
+``spatial-transform`` points at a record of the shared transform module
+(``"path": "transforms/<id>.json"``, relative to ``calibrations/``) -- what
+the bead calibration below and the Transform Calibration panel save.
+
+.. _bead-calibration:
+
+**Camera → scan calibration from beads.** The map from camera pixels to the
+Advanced scan's centre coordinates that the ROI dF/F pipeline's ``tf`` step
+needs, from one camera image and one APD scan of the same bead field.
+
+#. *Bead sample.* Sparse (beads a few µm apart), random -- not a grid or rows,
+   which are refused as ambiguous -- visible in both channels and not
+   saturated. Same stage position and focus for both images.
+#. *Camera file.* Recording panel, File format HDF5 (or Zarr), select the
+   camera, **Snap** (or record a few frames: they are averaged). Use the
+   camera ROI and binning of the experiment.
+#. *APD file.* Set the Advanced scan as for the experiment -- the same scan
+   axes, step, dwell and **phase delay** -- over the beads; Recording panel,
+   select the APD, **Scan once**, Record. The scan may cover only part of
+   the camera field.
+#. *Calibrate.* Run ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``
+   (edit the two file names), or in a terminal
+   ``python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5``
+   (``--id`` sets the id, default ``cam_to_scan``; ``--camera-detector`` /
+   ``--scan-detector`` pick a detector in a file that holds several; ``--help``
+   for the rest). It writes ``calibrations/cam_to_scan.json`` (the pipeline
+   transform: ``detector:<camera>`` → ``scanner:galvo``) and, in
+   ``calibrations/transforms/``, the record ``cam_to_scan.json``, a QC figure
+   ``cam_to_scan_qc.png`` (both images with the paired beads numbered, the
+   residuals magnified, their histogram) and the report.
+#. *Read the report.* Paired beads, residual RMS and maximum (nm and camera
+   pixels), rotation, scale (µm per camera pixel, compared with the camera's
+   configured pixel size), mirror, translation. It refuses -- with the reason
+   -- too few beads, an ambiguous (regular) pattern, two images that do not
+   show the same beads, and residuals above 0.25 µm.
+#. *Validate on the rig before trusting it.*
+   ``python -m imswitch.imcontrol.model.bead_calibration verify cam_to_scan CAM2.h5 APD2.hdf5``
+   on a *second* bead field: no fit, it reports how far the camera beads land
+   from the APD beads and whether the camera grid is the calibrated one.
+   ``... predict cam_to_scan ROW COL`` gives the scan centre for one camera
+   pixel: enter it in the Advanced scan panel and scan by hand -- the bead at
+   that pixel must be in the centre. Then run the pipeline in *Validate* mode
+   and check that the ``would scan ROI ...`` rectangles lie on the cells.
+
+*Conventions.* Input: camera (row, column) pixels, integer = pixel centre,
+``(0, 0)`` the first pixel of the frame as delivered (the ROI, binned).
+Output: µm in the Advanced scan's centre coordinates (``axis_centerpos``) of
+the two scanned positioners, in the order the record's ``target_axes`` says:
+the positioner whose physical axis is Y first, then X
+(``ScanStage:scan_axis_physical``; without it, slow axis then fast). With X
+fast and Y slow that is ``["Y", "X"]`` -- set the ``run-scan`` step's
+``axes`` to exactly that list (the report prints it). APD pixels are turned
+into µm with the recorded scan geometry: rows are the slow axis, columns the
+fast one, pixel ``j`` at ``first + j × step`` -- the rule the live scan frames
+and the ``scan-geometry`` transform use. The fitted model is a similarity
+(rotation, one scale, mirror or not) unless a full affine lowers the
+residual significantly (F-test p < 0.01, ≥ 10 % lower RMS, ≥ 10 beads).
+
+*Valid for.* That camera ROI and binning (arming on another grid is refused)
+and that scan configuration: a phase delay shifts the APD image along the
+fast axis and the calibration absorbs it as a translation, so recalibrate
+after changing it. Not modelled: the stage position (calibrate and image
+without moving the stage between them, or recalibrate), field distortion,
+chromatic shift between the two channels, z.
 
 
 Alignment tools
