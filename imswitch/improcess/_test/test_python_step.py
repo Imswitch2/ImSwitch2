@@ -111,7 +111,7 @@ def test_the_namespace_has_exactly_the_documented_names():
     second = _stack(name="other")
     namespace = build_namespace([first, second])
     assert set(namespace) == {
-        "np", "data", "inputs", "axes", "scales", "unit", "axis", "results",
+        "np", "data", "inputs", "axes", "scales", "unit", "attrs", "axis", "results",
         "make_result", "make_labels", "make_points", "make_value", "make_event", "state",
         "outputs", "out",
     }

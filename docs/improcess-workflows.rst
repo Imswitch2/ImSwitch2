@@ -91,7 +91,7 @@ Steps and references
      - ``id``; ``path`` (optional until bound), ``dataset`` (needed when the container holds several), ``source_kind`` (``auto`` / ``image`` / ``tiling-manifest``), ``fingerprint`` (recorded by replay)
      - ``data``
    * - ``Reconstruct``
-     - ``id``, ``reconstructor`` (plugin id), ``params``, ``inputs`` (exactly one source)
+     - ``id``, ``reconstructor`` (plugin id), ``params``, ``inputs`` (exactly one: a source, or any step that produces an image)
      - ``out``
    * - ``Consolidate``
      - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor); no ``params`` — consolidation merges what the reconstructions already are
@@ -99,6 +99,12 @@ Steps and references
    * - ``Process``
      - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered), ``restriction`` (optional ROI restriction in the form the provenance records it; the run is narrowed to those regions, as the GUI's "apply within ROI" does)
      - what the processor declares (see below)
+   * - ``Map``
+     - ``id``, ``input`` (the result to iterate over), ``over`` (an axis label), ``body`` (steps; ``$item`` is the current slice), ``output`` (a body step; default the last)
+     - ``out``
+   * - ``Fold``
+     - as ``Map``, plus ``carry: {init, next}``; designed, not runnable yet
+     - ``out``
    * - ``Save``
      - ``id``, ``input`` (one reference), ``fmt``, ``path_template``
      - none
@@ -185,6 +191,84 @@ Multi-input processors (``channel-merge``, ``image-calculator``,
 ``colocalization``, ``frc`` …) take their inputs in the order listed.
 
 .. _workflows-python-steps:
+
+Chaining reconstructors and iterating over axes
+-----------------------------------------------
+
+**Any image result can feed a reconstructor.** A ``Reconstruct`` step reads
+a source *or* any step that produces an image: a Python step's reshape, a
+crop, another reconstruction. The result is handed to the reconstructor as a
+recording would be, with its axes, scales and attributes, and the new
+result's provenance continues the whole chain before it. Whether a
+reconstructor can take an input is decided from the data (its axes and
+attributes), never from where it came from. The exception is a
+reconstructor that reads its *recording file* (tiling, time-lapse,
+polarisation map, widefield-STARSS): it takes only a source, and validation
+and the editor say so before anything runs. Which reconstructor does what is
+in the table under :ref:`improcess-input-contract`.
+
+**Auto-indexing.** A plugin may declare the axes one call works on, its
+*core dims* (SNOUTY: one ``(Z, Y, X)`` stack; MoNaLISA: one ``(frames, Y, X)``
+scan). Given more axes than that, the runner calls it once per index of the
+axes in front -- T, C, a position -- and stacks the outputs with those axes
+kept in front, as a LabVIEW loop auto-indexes an array. Nothing is written
+for it in the workflow; the provenance records it once, as
+``iterated_over: {T: 120}``, and a replay loops again. A step that wants the
+whole stack in one call sets ``params: {_iterate: false}``. Progress reads
+``deskew [T=3/120]``; a cancel stops between indices and leaves no half
+result. Only axes that are *declared* are looped: a raw file that names no
+axes gets labels guessed from its rank, and is handed to the plugin whole,
+as before. The parameters are prepared once, from the whole input, and are
+the same for every index. The stacked result keeps only the attributes
+every index agrees on.
+
+**A Python step carries metadata on.** Its outputs inherit the first input's
+attributes (``make_result(..., inherit_attrs=False)`` to start empty) and
+may set their own (``attrs={"geometry": "skewed"}``), so a reshape keeps,
+for example, the SNOUTY geometry a later deskew needs. The code reads them as
+``attrs``.
+
+**A map runs a group of steps per index.** For a chain whose intermediates
+are only wanted frame by frame (or would not fit in memory for the whole
+time-lapse), a ``map`` step runs its ``body`` once per index of one axis and
+stacks its ``output``::
+
+    - step: map
+      id: per_t
+      input: reshape
+      over: T
+      body:
+        - {step: reconstruct, id: deskew, reconstructor: snouty, params: {...}, inputs: [$item]}
+        - {step: process, id: crop, processor: python, params: {code: ...}, inputs: [deskew]}
+        - {step: reconstruct, id: mona, reconstructor: monalisa, params: {...}, inputs: [crop]}
+      output: mona
+
+A body step reads the current slice as ``$item`` and may read any earlier
+step of the workflow (that result is the same for every index). A body cannot
+contain a ``save`` or another map; its steps are validated as the workflow
+they run as. Each index runs the body as a workflow of its own, so a
+plugin that prepares parameters from its input does so per index. The
+provenance records one node: the body as written, each body step's own
+record (plugin, version, encoded parameters, replayable), ``iterated_over``,
+and the parameters of any body step that differed between indices; a body
+step that cannot be replayed makes the map unreplayable with its reason
+(:ref:`improcess-provenance-loops`). Replay rebuilds the map. The editor shows a map as one node ("Map over T",
+the chain it runs) and keeps the body intact; the body is edited in the file.
+
+A ``fold`` is a map with state carried from one index to the next (a drift
+reference, a crop box chosen on the first frame), LabVIEW's shift register:
+``carry: {init: <ref or null>, next: <body port>}``, read in the body as
+``$carry``. It loads, validates, saves and shows in the editor; running one is
+refused until it is implemented.
+
+Workflows stay a fixed graph: no step repeats "until" something happens, so
+every run can be replayed from what its provenance recorded. An iteration to
+convergence belongs inside one plugin.
+
+``examples/improcess_workflows/snouty_side_by_side_timelapse.py`` runs both
+forms on a synthetic time-lapse filed as one 3D array (the timepoints side by
+side along X): reshape → SNOUTY → crop → MoNaLISA, auto-indexed and as a map,
+and checks that they agree.
 
 Python steps
 ------------
@@ -418,7 +502,9 @@ names each value when they do not (``its targets disagree (smooth.radius =
 ``int``, ``float``, ``bool``, ``text``, ``select`` or ``path`` (not ``code``,
 ``json`` or ``multiselect``), and not a Python step's ``ports``, which are its
 outputs. A parameter is the target of at most one control. Sources are set by
-bindings and Save paths by ``--out``, so neither can be a target.
+bindings and Save paths by ``--out``, so neither can be a target; nor can a
+``map`` or ``fold`` or any step in a body (see *Maps and folds* under
+Bypass).
 
 **The control's field** combines its targets' fields: the same type and, for
 a ``select``, the same choices; the same unit; bounds that all of them
@@ -464,8 +550,10 @@ In the last example ``a.h5`` runs with radius 2.5 and ``b.h5`` with 3.
 results…** and **Run workflow over files…** ask for a file's controls before
 running it (after the question about Python code, when it has some): one
 field per control, from its combined field, with its label and help, filled
-with the file's values. The values hold for that run, or for every file of a
-run over files, and are not written to the file; **Cancel** runs nothing. A
+with the file's values. Only the values you change are sent: a control left
+as it is runs with exactly the file's value. The values hold for that run, or
+for every file of a run over files, and are not written to the file;
+**Cancel** runs nothing. A
 control that has no effect in that run is listed greyed with the reason and
 sends no value: its steps are bypassed, or, on selected results, it sets the
 reconstruction the selected result replaces. The status line names the
@@ -581,6 +669,19 @@ port (``smooth`` or ``smooth.out``). A split's ``C0`` or a Python step's named
 outputs have nothing to stand for them (``split: cannot be bypassed:
 'smooth' reads its port 'C0', which nothing would stand for``). A binding
 cannot name a bypassed step; bind the step it passes through instead.
+
+**Maps and folds.** A ``map`` or ``fold`` step cannot be bypassed, and neither
+can a step in its body: it has no single result to pass through, and its body
+is one unit that runs once per index (``bypass`` on any of them is refused
+when the file loads). A map or fold *can read* a bypassed step, and then reads
+what that step passes through: its ``input``, a read of an outer step in its
+body, and a fold's ``carry.init`` are all pointed at the bypassed step's own
+input, so the run is the one of the workflow written without the step (and
+the map's recorded body names the step that really made the data). A body
+read of a port other than the main one keeps the step from being bypassed,
+like any other reader. Controls follow the same line: a control sets a
+parameter of a top-level ``reconstruct`` or ``process`` step, including one
+that feeds a map; it cannot name a map, a fold or a step in a body.
 
 ``bypass`` must be ``true`` or ``false``: any other value (``"false"``,
 ``0``, ``null``) is refused naming the step, so nothing becomes a bypass by
@@ -1101,8 +1202,8 @@ plugins from the user plugins folder.
        (default ``run``); ``--allow-drift``; ``--hash-sources``;
        ``--verify-hash``; ``--summary NAME`` (the summary CSV inside
        ``--out``, default ``<workflow name>_summary.csv``);
-       ``--set NAME=VALUE`` (repeatable; a control's value for every run,
-       see :ref:`workflows-controls`).
+       ``--set NAME=VALUE`` (repeatable, once per control; a control's value
+       for every run, see :ref:`workflows-controls`).
    * - ``replay FILE``
      - ``--out-workflow PATH`` (``.yaml`` or ``.json``; default: print the
        YAML); ``--fmt FMT`` (format of the replayed save, default the

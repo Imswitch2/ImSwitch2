@@ -178,6 +178,46 @@ def test_rename_delete_and_paste_keep_targets_right(catalog):
     assert document.controls == []                               # a control left without targets goes
 
 
+def test_a_value_is_checked_against_bypassed_targets_too(catalog):
+    # 'bg' is bypassed, so its bounds (1..10000) are not in the combined field,
+    # but it runs with the value once switched back on.
+    document = _diamond(catalog, controls=[Control("radius", ["smooth.radius"])])
+    document.workflow.steps.insert(5, Process("bg", "subtract-background", {"radius": 5.0}, inputs=["smooth"]))
+    document.add_control("bgr", "bg.radius")
+    document.remove_control("bgr")
+    document.set_control_value("radius", 5.0)
+    document.add_target("radius", "bg.radius")
+    document.set_bypass("bg", True)
+    with pytest.raises(DocumentError, match="bg.radius cannot take 0.5"):
+        document.set_control_value("radius", 0.5)
+    assert document.step("smooth").params["radius"] == 5.0
+
+
+def test_another_controls_problem_does_not_refuse_this_one(catalog):
+    document = _diamond(catalog, controls=[Control("sigma", ["smooth.radius"])])
+    document.set_plugin("smooth", "transform")                        # leaves 'sigma' a target 8.1 reports
+    assert any("has no parameter 'radius'" in i.message for i in document.issues())
+    document.add_control("radius", "sharp.radius")                    # its message names 'radius' too
+    assert document.control("radius").targets == ["sharp.radius"]
+
+
+def test_a_step_cannot_take_a_controls_name(catalog):
+    document = _diamond(catalog, controls=[Control("radius", ["smooth.radius"])])
+    with pytest.raises(DocumentError, match="name of a control"):
+        document.rename_step("sharp", "radius")
+    pasted = document.paste(document.fragment(["sharp"]).replace("id: sharp", "id: radius"))
+    assert pasted == ["radius2"]
+
+
+def test_a_bypassed_save_previews_the_file_its_producer_names(catalog):
+    from imswitch.improcess.model.workfloweditor.nodes import node_infos as infos_of
+
+    document = _diamond(catalog, bypass=("smooth",))
+    document.workflow.steps.append(Save("each", input="smooth", fmt="tiff",
+                                        path_template="{out_dir}/{source_stem}_{input_step}{ext}"))
+    assert infos_of(document)["each"].summary == ("→ ‹recording›_split.tif",)
+
+
 def test_rename_and_stop_exposing(catalog):
     document = _diamond(catalog, controls=[Control("radius", ["smooth.radius", "sharp.radius"])])
     document.rename_control("radius", "blur")
@@ -246,7 +286,7 @@ def test_boxes_show_bypass_and_exposed_parameters(catalog):
     document = _diamond(catalog, controls=[Control("radius", ["smooth.radius"])], bypass=("smooth", "out"))
     infos = node_infos(document)
     assert infos["smooth"].bypassed and infos["smooth"].passes == "split.C0"
-    assert infos["out"].bypassed and infos["out"].passes == "merge"
+    assert infos["out"].bypassed and infos["out"].passes == ""        # a bypassed Save writes nothing
     assert infos["smooth"].exposed == (("radius", "radius"),)
     assert any(line.endswith("⇄ radius") for line in infos["smooth"].summary)
     assert kinds_of(document)["smooth"] == kinds_of(document)["split"]
@@ -278,6 +318,24 @@ def test_setting_a_control_outdates_exactly_its_targets_and_what_follows(catalog
     assert {sid for sid in before if before[sid] != after[sid]} == {"smooth", "merge", "out"}
     document.set_control_value("radius", 4.0)
     assert session.fingerprints(document) == after                # 4 and 4.0 are one run
+
+
+def test_a_bypassed_step_shows_nothing_while_its_producer_is_outdated(catalog, registry):
+    session = RunSession(registry)
+    document = _diamond(catalog, bypass=("smooth",))
+    prints = session.fingerprints(document)
+    from imswitch.improcess.model.workfloweditor.session import Entry
+
+    old = Entry(key="old", step_id="split", ports={"C0": object()}, previews={}, seconds=0.1)
+    session._cache["old"] = old
+    session._last_key["split"] = "old"                       # an older result of 'split'
+    states = session.states(document)
+    assert states["split"].status == "outdated" and states["smooth"].status == "bypassed"
+    assert states["smooth"].entry is None                    # not shown as if it were current
+    session._cache[prints["split"]] = Entry(key=prints["split"], step_id="split",
+                                            ports={"C0": "c0", "C1": "c1"}, previews={}, seconds=0.1)
+    shown = session.states(document)["smooth"].entry
+    assert shown.ports == {"C0": "c0"}                       # only the port it passes on
 
 
 def test_a_partial_run_is_prepared_without_the_control_definitions(catalog, registry, tmp_path):
@@ -422,6 +480,18 @@ def test_the_controls_panel_says_when_a_control_has_no_effect(editor, catalog, q
     assert editor.document.step("smooth").params["method"] == "mean"
 
 
+def test_a_hand_edited_value_of_the_wrong_type_opens_without_a_crash(editor, catalog, qapp):
+    document = _diamond(catalog, controls=[Control("radius", ["smooth.radius", "sharp.radius"])])
+    document.step("smooth").params["radius"] = document.step("sharp").params["radius"] = "2,5"
+    _load(editor, document)
+    editor.scene.clearSelection()
+    editor.refresh()
+    texts = " ".join(label.text() for label in editor.inspector.widget().findChildren(QtWidgets.QLabel))
+    assert "hold '2,5', which does not fit" in texts
+    editor.inspector.control_forms["radius"].set_value("radius", 2.5)  # setting it repairs both
+    assert editor.document.step("sharp").params["radius"] == 2.5
+
+
 def test_reset_is_disabled_with_the_reason_when_defaults_differ(editor, catalog, qapp):
     document = _diamond(catalog, controls=[Control("radius", ["smooth.radius"])])
     document.workflow.steps.insert(5, Process("bg", "subtract-background", {"radius": 5.0}, inputs=["smooth"]))
@@ -499,7 +569,21 @@ def test_a_run_with_a_bypassed_step_and_switching_it_back_on(rig):
     assert editor.run()
     _wait(rig)
     assert "Ran 1 step " in editor.statusBar().currentMessage()   # merge; the rest from the cache
+    # A bypassed step reading the second port: the panel shows only that
+    # port, and Pin publishes it, named for what it is.
+    editor.select_step("sharp")
+    assert editor.toggle_bypass()
+    assert editor.run()
+    _wait(rig)
+    panel = editor.inspector.output
+    assert [panel.port.itemData(i) for i in range(panel.port.count())] == ["C1"]
+    assert editor.pin("sharp", "C1")
+    assert rig.loaded[-1][0] == "diamond:split.C1"
+    assert rig.loaded[-1][1] is editor.session.result(editor.document, "split", "C1")
+    editor.select_step("sharp")
+    assert editor.toggle_bypass()
     assert editor.session.result(editor.document, "smooth") is editor.session.result(editor.document, "split", "C0")
+    editor.select_step("smooth")
     assert editor.toggle_bypass()                                  # back on: the old results are found
     assert editor.scene.node("merge").run.status == "done"
     assert editor.session.result(editor.document, "merge") is first

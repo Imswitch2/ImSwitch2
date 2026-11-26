@@ -217,6 +217,200 @@ def test_layout_step_sizes_calibrate_the_raster():
     assert result.metadata["geometry_source"] == "layout"
 
 
+def _scan_layout(*loops) -> AcquisitionLayout:
+    """A frame-stream layout with ``loops`` outermost first."""
+    return AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=tuple(loops),
+    )
+
+
+def _axis(kind, count, step=0.1):
+    return AcquisitionLoop(kind, kind, count, step=step, unit="um")
+
+
+@pytest.mark.parametrize(
+    ("slow_kind", "fast_kind", "labels"),
+    [
+        ("scan_z", "scan_x", ["Z", "X"]),
+        ("scan_z", "scan_y", ["Z", "Y"]),
+        ("scan_y", "scan_x", ["Y", "X"]),
+    ],
+)
+def test_any_two_scan_axes_make_an_image(slow_kind, fast_kind, labels):
+    """An XZ or YZ scan is as much a raster as XY, with its own axis labels."""
+    rows, cols = 3, 5
+    frames = _uniform_frames(np.arange(rows * cols, dtype=float))
+    layout = _scan_layout(_axis(slow_kind, rows), _axis(fast_kind, cols))
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.axis_labels == labels
+    assert result.metadata["scan_axes"] == tuple(labels)
+    assert result.metadata["scan_dims"] == (cols, rows)
+    np.testing.assert_allclose(
+        result.data, np.arange(rows * cols, dtype=float).reshape(rows, cols)
+    )
+
+
+def test_a_z_fast_scan_is_placed_by_coordinate_not_by_loop_order():
+    """Z stepped inside X still shows Z down the rows and X along the columns."""
+    xs, zs = 4, 3
+    frames = _uniform_frames(np.arange(xs * zs, dtype=float))
+    layout = _scan_layout(_axis("scan_x", xs), _axis("scan_z", zs))
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.axis_labels == ["Z", "X"]
+    # frame = x * zs + z, so pixel (z, x) holds that frame's value.
+    z, x = np.mgrid[0:zs, 0:xs]
+    np.testing.assert_allclose(result.data, x * zs + z)
+
+
+def test_an_xyz_scan_reconstructs_a_volume():
+    zs, ys, xs = 3, 4, 5
+    frames = _uniform_frames(np.arange(zs * ys * xs, dtype=float))
+    layout = _scan_layout(
+        _axis("scan_z", zs), _axis("scan_y", ys), _axis("scan_x", xs)
+    )
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.axis_labels == ["Z", "Y", "X"]
+    assert result.metadata["scan_dims"] == (xs, ys, zs)
+    np.testing.assert_allclose(
+        result.data, np.arange(zs * ys * xs, dtype=float).reshape(zs, ys, xs)
+    )
+
+
+def test_an_xyz_scan_with_conditions_keeps_one_volume_per_condition():
+    zs, ys, xs = 2, 3, 4
+    frames = _uniform_frames(np.arange(zs * ys * 2 * xs, dtype=float))
+    layout = _scan_layout(
+        _axis("scan_z", zs),
+        _axis("scan_y", ys),
+        AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+        _axis("scan_x", xs),
+    )
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.data.shape == (2, zs, ys, xs)
+    assert result.axis_labels == ["Condition", "Z", "Y", "X"]
+    assert result.metadata["condition_labels"] == ("A", "B")
+    z, y, x = np.mgrid[0:zs, 0:ys, 0:xs]
+    for condition in (0, 1):
+        expected = ((z * ys + y) * 2 + condition) * xs + x
+        np.testing.assert_allclose(result.data[condition], expected)
+
+
+def test_a_single_plane_z_loop_leaves_an_xy_image():
+    """A one-step Z is a placeholder, not a third dimension."""
+    ys, xs = 3, 4
+    frames = _uniform_frames(np.arange(ys * xs, dtype=float))
+    layout = _scan_layout(
+        _axis("scan_z", 1), _axis("scan_y", ys), _axis("scan_x", xs)
+    )
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.axis_labels == ["Y", "X"]
+    assert result.data.shape == (ys, xs)
+
+
+def test_a_coarser_z_step_is_resampled_to_square_pixels():
+    zs, xs = 4, 6
+    frames = _uniform_frames(np.arange(zs * xs, dtype=float))
+    layout = _scan_layout(_axis("scan_z", zs, step=0.2), _axis("scan_x", xs, step=0.1))
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    assert result.data.shape == (2 * zs, xs)
+
+
+def test_an_uncalibrated_z_loop_is_refused():
+    """Z steps are the fit's axial pixel size, as X and Y steps are laterally."""
+    frames = _uniform_frames(np.arange(12, dtype=float))
+    layout = _scan_layout(
+        AcquisitionLoop("scan_z", "scan_z", 3), _axis("scan_x", 4)
+    )
+
+    with pytest.raises(ValueError) as error:
+        BeadRecReconstructor().process(
+            _recorded_source(frames, layout), {"fit_model": "none"}
+        )
+
+    assert "UNCALIBRATED_ACQUISITION_LOOP" in {
+        issue.code for issue in getattr(error.value, "issues", ())
+    }
+
+
+def test_a_volume_is_fitted_through_the_bead_centre_in_three_sections():
+    zs = ys = xs = 15
+    z, y, x = np.mgrid[0:zs, 0:ys, 0:xs]
+    # Elongated along Z, as a real PSF is.
+    bead = 1000.0 * np.exp(
+        -((x - 7) ** 2 / (2 * 1.5 ** 2) + (y - 6) ** 2 / (2 * 1.5 ** 2)
+          + (z - 8) ** 2 / (2 * 3.0 ** 2))
+    ) + 10.0
+    layout = _scan_layout(
+        _axis("scan_z", zs), _axis("scan_y", ys), _axis("scan_x", xs)
+    )
+
+    result = BeadRecReconstructor().process(
+        _recorded_source(_uniform_frames(bead.ravel()), layout),
+        {"fit_model": "gaussian2d"},
+    )
+
+    sections = result.metadata["fit_sections"]
+    assert set(sections) == {"XY", "XZ", "YZ"}
+    assert sections["XY"]["section"] == {"Z": 8}
+    assert sections["XZ"]["section"] == {"Y": 6}
+    assert sections["YZ"]["section"] == {"X": 7}
+    assert sections["XZ"]["axes"] == ("Z", "X")
+    for entry in sections.values():
+        assert entry["r_squared"] > 0.99
+
+    def widest(entry):
+        return max(entry["sigma_x"], entry["sigma_y"])
+
+    assert widest(sections["XY"]) == pytest.approx(1.5, rel=0.05)
+    assert widest(sections["XZ"]) == pytest.approx(3.0, rel=0.05)
+    assert widest(sections["YZ"]) == pytest.approx(3.0, rel=0.05)
+
+
+@pytest.mark.parametrize("fmt", ["tiff", "zarr"])
+@pytest.mark.parametrize("kinds", [("scan_z", "scan_x"), ("scan_z", "scan_y", "scan_x")])
+def test_xz_and_xyz_results_save(tmp_path, fmt, kinds):
+    from imswitch.improcess.model.result_io import save_image_result
+
+    layout = _scan_layout(*(_axis(kind, 3) for kind in kinds))
+    frames = _uniform_frames(np.arange(3 ** len(kinds), dtype=float))
+    result = BeadRecReconstructor().process(
+        _recorded_source(frames, layout), {"fit_model": "none"}
+    )
+
+    path = tmp_path / f"bead.{'ome.tif' if fmt == 'tiff' else 'zarr'}"
+    save_image_result(result, path, fmt)
+
+    assert path.exists()
+
+
 def test_infer_scan_dims():
     assert infer_scan_dims(12, 4, 3) == (4, 3)     # explicit
     assert infer_scan_dims(12, scan_x=4) == (4, 3)  # infer the other axis

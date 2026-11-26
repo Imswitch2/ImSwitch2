@@ -153,6 +153,7 @@ def test_image_ops_toolbar_holds_result_producing_actions(qapp):
 
     assert view.added == [
         "duplicate",
+        "use-as-data",
         "crop-substack",
         "max-projection",
         "split-stack",

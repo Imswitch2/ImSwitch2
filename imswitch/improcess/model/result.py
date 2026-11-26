@@ -195,6 +195,13 @@ class ProcessingResult(ABC):
         self.identity_kind = identity_kind
         #: Receipts of every save of this result in this session, newest last.
         self.artifacts: list = []
+        #: Source-style attributes passed on to whatever reads this result
+        #: next, as a ``DataObj``'s ``attrs`` are (geometry a reshape must
+        #: keep, ``geometry: deskewed`` after a deskew). In memory only: the
+        #: annotations written beside the pixels are ``metadata``. Read it
+        #: through :func:`~imswitch.improcess.model.result_source.result_attrs`,
+        #: which tolerates a result type that never set it.
+        self.attrs: dict[str, Any] = {}
         self._display_layer_settings: dict[str, dict[str, Any]] = {}
         self.axis_scales = (
             axis_scales

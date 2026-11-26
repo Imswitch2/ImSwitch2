@@ -40,6 +40,8 @@ def field_of(entry: dict) -> ParamField | None:
     kind = entry.get("type")
     if not kind:
         return None
+    # "value" is there only when the file's value fits the field (prepare
+    # reports one that does not); a field needs a default of its type.
     default = entry.get("reset", entry.get("value"))
     try:
         return ParamField(
@@ -62,6 +64,9 @@ class WorkflowControlsDialog(QtWidgets.QDialog):
         self.setMinimumWidth(460)
         self._validate = validate
         self._active: dict[str, dict] = {}
+        #: Controls the user changed; the others are not sent, so they run
+        #: with exactly the file's value (a widget may round or clamp it).
+        self._touched: set[str] = set()
         layout = QtWidgets.QVBoxLayout(self)
         what = "each run" if runs > 1 else "this run"
         intro = QtWidgets.QLabel(f"<b>{workflow_name}</b> lets you set these values for {what}. "
@@ -93,6 +98,8 @@ class WorkflowControlsDialog(QtWidgets.QDialog):
                 values[name] = entry["value"]
         self.form = ParamForm()
         self.form.set_plugin(SimpleNamespace(fields=fields, extra_keys=()), values)
+        self.form.sigValueChanged.connect(lambda key, _value: self._touched.add(key))
+        self.form.sigValueCleared.connect(self._touched.add)
         self.form.set_reset_visible(False)
         self.form.setMinimumHeight(min(34 + 26 * len(fields), 320))
         if fields:
@@ -114,9 +121,10 @@ class WorkflowControlsDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     def values(self) -> dict:
-        """The value of every control that is active in this run."""
+        """The values changed in the dialog, for controls active in this run;
+        the others keep the file's value (they are not sent)."""
         found = self.form.values()
-        return {name: found[name] for name in self._active if name in found}
+        return {name: found[name] for name in self._active if name in found and name in self._touched}
 
     def accept(self) -> None:
         problems = self.form.problems()

@@ -113,8 +113,9 @@ Plugin architecture
 ImProcess defines two plugin shapes:
 
 * ``Reconstructor`` (``imswitch.improcess.reconstructors.base``)
-  Turns a raw ``DataObj`` into a ``ProcessingResult``.  One per
-  dataset.  Examples: ``monalisa``, ``view-only`` (the no-op
+  Turns a ``DataObj`` into a ``ProcessingResult``: a recording, or any image
+  result of another step handed over as one (a reshape, a crop, another
+  reconstruction -- see :ref:`improcess-input-contract`).  Examples: ``monalisa``, ``view-only`` (the no-op
   pass-through), ``widefield-starss`` and the SNOUTY reconstructors.
 * ``Processor`` (``imswitch.improcess.processors.base``)
   Operates on a ``ProcessingResult`` and returns one or more new results.
@@ -363,7 +364,9 @@ in the attributes of an HDF5 file or Zarr group, and in a
 as CSV.  The Metadata panel shows it for the selected result, including the
 step list recorded as ``processing_history``, and ``python -m
 imswitch.improcess.workflows replay`` turns a saved file's record back into
-a workflow (see :doc:`improcess-workflows`).
+a workflow (see :doc:`improcess-workflows`).  A step that ran once per
+timepoint is still one step in the record, with ``iterated_over`` saying
+over what (:ref:`improcess-provenance-loops`).
 
 .. _improcess-image-windows:
 
@@ -638,6 +641,8 @@ threshold               Processor      Otsu or absolute threshold to connected-c
 regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
 pick                    Processor      One point out of many: largest, brightest, first, nearest or max-column (by a named column, optionally only where another is true)
 roi-dff                 Processor      dF/F per ROI of a frozen cell mask with per-ROI baseline and trigger flag, as ``points``
+spot-count              Processor      Diffraction-limited spots per frame (SMLM net-gradient detection): ``points`` with an image overlay and a count graph
+tile-spots              Processor      Spots per tile of a tiling run; tiles ranked by count with their stage targets
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
 psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
 bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane
@@ -1930,17 +1935,27 @@ at startup; if you list ``["view-only", "widefield-starss"]`` under
 Drop-in reconstructors from the plugins folder are always registered, and
 *Tools → Load reconstructor* adds any other built-in for the session.
 
+.. _improcess-beadrec:
+
 Bead-scan reconstruction
 ========================
 
-The ``beadrec`` reconstructor turns a recorded camera frame stream into a 2D
-raster image. Each input frame represents one scan position; the reconstructed
-pixel value is the mean intensity inside the selected camera ROI. It accepts
-HDF5, TIFF/OME-TIFF and Zarr input.
+The ``beadrec`` reconstructor turns a recorded camera frame stream into a
+raster image or volume. Each input frame represents one scan position; the
+reconstructed pixel value is the mean intensity inside the selected camera
+ROI. It accepts HDF5, TIFF/OME-TIFF and Zarr input.
 
 A recording that carries its acquisition layout (see `Data ingest`_)
 defines the raster: its scan size and step sizes are used, and a scan with
 condition loops (line steps, for example) gives one image per condition.
+Any two scan axes give an image -- ``Y, X`` for an XY scan, ``Z, X`` for XZ,
+``Z, Y`` for YZ, with the higher axis down the rows -- and all three a
+``Z, Y, X`` volume. Frames are placed by their recorded coordinates, so the
+order the axes were stepped in does not matter. A scan axis with a single
+step (one Z plane in an XY scan) is dropped rather than kept as a third
+dimension. The Z loop, like X and Y, must record its step: it is the axial
+pixel size, and a coarser Z step is resampled to the lateral pixel size as
+an anisotropic XY scan is.
 Leave **Scan X pixels (0=auto)** and **Scan Y pixels (0=auto)** at ``0`` for
 such a file; a manual size that disagrees with the recorded one is refused
 rather than applied.  For a source without a recorded layout, enter the
@@ -1956,7 +1971,12 @@ the reconstructed image to equal pixel spacing.
 decay), ``sine1d`` (a one-dimensional sine with fitted wavelength, phase and
 angle) and ``sine2d``. A successful fit is stored in the result metadata with
 the model, centre, fitted parameters and :math:`R^2`; a fit failure is
-reported in the metadata without discarding the reconstructed image.
+reported in the metadata without discarding the reconstructed image. The
+fit's ``axes`` name the image's rows and columns: ``x0`` and ``sigma_x``
+follow the columns, ``y0`` and ``sigma_y`` the rows, so an XZ image reports
+its axial width as ``sigma_y``. The models are 2D, so a volume is fitted as
+its XY, XZ and YZ sections through the bead's intensity centroid, stored
+under ``fit_sections`` with the plane each was cut at.
 
 For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
 described in :doc:`tiling`.
@@ -3161,6 +3181,193 @@ offered on it.
 To publish plots in the graph panel, implement ``plot_payloads()`` on the
 returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 ``imswitch.improcess.model``.
+
+.. _improcess-input-contract:
+
+The input contract: what one call consumes
+------------------------------------------
+
+Every reconstructor states how it takes its input, and **every reconstructor
+is treated the same way** on that basis -- in the GUI, a workflow, a map, a
+replay.  Two class attributes say it; ``test_reconstructor_contract`` runs
+over the whole registry, so a reconstructor added later is held to the same
+rules without a test of its own.
+
+``core_dims_in`` (required for new reconstructors)
+    What one call of ``process`` consumes, as one of:
+
+    * **a tuple of axes** -- the trailing axes of the input, in order.  An
+      entry is a label (``"Y"``), alternatives (``"Z|Frame|Plane"``: the
+      plane axis has several names) or ``"*"`` (any axis).  Given an input
+      with *more* axes than these, ``process`` is called once per index of
+      the extra leading axes -- T, C, a position -- and the outputs are
+      stacked with those axes in front: **auto-indexing**.  An input of
+      exactly this rank is passed as it is.
+    * ``WHOLE_INPUT`` (from ``imswitch.improcess.model.core_dims``) -- one
+      call with the whole input, never looped.  For a plugin whose leading
+      axes are not independent repeats (BeadRec folds scan axes into a frame
+      list), or whose output cannot be stacked (the SMLM localizer makes one
+      table), or that reads a file.
+    * ``None`` -- not declared.  Only third-party plugins written before
+      this contract should still have it; they are treated as
+      ``WHOLE_INPUT`` and keep working.
+
+``reads_recording_file`` (default ``False``)
+    ``True`` when ``process`` needs the recording *file* itself -- a path,
+    sibling files, a manifest, a measurement-run file -- rather than the
+    pixels (``data``, ``data_handle``), ``axis_labels`` and ``attrs``.  Such
+    a reconstructor takes only a source.  Handed a result, it is refused
+    with one message, in the same words everywhere: ``check_input`` before a
+    run, workflow validation (a map's ``$item`` included), the editor's
+    cables and its quick-add list.  Leave it ``False`` and the plugin takes a
+    recording and any image result alike.
+
+The built-ins:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 30 44
+
+   * - Reconstructor
+     - ``core_dims_in``
+     - Takes a result of another step?
+   * - ``snouty``
+     - ``(Z|Frame|Plane, Y, X)``
+     - yes; loops over T, C, …
+   * - ``snouty-projections``
+     - ``(Z|Frame|Plane, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa-lattice``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa-legacy``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``beadrec``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``view-only``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``smlm-localizer``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``tiling-mosaic``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``time-lapse``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``polarisation-map``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``widefield-starss``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+
+Rules that hold for all of them:
+
+* **Only declared axes are looped.**  A raw file that names no axes gets
+  labels from its rank alone (``T, Z, C, Y, X`` from the right); such a guess
+  never decides which axis is time and which a scan axis, so that input is
+  handed over whole, exactly as before auto-indexing existed.  Results, and
+  files that name their axes (an ``axes`` attribute, OME metadata), are
+  looped.
+* **The axes a plugin needs must be last.**  Otherwise the input is refused
+  before any pixel is processed, with the axes it has and the ones it
+  needs; reorder or relabel them in a Python step.
+* ``_iterate: false`` in a step's parameters hands the plugin the whole
+  stack instead (recorded as ``iterate: false``, replayed the same way).
+* **Parameters are prepared once.**  ``prepare_params`` sees the whole
+  input; every index runs with the same parameters, and those are the ones
+  recorded.  (A ``map`` prepares them per index -- see
+  :doc:`improcess-workflows`.)
+* **One run path.**  Every reconstruction, looped or not, goes through
+  ``run_reconstruction`` (``imswitch.improcess.reconstructors.run``), which
+  checks the input, loops, and records one provenance node.  Nothing in the
+  source calls ``process`` around it; a test fails if something does.
+
+Optional, for what the declaration cannot say:
+
+``check_input(data_obj, params) -> list[str]``
+    Every reason the input cannot be reconstructed, as messages, before any
+    pixel is processed.  The default checks ``core_dims_in``,
+    ``required_attrs`` and ``reads_recording_file``; extend it with
+    ``super().check_input(...) + [...]``.  SNOUTY adds that ``n_timepoints``
+    must be 1 when the runner already loops over time.
+``required_attrs``
+    Attribute keys the input must carry unless a parameter of that name
+    gives the value.
+``stack_results(results, match, *, loop_scales=None)``
+    Builds the stacked result of a loop.  The default makes a generic image
+    (or labels) result; override it to keep your own result class (SNOUTY
+    returns a 4D ``SnoutyResult``).  Keep only attributes every index agrees
+    on (``iteration.common_attrs``) -- one that differs describes one index,
+    not the stack.
+``core_dims_out``
+    The axes one call produces, for documentation; the stacked result takes
+    its axes from what the calls returned.
+
+A minimal looping reconstructor::
+
+    from imswitch.improcess.reconstructors.base import Reconstructor
+
+    class MyDeconvolution(Reconstructor):
+        name = "My deconvolution"
+        id = "my-deconv"
+        core_dims_in = ("Z", "Y", "X")        # one volume per call
+        core_dims_out = ("Z", "Y", "X")
+        ...
+
+        def process(self, data_obj, params, context=None):
+            volume = data_obj.data              # always (Z, Y, X) here
+            ...
+
+Handed ``(T, Z, Y, X)``, it is called once per timepoint and the result is
+``(T, Z, Y, X)``; the provenance has one node with ``iterated_over: {T: n}``.
+
+Processors may declare ``core_dims_in``/``core_dims_out`` the same way and
+are auto-indexed by the same code (``processors/run.run_batch``); for them
+it stays optional, since most processors already work on any rank.
+
+.. _improcess-provenance-loops:
+
+Loops and maps in the provenance
+--------------------------------
+
+A looped step is **one node**, never one per index:
+
+``iterated_over: {"T": 120}``
+    On a reconstruct or process node that was auto-indexed: the loop axes and
+    their lengths.  Replay does not copy it; it loops again from the data's
+    axes, and in replay mode the source fingerprint (shape included) is
+    checked first, so the same loop is found.
+``iterate: false``
+    The step was asked for the whole stack (``_iterate: false``); replay asks
+    the same.
+A reconstruct node whose input is a result
+    Its input reference points at that result's output node, and the
+    result's whole graph is carried along: the chain from the recording
+    through every step is unbroken (the bridge is
+    ``model/result_source.data_obj_from_result``).
+``op: map``
+    One node for a whole map: ``body`` (the steps as written, ``$item``
+    included), ``body_steps`` (each body step's own node as it would be
+    recorded standalone -- plugin, plugin version, parameter version, its
+    parameters encoded by the plugin's own codec, ``replayable``),
+    ``iterated_over``, ``broadcast`` (where the body's reads of outer steps
+    sit in the node's inputs), and ``body_params_by_index`` when a body step's
+    parameters differed between indices.  If any body step is not
+    replayable, the map is not either, with that step's reason.
+
+A stacked result is named after its input (not the first slice's
+``[T=1/n]``), and keeps only the attributes every index agrees on.
+``test_provenance_chaining_integrity`` checks all of this end to end,
+including that the graph read back from an OME-TIFF or HDF5 file equals the
+one in memory and that a replay reproduces the pixels bit for bit.
 
 Drop-in analysis plugins
 ========================

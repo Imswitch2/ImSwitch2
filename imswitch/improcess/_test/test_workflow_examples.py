@@ -70,3 +70,12 @@ def test_the_batch_example_runs_over_a_folder(scratch):
 
 def test_the_replay_example_reproduces_the_diamond_pixel_for_pixel(scratch):
     assert _module("replay_from_file").main([]) == 0
+
+
+def test_the_snouty_side_by_side_example_agrees_auto_indexed_and_mapped(scratch, capsys):
+    assert _module("snouty_side_by_side_timelapse").main([]) == 0
+    printed = capsys.readouterr().out
+    assert "auto-indexed and mapped results agree" in printed
+    assert printed.count("iterated over {'T': 2}") == 2
+    written = sorted(p.name for p in (scratch[0] / "results").glob("*.ome.tif"))
+    assert written == ["lapse_deskewed.ome.tif", "lapse_monalisa.ome.tif", "lapse_monalisa_map.ome.tif"]

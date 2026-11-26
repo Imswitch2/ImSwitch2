@@ -42,6 +42,7 @@ from imswitch.imcommon.model.workflow.steps import (
     DEFAULT_PORT,
     Control,
     Issue,
+    Map,
     Process,
     Reconstruct,
     Ref,
@@ -50,6 +51,7 @@ from imswitch.imcommon.model.workflow.steps import (
     Workflow,
     WorkflowError,
     _defaults,
+    parse_ref,
     parse_target,
     step_from_dict,
     validate_plain,
@@ -229,6 +231,18 @@ def _copy(step):
     return copied
 
 
+def _rewire_map(step: Map, upstream: Mapping[str, Ref]) -> None:
+    """Point a map's (or fold's) reads of bypassed steps at what they pass through."""
+    if step.input is not None:
+        step.input = resolve_ref(step.input, upstream)
+    for inner in step.body:
+        if not isinstance(inner, Save):
+            inner.inputs = [resolve_ref(ref, upstream) for ref in inner.inputs]
+    init = step.carry.get("init") if hasattr(step, "carry") else None
+    if init:
+        step.carry["init"] = str(resolve_ref(parse_ref(init), upstream))
+
+
 def _rewrite(recipe: Workflow, upstream: Mapping[str, Ref]):
     """The recipe's steps with bypassed ones taken out and their readers
     rewired; a bypassed step the rules refuse stays in (for validation), as if
@@ -249,6 +263,16 @@ def _rewrite(recipe: Workflow, upstream: Mapping[str, Ref]):
             if new != copied.input:
                 rewired[(copied.id, -1)] = (str(copied.input), str(new))
                 copied.input = new
+        elif isinstance(copied, Map):
+            # A map or fold reads the enclosing workflow in three places: its
+            # input, whatever its body broadcasts, and a fold's carry.init.
+            # Each is rewired where it stands (never through ``inputs``,
+            # whose setter would drop a body read it no longer finds).
+            before = [str(ref) for ref in copied.inputs]
+            _rewire_map(copied, upstream)
+            for index, (was, now) in enumerate(zip(before, (str(ref) for ref in copied.inputs))):
+                if was != now:
+                    rewired[(copied.id, index)] = (was, now)
         elif not isinstance(copied, Source):
             refs = []
             for index, ref in enumerate(copied.inputs):
@@ -344,7 +368,10 @@ def control_states(recipe: Workflow, registry=None, reason_for=None) -> tuple[di
             seen.add(text)
             step = by_id.get(step_id)
             if step is None:
-                issues.append(Issue(where, f"control {name!r}: target {text!r} names no step"))
+                inside = next((m.id for m in recipe.steps if isinstance(m, Map) and step_id in m.body_ids), None)
+                hint = (f"; {step_id!r} is a step in the body of {inside!r}, and a control sets top-level "
+                        "steps only") if inside else ""
+                issues.append(Issue(where, f"control {name!r}: target {text!r} names no step{hint}"))
                 continue
             if not isinstance(step, (Reconstruct, Process)):
                 issues.append(Issue(step_id, f"control {name!r}: {text!r} is a {step.kind} step; a control "
@@ -658,6 +685,17 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
         return ""
 
     states, control_issues = control_states(recipe, registry, reason_for)
+    for state in states.values():
+        # The value the targets hold must be one the control's field can
+        # show and check: a hand-edited "2,5" for a number is the file's
+        # problem, said here, not a form's crash later.
+        if state.active and state.has_value and state.spec is not None:
+            try:
+                check_typed(state.value, state.spec)
+            except ValueError as exc:
+                first = next(t for t in state.targets if t.active)
+                control_issues.append(Issue(first.step, f"control {state.name!r}: the value its parameters hold, "
+                                                        f"{state.value!r}, does not fit it ({exc})"))
     recipe_issues.extend(control_issues)
     if subset:
         recipe_issues = [issue for issue in recipe_issues if issue.step in present or issue.step not in by_id]
@@ -719,7 +757,7 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
             try:
                 final_values[name] = check_typed(state.value, state.spec)
             except ValueError:
-                final_values[name] = state.value
+                pass            # reported with the control's issues (stage 5)
     prepared = PreparedRun(
         workflow=execution, recipe=recipe, bypassed=tuple(bypassed), values=final_values,
         inactive={name: state.inactive_reasons for name, state in states.items() if not state.active},

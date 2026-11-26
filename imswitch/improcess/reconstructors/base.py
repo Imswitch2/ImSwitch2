@@ -145,6 +145,41 @@ def preflight_acquisition_layout(
     return tuple(issues)
 
 
+def recording_file_refusal(reconstructor) -> str:
+    """The one message for a file-reading reconstructor handed a result."""
+    name = getattr(reconstructor, "name", None) or getattr(reconstructor, "id", "This reconstructor")
+    return (
+        f"{name} reads its recording file (not only the pixels), so it can only "
+        "reconstruct a recording, not a result of another step"
+    )
+
+
+def params_from_attrs(reconstructor, data_obj, params: dict | None, keys) -> dict:
+    """``params`` with each of ``keys`` taken from the input's attributes
+    where the parameter still holds the reconstructor's default.
+
+    A result made upstream knows things a recording's widget defaults do not
+    (a deskew writes the voxel size it resampled to as ``pixel_size_nm``);
+    an explicit, non-default parameter still wins. The comparison is with the
+    default because ``prepare_params`` is handed the merged defaults and step
+    parameters and cannot tell them apart otherwise.
+    """
+    params = dict(params or {})
+    try:
+        attrs = dict(getattr(data_obj, "attrs", None) or {})
+    except Exception:
+        return params
+    defaults = type(reconstructor).default_params()
+    for key in keys:
+        if key in attrs and key in defaults and params.get(key, defaults[key]) == defaults[key]:
+            value = attrs[key]
+            try:
+                params[key] = type(defaults[key])(value) if defaults[key] is not None else value
+            except (TypeError, ValueError):
+                continue
+    return params
+
+
 @dataclass(frozen=True)
 class DetectionPreview:
     """What :meth:`Reconstructor.detection_preview` draws: points and a line.
@@ -287,6 +322,104 @@ class Reconstructor(ABC):
     def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
         """Bring params recorded under an older ``params_version`` up to date."""
         return dict(encoded or {})
+
+    # -- declared input contract (all optional) -----------------------------
+
+    core_dims_in: tuple[str, ...] | None = None
+    """What one call of :meth:`process` consumes. **Every reconstructor
+    declares it** (``test_reconstructor_contract`` checks the built-ins):
+
+    * a tuple of axes -- the trailing axes of the input, in order; an entry
+      is a label, several labels any of which will do (``"Z|Frame"``) or
+      ``"*"`` (see :mod:`~imswitch.improcess.model.core_dims`). An input with
+      more axes than these is **auto-indexed**: :meth:`process` is called once
+      per index of the extra leading axes (T, C, a position), and the outputs
+      are stacked with those axes in front (:meth:`stack_results`). An input
+      of exactly this rank is passed as it is.
+    * :data:`~imswitch.improcess.model.core_dims.WHOLE_INPUT` (``()``) --
+      one call with the whole input, never looped (view-only, a localizer
+      that consumes a whole movie).
+    * ``None`` -- not declared: a plugin written before this contract. It is
+      treated as ``WHOLE_INPUT`` so it keeps working; new plugins must not
+      leave it ``None``.
+
+    Whatever is declared, the run goes through
+    :func:`~imswitch.improcess.reconstructors.run.run_reconstruction`, which
+    records one provenance node (with ``iterated_over`` when it looped).
+    """
+
+    reads_recording_file: bool = False
+    """``True`` when :meth:`process` needs the *recording file* itself, not
+    just its pixels and attributes: a path, sibling files, a manifest, a
+    measurement-run file. Such a reconstructor can only reconstruct a
+    ``Source``; given a result (a reshape, another reconstruction) it is
+    refused with the same message everywhere -- :meth:`check_input` before a
+    run, workflow validation, and the editor's cables. ``False``: it reads
+    ``data``/``data_handle``, ``axis_labels``, ``attrs``, and so takes a
+    recording or any image result alike.
+    """
+
+    core_dims_out: tuple[str, ...] | None = None
+    """The axes one call produces, for documentation and the editor; the
+    stacked result takes its axes from what the calls actually returned."""
+
+    required_attrs: tuple[str, ...] = ()
+    """Attribute keys the input must carry unless a parameter of the same
+    name gives the value (geometry a deskew cannot guess, say)."""
+
+    def check_input(self, data_obj, params: dict | None) -> list[str]:
+        """Why ``data_obj`` cannot be reconstructed with ``params``; empty when it can.
+
+        Called before any pixel is processed (the runner, the GUI's
+        reconstruct paths), and statically by workflow validation with
+        ``data_obj=None``, when only the parameters are known. The default
+        checks :attr:`core_dims_in` against the input's axes and
+        :attr:`required_attrs` against its attributes; a plugin extends it
+        (``super().check_input(...) + [...]``) for what only it knows.
+        Messages, not exceptions: a caller shows all of them at once.
+        """
+        from imswitch.improcess.model.core_dims import CoreDimsError, match_core_dims, wants_iteration
+
+        if data_obj is None:
+            return []
+        problems: list[str] = []
+        params = dict(params or {})
+        if self.reads_recording_file and getattr(data_obj, "provenance_parent", None) is not None:
+            return [recording_file_refusal(self)]
+        handle = getattr(data_obj, "data_handle", None)
+        shape = tuple(getattr(handle, "shape", None) or getattr(getattr(data_obj, "data", None), "shape", ()) or ())
+        # Guessed labels (a raw file that names no axes) decide nothing:
+        # such an input is handed over whole, as before (iteration.plan).
+        declared = bool(getattr(data_obj, "axis_labels_declared", True))
+        if self.core_dims_in and wants_iteration(params) and shape and declared:
+            try:
+                match_core_dims(getattr(data_obj, "axis_labels", None) or [], shape, self.core_dims_in)
+            except CoreDimsError as exc:
+                problems.append(f"{self.name}: {exc}")
+        if self.required_attrs:
+            try:
+                attrs = dict(getattr(data_obj, "attrs", None) or {})
+            except Exception:
+                attrs = {}
+            missing = [key for key in self.required_attrs if key not in params and key not in attrs]
+            if missing:
+                problems.append(
+                    f"{self.name} needs {', '.join(missing)}: neither the input's attributes "
+                    "nor the parameters give it"
+                )
+        return problems
+
+    def stack_results(self, results: list, match, *, loop_scales=None):
+        """One result from the per-index results of an auto-indexed run.
+
+        ``match`` is the :class:`~imswitch.improcess.model.core_dims.CoreMatch`
+        that was looped over. The default stacks the arrays with the loop axes
+        in front (:func:`~imswitch.improcess.model.iteration.stack_results`);
+        override to return the plugin's own result type.
+        """
+        from imswitch.improcess.model.iteration import stack_results
+
+        return stack_results(results, match, loop_scales=loop_scales)
 
     def prepare_params(self, data_obj, params: dict | None) -> dict:
         """Complete ``params`` from the data before a headless run.

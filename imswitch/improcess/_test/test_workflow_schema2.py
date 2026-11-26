@@ -508,6 +508,8 @@ def test_values_take_file_then_run_wide_then_row_precedence(registry, tmp_path):
     assert [row.controls["radius"] for row in batch.rows] == ["3.0", "4.0"]
     summary = list(csv.DictReader(open(batch.write_summary(tmp_path / "s.csv"), encoding="utf-8")))
     assert [r["control:radius"] for r in summary] == ["3.0", "4.0"] and summary[0]["bypassed"] == ""
+    # The unknown column is said once, not on every row.
+    assert [row.warnings for row in batch.rows] == [rows[0].warnings, []]
 
 
 def test_a_bad_cell_fails_its_row_only(registry, tmp_path):
@@ -569,6 +571,24 @@ def test_the_command_line_sets_lists_and_validates_controls(tmp_path, capsys, re
     assert main(["--no-user-plugins", "validate", str(path), "--set", "radius"]) == 2
     assert main(["--no-user-plugins", "run", str(path), "--input", recording, "--out", str(tmp_path / "x"),
                  "--set", "nope=1"]) == 2
+    assert main(["--no-user-plugins", "run", str(path), "--input", recording, "--out", str(tmp_path / "x"),
+                 "--set", "radius=3", "--set", "radius=4"]) == 2
+    assert "--set radius is given twice" in capsys.readouterr().err
+    # A bad --set is said even when the workflow has other problems.
+    broken = _diamond(controls=[RADIUS])
+    broken.step("merge").inputs[0] = broken.step("merge").inputs[0].__class__("nowhere")
+    broken.save(path)
+    assert main(["--no-user-plugins", "run", str(path), "--input", recording, "--out", str(tmp_path / "y"),
+                 "--set", "radius=abc"]) == 2
+    assert "'abc' is not a number" in capsys.readouterr().err
+
+
+def test_a_value_of_the_wrong_type_is_a_recipe_issue(registry):
+    recipe = _diamond(controls=[RADIUS])
+    recipe.step("smooth").params["radius"] = recipe.step("sharp").params["radius"] = "2,5"
+    messages = _messages(recipe, registry)
+    assert any("control 'radius': the value its parameters hold, '2,5', does not fit it" in m for m in messages)
+    assert "value" not in describe_controls(recipe, registry)[0]
 
 
 def test_describe_controls_says_which_targets_run(registry):

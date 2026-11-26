@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from imswitch.improcess.workflows.prepare import ControlText, ControlValueError, format_value, prepare_run
+from imswitch.improcess.workflows.prepare import ControlText, ControlValueError, _prepare, format_value
 from imswitch.improcess.workflows.runner import RunError, RunReport, is_result_binding, run
 from imswitch.improcess.workflows.sources import SourceSpec, parse_binding
 from imswitch.improcess.workflows.steps import Workflow, WorkflowError
@@ -185,11 +185,10 @@ def _check_batch(workflow: Workflow, rows: list, controls, registry) -> None:
         shapes.add(frozenset(sid for sid, value in bindings.items() if is_result_binding(value)))
     probe_registry = registry() if callable(registry) else registry
     for bound in shapes or {frozenset()}:
-        try:
-            prepared = prepare_run(workflow, registry=probe_registry, values=controls, bound=bound)
-        except ControlValueError:
-            raise
-        except WorkflowError:
+        prepared, issues, value_error = _prepare(workflow, probe_registry, controls, None, bound, None, strict=False)
+        if value_error is not None:
+            raise value_error           # a bad --set is said, whatever else is wrong
+        if issues:
             return      # an invalid recipe fails each row, as it always has
         for item in rows:
             if not isinstance(item, ManifestRow):
@@ -246,13 +245,16 @@ def run_over(
     out_dir.mkdir(parents=True, exist_ok=True)
     batch = BatchReport(workflow=workflow.name)
     reports: list[RunReport] = []
+    warned: set[str] = set()
     for index, item in enumerate(rows):
         manifest_row = item if isinstance(item, ManifestRow) else None
         bindings = manifest_row.bindings if manifest_row else item
         row_values = {name: ControlText(text) for name, text in (manifest_row.values if manifest_row else {}).items()
                       if text}
         values = {**(controls or {}), **row_values}
-        extra = list(manifest_row.warnings) if manifest_row else []
+        # A manifest's own warnings (an unknown column) go on its first row only.
+        extra = [w for w in (manifest_row.warnings if manifest_row else []) if w not in warned]
+        warned.update(extra)
         shown = {key: str(getattr(value, "path", value)) for key, value in bindings.items()}
         try:
             row_registry = registry() if callable(registry) else registry

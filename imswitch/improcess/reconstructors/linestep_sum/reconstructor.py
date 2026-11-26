@@ -53,6 +53,7 @@ from qtpy import QtWidgets
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 from imswitch.improcess.model.acquisition_layout_resolver import _normalized_attrs
 from imswitch.improcess.model.contrast import finite_range
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import (
     DisplayLayerSpec,
@@ -566,6 +567,8 @@ class LineStepSumReconstructor(Reconstructor):
 
     name = "Line-step sum"
     id = "linestep-sum"
+    #: Sums the whole recording (all frames, conditions and line steps): never looped.
+    core_dims_in = WHOLE_INPUT
     output_kind = "image"
     # View only's list: registered after it, this never wins its auto-select.
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]

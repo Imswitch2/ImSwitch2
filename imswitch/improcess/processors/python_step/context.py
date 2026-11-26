@@ -26,6 +26,7 @@ from imswitch.improcess.model.curve_result import CurveResult
 from imswitch.improcess.model.labels_result import LabelsResult
 from imswitch.improcess.model.points_result import PointsResult
 from imswitch.improcess.model.result import RESULT_KINDS, ProcessingResult
+from imswitch.improcess.model.result_source import result_attrs
 from imswitch.improcess.model.value_result import EventResult, ValueResult
 from imswitch.improcess.processors._axis_split import (
     axis_labels_for_result,
@@ -36,7 +37,7 @@ DEFAULT_PORTS = "out"
 
 DEFAULT_CODE = '''\
 # Names you can use: np, data (the first input as an array), inputs, axes,
-# scales, unit, axis("Z"), results, make_result(...), make_labels(...),
+# scales, unit, attrs, axis("Z"), results, make_result(...), make_labels(...),
 # make_points(...), make_value(...), make_event(...), state (a dict kept
 # between runs of this step). print() output is shown below the editor.
 # Set `outputs` to {port: array} with one entry for each name in "Output ports".
@@ -170,7 +171,8 @@ class ScriptOutput:
     """An output the code described itself, from :func:`make_result` or :func:`make_labels`.
 
     ``axes`` / ``scales`` / ``name`` left ``None`` are filled in from the
-    input; ``kind`` is ``"image"`` or ``"labels"``.
+    input; ``kind`` is ``"image"`` or ``"labels"``. ``attrs`` are set on the
+    output over the first input's (``inherit_attrs``) or alone.
     """
 
     array: Any
@@ -178,30 +180,43 @@ class ScriptOutput:
     scales: tuple[float, ...] | None = None
     name: str | None = None
     kind: str = "image"
+    attrs: dict | None = None
+    inherit_attrs: bool = True
 
 
-def _described(array, axes, scales, name, kind) -> ScriptOutput:
+def _described(array, axes, scales, name, kind, attrs=None, inherit_attrs=True) -> ScriptOutput:
+    if attrs is not None and not isinstance(attrs, dict):
+        raise ScriptError(f"attrs must be a dict of name -> value, got {type(attrs).__name__}")
     return ScriptOutput(
         array=array,
         axes=tuple(str(label) for label in axes) if axes is not None else None,
         scales=tuple(float(scale) for scale in scales) if scales is not None else None,
         name=None if name is None else str(name),
         kind=kind,
+        attrs=None if attrs is None else {str(key): value for key, value in attrs.items()},
+        inherit_attrs=bool(inherit_attrs),
     )
 
 
-def make_result(array, *, axes=None, scales=None, name=None) -> ScriptOutput:
+def make_result(array, *, axes=None, scales=None, name=None, attrs=None, inherit_attrs=True) -> ScriptOutput:
     """An image output with the axes (and optionally scales and name) you give.
 
     Needed when the array's dimensionality differs from the input's; one of
     the same dimensionality inherits the input's axes without it.
+
+    ``attrs`` is metadata the next step reads as the result's attributes, as
+    a reconstructor reads a recording's (a deskew's tilt and scan step, a
+    ``geometry: skewed`` marker). By default the output keeps the first
+    input's attributes and ``attrs`` is set over them, so a reshape does not
+    lose the geometry the recording carried; ``inherit_attrs=False`` starts
+    from ``attrs`` alone.
     """
-    return _described(array, axes, scales, name, "image")
+    return _described(array, axes, scales, name, "image", attrs, inherit_attrs)
 
 
-def make_labels(array, *, axes=None, scales=None, name=None) -> ScriptOutput:
+def make_labels(array, *, axes=None, scales=None, name=None, attrs=None, inherit_attrs=True) -> ScriptOutput:
     """Like :func:`make_result`, for an integer label image (segmentation)."""
-    return _described(array, axes, scales, name, "labels")
+    return _described(array, axes, scales, name, "labels", attrs, inherit_attrs)
 
 
 #: The name a ``make_points`` / ``make_value`` / ``make_event`` result has
@@ -331,6 +346,9 @@ def build_namespace(inputs, *, materialise: bool = True, state: dict | None = No
         "axes": labels,
         "scales": axis_scales_for_result(first),
         "unit": getattr(first, "scale_unit", "px"),
+        # A copy: changing it changes nothing; pass changes on with
+        # make_result(..., attrs={...}).
+        "attrs": result_attrs(first),
         "axis": _make_axis_lookup(labels),
         "results": results,
         "make_result": make_result,
@@ -570,22 +588,29 @@ def result_from_value(
         raise ScriptError(f"{what}: {len(scale_values)} scales for {array.ndim} dimensions")
     result_name = described.name or given_name or default_name or "python result"
     if described.kind == "labels":
-        return LabelsResult(
+        made = LabelsResult(
             result_name, _as_labels(what, array), labels,
             axis_scales=scale_values, scale_unit=unit, metadata=metadata,
         )
-    if array.ndim == 1:
+    elif array.ndim == 1:
         # A row of numbers has nothing to show in the image viewer; it is a
         # curve, and the Graph panel is where it is drawn.
-        return CurveResult(
+        made = CurveResult(
             result_name, array, labels,
             axis_scales=scale_values, scale_unit=unit, metadata=metadata,
         )
-    return ArrayProcessingResult(
-        result_name, array, labels,
-        display_levels=finite_range(array),
-        axis_scales=scale_values, scale_unit=unit, metadata=metadata,
-    )
+    else:
+        made = ArrayProcessingResult(
+            result_name, array, labels,
+            display_levels=finite_range(array),
+            axis_scales=scale_values, scale_unit=unit, metadata=metadata,
+        )
+    # The attributes travel on: the first input's (a reshape keeps the
+    # recording's geometry) unless the code said otherwise, with what it set
+    # on top.
+    inherited = result_attrs(reference) if (reference is not None and described.inherit_attrs) else {}
+    made.attrs = {**inherited, **(described.attrs or {})}
+    return made
 
 
 def _named_row(result, given_name, default_name, metadata: dict):

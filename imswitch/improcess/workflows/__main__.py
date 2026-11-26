@@ -39,6 +39,8 @@ def _control_values(items) -> dict:
         if "=" not in item:
             raise ValueError(f"--set expects name=value, got {item!r}")
         name, text = item.split("=", 1)
+        if name.strip() in values:
+            raise ValueError(f"--set {name.strip()} is given twice")
         values[name.strip()] = ControlText(text)
     return values
 

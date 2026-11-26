@@ -21,7 +21,10 @@ from imswitch.imcommon.model.workflow.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
+    Fold,
+    Map,
     Process,
+    RECONSTRUCTION_INPUT_KINDS,
     Reconstruct,
     Ref,
     Save,
@@ -129,8 +132,9 @@ def _fmt(value) -> str:
     return text if len(text) <= 40 else text[:39] + "…"
 
 
-def save_file_name(step: Save, catalog=None) -> str:
+def save_file_name(step: Save, catalog=None, input_step: str | None = None) -> str:
     """The file a Save writes, as words: ``‹recording›_diamond.h5``.
+    ``input_step`` is the step that made the data (through bypassed steps).
 
     ``catalog.normalize_format`` spells the format the way the host writes
     it; without a catalog the step's own spelling is used."""
@@ -144,7 +148,7 @@ def save_file_name(step: Save, catalog=None) -> str:
     extension = {"hdf5": ".h5", "tiff": ".tif", "zarr": ".zarr", "csv": ".csv"}.get(str(fmt), f".{fmt}")
     text = (template.replace("{source_stem}", "‹recording›").replace("{ext}", extension)
             .replace("{fmt}", str(fmt)).replace("{step}", step.id)
-            .replace("{input_step}", step.input.step).replace("{name}", "‹result›"))
+            .replace("{input_step}", input_step or step.input.step).replace("{name}", "‹result›"))
     return text
 
 
@@ -159,10 +163,21 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
             lines.append(f"dataset {spec.dataset}")
         return tuple(lines), ()
     if isinstance(step, Save):
-        return (f"→ {save_file_name(step, document.catalog)}",), ()
+        from imswitch.imcommon.model.workflow.prepare import bypass_upstream, resolve_ref
+
+        made_by = resolve_ref(step.input, bypass_upstream(document.workflow)).step
+        return (f"→ {save_file_name(step, document.catalog, made_by)}",), ()
     if isinstance(step, Consolidate):
         count = len(step.inputs)
         return (f"merges {count} reconstruction{'s' if count != 1 else ''}",), ()
+    if isinstance(step, Map):
+        # The body is shown as the chain it runs per index; editing it is
+        # done in the file for now (the node keeps it intact either way).
+        chain = " → ".join(item.id for item in step.body)
+        lines = (f"each {step.over}: {chain}", f"output {step.output}")
+        if isinstance(step, Fold):
+            lines += (f"carries {step.carry.get('next')}",)
+        return lines, ()
     params = dict(getattr(step, "params", {}) or {})
     descriptor = _descriptor(document, step)
     if descriptor is not None:
@@ -192,6 +207,8 @@ def title_of(document, step) -> str:
         return "Recording"
     if isinstance(step, Save):
         return f"Save · {str(step.fmt).upper()}"
+    if isinstance(step, Map):
+        return f"{'Fold' if isinstance(step, Fold) else 'Map'} over {step.over or '?'}"
     entry = document.entry_for(step)
     if entry is not None:
         return entry.name
@@ -263,7 +280,7 @@ def _outputs(document, step, kind: str, kinds=None) -> tuple[OutputSlot, ...]:
         return ()
     if isinstance(step, Source):
         return (OutputSlot(SOURCE_PORT, step.id, "", kind),)
-    if isinstance(step, (Reconstruct, Consolidate)):
+    if isinstance(step, (Reconstruct, Consolidate, Map)):
         return (OutputSlot(DEFAULT_PORT, step.id, "", kind),)
     descriptor = _descriptor(document, step)
     if descriptor is not None:
@@ -387,9 +404,7 @@ def node_infos(document, issues=None) -> dict[str, NodeInfo]:
         bypassed = bool(getattr(step, "bypass", False))
         passes = ""
         if bypassed and step.id in upstream:
-            passes = str(upstream[step.id])
-        elif bypassed and isinstance(step, Save):
-            passes = str(resolve_ref(step.input, upstream))
+            passes = str(upstream[step.id])          # a bypassed Save passes nothing on: it writes nothing
         exposed = tuple(document.exposed(step.id).items()) if hasattr(document, "exposed") else ()
         descriptor = _descriptor(document, step)
         infos[step.id] = NodeInfo(
@@ -417,6 +432,8 @@ _STEP_WORDS = {
     "source": "A recording: a file, or the one bound when the workflow runs",
     "save": "Writes one result to a file",
     "consolidate": "Merges several reconstructions of one kind into one",
+    "map": "Runs its steps once per index of an axis and stacks the outputs",
+    "fold": "Like a map, carrying a value from one index to the next (not runnable yet)",
 }
 
 
@@ -452,7 +469,15 @@ def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
     kinds = kinds if kinds is not None else kinds_of(document)
     kind = kinds.get(producer_id, UNKNOWN_KIND)
     if isinstance(target, Reconstruct):
-        return isinstance(producer, Source)
+        # Any image feeds a reconstruction (a chain of reconstructors, a
+        # reshape before a deskew); the run checks the data itself. A
+        # reconstructor that reads its recording file takes only a source.
+        if isinstance(producer, Source):
+            return True
+        entry = document.entry_for(target)
+        if entry is not None and getattr(entry.plugin, "reads_recording_file", False):
+            return False
+        return kind in RECONSTRUCTION_INPUT_KINDS
     if isinstance(target, Consolidate):
         return isinstance(producer, Reconstruct) and producer.reconstructor == target.reconstructor
     if isinstance(target, Save):
@@ -483,7 +508,7 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
     ``kind=None`` offers everything (Tab, double-click on the canvas). A cable
     from a recording offers reconstructions; from a reconstruction also its
     consolidation; from any result the processing steps that take it with
-    one input, and Save.
+    one input, and Save; from an image result, last, the reconstructions.
     """
     found: list[Candidate] = []
     if catalog is None:
@@ -518,6 +543,13 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
         if kind is not None and not kind_fits(kind, descriptor):
             continue
         found.append(Candidate(descriptor.kind, "", descriptor.name, descriptor.category, descriptor.description))
+    if kind is not None and kind != RECORDING_KIND and kind in RECONSTRUCTION_INPUT_KINDS:
+        # An image result feeds a reconstruction too (a chain of
+        # reconstructors); offered last, after what a result usually goes to.
+        for entry in catalog.runnable("reconstructor"):
+            if getattr(entry.plugin, "reads_recording_file", False):
+                continue        # takes only a recording (Reconstructor.reads_recording_file)
+            found.append(Candidate("reconstruct", entry.id, entry.name, "Reconstruct", entry.description))
     return found
 
 

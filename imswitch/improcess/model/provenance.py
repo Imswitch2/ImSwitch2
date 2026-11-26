@@ -10,12 +10,13 @@ be run again from what was written down.
 This module records a graph instead, under ``metadata["provenance"]``:
 
 * a **node** per operation (``source``, ``reconstruct``, ``consolidate``,
-  ``process``, ``external-import`` for a result taken back from an
-  interactive tool such as napari or Fiji, whose ``tool`` field names it;
-  ``napari-import`` is the legacy name of the same op, read from older files
-  and never written; ``opaque`` for a result whose origin is unknown), with
-  a minted step id, the plugin that ran, its parameters, **ordered** input
-  references and **named** output ports;
+  ``process``, ``map`` -- a workflow's sub-workflow run once per index,
+  recorded once with its body and ``iterated_over`` --, ``external-import`` for
+  a result taken back from an interactive tool such as napari or Fiji, whose
+  ``tool`` field names it; ``napari-import`` is the legacy name of the same op,
+  read from older files and never written; ``opaque`` for a result whose origin
+  is unknown), with a minted step id, the plugin that ran, its parameters,
+  **ordered** input references and **named** output ports;
 * every result carries the **transitive** union of its inputs' nodes plus its
   own, keyed by step id so shared ancestors deduplicate, and an ``output``
   reference saying which node and port *this* result is;
@@ -49,7 +50,7 @@ SCHEMA_VERSION = 1
 
 # "napari-import" is legacy-read-only: graphs saved before the op became
 # tool-neutral still validate and replay-skip, but no new node is written with it.
-OPS = ("source", "reconstruct", "consolidate", "process", "external-import", "napari-import", "opaque")
+OPS = ("source", "reconstruct", "consolidate", "process", "map", "external-import", "napari-import", "opaque")
 DEFAULT_PORT = "out"
 SOURCE_PORT = "data"
 
@@ -753,7 +754,27 @@ def record_reconstruction(result, reconstructor, params, data_obj, *, extra: dic
     A source that is not a file (a buffered live stack, a RAM recording)
     leaves the node non-replayable with the reason, unless the wrapper knew
     the path the recording was also written to.
+
+    A ``data_obj`` bridged from a result (it names the result as its
+    ``provenance_parent``, see :mod:`~imswitch.improcess.model.result_source`)
+    is not a source at all: the node's input is that result's output, and its
+    whole graph is carried, so a reconstruction of a reshaped or deskewed
+    result replays as the chain that made it.
     """
+    parent = getattr(data_obj, "provenance_parent", None)
+    if parent is not None:
+        node_id, node = make_node(
+            "reconstruct",
+            plugin=reconstructor,
+            params=params,
+            inputs=[output_ref(parent)],
+            input_labels=[_describe(parent)],
+            outputs=(DEFAULT_PORT,),
+            extra=extra,
+        )
+        ancestors = merge_nodes(*(graph.get("nodes", {}) for graph in _graphs_of([parent])))
+        _attach(result, merge_nodes(ancestors, {node_id: node}), node_id, DEFAULT_PORT)
+        return result
     source_id, source = source_node_for(data_obj)
     node_id, node = make_node(
         "reconstruct",

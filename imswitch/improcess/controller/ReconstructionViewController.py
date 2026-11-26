@@ -529,7 +529,9 @@ class ReconstructionViewController(ImProcessWidgetController):
             )
             return
 
-        if result_kind(result) in ("curve", "table"):
+        # A points, value or event result without display layers is a table:
+        # its array is rows x columns, and with nothing found it has zero rows.
+        if result_kind(result) in ("curve", "table", "points", "value", "event"):
             self._transposeOrder = []
             self._displayedAxisLabels = []
             self._widget.clearImage()
@@ -542,7 +544,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         # -- reaches napari as a dask array instead, which transposes without
         # reading and is read a plane at a time as the sliders move.
         data = display_array(result.data)
-        if getattr(data, "ndim", 0) < 2:
+        if getattr(data, "ndim", 0) < 2 or 0 in tuple(getattr(data, "shape", ()) or ()):
             # napari's image layer holds planes. A 1D result pushed into it
             # leaves the layer's transform and units disagreeing about the
             # rank, and every later cursor move or redraw raises from inside

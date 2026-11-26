@@ -49,7 +49,7 @@ def test_the_namespace_is_the_steps_less_outputs_plus_the_live_list():
     rec = _result()
     session = _List([rec], rec).session()
     assert set(session.namespace) == {
-        "np", "data", "inputs", "axes", "scales", "unit", "axis", "results",
+        "np", "data", "inputs", "axes", "scales", "unit", "attrs", "axis", "results",
         "make_result", "make_labels", "current", "selected", "publish",
     }
     assert "outputs" not in session.namespace and "out" not in session.namespace

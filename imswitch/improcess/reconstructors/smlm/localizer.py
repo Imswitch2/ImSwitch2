@@ -19,6 +19,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     iter_recorded_coordinates,
 )
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
 from imswitch.improcess.model.param_spec import ParamField
@@ -223,6 +224,10 @@ class SmlmLocalizer(StreamingReconstructor):
 
     name = "SMLM localizer"
     id = "smlm-localizer"
+
+    #: Localizes a whole movie into one table; a table per index could not be
+    #: stacked, so it takes the whole input in one call.
+    core_dims_in = WHOLE_INPUT
     output_kind = "localization"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     # Image stacks are what this localizes. Localization tables are not input

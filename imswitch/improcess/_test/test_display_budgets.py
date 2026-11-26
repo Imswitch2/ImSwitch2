@@ -65,7 +65,9 @@ def test_beadrec_requires_the_scan_loops_it_measures_with_to_be_calibrated():
     from imswitch.improcess.model.acquisition_layout_resolver import resolve_acquisition_layout
     from imswitch.improcess.reconstructors.beadrec.reconstructor import BeadRecReconstructor
 
-    assert BeadRecReconstructor.acquisition_requirements.requires_calibrated_loops == {"scan_x", "scan_y"}
+    assert BeadRecReconstructor.acquisition_requirements.requires_calibrated_loops == {
+        "scan_x", "scan_y", "scan_z"
+    }
 
     layout = AcquisitionLayout(
         schema=ACQUISITION_LAYOUT_SCHEMA,
