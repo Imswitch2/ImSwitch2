@@ -1049,6 +1049,20 @@ class ScanControllerAdvanced(SuperScanController):
             self._publishScheduleSummary()
             return built
 
+    def buildTriggeredScanSignals(self, analogParameterDict, digitalParameterDict):
+        """The signals the panel would play for these parameters.
+
+        Same chain as ``_buildScanSignals`` (position snapshot, then
+        ``_make_full_scan``), but for caller-supplied copies of the parameters
+        and without the design cache or the schedule publication: an
+        event-triggered scan is built straight from the event, not from the
+        panel's current fields.
+        """
+        analog = copy.deepcopy(analogParameterDict)
+        digital = copy.deepcopy(digitalParameterDict)
+        analog['axis_position_before_scan'] = self._positionsBeforeScan(analog)
+        return self._make_full_scan(analog, digital)
+
     def _publishScheduleSummary(self):
         """The file says what ran (§7.9): every distinct time the scan
         realizes differently, from the sample the timing note reads; blank for

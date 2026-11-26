@@ -98,6 +98,10 @@ class ActionRequest:
     tick: int
     epoch: int
     timeout_s: float | None = None
+    #: What the engine knows about the tick that started the action: the
+    #: frame (sequence, its clock and wall-clock time) and when the decision
+    #: was taken; for the action's records.
+    context: dict = field(default_factory=dict)
 
 
 @runtime_checkable

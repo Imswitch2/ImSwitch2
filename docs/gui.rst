@@ -1590,8 +1590,8 @@ Before pressing **Initiate etSTED**:
 * Choose a **Transform pipeline** and **Transform coefficients** (see
   :ref:`below <et-transform-calibration>`); both are needed in every mode.
 * **Scan type** — *ScanWidget* runs the loaded scan itself, greying out the
-  Scan widget while armed, and saves the result as the Recording widget's
-  **Snap** would.  *RecordingWidget* re-centres the Scan widget and starts a
+  Scan widget while armed, and, in *Experiment* mode, saves every triggered
+  scan itself (see below).  *RecordingWidget* re-centres the Scan widget and starts a
   recording with the Recording widget's settings.
 * **Record binary mask** averages ten fast-detector frames, smooths them by
   **Bin. smooth (px)** and thresholds them at **Bin. threshold (int.)**.  The
@@ -1601,6 +1601,27 @@ Before pressing **Initiate etSTED**:
   detector, live view included.
 * **Fast scan axis shift** offsets the fast-axis centre by an amount computed
   from the pixel size and dwell time, with coefficients fixed in the code.
+
+**What is saved.**  In *Experiment* mode with *ScanWidget* scan type each
+triggered scan is saved automatically, in the Recording widget's snapshot
+format, to ``recordings/logs_etsted/session_<time>/event_<n>_<time>_<detector>``:
+the scan detector's own frame (read from the detector when the scan has ended,
+checked against the scan's geometry; never the camera image or what the viewer
+happens to show), with the usual detector, laser and scan metadata (the scan
+centres are the triggered ones, the recording mode reads *ScanOnce*) and an
+``EtSTED`` metadata group: event index and session, the event in camera pixels
+(``event_coords_px`` as column, row) and the transformed scan centre in µm
+(``scan_center_um``, ``scan_axes``), the pipeline name and its parameter
+values, the transform and coefficient files with the 20 coefficients, and the
+UTC times of the triggering frame, the scan start and the scan end.  The
+file is written on a worker thread after the scan, so it does not delay the
+scan start.  Arming is refused if the folder is not writable or no scan
+detector is selected; if a save fails the run stops, with the reason, before
+another scan.  With *RecordingWidget* the Recording widget's own scan-once
+recording is the saved scan (set to **Scan once**, scan detector selected) and
+carries the same ``EtSTED`` group.  The text log in ``recordings/logs_etsted``
+and the ``…_snap_raw`` frames before each event are written as before; the
+*Test* modes save no scans.
 
 The fast laser is on while detecting and off during the scan.  In
 *Experiment* mode the frames before each event are saved as a ``…_snap_raw``
@@ -1613,9 +1634,70 @@ controls are locked.
 **Number of slow frames** and **Time between slow frames (s)** have no effect:
 nothing reads them.
 
+**Cooldown between scans (s)** and **Max. triggered scans** guard a laser that
+fires by itself.  Events within the cooldown of the end of the last triggered
+scan are ignored, and so are events after the maximum number of scans in one
+run (0 disables either); each ignored event is logged as a warning, and a run
+that reaches its maximum stops once its last scan has finished.  The defaults
+are 5 s and 10 scans.
+
+The scan is built by the scan panel that sent the parameters, with the event
+as the centre of its first two axes, so it carries the signals that panel
+would play (the Advanced and Base panels; the Expert panel runs a scan
+program with no centre and is refused).  An event outside a scanner's voltage
+range is refused with the designer's message and the run recovers.
+*RecordingWidget* needs the Recording widget on **Scan once** with the scan
+detector selected; the panel refuses to arm otherwise.
+
 .. image:: ./images/auto/EtSTEDWidget.png
    :align: center
    :width: 600px
+
+.. _etsted-first-run:
+
+etSTED first run on the mock setup
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``mock/point_scanning/etsted_advanced_mock_setup.json`` is a rehearsal rig
+without hardware: a camera (the widefield, 512 x 512 px at 0.05 µm) and an APD
+(the confocal scan) image the same virtual bead sample on a simulated NI-DAQ,
+with the Advanced scan panel and the EtSTED panel.  Choose it in the setup
+picker and then:
+
+#. **Lasers.**  In the Laser panel set 488 (EXC) to a non-zero power but leave
+   it *off*: the virtual sample is dark until a laser lights it.
+#. **Scan.**  The Scan panel opens with a small X × Y scan (5 × 5 µm at
+   0.1 µm) with the APD ticked: that is enough.  Change it if you like, but do
+   not press Start.
+#. **EtSTED panel.**  Press **Load scan parameters** (the box summarises the
+   scan).  Pick the *dff_event* analysis pipeline and press **Load pipeline**;
+   the six fields are its parameters (see the header of
+   ``analysis_pipelines/dff_event.py``).  Pick transform *poly3* and
+   coefficients *mock_rehearsal_only* (0.05 µm per pixel about the frame
+   centre; **only valid for this setup**).  Widefield detector *Camera*, laser
+   *488 (EXC)*, scan type *ScanWidget*.
+#. **Dry run.**  Mode *TestVisualize* and press **Initiate etSTED**: the
+   analysis window shows the dF/F map and a cross on each candidate.  Switch
+   488 (EXC) *on* in the Laser panel: the sample lights up, which the dF/F
+   sees as a rise, so a cross appears on the sample.  Stop.
+#. **TestValidate.**  The same, but the first candidate is logged and saved
+   (frames and analysis images) without scanning.
+#. **Experiment.**  Mode *Experiment*, laser off again, press **Initiate
+   etSTED**, then switch 488 on: the panel goes *Triggered*, *Scanning*, the
+   APD frame appears in the Image panel, and the run stops (tick **Endless**
+   to resume detecting; the cooldown then holds off the next scan).
+#. **Look at** ``recordings/logs_etsted`` in the user directory: one log per
+   run with the detected position in camera pixels, the transformed scan
+   centres, and the timestamps of the pipeline, the scan build and the scan
+   start; the ``session_*`` folder of saved scans; the saved ``…_snap_raw`` frames; and a warning for each event the
+   cooldown or the maximum ignored.
+
+On a rig the coefficient file comes from your bead registration: write it with
+``tools/etsted_affine_to_csv.py`` from the 2 × 3 affine that maps camera
+``(row, col)`` pixels to the scan axes' centres in µm (the pipeline reports
+``(column, row)``; the script and
+``EtSTEDTransformService.coefficients_from_affine`` do the swap), or fit it in
+the Transform calibration window.
 
 EtMonalisa widget
 -----------------
@@ -1902,9 +1984,34 @@ pixels as ``src_bbox_*`` and in scan micrometres as ``bbox_*``) and the
 transform (id, type and, when its record states one, the calibration
 residual); the ``done`` line holds the scan summary (centre, size, pixels,
 lasers, notes) and the latencies of the action. Save the log from the panel.
-The APD data itself is the Advanced panel's own scan (the panel's recording
-settings apply); the smart pipeline does not start a recording, so pair the
-files with the log by time.
+
+*The triggered scan is saved.* In *Experiment* every scan the pipeline
+starts is recorded, with nothing to set: ``run-scan`` (``save`` on, the
+default) starts it as a **Scan once** recording of the setup's scan-driven
+detectors (the APDs) -- the Recording panel's own transaction, so the writer
+is armed before the scan starts and the file is an ordinary ImSwitch
+recording (HDF5, the scan geometry and the setup's attributes) that ImProcess
+and *Load parameters from file* open like any other. The files go to
+``<Recording panel folder>/smart_pipeline/<YYYYmmdd-HHMMSS>_<pipeline>/``, one
+per event, named ``event0001_R0_roi12_rec_APD.hdf5`` (event number, region,
+ROI label). The Recording panel's own folder, name and format settings are
+not changed. Each file's ``APD`` group carries the event as
+``SmartPipeline:event:*`` attributes: ``roi_label`` and ``roi_id``
+(``R<region>-<label>``), ``dff``, ``F``, ``F0``, ``area_px``, the box in
+camera pixels (``bbox_camera_px``) and in scan µm (``bbox_scan_um``), the
+scanned centre/size/step and lasers, ``transform_id``, ``transform`` and
+``transform_residual``, the wall-clock times ``frame_wall`` (the camera frame
+that triggered), ``decision_wall``, ``scan_start_wall`` and ``scan_end_wall``,
+the action's latencies (``latency_s``) and ``stage_position_um`` (the stage
+positioners at the trigger); ``SmartPipeline:pipeline`` and
+``SmartPipeline:run_folder`` name the run. Arming in Experiment is refused
+when the files could not be written (no Recording panel, no scan-driven
+detector, a folder that cannot be made or written, less than 200 MB free); a
+Validate run arms and shows the same reasons as a note, and saves nothing (its
+``would`` line says where an Experiment run would save). A scan that cannot be
+recorded is not started, and the pipeline stops with the reason: it never
+goes on firing scans that are not saved. Set ``save`` to false on the
+``run-scan`` step to scan without saving.
 
 **Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
 your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,

@@ -123,7 +123,8 @@
         "lasers": [
           "561 (EXC)"
         ],
-        "restore": true
+        "restore": true,
+        "save": true
       },
       "inputs": [
         "tf"

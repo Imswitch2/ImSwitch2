@@ -187,7 +187,7 @@ class LiveFrameSource:
             image=np.array(array, copy=True), detector=self.detector, sequence=self._sequence, t=self._clock(),
             exposure_s=exposure_seconds(detector) if detector is not None else None, identity=identity,
             scale=tuple(float(v) for v in (scale or ())), unit="um" if scale else "px",
-            metadata={"init": bool(init), "current": bool(isCurrentDetector)},
+            metadata={"init": bool(init), "current": bool(isCurrentDetector), "wall_time": time.time()},
         )
         return self._inbox.push(frame)
 
@@ -224,7 +224,7 @@ class LiveFrameSource:
         frame = Frame(
             image=np.array(array, copy=True), detector=self.detector, sequence=self._sequence, t=self._clock(),
             scale=scale, unit="um" if scale else "px",
-            metadata={"scan_driven": True, "geometry": geometry, **dict(metadata or {})},
+            metadata={"scan_driven": True, "geometry": geometry, "wall_time": time.time(), **dict(metadata or {})},
         )
         return self._inbox.push(frame)
 

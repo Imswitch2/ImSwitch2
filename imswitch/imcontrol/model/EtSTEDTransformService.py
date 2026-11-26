@@ -83,6 +83,42 @@ class EtSTEDTransformService:
         path.write_text(json.dumps(metadata, indent=2))
 
     @classmethod
+    def coefficients_from_affine(cls, matrix, input_order: str = 'row_col') -> np.ndarray:
+        """The 20 poly3 coefficients of an affine map camera pixels -> scan um.
+
+        ``matrix`` is 2x3 (or 3x3, last row ignored): ``[scan_1, scan_2] =
+        matrix @ [p, q, 1]`` where ``(p, q)`` is the camera pixel in
+        ``input_order``: ``'row_col'`` (``p`` = row, index along axis 0; ``q``
+        = column; the order a bead registration on image arrays gives) or
+        ``'col_row'`` (``p`` = column, ``q`` = row). ``scan_1`` / ``scan_2``
+        are the centres of the first / second active scan axis in um.
+
+        The transform's inputs are ``(c1, c2) = (column, row)`` -- what the
+        ``dff_event`` pipeline returns and what the Transform calibration
+        window fits (see that pipeline's header) -- so the 'row_col' matrix
+        columns are swapped here, and nowhere else.
+        """
+        if input_order not in ('row_col', 'col_row'):
+            raise ValueError("input_order is 'row_col' or 'col_row'.")
+        matrix = np.asarray(matrix, dtype=float)
+        if matrix.shape == (3, 3):
+            matrix = matrix[:2]
+        if matrix.shape != (2, 3):
+            raise ValueError(f'An affine map is 2x3 (or 3x3); got {matrix.shape}.')
+        if input_order == 'row_col':
+            matrix = matrix[:, [1, 0, 2]]       # columns are now (col, row, 1)
+        coefficients = np.zeros(cls.expected_coefficients)
+        coefficients[[7, 8, 9]] = matrix[0]     # out1 = a7*c1 + a8*c2 + a9
+        coefficients[[17, 18, 19]] = matrix[1]  # out2 = a17*c1 + a18*c2 + a19
+        return coefficients
+
+    @staticmethod
+    def save_coefficients(path, coefficients) -> None:
+        """Write a coefficient file the panel lists: one number per line."""
+        coefficients = EtSTEDTransformService.validate_coefficients(coefficients)
+        Path(path).write_text(''.join(f'{repr(float(c))}\n' for c in coefficients))
+
+    @classmethod
     def load_coefficients(cls, path: Path) -> np.ndarray:
         """Load and validate one third-order transform coefficient vector."""
         try:

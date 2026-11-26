@@ -376,6 +376,23 @@ class CommunicationChannel(SignalInterface):
         controllers = getattr(self.__main, 'controllers', None) or {}
         return 'Scan' in controllers
 
+    def getRecordingMode(self):
+        """The Recording widget's current mode (a ``RecMode``), or None when
+        there is no Recording widget or it cannot say."""
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return getattr(controllers.get('Recording'), 'recMode', None)
+
+    def getSnapSaveFormat(self):
+        """The Recording widget's snapshot file format (a ``SaveFormat``), or
+        None when there is no Recording widget."""
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        widget = getattr(controllers.get('Recording'), '_widget', None)
+        getter = getattr(widget, 'getSaveSnapFormat', None)
+        if not callable(getter):
+            return None
+        from imswitch.imcontrol.model import SaveFormat
+        return SaveFormat(getter())
+
     def getRecordingScanSourceNames(self):
         """Widget keys of every controller a scan recording could drive.
 
