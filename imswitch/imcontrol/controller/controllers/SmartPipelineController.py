@@ -53,6 +53,8 @@ class SmartPipelineController(ImConWidgetController):
         self._registry = None
         self._editor = None
         self._closing = False
+        self._recorder = None         # the run's TriggeredScanRecorder (saves the triggered scans)
+        self._saveWarnings = []       # why an Experiment run could not save, shown in a dry run
         self._shownGeometry = {}      # detector -> the scan geometry the live view shows (axes), or None
         self._marksGeometry = None    # the geometry the overlay's marks belong to
         shown = getattr(self._commChannel, 'sigScanGeometryShown', None)
@@ -269,9 +271,21 @@ class SmartPipelineController(ImConWidgetController):
                                  logger=self.__logger)
         scan = None
         workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        recorder = None
         if workflow is not None:
+            recorder = self._makeRecorder(document)
             scan = {'controllers': self._commChannel.controllerRegistry, 'workflow': workflow,
-                    'capture': source.capture_latest}
+                    'capture': source.capture_latest, 'recorder': recorder}
+        saveProblems = self._saveProblems(document, recorder)
+        self._saveWarnings = []
+        if saveProblems:
+            if mode == RunMode.EXPERIMENT:
+                # A triggered scan that cannot be saved is not taken at all.
+                self._widget.setIssues([f'not armed: the triggered scans could not be saved -- {problem}'
+                                        for problem in saveProblems])
+                self._widget.setStatus('not armed')
+                return
+            self._saveWarnings = saveProblems
         actions = live_backend(self._master.positionersManager, snap=self._snap, marshal=self._marshal,
                                logger=self.__logger, scan=scan)
         try:
@@ -299,15 +313,92 @@ class SmartPipelineController(ImConWidgetController):
             self._widget.setIssues([f'{type(e).__name__}: {e}'])
             self._widget.setStatus('not armed')
             return
-        self._widget.setIssues([])
+        self._widget.setIssues([f'note: in Experiment the triggered scans could not be saved: {p}'
+                                for p in self._saveWarnings])
         self._run = run
         self._source = source
+        self._recorder = recorder
+        if recorder is not None and self._savesScans(document) and mode == RunMode.EXPERIMENT:
+            log.append(0, time.monotonic(), 'pipeline', 'saving', folder=recorder.folder,
+                       detectors=list(recorder.detectors), format=recorder.save_format)
         self._commChannel.sigUpdateImage.connect(source.on_image)
         self._showOverlay(True)
         run.start()
         self._statusTimer.start()
         self._updateButtons()
         self._refreshStatus()
+
+    # ------------------------------------------------------------------ #
+    # Saving the triggered scans                                          #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _scanSteps(document):
+        from imswitch.imcommon.model.smartpipeline import action_chain
+
+        return [step for step in action_chain(document.workflow) if step.action == 'run-scan']
+
+    def _savesScans(self, document):
+        from imswitch.imcontrol.model.smartpipeline.catalog import RUN_SCAN
+
+        return any(bool({**RUN_SCAN.params, **step.params}.get('save', True))
+                   for step in self._scanSteps(document))
+
+    def _recordingsFolder(self):
+        recording = self._commChannel.controllerRegistry().get('Recording')
+        if recording is None:
+            return None
+        try:
+            return recording.getRecFolder()
+        except Exception:
+            return None
+
+    def _stagePosition(self):
+        """ Where the stage positioners are now: {positioner: {axis: um}},
+        the positioners that position (not those that only scan). """
+        found = {}
+        for name, positioner in self._master.positionersManager:
+            if getattr(positioner, 'forScanning', False) or not getattr(positioner, 'forPositioning', True):
+                continue
+            try:
+                found[name] = {str(k): float(v) for k, v in dict(positioner.position).items()}
+            except Exception:
+                continue
+        return found
+
+    def _makeRecorder(self, document):
+        """ The recorder of this run's triggered scans: a folder of its own
+        under the Recording panel's folder, the scan-driven detectors. """
+        from imswitch.imcontrol.model.smartpipeline.event_recording import (
+            TriggeredScanRecorder, run_folder_name, scan_driven_detectors,
+        )
+
+        if not self._scanSteps(document):
+            return None
+        base = self._recordingsFolder()
+        folder = os.path.join(base, 'smart_pipeline', run_folder_name(document.name)) if base else ''
+        tiling = getattr(self._setupInfo, 'tiling', None)
+        baseAttrs = {'SmartPipeline:pipeline': document.name,
+                     'SmartPipeline:pipeline_file': self._path or '',
+                     'SmartPipeline:run_folder': folder}
+        if tiling is not None and getattr(tiling, 'xyPositioner', None):
+            baseAttrs['SmartPipeline:xy_positioner'] = tiling.xyPositioner
+        return TriggeredScanRecorder(
+            self._commChannel.controllerRegistry, self._marshal, folder=folder,
+            detectors=scan_driven_detectors(self._master.detectorsManager), save_format='HDF5',
+            base_attrs=baseAttrs, logger=self.__logger, stage_position=self._stagePosition,
+        )
+
+    def _saveProblems(self, document, recorder):
+        """ Why the triggered scans of ``document`` could not be saved, or
+        []. Checked at every arm: a refusal in Experiment, a note in a dry run. """
+        if not self._savesScans(document):
+            return []
+        if recorder is None:
+            return ['this setup has no scan workflow to run and record the scans with']
+        problems = []
+        for step in self._scanSteps(document):
+            problems.extend(recorder.problems(str(step.params.get('source') or 'Scan')))
+        return list(dict.fromkeys(problems))
 
     def stop(self):
         run = self._run

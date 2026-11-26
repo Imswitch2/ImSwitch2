@@ -40,7 +40,8 @@ RUN_SCAN = ActionSpec(
     params={"source": "Scan", "mode": "acquisition", "field_um": 60.0, "length_um": 8.0, "pixel_um": 0.1,
             "dwell_s": 0.0, "lasers": [], "axes": ["Y", "X"], "frame": "", "points": "all", "max_points": 0,
             "overview_pixel_um": 0.25, "box": "auto", "margin_um": 0.0, "margin_frac": 0.0, "min_size_um": 0.0,
-            "max_size_um": 0.0, "min_overlap": 0.5, "range_um": {}, "range_inset_um": 0.0, "restore": True},
+            "max_size_um": 0.0, "min_overlap": 0.5, "range_um": {}, "range_inset_um": 0.0, "restore": True,
+            "save": True},
     frame_param="frame", hardware=True,
     description="Run a point scan: 'overview' of field_um around the centre at overview_pixel_um (the Advanced "
                 "panel; the simple page plans its own), or 'acquisition' of "
@@ -51,7 +52,10 @@ RUN_SCAN = ActionSpec(
                 "margin_um + margin_frac, limited to min/max_size_um, a whole number of steps (the panel's step, or "
                 "pixel_um), fitted to the scanner range (range_um per axis, else the positioner's volts x "
                 "conversionFactor, inset by range_inset_um) or skipped with a reason when its centre is outside it or "
-                "less than min_overlap of it is inside; the panel's own parameters are put back afterwards (restore).",
+                "less than min_overlap of it is inside; the panel's own parameters are put back afterwards (restore). "
+                "In Experiment, 'save' (on by default) records every scan as a Scan-once recording of the setup's "
+                "scan-driven detectors into the run's folder under the Recording panel's folder, one file per "
+                "event with the trigger's metadata; a scan that cannot be saved stops the pipeline.",
 )
 
 WAIT = ActionSpec(

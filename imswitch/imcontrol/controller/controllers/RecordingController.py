@@ -93,6 +93,16 @@ class _ScanSeriesRequest:
     externallyPaced: bool = False
     # Who may stop the series (stopSeries). Defaults to ``source``.
     owner: Any = None
+    # Where and how the caller's recording is written, instead of the
+    # Recording panel's folder, file name and format (None: the panel's).
+    # A caller that names a folder always records to disk, whatever save
+    # mode the panel holds: its file is what it asked for.
+    folder: Optional[str] = None
+    fileName: Optional[str] = None
+    saveFormat: Optional[str] = None
+    # Attributes added to every recorded detector's metadata, as flat
+    # ``Category:key`` names (the SharedAttributes convention).
+    extraAttrs: Optional[Dict[str, Any]] = None
 
 
 def _dispatchWithoutLifecycle(dispatch, *args):
@@ -639,17 +649,24 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     )
                 self.updateRecAttrs(isSnapping=False)
 
-                folder = self._widget.getRecFolder()
+                # A caller's series may name its own folder, file name and
+                # format (the smart pipeline's triggered scans); the
+                # Recording panel's otherwise.
+                request = self.__dict__.get('_seriesRequest')
+                requestFolder = getattr(request, 'folder', None)
+                folder = requestFolder or self._widget.getRecFolder()
+                saveMode = (SaveMode.Disk if requestFolder
+                            else SaveMode(self._widget.getRecSaveMode()))
+                saveFormat = SaveFormat(self._widget.getSaveFormat())
+                if getattr(request, 'saveFormat', None):
+                    saveFormat = SaveFormat[str(request.saveFormat).upper()]
                 # A recording kept in memory only writes nothing there; the
                 # folder is created when it is saved from ImProcess.
-                if (
-                    SaveMode(self._widget.getRecSaveMode()) != SaveMode.RAM
-                    and not os.path.exists(folder)
-                ):
+                if saveMode != SaveMode.RAM and not os.path.exists(folder):
                     os.makedirs(folder)
                 time.sleep(0.01)
                 self._recordingBaseSavename = os.path.join(
-                    folder, self.getFileName()
+                    folder, getattr(request, 'fileName', None) or self.getFileName()
                 )
                 self.savename = _compose_recording_savename(
                     self._recordingBaseSavename
@@ -690,11 +707,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     'detectorNames': detectorsBeingCaptured,
                     'recMode': self.recMode,
                     'savename': self.savename,
-                    'saveMode': SaveMode(self._widget.getRecSaveMode()),
-                    'saveFormat': SaveFormat(self._widget.getSaveFormat()),
+                    'saveMode': saveMode,
+                    'saveFormat': saveFormat,
                     'attrs': {
-                        detectorName:
-                            self._commChannel.sharedAttrs.getHDF5Attributes()
+                        detectorName: {
+                            **self._commChannel.sharedAttrs.getHDF5Attributes(),
+                            **dict(getattr(request, 'extraAttrs', None) or {}),
+                        }
                         for detectorName in detectorsBeingCaptured
                     },
                     'singleMultiDetectorFile': (
@@ -4080,7 +4099,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     def recordScanSeries(
         self, source, detectorNames, frames: int = 1, intervalSeconds: float = 0.0,
         singleFile: bool = True, *, externallyPaced: bool = False,
-        onEnded=None,
+        onEnded=None, folder: Optional[str] = None, fileName: Optional[str] = None,
+        saveFormat: Optional[str] = None, extraAttrs: Optional[Dict[str, Any]] = None,
     ) -> ScanSeriesRecordingResult:
         """Record ``frames`` scans of ``source`` at a snapshotted cadence.
 
@@ -4111,10 +4131,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         back, so it is refused unless a provider is installed. ``onEnded`` is
         called once as ``onEnded(failed, message)`` when an accepted series
         has ended; a refused one never calls it.
+
+        ``folder``, ``fileName`` and ``saveFormat`` ('HDF5', 'ZARR' or
+        'TIFF') put this recording elsewhere than the Recording panel says,
+        without changing the panel; with a ``folder`` it is always written to
+        disk. ``extraAttrs`` (flat ``Category:key`` names) are added to every
+        recorded detector's metadata. The written file's base name is
+        :attr:`savename` while the recording runs.
         """
         def refuse(reason):
             return ScanSeriesRecordingResult(False, reason)
 
+        if saveFormat is not None and str(saveFormat).upper() not in SaveFormat.__members__:
+            return refuse(f'Unknown recording format {saveFormat!r}; use HDF5, TIFF or ZARR.')
         try:
             frames_number = float(frames)
         except (TypeError, ValueError):
@@ -4174,6 +4203,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             previousMode=self.recMode,
             externallyPaced=bool(externallyPaced),
             owner=source,
+            folder=str(folder) if folder else None,
+            fileName=str(fileName) if fileName else None,
+            saveFormat=str(saveFormat).upper() if saveFormat else None,
+            extraAttrs=dict(extraAttrs) if extraAttrs else None,
         )
         self._publishScanSeriesActivity(source, True)
         self.recMode = RecMode.ScanOnce if frames == 1 else RecMode.ScanLapse

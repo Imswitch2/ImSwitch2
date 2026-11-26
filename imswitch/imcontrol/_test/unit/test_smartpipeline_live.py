@@ -178,6 +178,8 @@ def test_the_source_takes_the_lease_and_stamps_the_envelope():
     assert frame.sequence == 0 and frame.t == 10.0 and frame.exposure_s == 0.02
     assert frame.scale == (0.1, 0.1) and frame.unit == "um" and frame.identity == source.identity
     assert frame.image is not image and np.array_equal(frame.image, image)   # a copy
+    wall = frame.metadata.pop("wall_time")      # the wall-clock time an event's records carry
+    assert isinstance(wall, float) and abs(wall - time.time()) < 60
     assert frame.metadata == {"init": False, "current": True}
     source.close()
     assert manager.released == [manager.leases[0]] if manager.leases else manager.released

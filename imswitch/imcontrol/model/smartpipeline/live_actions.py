@@ -195,12 +195,20 @@ class RunScanAdapter:
 
     spec = RUN_SCAN
 
-    def __init__(self, controllers, scan_workflow, *, marshal=None, capture=None, logger=None):
+    def __init__(self, controllers, scan_workflow, *, marshal=None, capture=None, logger=None, recorder=None):
         self._controllers = controllers
         self._workflow = scan_workflow
         self._marshal = marshal if marshal is not None else (lambda fn: fn())
         self._capture = capture
         self._logger = logger
+        #: A :class:`~.event_recording.TriggeredScanRecorder`: in Experiment,
+        #: with ``save`` on, each scan is started as a scan-once recording of
+        #: it (the scan is saved), not as a bare scan.
+        self.recorder = recorder
+
+    def _records(self, request: ActionRequest) -> bool:
+        return (self.recorder is not None and request.mode == "experiment"
+                and bool(request.params.get("save", True)))
 
     def resources(self, params: dict) -> set[str]:
         return set()   # scans admit the waveform output themselves (finding 1)
@@ -373,12 +381,15 @@ class RunScanAdapter:
     def plan(self, request: ActionRequest) -> dict:
         """What this request would scan, without touching the panel's fields or starting anything: the
         dry run's report (the box in scan micrometres, the padded and clamped rectangle, or why the trigger
-        is skipped)."""
+        is skipped), and where an Experiment run would save it."""
         targets = self._box_targets(request)
+        saving = {}
+        if self.recorder is not None and bool(request.params.get("save", True)):
+            saving = {"would_save_to": self.recorder.folder, "would_save_detectors": list(self.recorder.detectors)}
         if targets is None:
-            return {}
+            return saving
         return {"scan_plan": [_plan_report(t) for t in targets],
-                "message": "; ".join(_plan_sentence(t) for t in targets)}
+                "message": "; ".join(_plan_sentence(t) for t in targets), **saving}
 
     def _snapshot_advanced(self, controller, axes: list) -> dict | None:
         """The panel's scan fields now (None when its widget has no getters: nothing to put back)."""
@@ -446,15 +457,25 @@ class RunScanAdapter:
                 raise RuntimeError(f"the Scan panel {source!r} stayed busy for {timeout_s:g} s")
             time.sleep(0.05)
 
-    def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict, plan: dict | None = None):
+    def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict, plan: dict | None = None,
+                  info: dict | None = None):
         """Prepare and run one scan; returns its request completion (the
-        scan runs while the caller waits on it)."""
+        scan runs while the caller waits on it). When the scan is saved
+        (:meth:`_records`) it is started by its recording instead, and the
+        completion is that recording's."""
         t0 = time.perf_counter()
         self._wait_idle(str(request.params.get("source") or "Scan"))
         t1 = time.perf_counter()
         summary = self._marshal(lambda: self._prepare(request, centre, plan))
         t2 = time.perf_counter()
         source = str(request.params.get("source") or "Scan")
+        if self._records(request):
+            recording = self._start_recording(request, source, summary, info)
+            state["current"] = ("recording", recording)
+            t3 = time.perf_counter()
+            state["latency"] = {"wait_idle": round(t1 - t0, 4), "set_parameters": round(t2 - t1, 4),
+                                "start_request": round(t3 - t2, 4)}
+            return summary, recording
         result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,
                                                   exact_completion=True)
         if not getattr(result, "accepted", False) or not result.acceptedCompletions:
@@ -465,6 +486,53 @@ class RunScanAdapter:
         state["latency"] = {"wait_idle": round(t1 - t0, 4), "set_parameters": round(t2 - t1, 4),
                             "start_request": round(t3 - t2, 4)}
         return summary, request_completion
+
+    # -- saving the triggered scan ----------------------------------------------------
+
+    def _event_fields(self, request: ActionRequest, summary: dict, info: dict | None, event: int) -> dict:
+        """What the event's file records about it, before the scan."""
+        info = dict(info or {})
+        recorder = self.recorder
+        context = dict(getattr(request, "context", {}) or {})
+        label = info.get("label")
+        fields = {
+            "event": event, "region": recorder.region,
+            "roi_label": label, "roi_id": None if label is None else f"R{recorder.region}-{int(float(label))}",
+            "dff": info.get("dff"), "F": info.get("F"), "F0": info.get("F0"), "area_px": info.get("area"),
+            "point": info.get("point"),
+            "bbox_camera_px": ([info.get(k) for k in SOURCE_BOX_COLUMNS]
+                               if all(k in info for k in SOURCE_BOX_COLUMNS) else None),
+            "bbox_scan_um": [info.get(k) for k in BOX_COLUMNS] if all(k in info for k in BOX_COLUMNS) else None,
+            "scan_centre_um": summary.get("centre_um"), "scan_size_um": summary.get("size_um"),
+            "scan_pixel_um": summary.get("pixel_um"), "lasers": summary.get("lasers"),
+            "frame_sequence": context.get("frame_sequence"), "frame_wall": context.get("frame_wall"),
+            "decision_wall": context.get("decision_wall"), "tick": request.tick, "step": request.step_id,
+            "stage_position_um": recorder.stage_position(),
+        }
+        transform = info.get("transform")
+        if isinstance(transform, dict):
+            fields["transform_id"] = transform.get("id")
+            fields["transform"] = transform
+            for key in ("residual_rms_um", "residual_um", "residual"):
+                if transform.get(key) is not None:
+                    fields["transform_residual"] = transform.get(key)
+                    break
+        return fields
+
+    def _start_recording(self, request: ActionRequest, source: str, summary: dict, info: dict | None):
+        from imswitch.imcontrol.model.smartpipeline.event_recording import event_attrs, event_file_name
+
+        recorder = self.recorder
+        event = recorder.next_event()
+        fields = self._event_fields(request, summary, info, event)
+        fields["scan_start_wall"] = time.time()
+        name = event_file_name(event, fields.get("roi_label"), recorder.region)
+        summary["event"] = event
+        summary["file_base"] = name
+        try:
+            return recorder.start(source, file_name=name, attrs=event_attrs(fields))
+        except Exception as exc:
+            raise RuntimeError(f"the triggered scan was not started because it could not be saved: {exc}") from exc
 
     def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
         completion = SimpleCompletion(request.epoch)
@@ -502,7 +570,8 @@ class RunScanAdapter:
                     if state["abort"].is_set():
                         completion.cancel()
                         return
-                    summary, request_completion = self._one_scan(request, job["centre"], state, job["plan"])
+                    summary, request_completion = self._one_scan(request, job["centre"], state, job["plan"],
+                                                                 job["info"])
                     if job["plan"] is not None:
                         summary["trigger"] = job["info"]
                         summary["notes"] = job["plan"]["notes"]
@@ -510,10 +579,18 @@ class RunScanAdapter:
                         state["latency"]["request_to_start"] = round(time.perf_counter() - t_request, 4)
                     request_completion.wait()
                     state["current"] = None
+                    recording = request_completion if summary.get("file_base") is not None else None
                     if not request_completion.successful:
-                        completion.fail(f"run-scan: {request_completion.message or 'the scan failed'}"
+                        what = "the triggered scan was not saved" if recording is not None else "the scan failed"
+                        completion.fail(f"run-scan: {what}: {request_completion.message or 'no reason given'}"
                                         + (f" (scan {index + 1} of {len(runnable)})" if len(runnable) > 1 else ""))
                         return
+                    if recording is not None:
+                        end = {"scan_end_wall": recording.ended_wall, "latency_s": dict(state.get("latency") or {})}
+                        warnings = self.recorder.finish(recording, end)
+                        summary["saved"] = list(recording.paths)
+                        if warnings:
+                            summary["save_warnings"] = warnings
                     captured = False
                     if capture is not None:
                         try:
@@ -537,6 +614,8 @@ class RunScanAdapter:
         def abort():
             state["abort"].set()
             current = state.get("current")
+            if current and current[0] == "recording":
+                return current[1].abort()
             return self._abort(*current) if current else True
 
         completion.abort_hook = abort
@@ -629,7 +708,8 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
     ]
     if scan is not None:
         adapters.append(RunScanAdapter(scan.get("controllers"), scan.get("workflow"), marshal=marshal,
-                                       capture=scan.get("capture"), logger=logger))
+                                       capture=scan.get("capture"), logger=logger,
+                                       recorder=scan.get("recorder")))
     return LiveActionBackend(adapters, catalog=catalog())
 
 
