@@ -16,7 +16,8 @@
    "eeab2c05a53ed7a648aff446bd1a2b63136c3b955fd65deef4cf67a303c09948"
   ],
   "imcontrol_etsted/transform_pipelines/mock_rehearsal_only.csv": [
-   "22fb1e2c0ba5046937b675ec8c22051928cf4ae7aeb40bfd5ea46e2e58167cc1"
+   "22fb1e2c0ba5046937b675ec8c22051928cf4ae7aeb40bfd5ea46e2e58167cc1",
+   "d58b6c84a3a90d1828d9dc1998a1392e72e8331dc56168a7f47ee39d41816eb0"
   ],
   "imcontrol_etsted/transform_pipelines/poly3.py": [
    "e28df790eab9fad24bc96df33d9d01afda470339fc9730b370aaf21077c13cee"
@@ -163,6 +164,7 @@
    "dca3a4500cf569310c5461d9817afae0e20f3221f0e24a20e6a6f0641d1a8179"
   ],
   "imcontrol_setups/mock/point_scanning/etsted_advanced_mock_setup.json": [
+   "2c8425611ee00b0788f977ce49b9d17b8965031ed4a3dad4937efc4e0cb0f658",
    "86227b8496ec2a5ea6934f06b600a713a0e1730098a7d53126d3472de1839e04"
   ],
   "imcontrol_setups/mock/point_scanning/expert_mock_scan_setup.json": [

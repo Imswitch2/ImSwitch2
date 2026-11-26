@@ -79,11 +79,11 @@ def test_the_triggered_scan_has_the_signals_the_advanced_panel_would_play(rig, n
         info.pop('excludedDetectors', None)
     _same(triggered_signals, panel_signals)
     _same(triggered_info, panel_info)
-    # ... and it is a scan centred on the event: (302, 202) px at 0.15 um/px
+    # ... and it is a scan centred on the event: (302, 202) px at 0.05 um/px
     # from the frame centre (256, 256), as the binned pixel is reported.
     centres = analog['axis_centerpos']
-    assert centres[0] == pytest.approx(0.15 * (302 - 256), abs=1e-6)
-    assert centres[1] == pytest.approx(0.15 * (202 - 256), abs=1e-6)
+    assert centres[0] == pytest.approx(0.05 * (302 - 256), abs=1e-6)
+    assert centres[1] == pytest.approx(0.05 * (202 - 256), abs=1e-6)
 
 
 def test_event_to_scan_one_shot_stops_with_the_laser_off(rig, new_session):
@@ -246,8 +246,25 @@ def test_recording_widget_initiation_records_the_triggered_advanced_scan(rig, ne
             assert int(handle['APD/stream_complete'][0]) == 1
             assert handle['APD/data'][...].max() > 0
         analog = rig.etsted._analogParameterDict
-        assert analog['axis_centerpos'][0] == pytest.approx(0.15 * (302 - 256), abs=1e-6)
+        assert analog['axis_centerpos'][0] == pytest.approx(0.05 * (302 - 256), abs=1e-6)
     finally:
         rig.channel.sigScanEnded.disconnect(on_end)
         rig.select(rig.widget.scanInitiationPar, rig.widget.scanInitiation, 'ScanWidget')
         recording.setRecMode(RecMode.SpecFrames)
+
+
+def test_mock_rehearsal_switching_the_laser_on_triggers_a_scan_on_the_sample(rig, new_session):
+    """The steps of docs/gui.rst 'etSTED first run': the laser has a power but
+    is off, so the camera sees the dark; switching it on lights the virtual
+    sample, a rise the dF/F pipeline reports, and the APD scans there."""
+    session = new_session()
+    rig.main.controllers['Laser'].toggleLaser('488 (EXC)', False)
+    rig.process(0.3)
+    session.start_detecting()
+    assert baseline_settled(rig) or rig.wait_for(lambda: baseline_settled(rig), 60)
+    assert not session.armed
+    rig.main.controllers['Laser'].toggleLaser('488 (EXC)', True)
+    assert rig.wait_for(lambda: session.armed, 40), session.statuses
+    assert rig.wait_for(lambda: session.apd_frames, 40)
+    centres = rig.etsted._analogParameterDict['axis_centerpos'][:2]
+    assert all(abs(c) < 0.05 * 256 for c in centres)       # on the camera's field

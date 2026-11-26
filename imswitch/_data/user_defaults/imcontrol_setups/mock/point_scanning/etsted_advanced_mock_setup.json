@@ -1,5 +1,5 @@
 {
- "__comment__": "Hardware-free etSTED rehearsal: a widefield camera (fast, event detection) and an APD (slow, confocal scan) image the SAME virtual bead sample (mockSample, same seed, X/Y in the galvo's um per V), on a SIMULATED NI-DAQ with the ADVANCED scan panel (galvo scan designer). In the EtSTED panel the widefield detector is Camera, the scan detector is APD and the fast laser is 488 (EXC), which needs a non-zero power for the sample to be visible. The camera free-runs (internal trigger). Rehearsal steps: docs/gui.rst, 'etSTED first run'. Camera pixel 0.15 um, 512x512 px = 77 um; the galvo covers +-17.5 um (+-10 V at 1.75 um/V).",
+ "__comment__": "Hardware-free etSTED rehearsal: a widefield camera (fast, event detection) and an APD (slow, confocal scan) image the SAME virtual bead sample (mockSample, same seed, X/Y in the galvo's um per V), on a SIMULATED NI-DAQ with the ADVANCED scan panel (galvo scan designer). In the EtSTED panel the widefield detector is Camera, the scan detector is APD and the fast laser is 488 (EXC), which needs a non-zero power for the sample to be visible. The camera free-runs (internal trigger). Rehearsal steps: docs/gui.rst, 'etSTED first run'. Camera pixel 0.05 um, 512x512 px = 25.6 um, inside the galvo range of +-17.5 um (+-10 V at 1.75 um/V), so every event on the camera can be scanned.",
  "detectors": {
   "Camera": {
    "analogChannel": null,
@@ -7,7 +7,7 @@
    "managerName": "HamamatsuManager",
    "managerProperties": {
     "cameraListIndex": "mock-512",
-    "cameraPixelSizeUm": 0.15,
+    "cameraPixelSizeUm": 0.05,
     "hamamatsu": {
      "exposure_time": 0.02,
      "trigger_source": 1,

@@ -1638,7 +1638,7 @@ etSTED first run on the mock setup
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``mock/point_scanning/etsted_advanced_mock_setup.json`` is a rehearsal rig
-without hardware: a camera (the widefield, 512 x 512 px at 0.15 µm) and an APD
+without hardware: a camera (the widefield, 512 x 512 px at 0.05 µm) and an APD
 (the confocal scan) image the same virtual bead sample on a simulated NI-DAQ,
 with the Advanced scan panel and the EtSTED panel.  Choose it in the setup
 picker and then:
@@ -1652,7 +1652,7 @@ picker and then:
    scan).  Pick the *dff_event* analysis pipeline and press **Load pipeline**;
    the six fields are its parameters (see the header of
    ``analysis_pipelines/dff_event.py``).  Pick transform *poly3* and
-   coefficients *mock_rehearsal_only* (0.15 µm per pixel about the frame
+   coefficients *mock_rehearsal_only* (0.05 µm per pixel about the frame
    centre; **only valid for this setup**).  Widefield detector *Camera*, laser
    *488 (EXC)*, scan type *ScanWidget*.
 #. **Dry run.**  Mode *TestVisualize* and press **Initiate etSTED**: the
