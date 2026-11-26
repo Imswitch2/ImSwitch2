@@ -33,11 +33,10 @@ bin_px           binning factor, whole pixels (4). The reported position has
 baseline_frames  time constant of the baseline in frames (20). Short follows
                  bleaching better, long hides slow events less.
 smooth_px        Gaussian sigma in BINNED pixels (1.0); 0 = off.
-min_baseline     floor of the denominator in camera counts above the
-                 camera offset... in counts (20). It stops dark pixels, where
-                 dF/F of noise is huge, from triggering. Set it to a few times
-                 the camera's dark level plus the noise you see in the dark
-                 parts of the sample.
+min_baseline     floor of the denominator, in camera counts (20). It stops
+                 dark pixels, where dF/F of noise is huge, from triggering:
+                 set it to a few times the dark level you see off the sample
+                 (camera offset included).
 warmup_frames    frames that only build the baseline (10). etSTED itself
                  ignores its first 5 frames.
 

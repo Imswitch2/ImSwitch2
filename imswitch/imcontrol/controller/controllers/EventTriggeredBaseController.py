@@ -126,6 +126,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     INIT_FRAMES: int = 5
     VALIDATION_FRAMES_LIMIT: int = 5
     FLIP_WF_CALIB: bool = True
+    # Safeguard state; class-level so the neutral values hold for any
+    # instance, whatever its construction path.
+    _cooldownS: float = 0.0
+    _maxTriggeredScans: int = 0
+    _triggeredScanCount: int = 0
+    _lastTriggeredScanEnd: Optional[float] = None
     FAST_AXIS_SHIFT_COEFFICIENTS = (
         -5.06873628,
         -80.6978355,
@@ -229,6 +235,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._binary_stack_list: list[np.ndarray] = []
         self._param_vals: list[float] = []
         self._exinfo = None
+        # Safeguards for an automatically firing scan (panel options; the
+        # neutral values 0 / 0 leave the behaviour as it was).
+        self._cooldownS = 0.0
+        self._maxTriggeredScans = 0
+        self._triggeredScanCount = 0
+        self._lastTriggeredScanEnd: Optional[float] = None
         self._analogParameterDict: dict = {}
         self._digitalParameterDict: dict = {}
         self._positionersScan: list = []
@@ -452,6 +464,9 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
         self._param_vals = self.readParams()
         self._exinfo = None
+        self._readSafeguards()
+        self._triggeredScanCount = 0
+        self._lastTriggeredScanEnd = None
 
         experimentModeIdx = self._widget.experimentModesPar.currentIndex()
         self.experimentMode = self._widget.experimentModes[experimentModeIdx]
@@ -464,6 +479,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
         if self._state.runMode == RunMode.Experiment:
             self._validate_pre_run()
+            self._validate_recording_widget_mode()
 
         if self._state.runMode in (RunMode.Validate, RunMode.Visualize):
             self.launchHelpWidget()
@@ -471,6 +487,54 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self.loadTransform()
 
     # ── Run-signal wiring ────────────────────────────────────────────────── #
+
+    def _readSafeguards(self) -> None:
+        """Cooldown (s) and maximum number of triggered scans from the panel;
+        a panel without the fields leaves both off."""
+        def number(edit, name, integer=False):
+            if edit is None:
+                return 0
+            try:
+                value = float(edit.text())
+            except ValueError:
+                raise ValueError(f'{name} must be a number, not {edit.text()!r}.') from None
+            if value < 0 or (integer and value != int(value)):
+                raise ValueError(
+                    f'{name} must be a non-negative {"whole " if integer else ""}number.')
+            return value
+        self._cooldownS = float(number(
+            getattr(self._widget, 'cooldown_edit', None), 'Cooldown'))
+        self._maxTriggeredScans = int(number(
+            getattr(self._widget, 'maxscans_edit', None), 'Max. triggered scans', True))
+
+    def _triggerSuppression(self) -> Optional[str]:
+        """Why a detected event must not start a scan now, or None."""
+        if self._maxTriggeredScans and self._triggeredScanCount >= self._maxTriggeredScans:
+            return (f'maximum of {self._maxTriggeredScans} triggered scans '
+                    f'reached ({self._triggeredScanCount} done)')
+        if self._cooldownS and self._lastTriggeredScanEnd is not None:
+            elapsed = time.monotonic() - self._lastTriggeredScanEnd
+            if elapsed < self._cooldownS:
+                return (f'cooldown: {elapsed:.1f} s since the last triggered scan, '
+                        f'{self._cooldownS:g} s required')
+        return None
+
+    def _validate_recording_widget_mode(self) -> None:
+        """RecordingWidget initiation runs the scan THROUGH the Recording
+        widget, which only does so in 'Scan once': any other mode would start
+        a camera recording instead and the scan would be refused at the first
+        event. Say so now, not at trigger time."""
+        if self._state.scanInitiationMode != ScanInitiationMode.RecordingWidget:
+            return
+        getMode = getattr(self._commChannel, 'getRecordingMode', None)
+        mode = getMode() if callable(getMode) else None
+        if mode is not None and getattr(mode, 'name', mode) != 'ScanOnce':
+            raise RuntimeError(
+                "Scan initiation 'RecordingWidget' needs the Recording widget "
+                "set to 'Scan once' (it is on "
+                f"'{getattr(mode, 'name', mode)}'), with the scan detector "
+                "selected, and the scan parameters loaded."
+            )
 
     def _connectRunSignals(self) -> None:
         if not self._state.imageSignalConnected:
@@ -1054,6 +1118,16 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self.setBusyFalse()
             return
 
+        suppressed = self._triggerSuppression()
+        if suppressed is not None:
+            self._logger.warning(
+                f'{self.MODALITY_LABEL} event ignored, {suppressed}.'
+            )
+            self._prevFrames.append(img)
+            self._state.frame += 1
+            self.setBusyFalse()
+            return
+
         coords_wf = np.copy(self._first_coord(coords_detected))
         self.setDetLogLine('prepause', _now_us_tag())
         self.setDetLogLine('fastscan_x_center', coords_wf[0])
@@ -1123,6 +1197,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
                 )
             return
 
+        self._triggeredScanCount += 1
         try:
             self.updateScatter(coords_detected)
             self._prevFrames.append(img)
@@ -1428,6 +1503,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         that ordering even when this terminal path races an asynchronous
         detector acknowledgement.
         """
+        self._lastTriggeredScanEnd = time.monotonic()
         if not self._isDirectTriggeredScan():
             hadTriggeredRecording = bool(
                 self.__dict__.get('_triggeredRecordingInFlight', False)
@@ -2078,6 +2154,14 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self._state.busy = False
             self._setFastLaserEnabled(False)
             self._disconnectNidaqCompletionSignalsIfIdle()
+            return
+        if (self._maxTriggeredScans
+                and self._triggeredScanCount >= self._maxTriggeredScans):
+            self._logger.warning(
+                f'{self.MODALITY_LABEL} stopping: the maximum of '
+                f'{self._maxTriggeredScans} triggered scans is reached.'
+            )
+            self.stopExperiment(resetParams=True)
             return
         if self._widget.endlessScanCheck.isChecked() and not self._state.running:
             try:

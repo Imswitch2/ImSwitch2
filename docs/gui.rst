@@ -1613,9 +1613,70 @@ controls are locked.
 **Number of slow frames** and **Time between slow frames (s)** have no effect:
 nothing reads them.
 
+**Cooldown between scans (s)** and **Max. triggered scans** guard a laser that
+fires by itself.  Events within the cooldown of the end of the last triggered
+scan are ignored, and so are events after the maximum number of scans in one
+run (0 disables either); each ignored event is logged as a warning, and a run
+that reaches its maximum stops once its last scan has finished.  The defaults
+are 5 s and 10 scans.
+
+The scan is built by the scan panel that sent the parameters, with the event
+as the centre of its first two axes, so it carries the signals that panel
+would play (the Advanced and Base panels; the Expert panel runs a scan
+program with no centre and is refused).  An event outside a scanner's voltage
+range is refused with the designer's message and the run recovers.
+*RecordingWidget* needs the Recording widget on **Scan once** with the scan
+detector selected; the panel refuses to arm otherwise.
+
 .. image:: ./images/auto/EtSTEDWidget.png
    :align: center
    :width: 600px
+
+.. _etsted-first-run:
+
+etSTED first run on the mock setup
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``mock/point_scanning/etsted_advanced_mock_setup.json`` is a rehearsal rig
+without hardware: a camera (the widefield, 512 x 512 px at 0.15 µm) and an APD
+(the confocal scan) image the same virtual bead sample on a simulated NI-DAQ,
+with the Advanced scan panel and the EtSTED panel.  Choose it in the setup
+picker and then:
+
+#. **Lasers.**  In the Laser panel set 488 (EXC) to a non-zero power but leave
+   it *off*: the virtual sample is dark until a laser lights it.
+#. **Scan.**  The Scan panel opens with a small X × Y scan (5 × 5 µm at
+   0.1 µm) with the APD ticked: that is enough.  Change it if you like, but do
+   not press Start.
+#. **EtSTED panel.**  Press **Load scan parameters** (the box summarises the
+   scan).  Pick the *dff_event* analysis pipeline and press **Load pipeline**;
+   the six fields are its parameters (see the header of
+   ``analysis_pipelines/dff_event.py``).  Pick transform *poly3* and
+   coefficients *mock_rehearsal_only* (0.15 µm per pixel about the frame
+   centre; **only valid for this setup**).  Widefield detector *Camera*, laser
+   *488 (EXC)*, scan type *ScanWidget*.
+#. **Dry run.**  Mode *TestVisualize* and press **Initiate etSTED**: the
+   analysis window shows the dF/F map and a cross on each candidate.  Switch
+   488 (EXC) *on* in the Laser panel: the sample lights up, which the dF/F
+   sees as a rise, so a cross appears on the sample.  Stop.
+#. **TestValidate.**  The same, but the first candidate is logged and saved
+   (frames and analysis images) without scanning.
+#. **Experiment.**  Mode *Experiment*, laser off again, press **Initiate
+   etSTED**, then switch 488 on: the panel goes *Triggered*, *Scanning*, the
+   APD frame appears in the Image panel, and the run stops (tick **Endless**
+   to resume detecting; the cooldown then holds off the next scan).
+#. **Look at** ``recordings/logs_etsted`` in the user directory: one log per
+   run with the detected position in camera pixels, the transformed scan
+   centres, and the timestamps of the pipeline, the scan build and the scan
+   start; the saved ``…_snap_raw`` frames; and a warning for each event the
+   cooldown or the maximum ignored.
+
+On a rig the coefficient file comes from your bead registration: write it with
+``tools/etsted_affine_to_csv.py`` from the 2 × 3 affine that maps camera
+``(row, col)`` pixels to the scan axes' centres in µm (the pipeline reports
+``(column, row)``; the script and
+``EtSTEDTransformService.coefficients_from_affine`` do the swap), or fit it in
+the Transform calibration window.
 
 EtMonalisa widget
 -----------------

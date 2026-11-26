@@ -174,7 +174,8 @@ def same(a, b, path='root', atol=None):
 class Session:
     """Drives one etSTED run on the rig and records what the DAQ was asked."""
 
-    def __init__(self, rig, *, endless=False, mode='Experiment', prepare_scan=None):
+    def __init__(self, rig, *, endless=False, mode='Experiment', prepare_scan=None,
+                 cooldown=0, max_scans=0):
         self.rig = rig
         self.et = rig.etsted
         self.armed = []          # (signalDict, scanInfoDict) per scan armed
@@ -187,6 +188,8 @@ class Session:
         rig.select(widget.experimentModesPar, widget.experimentModes, mode)
         rig.select(widget.transformCoefsPar, widget.transformCoefs, 'mock_rehearsal_only')
         widget.endlessScanCheck.setChecked(endless)
+        widget.cooldown_edit.setText(str(cooldown))
+        widget.maxscans_edit.setText(str(max_scans))
         self.et.loadPipeline()
         names = self.et._pipelineRunner.get_user_parameter_names()
         widget.param_edits[names.index('warmup_frames')].setText(str(WARMUP))

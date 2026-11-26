@@ -33,7 +33,7 @@ def _service():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--matrix', nargs=6, type=float, required=True,
-                        metavar=('A00', 'A01'), help='the 2x3 matrix, row by row')
+                        metavar='A', help='the 2x3 matrix, row by row')
     parser.add_argument('--input-order', choices=('row_col', 'col_row'), default='row_col')
     parser.add_argument('--out', required=True, help='the .csv file to write')
     args = parser.parse_args(argv)

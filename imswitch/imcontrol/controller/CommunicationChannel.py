@@ -376,6 +376,12 @@ class CommunicationChannel(SignalInterface):
         controllers = getattr(self.__main, 'controllers', None) or {}
         return 'Scan' in controllers
 
+    def getRecordingMode(self):
+        """The Recording widget's current mode (a ``RecMode``), or None when
+        there is no Recording widget or it cannot say."""
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return getattr(controllers.get('Recording'), 'recMode', None)
+
     def getRecordingScanSourceNames(self):
         """Widget keys of every controller a scan recording could drive.
 
