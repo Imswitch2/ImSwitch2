@@ -29,6 +29,13 @@ def _until(predicate, timeout_s):
 
 @pytest.fixture
 def advanced(qtbot):
+    # The virtual sample is built once per process, on the first scan: start
+    # cold, so the stop bound below does not depend on which test ran first
+    # (the build, ~1 s, must happen while the scan is armed, not inside the run).
+    from imswitch.imcontrol.model.managers.detectors import _mock_sample
+    with _mock_sample._cacheLock:
+        _mock_sample._views.clear()
+        _mock_sample._densities.clear()
     rig = AdvancedRig()
     yield rig
     rig.close()
