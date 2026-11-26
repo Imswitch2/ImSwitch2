@@ -6,12 +6,14 @@ The older etSTED tests drive the controller with mock scan managers; this rig
 is what proves the triggered scan against the real scan controller, designers
 and NI-DAQ manager.
 """
+import copy
 import json
 import shutil
 import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 SETUP_DIR = Path(__file__).resolve().parents[3] / '_data' / 'user_defaults' / 'imcontrol_setups'
 ETSTED_ADVANCED_SETUP = SETUP_DIR / 'mock' / 'point_scanning' / 'etsted_advanced_mock_setup.json'
@@ -141,3 +143,114 @@ class EtSTEDRig:
                 del self._napari.EmbeddedNapari.add_points
             else:
                 self._napari.EmbeddedNapari.add_points = addPoints
+
+
+#: The test only needs the baseline to settle for a few frames.
+WARMUP = 2
+
+
+def same(a, b, path='root', atol=None):
+    """Deep equality of signal/info structures, arrays by value (exactly, or
+    within ``atol``)."""
+    if isinstance(a, dict):
+        assert isinstance(b, dict) and set(a) == set(b), f'{path}: keys differ'
+        for key in a:
+            same(a[key], b[key], f'{path}.{key}', atol)
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b), f'{path}: length differs'
+        for index, (x, y) in enumerate(zip(a, b)):
+            same(x, y, f'{path}[{index}]', atol)
+    elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        if atol is None or np.asarray(a).dtype.kind not in 'fc':
+            np.testing.assert_array_equal(np.asarray(a), np.asarray(b), err_msg=path)
+        else:
+            np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=0, atol=atol, err_msg=path)
+    elif isinstance(a, float) and atol is not None:
+        assert a == pytest.approx(b, abs=atol, rel=0), path
+    else:
+        assert a == b, f'{path}: {a!r} != {b!r}'
+
+
+class Session:
+    """Drives one etSTED run on the rig and records what the DAQ was asked."""
+
+    def __init__(self, rig, *, endless=False, mode='Experiment', prepare_scan=None):
+        self.rig = rig
+        self.et = rig.etsted
+        self.armed = []          # (signalDict, scanInfoDict) per scan armed
+        self.apd_frames = []
+        self.digital = {}        # laser line -> last level written
+        self.errors = []
+        widget = rig.widget
+        rig.select(widget.fastImgDetectorsPar, widget.fastImgDetectors, 'Camera')
+        rig.select(widget.fastImgLasersPar, widget.fastImgLasers, '488 (EXC)')
+        rig.select(widget.experimentModesPar, widget.experimentModes, mode)
+        rig.select(widget.transformCoefsPar, widget.transformCoefs, 'mock_rehearsal_only')
+        widget.endlessScanCheck.setChecked(endless)
+        self.et.loadPipeline()
+        names = self.et._pipelineRunner.get_user_parameter_names()
+        widget.param_edits[names.index('warmup_frames')].setText(str(WARMUP))
+        rig.switch_laser_on()
+        self.event = rig.event_source()
+        if prepare_scan is not None:
+            prepare_scan(rig)
+        self.et.getScanParameters()
+        rig.process(0.3)
+
+        coordinator = self.et._scanCoordinator
+        arm = coordinator.arm
+
+        def recording_arm(signalDict, scanInfoDict, *args, **kwargs):
+            # as handed over: the NI-DAQ run adds its own keys to the info
+            self.armed.append(copy.deepcopy((signalDict, scanInfoDict)))
+            return arm(signalDict, scanInfoDict, *args, **kwargs)
+
+        self._coordinator = coordinator
+        self.statuses = []
+        set_status = self.et._set_status
+
+        def recording_status(status, message=''):
+            self.statuses.append(status)
+            return set_status(status, message)
+
+        self.et._set_status = recording_status
+        coordinator.arm = recording_arm
+        self._on_apd = lambda image, init, scale: self.apd_frames.append(np.array(image))
+        rig.master.detectorsManager['APD'].sigImageUpdated.connect(self._on_apd)
+        nidaq = rig.master.nidaqManager
+        set_digital = nidaq.setDigital
+
+        def recording_set_digital(name, level, *args, **kwargs):
+            self.digital[name] = bool(level)
+            return set_digital(name, level, *args, **kwargs)
+
+        self._nidaq = nidaq
+        nidaq.setDigital = recording_set_digital
+
+    def close(self):
+        """Leave the shared rig as found."""
+        rig = self.rig
+        if self.et._experimentActive or self.et._state.running:
+            self.et.stopExperiment(resetParams=True)
+        rig.wait_for(lambda: not rig.master.nidaqManager.busy, 20)
+        rig.process(0.3)
+        self.event.on = False
+        self.event.restore()
+        del self._coordinator.arm
+        del self.et._set_status
+        del self._nidaq.setDigital
+        rig.master.detectorsManager['APD'].sigImageUpdated.disconnect(self._on_apd)
+        rig.main.controllers['Laser'].toggleLaser('488 (EXC)', False)
+        rig.process(0.2)
+
+    def start_detecting(self, frames=WARMUP + 7):
+        self.et.initiate()
+        assert self.rig.wait_for(lambda: self.et._state.frame >= frames, 60), 'no camera frames'
+
+    def trigger(self):
+        self.event.on = True
+
+    def status(self):
+        return self.rig.widget.statusLabel.text()
+
+
