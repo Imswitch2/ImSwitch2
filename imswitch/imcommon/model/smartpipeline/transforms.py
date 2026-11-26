@@ -398,7 +398,21 @@ class SpatialTransformRef:
             payload["record"] = self.record
         if self.target_axes:
             payload["target_axes"] = list(self.target_axes)
+        # The fit quality, for the record and for the pipeline log (boxes.transform_record).
+        payload.update(self.quality())
         return payload
+
+    def quality(self) -> dict:
+        """``residual_rms_um``, ``residual_max_um`` and ``n_beads`` (pairs
+        used) when the record states them."""
+        out = {}
+        residuals = self.transform.residuals
+        provenance = dict(self.transform.provenance or {})
+        if residuals is not None and str(residuals.unit) in ("um", "µm"):
+            out["residual_rms_um"] = float(provenance.get("residual_rms_um", residuals.rms))
+            out["residual_max_um"] = float(provenance.get("residual_max_um", residuals.max))
+            out["n_beads"] = int(provenance.get("beads_used", residuals.n_inliers))
+        return out
 
     @classmethod
     def from_dict(cls, payload: dict) -> "SpatialTransformRef":
