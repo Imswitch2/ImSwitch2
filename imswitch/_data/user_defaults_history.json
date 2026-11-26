@@ -665,7 +665,12 @@
    "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270",
    "6f505c9edce47b4eb88b3043c9303268ed459d4e5a036b8c1cf5fb8f1b6c8ed2",
    "aa3d9f48b12c1d23b2374fcfe44b21fe562e2659d70c52358ce6526e864d6cac",
-   "c8767b87f3afaa10ca33bec2f921ebd463252b3b1e1a683aeb9b640c6018bdea"
+   "c8767b87f3afaa10ca33bec2f921ebd463252b3b1e1a683aeb9b640c6018bdea",
+   "cfa00a3bf5a4f7f1156c0d2e2019af5ab15a7dae204fa0065e814215cfe8cb60",
+   "e52756ede8df8531532a34175d13e902a8b20440f88b8bc6d009bcafb017733c"
+  ],
+  "scripts/workflows/event_trigger/01_spot_tiles_confocal.py": [
+   "e521d4e87a919b39782e77bcca6a917c44cf2e6efd917fcb6ead4d1d0bc80914"
   ],
   "scripts/workflows/monalisa/01_bleach_compensated_timelapse.py": [
    "0a31d08a7cc60eff85491e8082219c19ec903b8a656e0d7b8dd5d3f1f7277fff",

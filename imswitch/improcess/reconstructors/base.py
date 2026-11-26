@@ -147,11 +147,9 @@ def preflight_acquisition_layout(
 
 def recording_file_refusal(reconstructor) -> str:
     """The one message for a file-reading reconstructor handed a result."""
-    name = getattr(reconstructor, "name", None) or getattr(reconstructor, "id", "This reconstructor")
-    return (
-        f"{name} reads its recording file (not only the pixels), so it can only "
-        "reconstruct a recording, not a result of another step"
-    )
+    from imswitch.imcommon.model.workflow.steps import recording_file_refusal as _refusal
+
+    return _refusal(reconstructor)
 
 
 def params_from_attrs(reconstructor, data_obj, params: dict | None, keys) -> dict:
