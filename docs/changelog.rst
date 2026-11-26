@@ -37,6 +37,16 @@ Unreleased
 
 **Bug Fixes**
 
+- The Beta stage designer drives rigs with one or two scanning stages. It
+  refused anything but three ``forScanning`` positioners, although the 1D and
+  2D scans it designs never need a third axis; four or more are refused with
+  the reason.
+- The Beta stage designer's move and settle times are declared in every
+  shipped setup that uses it (``move_time``/``settle_time`` in
+  ``scan.scanDesignerParams``, 2 ms each, unchanged). The 2 ms are the values
+  the MoNaLISA stage was tuned to in ImSwitch 1 (upstream keeps 1 ms each), so
+  a setup that does not declare them now gets a warning naming the keys
+  instead of silently scanning with another rig's timing.
 - SNOUTY deskew results saved as HDF5 reloaded without a voxel size or axis labels — the volume came back as uncalibrated channels (``C, Y, X`` at 1 px), so anything measuring it, such as the PSF panel, analysed the first plane in pixels. The writer now stores ``axes`` and ``element_size_um`` on each volume, and files written before are recognised by their SNOUTY parameters and read as a ``Z, Y, X`` stack at the deskew's output voxel size. Opening a file for viewing and processing also kept losing those labels: the view-only reconstructor replaced every file's own axis labels with ``Frame, Y, X`` whenever the file had no acquisition layout, so a volume that names its axes (an ``axes`` attribute) reached the processors without a ``Z``. Declared labels are now kept; only labels guessed from the array's rank give way to ``Frame``.
 - The PSF resolution panel analysed only the first plane of a stack whose axis was not labelled ``Z``. Such a stack is now searched on its maximum projection and each bead is fitted in its brightest plane.
 - **A blank or unreadable value in the setup file no longer stops Hardware

@@ -924,6 +924,25 @@ def _diagnostic_message_to_html(diag) -> str:
     return msg
 
 
+def _beta_timing_editor_issues(data: dict) -> list[tuple[str, str]]:
+    """Warn without migrating old hardware setups or seeding fallback values."""
+    scan = data.get("scan") or {}
+    if scan.get("scanDesigner") != "BetaScanDesigner":
+        return []
+    params = scan.get("scanDesignerParams") or {}
+    if not isinstance(params, dict):
+        return []
+    from imswitch.imcontrol.model.beta_scan_timing import missing_beta_timing_keys
+    missing = missing_beta_timing_keys(params)
+    if not missing:
+        return []
+    return [("warning",
+             "Beta scan stage timing is not configured ("
+             + ", ".join(missing)
+             + "); the 2 ms stage defaults will be used. "
+             "<a href='fixsection:scan'>Configure…</a>")]
+
+
 def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
     """Collect cross-reference diagnostics as ``(severity, html_message)`` pairs.
 
@@ -947,11 +966,12 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
             build_default_registry(discover=True),
             context=context,
         )
-        return [
+        issues = [
             (diag.severity, _diagnostic_message_to_html(diag))
             for diag in report.diagnostics
             if diag.code.startswith(("xref.", "widget.", "legacy.", "value."))
         ]
+        return issues + _beta_timing_editor_issues(data)
     except Exception:
         issues = []
         widgets = data.get("availableWidgets") or []
@@ -962,7 +982,7 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
                     f"Widget '{widget}' is enabled but no '{section_key}' section is configured. "
                     f"<a href='fixsection:{section_key}'>Configure…</a>",
                 ))
-        return issues
+        return issues + _beta_timing_editor_issues(data)
 
 
 # =============================================================================
