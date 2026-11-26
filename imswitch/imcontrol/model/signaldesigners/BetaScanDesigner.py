@@ -9,12 +9,10 @@ from ..scan_parameters import (
 )
 from ..scan_program.motion import smooth_ramp
 from imswitch.imcommon.model import initLogger
+from ..beta_scan_timing import (
+    DEFAULT_MOVE_TIME_S, DEFAULT_SETTLE_TIME_S, beta_timing_config_warning,
+)
 
-#: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
-#: literals inside the pixel loop; a stage that needs longer declares
-#: ``move_time``/``settle_time`` in ``scanDesignerParams``.
-DEFAULT_MOVE_TIME_S = 0.002
-DEFAULT_SETTLE_TIME_S = 0.002
 
 
 class BetaScanDesigner(ScanDesigner):
@@ -25,9 +23,10 @@ class BetaScanDesigner(ScanDesigner):
     - ``return_time`` -- time to wait between lines for the stage to return to
       the first position of the next line, in seconds.
     - ``move_time`` -- how long the fast axis takes to ramp from one pixel to
-      the next, in seconds (default 2 ms).
+      the next, in seconds. A property of the stage: declare it (2 ms, with
+      a warning, when absent).
     - ``settle_time`` -- how long it rests at the new pixel before the next
-      dwell starts, in seconds (default 2 ms).
+      dwell starts, in seconds. Declare it like ``move_time``.
     - ``position_anchor`` -- how ``Center`` is interpreted when a runtime
       position snapshot is available. ``"center"`` (default) centers the ROI
       on ``position_before_scan + Center``; ``"start"`` starts the ROI at
@@ -49,6 +48,7 @@ class BetaScanDesigner(ScanDesigner):
                                     'axis_startpos',
                                     'axis_centerpos',
                                     'return_time']
+        self._warnedUndeclaredTiming = False
 
     def checkSignalLength(self, scanParameters, setupInfo):
         return not self.signalLengthRefusal(scanParameters, setupInfo)
@@ -131,11 +131,28 @@ class BetaScanDesigner(ScanDesigner):
                                ' since this should be checked at program start-up')
             return None
 
-        if len(parameterDict['target_device']) != 3:
-            raise ValueError(f'{self.__class__.__name__} requires 3 target devices/axes')
+        # target_device holds one entry per forScanning positioner, so a rig
+        # with one or two scanning stages sends fewer than the three
+        # fast/middle/slow slots built below. The missing slots become virtual
+        # zero-length axes: they keep the slot arithmetic unchanged and never
+        # emit a signal. The step of 1 mirrors the controller's placeholder
+        # for parked positioners (ScanControllerPointScan.getParameters).
+        devices = list(parameterDict['target_device'])
+        nDevices = len(devices)
+        if not 1 <= nDevices <= 3:
+            raise ValueError(
+                f'{self.__class__.__name__} drives one to three axes (fast, '
+                f'middle, slow) but got {nDevices} target devices {devices}; '
+                f'clear forScanning on the positioners it should not drive'
+            )
+        nVirtual = 3 - nDevices
+        axisLength = list(parameterDict['axis_length']) + [0] * nVirtual
+        axisStepSize = list(parameterDict['axis_step_size']) + [1] * nVirtual
+        axisCenterPos = list(parameterDict['axis_centerpos']) + [0] * nVirtual
+        axisStartPos = list(parameterDict['axis_startpos']) + [[0]] * nVirtual
 
         for i in range(3):
-            if len(parameterDict['axis_startpos'][i]) > 1:
+            if len(axisStartPos[i]) > 1:
                 raise ValueError(f'{self.__class__.__name__} does not support multi-axis'
                                  f' positioners')
 
@@ -151,8 +168,7 @@ class BetaScanDesigner(ScanDesigner):
             for name, positioner in setupInfo.positioners.items()
             if positioner.forScanning
         }
-        unknown = [dev for dev in parameterDict['target_device']
-                   if dev not in scanningProps]
+        unknown = [dev for dev in devices if dev not in scanningProps]
         if unknown:
             raise ValueError(
                 f'{self.__class__.__name__}: target device(s) {unknown} not '
@@ -160,7 +176,7 @@ class BetaScanDesigner(ScanDesigner):
                 f'({sorted(scanningProps)})'
             )
         convFactors = [scanningProps[dev].get('conversionFactor', 1)
-                       for dev in parameterDict['target_device']]
+                       for dev in devices] + [1] * nVirtual
         
         # Runtime position snapshot supplied by the scan controller.
         # Values are in positioner units (typically µm), so convert them to the
@@ -181,11 +197,12 @@ class BetaScanDesigner(ScanDesigner):
             )
 
         if hasPositionSnapshot:
-            if len(positionsBeforeScan) != 3:
+            if len(positionsBeforeScan) != nDevices:
                 raise ValueError(
                     f'{self.__class__.__name__}: axis_position_before_scan must '
                     'contain one entry per target device'
                 )
+            positionsBeforeScan = list(positionsBeforeScan) + [[0]] * nVirtual
 
             for i in range(3):
                 if len(positionsBeforeScan[i]) != 1:
@@ -206,17 +223,17 @@ class BetaScanDesigner(ScanDesigner):
         
         # Retrieve sizes
         [fast_axis_size, middle_axis_size, slow_axis_size] = \
-            [(parameterDict['axis_length'][i] / convFactors[i]) for i in range(3)]
+            [(axisLength[i] / convFactors[i]) for i in range(3)]
 
         # Retrieve step sizes
         [fast_axis_step_size, middle_axis_step_size, slow_axis_step_size] = \
-            [(parameterDict['axis_step_size'][i] / convFactors[i]) for i in range(3)]
+            [(axisStepSize[i] / convFactors[i]) for i in range(3)]
 
         # For Beta stage scans, Center is a relative offset from the positioner
         # position immediately before the scan.
-        fast_axis_center_offset = parameterDict['axis_centerpos'][0] / convFactors[0]
-        middle_axis_center_offset = parameterDict['axis_centerpos'][1] / convFactors[1]
-        slow_axis_center_offset = parameterDict['axis_centerpos'][2] / convFactors[2]
+        fast_axis_center_offset = axisCenterPos[0] / convFactors[0]
+        middle_axis_center_offset = axisCenterPos[1] / convFactors[1]
+        slow_axis_center_offset = axisCenterPos[2] / convFactors[2]
 
         if hasPositionSnapshot:
             fast_axis_center = fast_axis_position_before_scan + fast_axis_center_offset
@@ -253,6 +270,10 @@ class BetaScanDesigner(ScanDesigner):
             slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
+        timing_warning = beta_timing_config_warning(parameterDict)
+        if timing_warning and not self._warnedUndeclaredTiming:
+            self._warnedUndeclaredTiming = True
+            self._logger.warning(timing_warning)
         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
         settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
         # The dwell as it plays: a whole number of samples (the one rule every
@@ -372,20 +393,21 @@ class BetaScanDesigner(ScanDesigner):
                 sliceValues[-1],slow_axis_position_before_scan,returnSamples,
             )
 
+        # A real middle axis is driven even when parked at length 0; the slow
+        # axis only when it is scanned. Virtual axes have no device to drive.
+        allSignals = [fastAxisSignal, middleAxisSignal, slowAxisSignal]
+        nEmitted = 3 if slow_axis_size > 0 else 2
+        emittedSignals = allSignals[:min(nEmitted, nDevices)]
+        sig_dict = dict(zip(devices, emittedSignals))
         if slow_axis_size > 0:
-            sig_dict = {parameterDict['target_device'][0]: fastAxisSignal,
-                        parameterDict['target_device'][1]: middleAxisSignal,
-                        parameterDict['target_device'][2]: slowAxisSignal}
             positions = [fast_axis_positions, middle_axis_positions, slow_axis_positions]
         else:
-            sig_dict = {parameterDict['target_device'][0]: fastAxisSignal,
-                        parameterDict['target_device'][1]: middleAxisSignal}
             positions = [fast_axis_positions, middle_axis_positions]
 
         # Build complete scanInfoDict via ScanInfoContract
         img_dims = list(positions)
         img_axes_phys = ["x", "y", "z"][:len(img_dims)]
-        pixel_sizes = [parameterDict['axis_step_size'][i] for i in range(len(img_dims))]
+        pixel_sizes = [axisStepSize[i] for i in range(len(img_dims))]
 
         # ScanInfoContract: scan_samples is LEVEL-based and one element longer
         # than the number of physical axes: [per_pixel, per_line, per_frame(,
@@ -418,10 +440,7 @@ class BetaScanDesigner(ScanDesigner):
             # target_device order, so checkSignalComp checks exactly what will
             # be written to the AO channels (parked axes included -- they are
             # driven to their scan position) and nothing that will not.
-            minmaxes=[[float(np.min(s)), float(np.max(s))] for s in
-                      ((fastAxisSignal, middleAxisSignal, slowAxisSignal)
-                       if slow_axis_size > 0 else
-                       (fastAxisSignal, middleAxisSignal))],
+            minmaxes=[[float(np.min(s)), float(np.max(s))] for s in emittedSignals],
         )
         scanInfoDict = contract.to_dict()
 
