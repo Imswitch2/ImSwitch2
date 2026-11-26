@@ -25,6 +25,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
+from imswitch.imcontrol.model.smartpipeline.boxes import BOX_COLUMNS, SOURCE_BOX_COLUMNS, box_of_row, plan_box_scan
 from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, RUN_SCAN, SNAP, WAIT, axis_targets, catalog
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest, SimpleCompletion
 
@@ -226,15 +227,26 @@ class RunScanAdapter:
         return [{axis: float(value) for axis, value in zip(axes, row)} for row in rows]
 
     def _prepare_advanced(self, controller, request: ActionRequest, centre: dict | None, mode: str,
-                          lasers: list, dwell) -> dict:
+                          lasers: list, dwell, plan: dict | None = None) -> dict:
         """The Advanced scan panel: its fields, through the controller's
         setters and its widget's. The scanned axes are the step's ``axes``
         (the positioners' names); an overview is ``field_um`` around 0, an
-        acquisition ``length_um`` at ``pixel_um`` around the centre given."""
+        acquisition ``length_um`` at ``pixel_um`` around the centre given. With
+        a box ``plan`` (:func:`~.boxes.plan_box_scan`) the centre and the size
+        are per axis, and only those are set (the panel keeps its step unless
+        ``pixel_um`` is given)."""
         params = request.params
         axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
         widget = getattr(controller, "_widget", None)
-        if mode == "overview":
+        sizes: dict = {}
+        steps: dict = {}
+        if plan is not None:
+            centre = dict(plan["centre"])
+            sizes = dict(plan["size"])
+            steps = dict(plan.get("steps") or {})
+            size = None
+            step = None
+        elif mode == "overview":
             size = float(params.get("field_um") or 0.0) or None
             step = float(params.get("overview_pixel_um") or 0.0) or None
             centre = {axis: 0.0 for axis in axes}
@@ -244,6 +256,12 @@ class RunScanAdapter:
         for axis in axes:
             if centre and axis in centre:
                 controller.changeScanCenterPos(axis, float(centre[axis]))
+            if plan is not None:
+                if axis in sizes:
+                    controller.changeScanSize(axis, float(sizes[axis]))
+                if axis in steps and params.get("pixel_um") and widget is not None and hasattr(widget, "setScanStepSize"):
+                    widget.setScanStepSize(axis, float(steps[axis]))
+                continue
             if size:
                 controller.changeScanSize(axis, size)
             if step and widget is not None and hasattr(widget, "setScanStepSize"):
@@ -260,10 +278,141 @@ class RunScanAdapter:
                         applied_lasers.append(name)
                 except Exception:  # noqa: BLE001 - a laser the panel does not list
                     pass
-        return {"mode": mode, "centre_um": dict(centre or {}), "size_um": size, "pixel_um": step,
+        return {"mode": mode, "centre_um": dict(centre or {}), "size_um": (sizes or size), "pixel_um": (steps or step),
                 "lasers": applied_lasers or lasers, "panel": "advanced"}
 
-    def _prepare(self, request: ActionRequest, centre: dict | None = None) -> dict:
+    # -- boxes (the Advanced panel) -----------------------------------------------
+
+    @staticmethod
+    def _is_advanced(controller) -> bool:
+        return not hasattr(controller, "applyAcquisitionPlan")
+
+    def _scanner_ranges(self, controller, axes: list, params: dict) -> dict:
+        """``{axis: (low, high)}`` in micrometres the scanner of each axis can reach: the step's own
+        ``range_um`` where given, else the positioner's ``minVolt``/``maxVolt`` times its
+        ``conversionFactor`` (what the scan designer's voltage check compares against), narrowed
+        by ``range_inset_um`` on both ends. An axis with no limit known is absent."""
+        given = params.get("range_um") or {}
+        inset = float(params.get("range_inset_um") or 0.0)
+        positioners = getattr(getattr(controller, "_setupInfo", None), "positioners", None) or {}
+        ranges: dict = {}
+        for axis in axes:
+            if axis in given and given[axis] is not None:
+                low, high = (float(v) for v in given[axis])
+            else:
+                props = getattr(positioners.get(axis), "managerProperties", None) or {}
+                lo_v, hi_v = props.get("minVolt"), props.get("maxVolt")
+                if lo_v is None or hi_v is None:
+                    continue
+                conversion = float(props.get("conversionFactor", 1) or 1)
+                low, high = sorted((float(lo_v) * conversion, float(hi_v) * conversion))
+            ranges[axis] = (low + inset, high - inset)
+        return ranges
+
+    def _row_info(self, request: ActionRequest, row: int) -> dict:
+        """What the trigger's row says, for the log: its label, dff, F, F0, the box in the camera's and
+        the scan's coordinates, and the transform the points went through."""
+        points = request.inputs[0]
+        properties = getattr(points, "properties", None) or {}
+        info: dict = {}
+        for key in ("label", "dff", "F", "F0", "area", *SOURCE_BOX_COLUMNS, *BOX_COLUMNS):
+            if key in properties:
+                value = properties[key][row]
+                info[key] = value.item() if hasattr(value, "item") else value
+        coordinates = points_of(points)
+        info["point"] = [float(v) for v in coordinates[row]]
+        meta = getattr(points, "metadata", None) or {}
+        if isinstance(meta, dict) and meta.get("transform"):
+            info["transform"] = meta["transform"]
+        return info
+
+    def _box_targets(self, request: ActionRequest) -> list | None:
+        """Per input point (as ``points``/``max_points`` select them) the scan the box asks for:
+        ``{"row", "info", "plan"}``; None when the action is not box-driven (no box columns, the Advanced
+        panel absent, ``box: off``)."""
+        params = request.params
+        if str(params.get("box") or "auto").lower() == "off" or not request.inputs:
+            return None
+        points = request.inputs[0]
+        properties = getattr(points, "properties", None) or {}
+        coordinates = points_of(points)
+        if coordinates is None or not all(name in properties for name in BOX_COLUMNS):
+            return None
+        source = str(params.get("source") or "Scan")
+        controller = self._controller(source)
+        if not self._is_advanced(controller):
+            return None
+        axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
+        rows = list(range(coordinates.shape[0]))
+        if str(params.get("points", "all")).lower() != "all":
+            rows = rows[:1]
+        limit = int(params.get("max_points") or 0)
+        if limit > 0:
+            rows = rows[:limit]
+        widget = getattr(controller, "_widget", None)
+
+        def read():
+            return {axis: (float(params.get("pixel_um") or 0.0) or float(widget.getScanStepSize(axis)))
+                    for axis in axes[:2]}
+
+        steps = self._marshal(read)
+        ranges = self._scanner_ranges(controller, axes[:2], params)
+        targets = []
+        for row in rows:
+            box = box_of_row(properties, row, axes)
+            plan = plan_box_scan(
+                box, steps=steps, margin_um=float(params.get("margin_um") or 0.0),
+                margin_frac=float(params.get("margin_frac") or 0.0), min_size_um=float(params.get("min_size_um") or 0.0),
+                max_size_um=float(params.get("max_size_um") or 0.0), ranges=ranges,
+                min_overlap=float(params.get("min_overlap", 0.5)))
+            plan["steps"] = steps
+            plan["ranges"] = ranges
+            targets.append({"row": row, "info": self._row_info(request, row), "plan": plan})
+        return targets
+
+    def plan(self, request: ActionRequest) -> dict:
+        """What this request would scan, without touching the panel's fields or starting anything: the
+        dry run's report (the box in scan micrometres, the padded and clamped rectangle, or why the trigger
+        is skipped)."""
+        targets = self._box_targets(request)
+        if targets is None:
+            return {}
+        return {"scan_plan": [_plan_report(t) for t in targets],
+                "message": "; ".join(_plan_sentence(t) for t in targets)}
+
+    def _snapshot_advanced(self, controller, axes: list) -> dict | None:
+        """The panel's scan fields now (None when its widget has no getters: nothing to put back)."""
+        widget = getattr(controller, "_widget", None)
+        snap: dict = {"centre": {}, "size": {}, "step": {}, "dwell": None, "lines": {}}
+        if widget is None or not hasattr(widget, "getScanCenterPos"):
+            return None
+        for axis in axes:
+            snap["centre"][axis] = float(widget.getScanCenterPos(axis))
+            snap["size"][axis] = float(widget.getScanSize(axis))
+            snap["step"][axis] = float(widget.getScanStepSize(axis))
+        if hasattr(widget, "getSeqTimePar"):
+            snap["dwell"] = float(widget.getSeqTimePar())
+        if hasattr(widget, "getLineStepEnabled"):
+            for name in list(getattr(getattr(controller, "_setupInfo", None), "lasers", {}) or {}):
+                snap["lines"][name] = bool(widget.getLineStepEnabled(name, 0))
+        return snap
+
+    def _restore_advanced(self, controller, snap: dict) -> None:
+        widget = getattr(controller, "_widget", None)
+        for axis, value in snap.get("centre", {}).items():
+            controller.changeScanCenterPos(axis, value)
+        for axis, value in snap.get("size", {}).items():
+            controller.changeScanSize(axis, value)
+        if widget is not None:
+            for axis, value in snap.get("step", {}).items():
+                widget.setScanStepSize(axis, value)
+            if snap.get("dwell") is not None and hasattr(widget, "setSeqTimePar"):
+                widget.setSeqTimePar(snap["dwell"])
+            if hasattr(widget, "setLineStepEnabled"):
+                for name, enabled in snap.get("lines", {}).items():
+                    widget.setLineStepEnabled(name, 0, enabled)
+
+    def _prepare(self, request: ActionRequest, centre: dict | None = None, plan: dict | None = None) -> dict:
         """On the GUI thread: put the Scan panel's plan as the step says."""
         params = request.params
         source = str(params.get("source") or "Scan")
@@ -272,7 +421,7 @@ class RunScanAdapter:
         lasers = [str(name) for name in (params.get("lasers") or [])]
         dwell = float(params.get("dwell_s") or 0.0) or None
         if not hasattr(controller, "applyAcquisitionPlan"):
-            return self._prepare_advanced(controller, request, centre, mode, lasers, dwell)
+            return self._prepare_advanced(controller, request, centre, mode, lasers, dwell, plan)
         if mode == "overview":
             field = float(params.get("field_um") or 0.0)
             controller.applyOverviewPlan(field_um=field or None, lasers=lasers or None)
@@ -297,11 +446,14 @@ class RunScanAdapter:
                 raise RuntimeError(f"the Scan panel {source!r} stayed busy for {timeout_s:g} s")
             time.sleep(0.05)
 
-    def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict):
+    def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict, plan: dict | None = None):
         """Prepare and run one scan; returns its request completion (the
         scan runs while the caller waits on it)."""
+        t0 = time.perf_counter()
         self._wait_idle(str(request.params.get("source") or "Scan"))
-        summary = self._marshal(lambda: self._prepare(request, centre))
+        t1 = time.perf_counter()
+        summary = self._marshal(lambda: self._prepare(request, centre, plan))
+        t2 = time.perf_counter()
         source = str(request.params.get("source") or "Scan")
         result = self._workflow.run_scan_prepared(True, False, notify_starting=True, preferred_source=source,
                                                   exact_completion=True)
@@ -309,28 +461,58 @@ class RunScanAdapter:
             raise RuntimeError(f"refused: {getattr(result, 'rejectionMessage', '') or 'not accepted'}")
         owner, run_token, request_completion = result.acceptedCompletions[0]
         state["current"] = (owner, run_token)
+        t3 = time.perf_counter()
+        state["latency"] = {"wait_idle": round(t1 - t0, 4), "set_parameters": round(t2 - t1, 4),
+                            "start_request": round(t3 - t2, 4)}
         return summary, request_completion
 
     def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
         completion = SimpleCompletion(request.epoch)
         mode = str(request.params.get("mode") or "acquisition").lower()
-        centres = [None] if mode == "overview" else self._centres(request)
         state: dict = {"current": None, "abort": threading.Event()}
         capture = self._capture
+        t_request = time.perf_counter()
+        try:
+            targets = None if mode == "overview" else self._box_targets(request)
+        except Exception as exc:  # noqa: BLE001 - reported as the action's failure
+            completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
+            return completion
+        if targets is not None:
+            jobs = [{"centre": None, "plan": t["plan"], "info": t["info"], "row": t["row"]} for t in targets]
+        else:
+            jobs = [{"centre": c, "plan": None, "info": None, "row": None}
+                    for c in ([None] if mode == "overview" else self._centres(request))]
+        restore = bool(request.params.get("restore", True))
+        source = str(request.params.get("source") or "Scan")
+        axes = [str(a) for a in (request.params.get("axes") or RUN_SCAN.params["axes"])]
 
         def run_all():
-            scans = []
+            scans, skipped = [], []
+            snapshot = None
+            controller = None
             try:
-                for index, centre in enumerate(centres):
+                runnable = [j for j in jobs if j["plan"] is None or not j["plan"]["skip"]]
+                skipped = [{"row": j["row"], "reason": j["plan"]["skip"], "trigger": j["info"]}
+                           for j in jobs if j["plan"] is not None and j["plan"]["skip"]]
+                if restore and runnable and self._is_advanced(self._controller(source)):
+                    controller = self._controller(source)
+                    self._wait_idle(source)
+                    snapshot = self._marshal(lambda: self._snapshot_advanced(controller, axes))
+                for index, job in enumerate(runnable):
                     if state["abort"].is_set():
                         completion.cancel()
                         return
-                    summary, request_completion = self._one_scan(request, centre, state)
+                    summary, request_completion = self._one_scan(request, job["centre"], state, job["plan"])
+                    if job["plan"] is not None:
+                        summary["trigger"] = job["info"]
+                        summary["notes"] = job["plan"]["notes"]
+                        summary["pixels"] = job["plan"]["pixels"]
+                        state["latency"]["request_to_start"] = round(time.perf_counter() - t_request, 4)
                     request_completion.wait()
                     state["current"] = None
                     if not request_completion.successful:
                         completion.fail(f"run-scan: {request_completion.message or 'the scan failed'}"
-                                        + (f" (scan {index + 1} of {len(centres)})" if len(centres) > 1 else ""))
+                                        + (f" (scan {index + 1} of {len(runnable)})" if len(runnable) > 1 else ""))
                         return
                     captured = False
                     if capture is not None:
@@ -338,11 +520,19 @@ class RunScanAdapter:
                             captured = bool(capture(metadata={"scan": summary}))
                         except Exception as exc:  # noqa: BLE001 - reported in the result
                             captured = f"not captured: {exc}"
-                    scans.append({**summary, "frame": captured})
-                completion.complete({"scanned": True, "scans": len(scans), "mode": mode,
+                    scans.append({**summary, "frame": captured, **({"latency_s": state["latency"]} if job["plan"] else {})})
+                completion.complete({"scanned": bool(scans), "scans": len(scans), "mode": mode, "skipped": skipped,
                                      **(scans[-1] if scans else {}), "all": scans})
             except Exception as exc:  # noqa: BLE001 - the action failed
                 completion.fail(f"run-scan: {type(exc).__name__}: {exc}")
+            finally:
+                if snapshot is not None:
+                    try:
+                        self._wait_idle(source)
+                        self._marshal(lambda: self._restore_advanced(controller, snapshot))
+                    except Exception as exc:  # noqa: BLE001 - say that the panel was not put back
+                        if self._logger is not None:
+                            self._logger.warning("run-scan: the panel's scan parameters were not restored: %s", exc)
 
         def abort():
             state["abort"].set()
@@ -361,6 +551,24 @@ class RunScanAdapter:
             if self._logger is not None:
                 self._logger.warning("run-scan: abort failed", exc_info=True)
             return False
+
+
+def _plan_report(target: dict) -> dict:
+    plan = target["plan"]
+    return {"row": target["row"], "trigger": target["info"], "skip": plan["skip"],
+            "padded_um": {a: [round(v, 4) for v in lh] for a, lh in plan["padded"].items()},
+            "centre_um": plan["centre"], "size_um": plan["size"], "pixels": plan["pixels"],
+            "range_um": {a: list(r) for a, r in plan["ranges"].items()}, "notes": plan["notes"]}
+
+
+def _plan_sentence(target: dict) -> str:
+    plan, info = target["plan"], target["info"]
+    who = f"ROI {info.get('label', '?')} (dff {info.get('dff', float('nan')):.3g})"
+    if plan["skip"]:
+        return f"would SKIP {who}: {plan['skip']}"
+    where = ", ".join(f"{a}={plan['centre'][a]:.3f}+/-{plan['size'][a] / 2:.3f}" for a in plan["centre"])
+    note = f" [{'; '.join(plan['notes'])}]" if plan["notes"] else ""
+    return f"would scan {who}: centre/half-size um {where}{note}"
 
 
 class LiveActionBackend:
@@ -394,6 +602,13 @@ class LiveActionBackend:
         for adapter in self._adapters.values():
             found |= set(getattr(adapter, "quarantined", ()))
         return found
+
+    def plan(self, request: ActionRequest) -> dict:
+        """What the action would do, as a report (the dry run's log line); {} when the
+        adapter has nothing to say."""
+        adapter = self.adapter(request.action)
+        planner = getattr(adapter, "plan", None)
+        return planner(request) if callable(planner) else {}
 
     def start(self, request: ActionRequest) -> SimpleCompletion:
         adapter = self.adapter(request.action)
