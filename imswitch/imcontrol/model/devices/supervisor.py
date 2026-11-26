@@ -49,7 +49,18 @@ _SINGLE_MANAGER_SOURCES = (
     ("stand", "Microscope stand", "standManager"),
 )
 
-_INFRASTRUCTURE_KINDS = {"daq", "pulse_generator", "trigger_scope", "rs232"}
+_INFRASTRUCTURE_KINDS = {"daq", "pulse_generator", "trigger_scope", "rs232",
+                         "time_tagger", "scan_engine"}
+
+# Startup failures of parts that are not one fixed attribute: the shared Time
+# Tagger card, and each pulse generator / scan engine of a setup that has
+# several (keys ``pulseGenerators:<name>`` and ``scanEngines:<name>``; a whole
+# section that failed is ``pulseGenerators`` / ``scanEngines`` alone).
+_STARTUP_FAILURE_KINDS = {
+    "timeTaggerManager": ("time_tagger", "Time Tagger"),
+    "pulseGenerators": ("pulse_generator", "Pulse generators"),
+    "scanEngines": ("scan_engine", "Scan engines"),
+}
 
 # These are intentionally limited to passive values stored directly on the
 # manager. Do not call arbitrary isConnected()/is_connected() methods here:
@@ -336,6 +347,14 @@ class DeviceSupervisor:
                     status_manager = wrapped
 
             yield DeviceId(kind=kind, name=display_name), status_manager
+
+        failures = getattr(self._master, "startupFailures", None)
+        for key, failed in (failures.items() if isinstance(failures, dict) else ()):
+            attr, _, part = str(key).partition(":")
+            if attr not in _STARTUP_FAILURE_KINDS:
+                continue
+            kind, display_name = _STARTUP_FAILURE_KINDS[attr]
+            yield DeviceId(kind=kind, name=part or display_name), failed
 
     def _rawEntries(self):
         return tuple(self._iterDevices())

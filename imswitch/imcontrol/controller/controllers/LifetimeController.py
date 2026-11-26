@@ -392,8 +392,13 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         """The shared card manager, when the setup has one and it is open."""
         card = getattr(self._master, 'timeTaggerManager', None)
         if card is None or not getattr(card, 'connected', False):
-            self._widget.setStatusStrip('● no Time Tagger in this setup' if card is None
-                                        else '● Time Tagger not connected', warn=card is not None)
+            failed = (getattr(self._master, 'startupFailures', None) or {}).get('timeTaggerManager')
+            if card is None and failed is not None:
+                self._widget.setStatusStrip('● Time Tagger did not start (see the log)', warn=True)
+            else:
+                self._widget.setStatusStrip('● no Time Tagger in this setup' if card is None
+                                            else '● Time Tagger not connected',
+                                            warn=card is not None)
             for button in (self._widget.sweepButton, self._widget.scopeButton,
                            self._widget.preflightButton, self._widget.measureRepRateButton):
                 button.setEnabled(False)

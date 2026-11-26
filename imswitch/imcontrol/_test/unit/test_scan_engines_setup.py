@@ -88,10 +88,12 @@ def test_an_unknown_scan_engine_choice_is_refused():
         build_scan_engines(_setup(**{'scan.engine': 'nope'}), nidaqManager=_FakeNidaq())
 
 
-def test_an_unknown_engine_manager_names_what_is_installed():
+def test_an_unknown_engine_manager_is_reported_by_name_and_does_not_stop_the_setup():
+    # (it used to raise SetupError and abort startup; see test_startup_construction_failures)
     setup = _setup(scanEngines={'x': {'managerName': 'acme.board', 'managerProperties': {}}})
-    with pytest.raises(SetupError, match='acme.board'):
-        build_scan_engines(setup, nidaqManager=_FakeNidaq())
+    engines = build_scan_engines(setup, nidaqManager=_FakeNidaq())
+    assert 'acme.board' in engines.failures['x'] and 'SetupError' in engines.failures['x']
+    assert getattr(engines.engines['x'], 'unavailable', False)
 
 
 def test_the_nidaq_declares_what_it_drives_and_where_that_came_from():
