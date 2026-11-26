@@ -1972,6 +1972,12 @@ the newest ``baseline_exclude_frames``) or ``ema`` (time constant
 F0) / F0; a cell with F0 at or below ``min_f0`` is invalid and never
 triggers. A cell triggers after ``min_consecutive`` frames at or above
 ``threshold`` and then rests for ``refractory_frames`` / ``refractory_s``.
+With ``refractory_after`` ``action`` (the default) only a cell the pipeline
+acted on rests -- the one scanned, or skipped by the scan -- counted from the
+frame that triggered it; the other cells that triggered on the same frame stay
+eligible, so a cell still above threshold is scanned next, as soon as the
+``rest`` gate's interval allows. ``trigger`` makes every cell that triggers
+rest, acted on or not (the earlier rule).
 Nothing triggers during warm-up (the result says ``warming up, n of N``).
 
 *The scan rectangle (``run-scan`` on box points).* The box is padded by

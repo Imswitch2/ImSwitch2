@@ -50,6 +50,10 @@ STATISTICS = ("mean", "median")
 BACKGROUNDS = ("none", "constant", "outside-mean", "outside-percentile")
 BASELINES = ("first-n", "running-median", "running-percentile", "ema")
 THRESHOLD_METHODS = ("otsu", "manual", "triangle", "yen", "local")
+REFRACTORY_AFTER = ("action", "trigger")
+#: The state key through which a smart pipeline's engine tells this step
+#: which ROIs an action was started for (their labels): see refractory_after.
+CONSUMED_KEY = "consumed"
 
 #: Pixels outside every ROI used for a background estimate (a strided subset).
 BACKGROUND_SAMPLE = 20_000
@@ -101,6 +105,7 @@ class RoiDffProcessor(Processor):
             "min_consecutive": 1,
             "refractory_frames": 0,
             "refractory_s": 0.0,
+            "refractory_after": "action",
         }
 
     @classmethod
@@ -155,6 +160,11 @@ class RoiDffProcessor(Processor):
                        group="Trigger", help="A ROI that triggered cannot trigger again for this many frames"),
             ParamField("refractory_s", "float", 0.0, label="Refractory", min=0, decimals=2, suffix="s",
                        group="Trigger", help="... and for this many seconds of the frame clock; both must pass"),
+            ParamField("refractory_after", "select", "action", label="Refractory after", options=REFRACTORY_AFTER,
+                       group="Trigger",
+                       help="action: only a ROI the pipeline acted on (scanned, or skipped by the scan) rests; "
+                            "the others that triggered on the same frame stay eligible. trigger: every ROI "
+                            "that triggers rests, acted on or not"),
         )
 
     @property
@@ -244,6 +254,7 @@ class RoiDffProcessor(Processor):
         state.setdefault("grid", grid)
         state.setdefault("mask_key", mask_key)
         state.setdefault("base_key", base_key)
+        state.setdefault(CONSUMED_KEY, [])
         state["frames_in"] = state.get("frames_in", 0) + 1
 
         if "rois" not in state:
@@ -328,6 +339,24 @@ class RoiDffProcessor(Processor):
     # --------------------------------------------------- baseline + trigger
 
     @staticmethod
+    def _rest_consumed(state: dict, n: int) -> None:
+        """The ROIs an action was started for since the last frame rest from
+        the frame that triggered them (the one before this)."""
+        consumed = state.get(CONSUMED_KEY)
+        last = state.get("last_trigger")
+        rois = state.get("rois") or {}
+        if not consumed or last is None or last["frame"].shape[0] != n or "label" not in rois:
+            if consumed:
+                consumed.clear()
+            return
+        labels = list(consumed)
+        consumed.clear()
+        index = np.flatnonzero(np.isin(rois["label"], np.asarray(labels, dtype=np.int64)))
+        last["frame"][index] = state["frames_in"] - 1
+        if state.get("last_clock") is not None:
+            last["t"][index] = float(state["last_clock"])
+
+    @staticmethod
     def _update(state: dict, p: dict, F: np.ndarray, clock) -> dict:
         n = F.size
         rule = p["baseline"]
@@ -376,13 +405,16 @@ class RoiDffProcessor(Processor):
         if last is None or last["frame"].shape[0] != n:
             last = {"frame": np.full(n, -(10**12), dtype=np.int64), "t": np.full(n, -np.inf)}
             state["last_trigger"] = last
+        RoiDffProcessor._rest_consumed(state, n)
         free = (frame_no - last["frame"]) > int(p["refractory_frames"])
         if float(p["refractory_s"]) > 0 and clock is not None:
             free &= (float(clock) - last["t"]) >= float(p["refractory_s"])
         triggered = above & (streak >= int(p["min_consecutive"])) & free
-        last["frame"][triggered] = frame_no
-        if clock is not None:
-            last["t"][triggered] = float(clock)
+        if str(p.get("refractory_after", "action")) == "trigger":
+            last["frame"][triggered] = frame_no
+            if clock is not None:
+                last["t"][triggered] = float(clock)
+        state["last_clock"] = None if clock is None else float(clock)
         if rule == "ema":
             alpha = 1.0 - math.exp(-1.0 / max(0.5, float(p["ema_tau_frames"])))
             state["f0"] = np.where(above, F0, F0 + alpha * (F - F0))
@@ -495,4 +527,4 @@ def _freeze_rois(labels: np.ndarray) -> dict:
             "centroid": np.column_stack([cy, cx]), "bbox": bbox, "bg_sel": outside}
 
 
-__all__ = ["TRACE_FRAMES", "RoiDffProcessor", "trace_snapshot"]
+__all__ = ["CONSUMED_KEY", "TRACE_FRAMES", "RoiDffProcessor", "trace_snapshot"]

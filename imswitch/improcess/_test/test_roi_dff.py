@@ -70,7 +70,7 @@ def test_dff_values_and_sorted_rows_and_box_columns():
 
 def test_consecutive_frames_and_refractory():
     proc, state = RoiDffProcessor(), {}
-    kw = dict(baseline_frames=3, threshold=0.3, min_consecutive=2, refractory_frames=3)
+    kw = dict(baseline_frames=3, threshold=0.3, min_consecutive=2, refractory_frames=3, refractory_after="trigger")
     for i in range(3):
         _run(proc, state, _scene(), index=i, **kw)
     flags = []
@@ -83,7 +83,7 @@ def test_consecutive_frames_and_refractory():
 
 def test_refractory_seconds_uses_the_frame_clock():
     proc, state = RoiDffProcessor(), {}
-    kw = dict(baseline_frames=2, threshold=0.3, refractory_s=5.0)
+    kw = dict(baseline_frames=2, threshold=0.3, refractory_s=5.0, refractory_after="trigger")
     for i in range(2):
         _run(proc, state, _scene(), t=float(i), index=i, **kw)
     hits = [bool(_run(proc, state, _scene(b=2.0), t=float(t), index=t, **kw).properties["triggered"].any())
@@ -228,3 +228,32 @@ def test_the_frozen_mask_and_a_bounded_trace_are_kept_for_the_records():
     assert trace["dff"].shape == (TRACE_FRAMES, 3)
     assert trace["frame"][0] == 20 and trace["frame"][-1] == TRACE_FRAMES + 19
     assert np.all(np.diff(trace["frame"]) == 1)
+
+
+def test_only_the_roi_an_action_was_started_for_rests():
+    """refractory_after 'action' (the default): two ROIs trigger on the same
+    frame, the pipeline acts on one (its label in the state's 'consumed', as
+    the engine puts it); only that one rests, the other triggers again."""
+    from imswitch.improcess.processors.roi_dff.processor import CONSUMED_KEY
+
+    proc, state = RoiDffProcessor(), {}
+    kw = dict(baseline_frames=2, threshold=0.3, refractory_frames=3)
+    for i in range(2):
+        _run(proc, state, _scene(), index=i, **kw)
+    first = _run(proc, state, _scene(a=2.0, b=2.0), index=2, **kw)
+    fired = {int(label) for label, hit in zip(first.properties["label"], first.properties["triggered"]) if hit}
+    assert len(fired) == 2
+    acted, other = sorted(fired)
+    state[CONSUMED_KEY].append(acted)
+    hits = []
+    for i in range(3, 8):
+        r = _run(proc, state, _scene(a=2.0, b=2.0), index=i, **kw)
+        hits.append({int(label) for label, hit in zip(r.properties["label"], r.properties["triggered"]) if hit})
+    # the other stays eligible on every frame; the one acted on rests 3 frames after its trigger (frame 2)
+    assert [other in h for h in hits] == [True] * 5
+    assert [acted in h for h in hits] == [False, False, False, True, True]
+    # without an action nothing rests: the trigger repeats while above threshold
+    proc2, state2 = RoiDffProcessor(), {}
+    for i in range(2):
+        _run(proc2, state2, _scene(), index=i, **kw)
+    assert all(_run(proc2, state2, _scene(b=2.0), index=i, **kw).properties["triggered"].any() for i in range(2, 6))

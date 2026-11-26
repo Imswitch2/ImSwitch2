@@ -37,7 +37,8 @@
         "min_f0": 5.0,
         "threshold": 0.3,
         "min_consecutive": 2,
-        "refractory_frames": 100
+        "refractory_frames": 100,
+        "refractory_after": "action"
       },
       "inputs": [
         "cam"

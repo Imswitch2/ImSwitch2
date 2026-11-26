@@ -803,6 +803,7 @@ class Engine:
             self.log.append(tick, now, step.id, "started", **summary)
             completion = self.actions.start(request)
         self.summary.actions_started += 1
+        self._tell_consumed(inputs)
         pending = _Pending(step, completion, now, tick, values, chain_index)
         self._pending = pending
         # Wake on the completion itself: between ticks nothing else polls
@@ -812,6 +813,25 @@ class Engine:
         if callable(subscribe):
             subscribe(lambda _completion: self._on_settled(pending))
         self._poll_completion()
+
+    def _tell_consumed(self, inputs: list) -> None:
+        """An action was started (or would be, or was skipped by the mode)
+        for the ROIs whose labels its points carry: a step that keeps a
+        ``consumed`` list in its state (``roi-dff``) is told, so only those
+        rest; the others that triggered with them stay eligible."""
+        labels = []
+        for value in inputs:
+            if kind_of(value) != "points":
+                continue
+            column = (getattr(value, "properties", None) or {}).get("label")
+            if column is not None:
+                labels.extend(int(v) for v in np.asarray(column).reshape(-1))
+        if not labels:
+            return
+        for state in self._state.values():
+            consumed = state.get("consumed") if isinstance(state, dict) else None
+            if isinstance(consumed, list):
+                consumed.extend(labels)
 
     def _on_settled(self, pending: "_Pending") -> None:
         """A completion settled (any thread): continue the chain if it is

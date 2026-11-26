@@ -279,3 +279,17 @@ def test_box_columns_are_mapped_through_all_four_corners_of_a_rotation():
     map_boxes(source, moved, Rotate90(), {})
     assert [moved.properties[k][0] for k in ("bbox_y0", "bbox_x0", "bbox_y1", "bbox_x1")] == [0.0, -2.0, 6.0, 0.0]
     assert moved.properties["src_bbox_x1"][0] == 6.0
+
+
+def test_a_roi_that_triggered_with_the_scanned_one_is_scanned_next_not_put_to_rest():
+    events = [(1.5, 2.0)] * 6           # ticks 5..10: both cells over threshold all along, B the stronger
+    engine, workflow, _ = _run(_frames(4, *events), dff={"refractory_frames": 3}, gates={"rest": {"seconds": 0.5}},
+                               interval=1.0)
+    centres = [round(scan["centre"]["Y"], 2) for scan in workflow.scans]
+    # B (5.75 um) at tick 5; A (-10.25 um) is still eligible and is scanned at tick 6 while B rests; then
+    # each again once its own 3 frames of rest are over (B at tick 9, A at tick 10)
+    assert centres == [5.75, -10.25, 5.75, -10.25]
+    # the old rule, every ROI that triggers rests: A is never scanned
+    engine, workflow, _ = _run(_frames(4, *events), dff={"refractory_frames": 3, "refractory_after": "trigger"},
+                               gates={"rest": {"seconds": 0.5}}, interval=1.0)
+    assert [round(scan["centre"]["Y"], 2) for scan in workflow.scans] == [5.75, 5.75]
