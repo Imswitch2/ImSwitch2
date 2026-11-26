@@ -77,7 +77,7 @@ def _pump(seconds):
     QtTest.QTest.qWait(int(seconds * 1000))
 
 
-def _request(label, box_um, dff=0.8, tick=7):
+def _request(label, box_um, dff=0.8, tick=7, **extra):
     from imswitch.improcess.model.points_result import PointsResult
     from imswitch.imcontrol.model.smartpipeline.catalog import RUN_SCAN
     from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest
@@ -92,7 +92,8 @@ def _request(label, box_um, dff=0.8, tick=7):
         'bbox_y0': np.array([y0]), 'bbox_x0': np.array([x0]), 'bbox_y1': np.array([y1]), 'bbox_x1': np.array([x1]),
     }, metadata={'transform': {'id': 'cam_to_scan', 'type': 'affine', 'residual_rms_um': 0.031}})
     params = {**RUN_SCAN.params, 'source': 'Scan', 'axes': ['Y', 'X'], 'frame': 'scanner:galvo', 'points': 'first',
-              'lasers': ['488 (EXC)'], 'margin_um': 0.5, 'min_size_um': 2.0, 'max_size_um': 10.0, 'pixel_um': 0.2}
+              'lasers': ['488 (EXC)'], 'margin_um': 0.5, 'min_size_um': 2.0, 'max_size_um': 10.0, 'pixel_um': 0.2,
+              **extra}
     return ActionRequest(step_id='scan', action='run-scan', params=params, inputs=[points], mode='experiment',
                          tick=tick, epoch=1, timeout_s=60,
                          context={'frame_sequence': tick - 1, 'frame_wall': time.time() - 0.05,
@@ -148,6 +149,24 @@ def adapter_scenario(controller, out):
     _wait(completion)
     report['bare'] = json.loads(json.dumps(completion.result, default=str)) if completion.result else None
     _pump(0.3)
+
+    # A trigger while the panel is scanning (a long scan started first): skipped with the reason, nothing
+    # recorded, the long scan undisturbed.
+    long_scan = bare.start(_request(12, (-4.0, -6.0, 4.0, 2.0), dwell_s=0.002), None)
+    for _ in range(100):
+        _pump(0.02)
+        if controller.controllers['Scan'].isRunning:
+            break
+    files_before = len(recorder.saved)
+    triggered = scan.start(_request(13, (1.0, 2.0, 5.0, 6.0)), None)
+    _wait(triggered)
+    running_during = bool(controller.controllers['Scan'].isRunning)
+    _wait(long_scan)
+    _pump(0.3)
+    report['busy'] = {'outcome': triggered.outcome, 'error': triggered.error,
+                      'result': json.loads(json.dumps(triggered.result, default=str)) if triggered.result else None,
+                      'running_during': running_during, 'saved': len(recorder.saved) - files_before,
+                      'long_outcome': long_scan.outcome, 'long_error': long_scan.error}
 
     # A recording the Recording controller refuses: the action fails, nothing is scanned unsaved.
     recordingController = controller.controllers['Recording']

@@ -254,10 +254,14 @@ def test_the_adapter_waits_for_the_panel_to_be_idle_before_setting_a_plan():
         def _isBusy(self):
             return True
 
-    stuck = RunScanAdapter(lambda: {"Scan": Stuck()}, _Workflow())
+    # A panel that stays busy (the user's own scan) is not started into: the
+    # trigger is skipped with the reason, and the run goes on.
+    stuck_panel, stuck_workflow = Stuck(), _Workflow()
+    stuck = RunScanAdapter(lambda: {"Scan": stuck_panel}, stuck_workflow)
     completion = stuck.start(_request({"mode": "overview"}), None)
-    stuck._wait_idle = lambda source, timeout_s=0.1: RunScanAdapter._wait_idle(stuck, source, 0.1)
-    assert completion.wait(8) and completion.outcome == "failed" and "stayed busy" in completion.error
+    assert completion.wait(8) and completion.outcome == "ok", completion.error
+    assert completion.result["scanned"] is False and stuck_panel.overviews == []
+    assert "is busy: a scan is running" in completion.result["skipped"][0]["reason"]
 
 
 def test_the_advanced_scan_panel_is_driven_through_its_fields():

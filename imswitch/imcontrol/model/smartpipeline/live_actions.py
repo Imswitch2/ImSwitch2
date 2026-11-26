@@ -448,17 +448,22 @@ class RunScanAdapter:
         return {"mode": mode, "centre_um": centre, "length_um": params.get("length_um"),
                 "pixel_um": params.get("pixel_um"), "lasers": lasers}
 
+    def _busy_reason(self, source: str, timeout_s: float = 0.0) -> str:
+        """Why the scan panel ``source`` cannot take a scan now ('' when it
+        can), after waiting up to ``timeout_s`` for it to become free."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            reason = self._marshal(lambda: scan_panel_busy(self._controller(source)))
+            if not reason or time.monotonic() > deadline:
+                return reason
+            time.sleep(0.05)
+
     def _wait_idle(self, source: str, timeout_s: float = 5.0) -> None:
         """The panel releases its run a moment after the completion resolves;
         a plan set in that moment would be refused, so wait for it."""
-        deadline = time.monotonic() + timeout_s
-        while True:
-            busy = self._marshal(lambda: bool(getattr(self._controller(source), "_isBusy", lambda: False)()))
-            if not busy:
-                return
-            if time.monotonic() > deadline:
-                raise RuntimeError(f"the Scan panel {source!r} stayed busy for {timeout_s:g} s")
-            time.sleep(0.05)
+        reason = self._busy_reason(source, timeout_s)
+        if reason:
+            raise RuntimeError(f"the Scan panel {source!r} stayed busy for {timeout_s:g} s ({reason})")
 
     def _one_scan(self, request: ActionRequest, centre: dict | None, state: dict, plan: dict | None = None,
                   info: dict | None = None):
@@ -592,6 +597,14 @@ class RunScanAdapter:
                 runnable = [j for j in jobs if j["plan"] is None or not j["plan"]["skip"]]
                 skipped = [{"row": j["row"], "reason": j["plan"]["skip"], "trigger": j["info"]}
                            for j in jobs if j["plan"] is not None and j["plan"]["skip"]]
+                # A panel that is scanning or stopping (the user's scan, or the
+                # end of the previous one that has not let go yet) is not
+                # started into: the trigger is skipped, with the reason.
+                busy = self._busy_reason(source, BUSY_WAIT_S) if runnable else ""
+                if busy:
+                    skipped += [{"row": j["row"], "reason": f"the scan panel {source!r} is busy: {busy}",
+                                 "trigger": j["info"]} for j in runnable]
+                    runnable = []
                 if restore and runnable and self._is_advanced(self._controller(source)):
                     controller = self._controller(source)
                     self._wait_idle(source)
@@ -672,6 +685,35 @@ class RunScanAdapter:
             if self._logger is not None:
                 self._logger.warning("run-scan: abort failed", exc_info=True)
             return False
+
+
+#: How long a trigger waits for a busy scan panel to let go before it is skipped, s.
+BUSY_WAIT_S = 1.0
+
+
+def scan_panel_busy(controller) -> str:
+    """Why a scan panel's controller is busy -- a scan running, a stop still
+    taking the devices down, a run held between iterations -- or ''."""
+    state = getattr(controller, "__dict__", {})
+    if state.get("_stopInFlight", False):
+        return "its scan is stopping"
+    if bool(getattr(controller, "isRunning", False)):
+        return "a scan is running"
+    busy = getattr(controller, "_isBusy", None)
+    if callable(busy) and busy():
+        return "a scan is running"
+    if state.get("_scanRunToken") is not None:
+        return "a scan run is still open"
+    if state.get("_repeatPending", False):
+        return "a repeated scan is pending"
+    holds = getattr(controller, "_holdsScanRunBetweenIterations", None)
+    if callable(holds):
+        try:
+            if holds():
+                return "a scan run is held between iterations"
+        except Exception:  # noqa: BLE001 - an unreadable state is not a reason to skip
+            pass
+    return ""
 
 
 def _plan_report(target: dict) -> dict:
@@ -755,8 +797,8 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
     return LiveActionBackend(adapters, catalog=catalog())
 
 
-__all__ = ["ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "RunScanAdapter", "SnapAdapter",
-           "WaitAdapter", "live_backend"]
+__all__ = ["BUSY_WAIT_S", "ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "RunScanAdapter",
+           "SnapAdapter", "WaitAdapter", "live_backend", "scan_panel_busy"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

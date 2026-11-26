@@ -216,3 +216,25 @@ def test_the_archive_writes_rows_and_reports_a_failed_write(tmp_path):
     rows = json.loads((tmp_path / 'run' / 'summary.json').read_text())['rows']
     assert rows[0]['roi_id'] == 'R0-3' and rows[0]['status'] == 'skipped'
     assert (tmp_path / 'run' / 'pipeline.json').exists() and (tmp_path / 'run' / 'region_R0.h5').exists()
+
+
+def test_a_trigger_while_the_panel_is_scanning_is_skipped_with_the_reason(report):
+    busy = report['adapter']['busy']
+    assert busy['running_during'], busy          # the long scan was still running when the trigger gave up
+    assert busy['outcome'] == 'ok' and busy['result']['scanned'] is False, busy
+    assert "is busy: a scan is running" in busy['result']['skipped'][0]['reason']
+    assert busy['saved'] == 0
+    assert busy['long_outcome'] == 'ok', busy['long_error']
+
+
+def test_scan_panel_busy_reads_the_scan_controllers_state():
+    from types import SimpleNamespace
+
+    from imswitch.imcontrol.model.smartpipeline.live_actions import scan_panel_busy
+
+    assert scan_panel_busy(SimpleNamespace(isRunning=False)) == ''
+    assert scan_panel_busy(SimpleNamespace(isRunning=True)) == 'a scan is running'
+    assert scan_panel_busy(SimpleNamespace(isRunning=False, _stopInFlight=True)) == 'its scan is stopping'
+    assert scan_panel_busy(SimpleNamespace(isRunning=False, _scanRunToken=object())) == 'a scan run is still open'
+    assert scan_panel_busy(SimpleNamespace(isRunning=False, _repeatPending=True)) == 'a repeated scan is pending'
+    assert scan_panel_busy(SimpleNamespace(isRunning=False, _isBusy=lambda: True)) == 'a scan is running'

@@ -1988,8 +1988,12 @@ else the positioner's ``minVolt`` / ``maxVolt`` times its ``conversionFactor``
 (narrowed by ``range_inset_um`` -- keep an inset for the galvo's turnaround).
 A box partly outside is clipped and the clip is logged; a box whose centre is
 outside, or of which less than ``min_overlap`` of the padded area is inside,
-is **skipped** with the reason logged and nothing is started. After the scan
-the panel's centre, size, step, dwell and laser line steps are put back
+is **skipped** with the reason logged and nothing is started. A trigger that
+finds the scan panel busy -- a scan running (yours, started from the panel),
+a Stop still taking the devices down, a run held between repeats -- waits up
+to 1 s for it and is otherwise skipped the same way (``the scan panel 'Scan'
+is busy: a scan is running``); the panel's scan is not disturbed. After the
+scan the panel's centre, size, step, dwell and laser line steps are put back
 (``restore``).
 
 *What is recorded.* Every trigger is in the event log: the ``started`` line
