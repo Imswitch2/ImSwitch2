@@ -16,7 +16,7 @@ from imswitch.imcontrol.model.smartpipeline.live_actions import live_backend
 from imswitch.imcontrol.model.smartpipeline.live_source import LiveFrameSource
 from imswitch.imcontrol.model.smartpipeline.mock import FunctionStepRunner
 from imswitch.imcontrol.model.smartpipeline.run import (
-    ARMED, RUNNING, STOPPING, PipelineRun,
+    ARMED, FAILED, RUNNING, STOPPED, STOPPING, PipelineRun,
 )
 from imswitch.imcontrol.model.smartpipeline.calibrations import CalibrationError, load_calibrations
 from imswitch.imcontrol.model.smartpipeline.designer import pipeline_catalog
@@ -29,6 +29,8 @@ _editorPreferencesPath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipel
 _roisFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'smart_pipelines', 'rois')
 #: Seconds to wait for camera frames when segmenting before saying none come.
 _SEGMENT_FRAMES_TIMEOUT_S = 5.0
+#: An armed pipeline that gets no camera frame for this long disarms, with the reason.
+_FRAMES_WATCHDOG_S = 10.0
 
 _STATUS_PERIOD_MS = 500
 _CLOSE_JOIN_S = 5.0
@@ -68,6 +70,9 @@ class SmartPipelineController(ImConWidgetController):
         self._collect = None          # frames being averaged for a segmentation
         self._roiFile = None          # the file the running pipeline reads its ROIs from
         self._roiStep = None          # (step id, generation) of the running pipeline's roi-dff step
+        self._counters = {}           # what the run did: triggers, scans, skips (and why), the last event
+        self._stopReason = None       # why the run was disarmed by the panel (watchdog), shown
+        self._watch = {}              # what the watchdog compares against
         self._saveWarnings = []       # why an Experiment run could not save, shown in a dry run
         self._shownGeometry = {}      # detector -> the scan geometry the live view shows (axes), or None
         self._marksGeometry = None    # the geometry the overlay's marks belong to
@@ -345,6 +350,9 @@ class SmartPipelineController(ImConWidgetController):
             on_overlay=self._onOverlay,
         )
         self._widget.clearLog()
+        self._counters = {'scans': 0, 'skipped': {}, 'would': 0, 'triggers': 0, 'last': '', 'scanning': None}
+        self._stopReason = None
+        self._watch = self._watchBaseline(document)
         for check in checks:
             log.append(0, time.monotonic(), 'preflight', check.level, topic=check.topic, text=check.text)
         try:
@@ -1084,8 +1092,44 @@ class SmartPipelineController(ImConWidgetController):
 
         self._invokeOnControllerThreadIfNeeded(draw)
 
+    def _count(self, entry):
+        """ The counters and the last event, from the run's log (any thread). """
+        counters = self._counters
+        if not counters:
+            return
+        detail = entry.detail
+        if entry.event in ('started', 'would') and detail.get('action') == 'run-scan':
+            counters['triggers'] += 1
+            row = ((detail.get('inputs') or [{}])[0] or {}).get('first_row') or {}
+            counters['scanning'] = row.get('label')
+            if entry.event == 'would':
+                counters['would'] += 1
+                counters['last'] = str(detail.get('message') or 'would scan')
+        elif entry.event == 'done' and isinstance(detail.get('result'), dict) and 'scans' in detail['result']:
+            result = detail['result']
+            counters['scans'] += int(result.get('scans') or 0)
+            for skip in result.get('skipped') or []:
+                reason = str(skip.get('reason') or '?')
+                short = ('outside the scan range' if 'range' in reason else 'panel busy' if 'busy' in reason
+                         else reason[:40])
+                counters['skipped'][short] = counters['skipped'].get(short, 0) + 1
+            label = (result.get('trigger') or {}).get('label')
+            if result.get('scans'):
+                counters['last'] = f'scanned ROI {label}' + (f' -> {os.path.basename(result["saved"][0])}'
+                                                             if result.get('saved') else '')
+            elif result.get('skipped'):
+                counters['last'] = f'skipped: {result["skipped"][0].get("reason")}'
+            counters['scanning'] = None
+        elif entry.event == 'failed':
+            counters['last'] = f'{entry.step} failed: {detail.get("error")}'
+            counters['scanning'] = None
+
     def _onLogEntry(self, entry):
         text = str(entry)
+        try:
+            self._count(entry)
+        except Exception:
+            pass
         self._invokeOnControllerThreadIfNeeded(lambda: self._widget.appendLog(text))
         if entry.event in ('started', 'would', 'skipped') and entry.detail.get('action'):
             # The marks belong to the frame they were measured on; a hardware
@@ -1126,11 +1170,102 @@ class SmartPipelineController(ImConWidgetController):
     # ------------------------------------------------------------------ #
     # Status and log                                                      #
     # ------------------------------------------------------------------ #
+    def _runState(self, run):
+        """ (kind, text) of the state indicator. """
+        if run is None:
+            return 'idle', 'Idle'
+        if run.state in (STOPPED, FAILED):
+            reason = self._stopReason or run.error or 'by the user'
+            return ('failed' if (run.error or self._stopReason) else 'stopped'), f'Stopped: {reason}'
+        if run.state == STOPPING:
+            return 'stopped', 'Stopping…'
+        engine = run.engine
+        for stepId, state in list(engine.step_states.items()):
+            if state and state != 'running':
+                return 'warming', f'Warming up: {state}' if state.startswith(('warming', 'collecting')) else state
+        mode = run.mode
+        counters = self._counters or {}
+        if engine.busy and mode == RunMode.EXPERIMENT:
+            label = counters.get('scanning')
+            return 'scanning', f'Scanning ROI {label}' if label is not None else 'Scanning'
+        if mode == RunMode.VALIDATE:
+            return 'dry', 'Armed — dry run (nothing scans)'
+        if mode == RunMode.VISUALIZE:
+            return 'dry', 'Watching — actions skipped'
+        return 'armed', 'ARMED — will scan'
+
+    def _countersText(self, status):
+        counters = self._counters or {}
+        parts = [f'frames {status["ticks"]}', f'triggers {counters.get("triggers", 0)}']
+        if status['mode'] == 'experiment':
+            parts.append(f'scans {counters.get("scans", 0)}')
+        skipped = counters.get('skipped') or {}
+        if skipped:
+            parts.append(f'skipped {sum(skipped.values())} (' + ', '.join(f'{k} {v}' for k, v in skipped.items())
+                         + ')')
+        if counters.get('last'):
+            parts.append(f'last: {counters["last"]}')
+        return ' · '.join(parts)
+
+    def _watchBaseline(self, document):
+        """ What the watchdog compares against: the calibration files' times,
+        the lasers the scans fire. """
+        from imswitch.imcommon.model.smartpipeline import Transform
+        from imswitch.imcontrol.model.smartpipeline.catalog import RUN_SCAN
+
+        files = {}
+        for step in document.workflow.steps:
+            if isinstance(step, Transform):
+                path = os.path.join(_calibrationsFolderPath, f'{step.transform}.json')
+                try:
+                    files[path] = os.path.getmtime(path)
+                except OSError:
+                    pass
+        lasers = sorted({str(name) for step in self._scanSteps(document)
+                         for name in ({**RUN_SCAN.params, **step.params}.get('lasers') or [])})
+        return {'files': files, 'lasers': lasers, 'since': time.monotonic()}
+
+    def _watchdog(self, run):
+        """ A reason to disarm now, or None: no camera frames for a while, a
+        calibration changed on disk, a laser the scans fire gone absent. """
+        source = self._source
+        watch = self._watch or {}
+        last = getattr(source, 'last_frame_t', None) or watch.get('since')
+        if last is not None and time.monotonic() - last > _FRAMES_WATCHDOG_S:
+            return (f'no frame from {getattr(source, "detector", "the camera")} for {_FRAMES_WATCHDOG_S:g} s '
+                    '(is the camera streaming?)')
+        for path, mtime in (watch.get('files') or {}).items():
+            try:
+                changed = os.path.getmtime(path) != mtime
+            except OSError:
+                changed = True
+            if changed:
+                return f'the calibration {os.path.basename(path)} changed on disk: re-arm to use it'
+        manager = getattr(self._master, 'lasersManager', None)
+        for name in watch.get('lasers') or []:
+            try:
+                device = manager[name]
+            except Exception:
+                continue
+            mode = str(getattr(getattr(device, 'runtimeMode', None), 'value', '') or '')
+            if mode == 'absent' or getattr(device, 'isUsable', True) is False:
+                return f'the laser {name!r} is no longer usable'
+        return None
+
     def _refreshStatus(self):
         run = self._run
+        if hasattr(self._widget, 'setRunState'):
+            kind, text = self._runState(run)
+            self._widget.setRunState(kind, text, self._countersText(run.status()) if run is not None else '')
         if run is None:
             self._widget.setStatus('')
             return
+        if run.state == RUNNING and self._stopReason is None:
+            reason = self._watchdog(run)
+            if reason:
+                self._stopReason = reason
+                run.log.append(run.engine._tick, time.monotonic(), 'pipeline', 'disarmed', why=reason)
+                run.stop()
         status = run.status()
         parts = [status['state'], status['mode']]
         parts.append(f'{status["ticks"]} ticks')

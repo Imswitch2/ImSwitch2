@@ -1893,6 +1893,19 @@ before the experiment -- and the expected scan time per trigger (pixels x
 dwell); the scan detectors; the interval and budget gates; where the scans
 are saved and the free disk space.
 
+**Is it armed?** A coloured state next to the run row says what the run is
+doing: *Idle*; *Warming up: collecting reference, 2 of 5* / *warming up, 7 of
+20* (the ROI step builds its mask and baselines: nothing triggers yet);
+*Armed — dry run (nothing scans)* (Validate); *ARMED — will scan*
+(Experiment); *Scanning ROI 12*; *Stopped: <reason>*. Beside it: frames
+processed, triggers, scans, skips by reason (outside the scan range, panel
+busy) and the last event (``scanned ROI 12 -> event0003_R0_roi12_rec_APD.hdf5``
+or the skip's reason). **Stop** always ends the run. The run disarms by itself,
+with the reason in the state and the log (``disarmed``), when no camera frame
+arrives for 10 s, when a calibration it uses changes on disk, or when a laser
+its scans fire becomes absent or unusable; a change of the camera's frame grid
+stops it too.
+
 **Arm** reserves the devices (while the pipeline holds a stage, the
 Positioner panel and scripts are refused for it), applies the ``scouting``
 mode in Experiment, takes an event-stream lease on the detector -- no live

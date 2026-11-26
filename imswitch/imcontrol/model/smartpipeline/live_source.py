@@ -112,6 +112,8 @@ class LiveFrameSource:
         self._history: deque = deque(maxlen=1)
         self._history_cond = threading.Condition()
         self._ended = False
+        #: Monotonic time of the last frame delivered (None before the first).
+        self.last_frame_t: float | None = None
         self.keep_frames = 0
 
     @property
@@ -235,6 +237,7 @@ class LiveFrameSource:
             metadata={"init": bool(init), "current": bool(isCurrentDetector), "wall_time": time.time()},
         )
         self._remember(frame)
+        self.last_frame_t = time.monotonic()
         return self._inbox.push(frame)
 
     def _is_duplicate(self, array: np.ndarray) -> bool:

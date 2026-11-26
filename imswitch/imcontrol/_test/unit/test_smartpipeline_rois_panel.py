@@ -265,3 +265,65 @@ def test_a_set_made_on_another_grid_is_refused_at_arm_with_what_to_do(panel):
     controller.stop()
     controller._run.join(5)
     assert json.loads(open(controllerModule._stateFilePath).read())['use_rois'] is False
+
+
+def test_the_state_indicator_counters_and_the_frames_watchdog(panel, monkeypatch):
+    controller, widget, comm = panel.controller, panel.widget, panel.comm
+    controller._refreshStatus()
+    assert widget.getRunState()[0] == 'Idle'
+    widget.setUseRois(False)
+    widget.setMode('validate')
+    controller.arm()
+    run = controller._run
+    assert run is not None, widget.issuesLabel.text()
+    comm.sigUpdateImage.emit('Camera', _cells(), False, [0.1, 0.1], True)
+    _waitFor(lambda: run.engine.summary.ticks >= 1)
+    controller._refreshStatus()
+    state, counters = widget.getRunState()
+    assert state.startswith('Warming up') and 'frames 1' in counters and 'triggers 0' in counters
+    for index in range(1, 4):
+        comm.sigUpdateImage.emit('Camera', _cells() + index, False, [0.1, 0.1], True)
+        _waitFor(lambda: run.engine.summary.ticks >= index + 1)
+    controller._refreshStatus()
+    assert widget.getRunState()[0] == 'Armed — dry run (nothing scans)'
+    # no frames: the watchdog disarms, with the reason shown
+    monkeypatch.setattr(controllerModule, '_FRAMES_WATCHDOG_S', 0.2)
+    import time as _time
+    _time.sleep(0.3)
+    controller._refreshStatus()
+    _waitFor(lambda: run.state in ('stopped', 'failed'))
+    _waitFor(lambda: widget.armButton.isEnabled())
+    controller._refreshStatus()
+    state, _ = widget.getRunState()
+    assert state.startswith('Stopped: no frame from Camera for 0.2 s'), state
+    assert run.log.events('disarmed')
+
+
+def test_a_calibration_changed_on_disk_disarms(panel, tmp_path):
+    controller, widget = panel.controller, panel.widget
+    calibration = panel.tmp / 'calibrations' / 'x.json'
+    calibration.write_text('{}')
+    controller._watch = {'files': {str(calibration): 0.0}, 'lasers': [], 'since': None}
+    assert 'x.json changed on disk' in controller._watchdog(SimpleNamespace())
+    controller._watch = {'files': {}, 'lasers': ['561'], 'since': None}
+    controller._master.lasersManager = {'561': SimpleNamespace(isUsable=False)}
+    assert "laser '561' is no longer usable" in controller._watchdog(SimpleNamespace())
+
+
+def test_counters_from_the_log():
+    from imswitch.imcontrol.model.smartpipeline.engine import LogEntry
+
+    controller = SimpleNamespace(_counters={'scans': 0, 'skipped': {}, 'would': 0, 'triggers': 0, 'last': '',
+                                            'scanning': None})
+    count = SmartPipelineController._count
+    count(controller, LogEntry(5, 0.0, 'scan', 'started', {'action': 'run-scan',
+                                                           'inputs': [{'first_row': {'label': 7}}]}))
+    assert controller._counters['scanning'] == 7 and controller._counters['triggers'] == 1
+    count(controller, LogEntry(5, 0.1, 'scan', 'done', {'result': {'scans': 1, 'trigger': {'label': 7},
+                                                                   'saved': ['/x/event0001_R0_roi7_rec_APD.hdf5'],
+                                                                   'skipped': []}}))
+    count(controller, LogEntry(9, 0.2, 'scan', 'done', {'result': {'scans': 0, 'skipped': [
+        {'reason': 'the box centre is outside the scanner range'}]}}))
+    c = controller._counters
+    assert c['scans'] == 1 and c['skipped'] == {'outside the scan range': 1} and c['scanning'] is None
+    assert c['last'].startswith('skipped: the box centre')

@@ -392,6 +392,9 @@ class Engine:
         self._fresh_after: int | None = None
         self._source_step = source_step_of(self.workflow)
         self._tick_opened: list = []
+        #: The ``state`` a processing step's result says it is in (roi-dff:
+        #: "warming up, 3 of 20", "running"), per step id: for the panel.
+        self.step_states: dict[str, str] = {}
         self._default_ports = {step.id: ports[0] for step in self.workflow.steps
                                if (ports := getattr(step, "ports", None))}
         self._lock = threading.RLock()
@@ -451,6 +454,7 @@ class Engine:
             self._last_sequence = None
             self._fresh_after = None
             self.summary = RunSummary(mode=self.mode.value)
+            self.step_states = {}
             self.armed = True
         self.log.append(0, self.clock(), "pipeline", "armed", mode=self.mode.value, epoch=self._epoch,
                         steps=[s.id for s in self.workflow.steps])
@@ -674,8 +678,13 @@ class Engine:
             self._sink(step, inputs[0], tick, now, frame)
             return {}
         state = self._state.setdefault(step.id, {})
-        produced = self.steps.run_step(step, inputs, state=state, frame=frame)
-        return dict(produced or {})
+        produced = dict(self.steps.run_step(step, inputs, state=state, frame=frame) or {})
+        for value in produced.values():
+            meta = getattr(value, "metadata", None)
+            if isinstance(meta, dict) and isinstance(meta.get("state"), str):
+                self.step_states[step.id] = meta["state"]
+                break
+        return produced
 
     # -- gates ----------------------------------------------------------------
 

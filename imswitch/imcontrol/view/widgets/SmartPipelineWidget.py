@@ -72,6 +72,10 @@ class SmartPipelineWidget(Widget):
         self.stopButton = guitools.BetterPushButton('Stop')
         self.stopButton.setEnabled(False)
 
+        self.stateLabel = QtWidgets.QLabel('Idle')
+        self.stateLabel.setStyleSheet('font-weight: bold; padding: 2px 6px; border-radius: 3px;')
+        self.countersLabel = QtWidgets.QLabel()
+        self.countersLabel.setWordWrap(True)
         self.statusLabel = QtWidgets.QLabel()
         self.statusLabel.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
                                        QtWidgets.QSizePolicy.Preferred)
@@ -110,6 +114,10 @@ class SmartPipelineWidget(Widget):
         layout.addWidget(self.issuesLabel)
         layout.addWidget(self.preflightLabel)
         layout.addLayout(runRow)
+        stateRow = QtWidgets.QHBoxLayout()
+        stateRow.addWidget(self.stateLabel)
+        stateRow.addWidget(self.countersLabel, 1)
+        layout.addLayout(stateRow)
         layout.addWidget(self._buildRoiBox())
         layout.addLayout(logRow)
         layout.addWidget(self.logView, 1)
@@ -381,6 +389,21 @@ class SmartPipelineWidget(Widget):
 
     def setStopEnabled(self, enabled):
         self.stopButton.setEnabled(enabled)
+
+    _STATE_COLOURS = {'idle': ('#555', '#e6e6e6'), 'warming': ('#000', '#ffd27a'), 'dry': ('#fff', '#3a7bd5'),
+                      'armed': ('#fff', '#2e9e44'), 'scanning': ('#fff', '#8e44ad'), 'cooling': ('#000', '#a9dfbf'),
+                      'stopped': ('#fff', '#888'), 'failed': ('#fff', '#d9534f')}
+
+    def setRunState(self, kind, text, counters=''):
+        """The unmistakable state (``kind`` picks the colour) and the counters line."""
+        foreground, background = self._STATE_COLOURS.get(kind, self._STATE_COLOURS['idle'])
+        self.stateLabel.setText(text)
+        self.stateLabel.setStyleSheet(f'font-weight: bold; padding: 2px 6px; border-radius: 3px; '
+                                      f'color: {foreground}; background: {background};')
+        self.countersLabel.setText(counters)
+
+    def getRunState(self):
+        return self.stateLabel.text(), self.countersLabel.text()
 
     def setStatus(self, text, toolTip=''):
         self.statusLabel.setText(text)
