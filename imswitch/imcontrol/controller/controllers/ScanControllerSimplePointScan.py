@@ -350,6 +350,17 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 raise ScanDesignRefusedError(refusal)
         return super()._buildScanSignals()
 
+    def buildTriggeredScanSignals(self, analogParameterDict, digitalParameterDict):
+        """The same power refusal as a panel start, then the Advanced chain."""
+        if self._onSimplePage():
+            plan = self.currentPlan()
+            if not plan.channels:
+                raise ScanDesignRefusedError('Choose at least one laser.')
+            refusal = power_refusal(plan, self._scanLimits())
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
+        return super().buildTriggeredScanSignals(analogParameterDict, digitalParameterDict)
+
     def _make_full_scan(self, scanParameters, TTLParameters):
         signalDict, scanInfoDict = super()._make_full_scan(scanParameters, TTLParameters)
         if not self._onSimplePage():

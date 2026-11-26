@@ -122,6 +122,19 @@ class EtSTEDWidget(Widget):
         self.loadScanParametersStatus.setText('No scan parameters loaded.')
 
         self.endlessScanCheck = QtWidgets.QCheckBox('Endless')
+        # Safeguards for an automatically firing laser scan.
+        self.cooldown_label = QtWidgets.QLabel('Cooldown between scans (s)')
+        self.cooldown_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.cooldown_edit = QtWidgets.QLineEdit(str(5))
+        self.cooldown_edit.setToolTip(
+            'Events within this time of the end of the last triggered scan '
+            'are ignored (and logged). 0 = no cooldown.')
+        self.maxscans_label = QtWidgets.QLabel('Max. triggered scans (0 = no limit)')
+        self.maxscans_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.maxscans_edit = QtWidgets.QLineEdit(str(10))
+        self.maxscans_edit.setToolTip(
+            'etSTED stops after this many triggered scans in one run. '
+            'Events beyond it are ignored (and logged). 0 = unlimited.')
         self.fastaxisshiftCheck = QtWidgets.QCheckBox('Fast scan axis shift')
 
         self.bin_thresh_label = QtWidgets.QLabel('Bin. threshold (int.)')
@@ -234,6 +247,16 @@ class EtSTEDWidget(Widget):
         currentRow += 1
 
         self.grid.addWidget(self.loadScanParametersStatus, currentRow, 3, 2, 2)
+
+        currentRow += 2
+
+        self.grid.addWidget(self.cooldown_label, currentRow, 2)
+        self.grid.addWidget(self.cooldown_edit, currentRow, 3)
+
+        currentRow += 1
+
+        self.grid.addWidget(self.maxscans_label, currentRow, 2)
+        self.grid.addWidget(self.maxscans_edit, currentRow, 3)
         self.setEtSTEDStatus('idle')
 
     def initParamFields(self, parameters: dict):
@@ -325,6 +348,8 @@ class EtSTEDWidget(Widget):
             self.bin_thresh_edit,
             self.bin_smooth_edit,
             self.fastaxisshiftCheck,
+            self.cooldown_edit,
+            self.maxscans_edit,
         ]
         for control in controls:
             control.setEnabled(not armed)

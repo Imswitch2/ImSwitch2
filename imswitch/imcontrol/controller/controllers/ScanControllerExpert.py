@@ -671,6 +671,15 @@ class ScanControllerExpert(SuperScanController):
         return duration_cap_refusal(self._duration_s(self._scheduleOf(compiled)),
                                     self._setupInfo)
 
+    def buildTriggeredScanSignals(self, analogParameterDict, digitalParameterDict):
+        """The Expert panel runs a program, not centre-and-extent parameters:
+        an event-triggered scan has no scan-axis centre to replace."""
+        raise ScanDesignRefusedError(
+            'Event-triggered scans cannot drive the Expert scan panel: it runs '
+            'a scan program, not scan-axis parameters with a centre. Use the '
+            'Advanced scan panel.'
+        )
+
     def _buildScanSignals(self):
         """What the run arms: refused, with the reason, before the run is
         reserved."""
