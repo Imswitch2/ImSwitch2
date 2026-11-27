@@ -410,7 +410,7 @@ class EtstedPipelineProcessor(Processor):
 
     def _runner(self, state: dict, path):
         """The loaded pipeline of this run (loaded again when the file changes; a failure is remembered)."""
-        from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
+        from imswitch.imcommon.model.event_pipeline_runner import EtSTEDPipelineRunner
 
         try:
             key = (str(path.resolve()), path.stat().st_mtime_ns)

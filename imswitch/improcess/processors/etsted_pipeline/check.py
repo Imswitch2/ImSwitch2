@@ -54,7 +54,7 @@ def check(pipeline: str, folder: str = "etsted", *, frames: int = 14, shape=(256
             reason = "named like a setting of the step: give it in 'params'" if param.exposed else param.note
             out(f"    {param.name:<22} (not a field: {reason})")
     try:
-        from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
+        from imswitch.imcommon.model.event_pipeline_runner import EtSTEDPipelineRunner
 
         runner = EtSTEDPipelineRunner()
         parameters = runner.load_file(path)
