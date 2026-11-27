@@ -53,7 +53,7 @@ from .correspondence.beads import (
     detect_beads,
     match_point_sets,
 )
-from .estimate import ModelFit, _f_test, fit_transform, select_similarity_or_affine
+from .estimate import _f_test, ModelFit, fit_transform, select_similarity_or_affine  # noqa: F401  (_f_test: kept importable from here)
 from .model import AcquisitionContext, ResidualStats, SpatialTransform
 from .models.affine import AffineTransform
 

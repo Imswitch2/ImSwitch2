@@ -61,7 +61,6 @@ from imswitch.imcommon.algorithms.transforms import calibration_report
 from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
-    DegeneratePointsError,
     ImageLocalizationResult,
     LocalizationDiagnostics,
     PairFit,
