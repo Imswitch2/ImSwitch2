@@ -95,16 +95,16 @@ def test_detector_resolves_its_roles_from_the_shared_card():
     assert manager.parameters["click_trigger"].value == -0.2
 
 
-def test_legacy_channel_properties_are_ignored_when_the_block_exists(caplog):
+def test_retired_card_properties_are_named_and_not_read(caplog):
     card = _shared_card(photonsChannel=1)
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.WARNING):
         manager = SwabianTimeTaggerManager(
             _DetectorInfo({"click_channel": 9, "click_trigger": 9.0}),
             "FLIM", _Nidaq(), timeTaggerManager=card,
         )
     assert manager._click_ch == 1
     assert manager._click_trigger == 0.5
-    assert "ignored: click_channel, click_trigger" in caplog.text
+    assert "no longer read: click_channel, click_trigger" in caplog.text
 
 
 def test_changing_a_role_parameter_re_resolves_the_channel():
@@ -119,13 +119,8 @@ def test_changing_a_role_parameter_re_resolves_the_channel():
     assert manager.parameters["line_trigger"].value == 0.9
 
 
-def test_unconfigured_role_is_rejected_at_construction():
-    card = _shared_card()
-    with pytest.raises(ValueError, match="line_role 'frame_clock' is not"):
-        SwabianTimeTaggerManager(
-            _DetectorInfo({"line_role": "frame_clock"}), "FLIM", _Nidaq(),
-            timeTaggerManager=card,
-        )
+# An unconfigured role falls back to the default role with a warning, and is
+# refused only when the card lacks that too: test_swabian_setup_values.py.
 
 
 def test_channel_parameters_are_read_only_views():
@@ -144,6 +139,9 @@ def test_trigger_level_parameter_writes_through_to_the_card():
         _DetectorInfo({}), "FLIM", _Nidaq(), timeTaggerManager=card,
     )
     manager.setParameter("click_trigger", -0.15)
+    # The write runs on the card's I/O thread, not in the GUI slot: wait for
+    # it (and its completion callback, which runs before the next call).
+    card.submit(lambda: None).result(timeout=5)
     assert card.tagger.getTriggerLevel(1) == -0.15
     assert card.channelInfo("photons").trigger_v == -0.15
     assert manager._click_trigger == -0.15
@@ -163,12 +161,18 @@ def test_trigger_level_write_is_refused_during_a_scan_hold(caplog):
 
 
 # --------------------------------------------------------------------------- #
-# Compatibility: no block                                                      #
+# No block: no card                                                            #
 # --------------------------------------------------------------------------- #
 
 
-def test_without_a_block_the_detector_builds_a_private_card_and_says_so(caplog):
-    with caplog.at_level(logging.WARNING):
+def _printed_block(caplog):
+    return json.loads(caplog.text.split('"timeTagger": ', 1)[1].split("\n")[0])
+
+
+def test_without_a_block_the_detector_starts_and_prints_the_block_to_add(caplog):
+    """The retired card properties are not the card any more; they only
+    seed the block the log asks for."""
+    with caplog.at_level(logging.ERROR):
         manager = SwabianTimeTaggerManager(
             _DetectorInfo({
                 "click_channel": -1, "start_channel": 2, "line_channel": 3,
@@ -176,34 +180,40 @@ def test_without_a_block_the_detector_builds_a_private_card_and_says_so(caplog):
             }),
             "FLIM", _Nidaq(),
         )
-    assert manager._ownsTimeTagger
-    assert isinstance(manager.timeTagger, TimeTaggerManager)
-    assert (manager._click_ch, manager._start_ch, manager._line_ch) == (-1, 2, 3)
-    assert manager._click_trigger == -0.1
-    assert manager._line_trigger == 0.7
+    assert not manager.timeTagger.configured
+    assert not manager.timeTagger.connected
+    assert not manager.timeTagger.isMock, "no silent mock on a rig"
+    assert (manager._click_ch, manager._start_ch, manager._line_ch) == (1, 2, 3), \
+        "the stand-in's roles are the block's defaults, not the retired properties"
     assert 'no top-level "timeTagger" block' in caplog.text
-    # The warning prints a block that reproduces the legacy properties.
-    block = json.loads(caplog.text.split('"timeTagger": ', 1)[1].split("\n")[0])
-    assert block == {
+    assert "which are no longer read" in caplog.text
+    assert _printed_block(caplog) == {
         "photonsChannel": -1, "photonsTriggerV": -0.1,
         "laserSyncChannel": 2, "laserSyncTriggerV": 0.5,
         "lineClockChannel": 3, "lineClockTriggerV": 0.7,
     }
 
 
-def test_without_a_block_and_without_the_library_a_scan_rolls_back():
-    """Today's behaviour, kept: no silent mock on a rig."""
-    manager = SwabianTimeTaggerManager(
-        _DetectorInfo({"click_channel": 1, "start_channel": 2, "line_channel": 3}),
-        "FLIM", _Nidaq(),
-    )
-    assert not manager.timeTagger.connected
+def test_without_a_block_or_old_properties_the_block_has_the_defaults(caplog):
+    with caplog.at_level(logging.ERROR):
+        SwabianTimeTaggerManager(_DetectorInfo({}), "FLIM", _Nidaq())
+    assert "set them to the cabling" in caplog.text
+    assert _printed_block(caplog) == {
+        "photonsChannel": 1, "photonsTriggerV": 0.5,
+        "laserSyncChannel": 2, "laserSyncTriggerV": 0.5,
+        "lineClockChannel": 3, "lineClockTriggerV": 0.5,
+    }
+
+
+def test_without_a_block_a_scan_rolls_back_saying_which_block_to_add():
+    manager = SwabianTimeTaggerManager(_DetectorInfo({}), "FLIM", _Nidaq())
     manager._onScanBuilt(_scan_info(manager), {}, [])
     assert manager._flim is None
     assert manager._preparedScanGeneration is None
     stage, error = manager._nidaqManager.scanBuildFailures[0]
     assert stage == "FLIM.prepare"
     assert "Time Tagger is not available" in str(error)
+    assert 'no top-level "timeTagger" block' in str(error)
     assert not manager.timeTagger.scanHeld
 
 

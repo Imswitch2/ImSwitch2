@@ -38,6 +38,7 @@ from .time_tagger_facade import (
     SkewResult,
     RatesResult,
     RepRateResult,
+    LevelResult,
     SweepResult,
     TimeTaggerFacade,
 )

@@ -103,6 +103,12 @@
    "908c1cbaf501946741cd51ad23fa7f60ae34ea68422ea796c3229621bd6b25e7",
    "fa93d2987150bae52455203ac5ff513a57e207af34b658fe0541a738fa0925d9"
   ],
+  "imcontrol_setups/galvo_two_apd_counting_mock_setup.json": [
+   "01114e83798ab50ad3d583f7291761a804eed37c8991e598e14b624352e88ae1"
+  ],
+  "imcontrol_setups/galvo_two_colour_flim_mock_setup.json": [
+   "92358ad109124811dad936fe69413bbc9951a6c091601d6ef6ef7ecc6d82626c"
+  ],
   "imcontrol_setups/general_image_processing.json": [
    "8507f740cd72642444272fe3bfcd626e398ffdc1929e684f497f70ca053b4f99",
    "b2831d5c222bcec6c18d521bfbbaaf013464ab9ce59ca57cc06435d71e8d8a43",
@@ -153,6 +159,12 @@
   ],
   "imcontrol_setups/mock/time_tagger/galvo_flim_mock_scan_setup.json": [
    "908c1cbaf501946741cd51ad23fa7f60ae34ea68422ea796c3229621bd6b25e7"
+  ],
+  "imcontrol_setups/mock/time_tagger/galvo_two_apd_counting_mock_setup.json": [
+   "01114e83798ab50ad3d583f7291761a804eed37c8991e598e14b624352e88ae1"
+  ],
+  "imcontrol_setups/mock/time_tagger/galvo_two_colour_flim_mock_setup.json": [
+   "92358ad109124811dad936fe69413bbc9951a6c091601d6ef6ef7ecc6d82626c"
   ],
   "imcontrol_setups/mock/widefield/example_mock.json": [
    "5771cf8e7e604d0cb7147199a8a1757634888bff6fb0ce86cbdce53c0277650a"
@@ -285,6 +297,7 @@
    "ba8e94139039ffbe2ba1a6922448c23ad0db8d3e13e6d7df80442313b6e11bc8"
   ],
   "scripts/tutorial/README.md": [
+   "01556359291e246e403dd6219bbf15c97c81d8dba22aa9b5e429e0adf536e281",
    "13ecb6c44361cdb793c66b6d4d0e7c4e66bd04e3ca2c6b44319c87874d24e0ba",
    "3749c0cd2194ecde4d375e826307af2d2512be598f941402651ea05df55d87e5",
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
@@ -430,6 +443,7 @@
   ],
   "scripts/tutorial/timetagger/02_trigger_levels_and_dead_time.py": [
    "7262e359291f65f7815951eb3df68b5027788410f6861ab3dcff6a438365e365",
+   "d0662aa003791485fb8d355b9fa118e8e5c5de774d48c6009b16490929b3c447",
    "ea9274da27dd67e4a2eef36ea43184bd8fcc6c3d9fcfe783acc9a50b38547f1c"
   ],
   "scripts/tutorial/timetagger/03_dark_counts_and_afterpulsing.py": [
@@ -437,6 +451,7 @@
    "cf3f05b7f2319e5223eb51c07cb2d5a894e34e062cbbcce997d5965b14fe7aa2"
   ],
   "scripts/tutorial/timetagger/04_laser_sync.py": [
+   "8ff28eff3138ddd17dbf263180808a58699e3c374f569d16cb3aa918e3282e70",
    "e562036252a0a38103a41ee8bf737d720cb7c6d927030fae4cdb4972c593a81f"
   ],
   "scripts/tutorial/timetagger/05_bandwidth_and_the_filter.py": [
@@ -448,10 +463,12 @@
    "a4bdd9af7e48600f2d76394c8203d5f631f49b081d7210d609f1d8a9b6205f5e"
   ],
   "scripts/tutorial/timetagger/07_line_clock_during_a_scan.py": [
+   "dfbb205096a45e92a70e8e4333d13aa138f849bda8c06b599b12569d930d4c60",
    "f670617b86fb72580645a97e062dcf840be3832fb47f0f9181157ed975e1bb8b",
    "fb8456f131582365efef273dec0386c95d2b19c86e7ab5ab403d2f0b6ebb3615"
   ],
   "scripts/tutorial/timetagger/08_frame_clock_and_pixel_markers.py": [
+   "55e23b6f35531cce6048b1c621a9597f02cdd1160a66de6606ab00d9a03b4634",
    "7e265ed188cd02bb751767b7d901ae40ec4093dcddcf05920ff73b03efdbeb76",
    "b5032186f43cb1baef7dd623d4bc0bda9f42e0f797d5648a3ca6011030c5b2e4"
   ],
@@ -474,6 +491,9 @@
   ],
   "scripts/tutorial/timetagger/13_tau_sted.py": [
    "38e2afbf333aed19eb4f8ddf47efe3df2a8dd111447f7f898c2a0d7279846d02"
+  ],
+  "scripts/tutorial/timetagger/14_several_detectors_on_one_card.py": [
+   "d3458f34c03bf9e361099c76a86fd8813ca10a492eb091bbce45bebc1487fb30"
   ],
   "scripts/tutorial/timetagger/gate_presets/detection_window.json": [
    "f39a4a29aeb2791c58fda9bd6e46137b229c152f3e39e8d1e49ee1831f512f37"

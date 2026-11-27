@@ -1,0 +1,215 @@
+{
+  "__comment__": "Hardware-free two-colour FLIM: TWO single-photon detectors on ONE SIMULATED Swabian Time Tagger against ONE laser sync. The timeTagger block declares its inputs by name (apd_green and apd_red on inputs 1 and 2, the sync on 5, the scan's line and frame clocks on 3 and 4); FLIM_green and FLIM_red each name their photon_input and build their own Flim (histogram, cube, fit) on the card's shared pixel markers. The mock card gives each input its own sample (red: lifetimes 0.75 ns longer and a brightness ramp across x). The Lifetime widget shows one FLIM detector at a time (choose it at the top).",
+  "detectors": {
+    "APD": {
+      "managerName": "APDManager",
+      "managerProperties": {
+        "ctrInputLine": "Dev1/ctr0",
+        "terminal": "PFI0",
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    },
+    "FLIM_green": {
+      "managerName": "SwabianTimeTaggerManager",
+      "managerProperties": {
+        "photon_input": "apd_green",
+        "measurement": "flim",
+        "start_role": "laser_sync",
+        "line_role": "line_clock",
+        "binwidth_ps": 32,
+        "t0_ps": 0,
+        "min_counts_per_pixel": 20,
+        "fit_method": "moment",
+        "laser_rep_rate_mhz": 80.0,
+        "background_rate_hz": 0.0,
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    },
+    "FLIM_red": {
+      "managerName": "SwabianTimeTaggerManager",
+      "managerProperties": {
+        "photon_input": "apd_red",
+        "measurement": "flim",
+        "start_role": "laser_sync",
+        "line_role": "line_clock",
+        "binwidth_ps": 32,
+        "t0_ps": 0,
+        "min_counts_per_pixel": 20,
+        "fit_method": "moment",
+        "laser_rep_rate_mhz": 80.0,
+        "background_rate_hz": 0.0,
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": "Dev1/ao3",
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 10
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "X"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "Y"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": [
+        "Z"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "Advanced",
+    "scanDesigner": "GalvoScanDesigner",
+    "scanDesignerParams": {},
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": "Dev1/port0/line5",
+    "frameStartClockLine": "Dev1/port0/line6",
+    "frameEndClockLine": null
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "timeTagger": {
+    "simulation": true,
+    "inputs": {
+      "apd_green": {
+        "channel": -1,
+        "kind": "detector",
+        "triggerV": -0.25,
+        "deadtimePs": 50000
+      },
+      "apd_red": {
+        "channel": -2,
+        "kind": "detector",
+        "triggerV": -0.25,
+        "deadtimePs": 50000
+      },
+      "laser_sync": {
+        "channel": 5,
+        "kind": "laser_sync",
+        "triggerV": 0.5
+      },
+      "line_clock": {
+        "channel": 3,
+        "kind": "line_clock",
+        "triggerV": 0.5
+      },
+      "frame_clock": {
+        "channel": 4,
+        "kind": "frame_clock",
+        "triggerV": 0.5
+      }
+    },
+    "filterSyncByPhotons": false,
+    "mockSample": "beads_two_lifetimes",
+    "mockFaults": {}
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Laser",
+    "Scan",
+    "Lifetime"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": [
+      "monalisa",
+      "view-only"
+    ],
+    "processors": []
+  }
+}

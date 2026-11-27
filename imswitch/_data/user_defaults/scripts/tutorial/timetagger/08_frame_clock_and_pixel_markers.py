@@ -3,7 +3,10 @@
 You will learn
   * the frame clock: one edge per frame, on which the card re-syncs its
     pixel index, so a lost line marker costs one frame and not the rest of
-    the scan; its trigger level, swept between runs like the line clock's
+    the scan; its trigger level, checked between runs like the line
+    clock's -- one edge per frame is too few for a rate plateau
+    (find_trigger_level reads it as needs_scan or too few counts), so
+    the edge count of a whole scan is what tells
   * ``skew()``: the *signed* time from the frame edge to the first line
     edge, both orders visible through a known added delay; it must stay
     below ``pattern_offset_ps()`` (the block's ``pixelPatternOffsetPs``),

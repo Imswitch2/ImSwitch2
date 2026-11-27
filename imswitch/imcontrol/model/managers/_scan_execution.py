@@ -35,6 +35,10 @@ from .NidaqManager import ScanBusyError
 #: forever; losing one final frame is strictly better than a stuck GUI.
 DEFAULT_FINISH_TIMEOUT_S = 5.0
 
+#: A participant may ask for a longer deadline (``finishTimeoutS()``, e.g. a
+#: Time Tagger fitting a large final frame); never longer than this.
+MAX_FINISH_TIMEOUT_S = 300.0
+
 #: ``scanInfoDict`` key carrying the participant snapshot to the detectors.
 #: Absent means "legacy scan" — every scan-driven detector participates, which
 #: is what preserves behaviour for any entry point not yet routed through here.
@@ -622,6 +626,9 @@ class ScanExecutionCoordinator:
             self._completeToken(token)
             return True
 
+        if timeoutS:
+            timeoutS = max(float(timeoutS),
+                           self._participantFinishTimeout(token.participants))
         if timeoutS and self._scheduleTimeout is not None:
             try:
                 self._scheduleTimeout(
@@ -669,6 +676,34 @@ class ScanExecutionCoordinator:
                 # barrier open.
                 self._log(f'finishScan({mode}) failed for detector "{name}"')
                 self._acknowledge(token, name)
+
+    def _participantFinishTimeout(self, participants):
+        """The longest end-of-scan deadline a participant asks for.
+
+        A detector whose final frame needs real work after scan-done (the
+        Time Tagger reads and fits a whole TCSPC cube) declares
+        ``finishTimeoutS()``; without it, or with anything but a positive
+        number, the default stands. Capped at ``MAX_FINISH_TIMEOUT_S``: the
+        deadline is still a liveness backstop.
+        """
+        longest = 0.0
+        for name in tuple(participants):
+            try:
+                value = self._detectorsManager.execOn(
+                    name,
+                    lambda detector: (
+                        detector.finishTimeoutS()
+                        if callable(getattr(type(detector), 'finishTimeoutS', None))
+                        else None
+                    ),
+                )
+            except Exception:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if value == value and value > longest:   # not NaN
+                longest = float(value)
+        return min(longest, MAX_FINISH_TIMEOUT_S)
 
     def _acknowledge(self, token, detectorName):
         """Called by a participant when its end-of-scan work is done. Safe

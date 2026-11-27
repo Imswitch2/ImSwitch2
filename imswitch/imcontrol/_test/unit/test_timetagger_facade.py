@@ -217,8 +217,14 @@ def test_preflight_is_green_on_a_well_configured_mock():
     assert "laser sync rate matches laser_rep_rate_mhz" in names
     assert "TCSPC window spans the laser period" in names
     assert report.summary().startswith("FLIM pre-flight: green")
-    skipped = [item for item in report.items if item.status == "skipped"]
-    assert len(skipped) == 3, "the scan-aware checks are reported, not forgotten"
+    skipped = [item.name for item in report.items if item.status == "skipped"]
+    # No frame clock is cabled on this card, so there is no frame-clock row.
+    assert skipped == ["line clock edges = Ny", "last frame closes"], \
+        "the scan-aware checks are reported, not forgotten"
+    tt = _facade(frameClockChannel=4)
+    report = run_device_preflight(tt, _detector(tt.manager), duration_s=0.01)
+    skipped = [item.name for item in report.items if item.status == "skipped"]
+    assert len(skipped) == 3 and "frame clock leads pixel 0" in skipped
 
 
 def test_preflight_flags_a_wrong_rep_rate_and_a_short_window():

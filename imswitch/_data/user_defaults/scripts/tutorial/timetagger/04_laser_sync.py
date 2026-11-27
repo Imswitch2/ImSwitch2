@@ -14,7 +14,11 @@ Setup
   It simulates: an 80.000 MHz laser sync with 20 ps of jitter on a card
                 with 8 ps of its own.
   Your own microscope: the same block; the measurement holds the card for
-                its duration, so no scan can start meanwhile.
+                its duration, so no scan can start meanwhile. The sync's
+                trigger level comes first: tutorial 02's
+                find_trigger_level('laser_sync') finds it (either polarity;
+                a photodiode sync under 0.1 V reads too_small or
+                noise_only there, and this measurement then fails).
 
 Next: 05_bandwidth_and_the_filter.py
 """

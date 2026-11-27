@@ -9,8 +9,12 @@ You will learn
     line missing from every FLIM image)
   * ``period()``: the line period (dwell x Nx plus the flyback) and its
     jitter, measured while the scan runs
-  * a trigger-level sweep of the line clock between runs: a DAQ line is
-    about 1 V into 50 ohm, so the plateau is narrow and 0.5 V sits in it
+  * the line clock's trigger level, counted during the scan: a scan clock
+    fires only while a scan runs, which is why tutorial 02's
+    find_trigger_level() reads ``needs_scan`` between scans. Here three
+    levels are each counted over one APD-only run (a DAQ line is about 1 to
+    1.5 V into 50 ohm, so 0.5 V sits in the plateau); the Lifetime widget's
+    Signals panel can Find the level while an APD-only scan repeats
   * more edges than lines: the clock pulse's falling edge bouncing back
     through the threshold, seen with ``scope()``, and the dead time that
     swallows the bounces (``lineClockDeadtimePs``)
@@ -146,6 +150,8 @@ try:
     if not plateau:
         print('No level counts: wrong input, wrong polarity (a negative channel number')
         print('selects the falling edge) or the DAQ line into a high-impedance input.')
+        print('With an APD-only scan repeating, the Signals panel\'s Find on line_clock')
+        print('sweeps both polarities and says which.')
         chosen = level0
     else:
         chosen = 0.5 if 0.5 in plateau else plateau[len(plateau) // 2]

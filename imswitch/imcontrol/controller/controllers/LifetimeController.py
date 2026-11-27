@@ -74,6 +74,13 @@ SCOPE_ROLES = ('line_clock', 'frame_clock', 'laser_sync')
 #: Metadata that must agree between scans summed into one result.
 ACCUMULATION_KEYS = ('binwidth_ps', 'n_bins', 'fit_method', 'laser_rep_rate_mhz',
                      't0_ps', 'background_rate_hz', 'min_counts_per_pixel')
+#: The pooled lifetime histogram keeps at most this many values: a uniform
+#: random sample of every pooled scan's pixels (reservoir sampling), so a
+#: long accumulation neither grows without bound nor makes each render
+#: concatenate every scan so far on the GUI thread.
+POOL_MAX_VALUES = 1_000_000
+#: Trigger-level verdicts whose level may be applied from the widget.
+APPLICABLE_VERDICTS = ('good', 'too_small', 'needs_scan')
 #: Where the gate presets live, relative to the user's scripts folder (the
 #: same files tutorial 12 loads); the shipped defaults are the fallback.
 GATE_PRESETS_RELATIVE = os.path.join('scripts', 'tutorial', 'timetagger', 'gate_presets')
@@ -268,7 +275,9 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         widget.sigStop.connect(self._onStop)
         widget.sigSave.connect(self._onSave)
         widget.sigTriggerLevelEdited.connect(self._onTriggerLevelEdited)
-        widget.sigTriggerSweep.connect(self._onTriggerSweep)
+        widget.sigFindLevel.connect(self._onFindLevel)
+        widget.sigApplyLevel.connect(self._onApplyLevel)
+        widget.sigCopyLevel.connect(self._onCopyLevel)
         widget.sigScopeSnapshot.connect(self._onScopeSnapshot)
         widget.sigPreflight.connect(self._onPreflight)
         widget.histBinsSpin.valueChanged.connect(lambda _v: self._renderHistogram())
@@ -281,6 +290,15 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._presets = {}
         self._loadPresetList()
         self._stedPeakNs = None
+        #: The last ``find_trigger_level`` result, for Apply / Copy.
+        self._levelResult = None
+        #: Whether a scan runs (a scan clock's 0 Hz is only news then).
+        self._scanRunning = False
+        self._pooledSeen = 0
+        for name, running in (('sigScanStarted', True), ('sigScanEnded', False)):
+            signal = getattr(self._commChannel, name, None)
+            if signal is not None:
+                signal.connect(lambda *_a, r=running: setattr(self, '_scanRunning', r))
 
         names = list(self._detectors)
         widget.setDetectors(names, names[0] if names else None)
@@ -312,9 +330,18 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                 detector = manager[name]
             except Exception:
                 continue
-            if hasattr(detector, 'configureTimeResolvedProducts') and hasattr(
-                    detector, 'sigTimeResolvedProducts'):
-                found[name] = detector
+            if not (hasattr(detector, 'configureTimeResolvedProducts') and hasattr(
+                    detector, 'sigTimeResolvedProducts')):
+                continue
+            try:
+                capabilities = detector.timeResolvedCapabilities()
+            except Exception:
+                capabilities = {}
+            if capabilities.get('supports_lifetime_fit') is False:
+                # A counting detector on the card: no time axis, nothing to
+                # show here (its image is in the viewer like any detector's).
+                continue
+            found[name] = detector
         return found
 
     @property
@@ -344,6 +371,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._stedPeakNs = None
         self._t0SourceId = None
         self._pooledLifetimes = []
+        self._pooledSeen = 0
         self._widget.setStedMarker(None)
 
     def _onDetectorChanged(self, name: str):
@@ -373,10 +401,13 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         from imswitch.imcontrol.model.workflows.time_tagger_facade import TimeTaggerFacade
         self._card = card
         self._tt = TimeTaggerFacade(card, getattr(self._master, 'detectorsManager', None))
-        roles = self._tt.roles()
-        self._widget.setRoles(roles)
-        for role, report in self._tt.channels().items():
+        # Every declared input by name (the roles, without an inputs map).
+        roles = self._tt.inputs()
+        channels = self._tt.channels()
+        self._widget.setRoles(roles, {role: report.channel for role, report in channels.items()})
+        for role, report in channels.items():
             self._widget.setTriggerLevel(role, report.trigger_v)
+        self._refreshLevelWarnings()
         try:
             card.startHealthSampling(1.0, self._onHealthSampled)
         except Exception as error:
@@ -397,9 +428,11 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         filter_on = bool(getattr(health, 'filter_on', False))
         self._widget.updateRates(rates, direction=direction, filter_on=filter_on,
                                  overflows=self._overflowsSeen)
+        self._refreshLevelWarnings(rates, filter_on=filter_on)
         parts = []
         for role, rate in rates.items():
-            label = 'sync (filtered)' if role == 'laser_sync' and filter_on else role
+            label = ('sync (filtered)' if role == 'laser_sync' else f'{role} (filtered)') \
+                if self._isSync(role) and filter_on else role
             text = ('—' if rate is None else f'{rate / 1e6:.2f} Mcps' if rate >= 1e6
                     else f'{rate / 1e3:.1f} kcps' if rate >= 1e3 else f'{rate:.0f} cps')
             parts.append(f'● {label} {text}')
@@ -508,7 +541,40 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
     def _onPoolToggled(self, enabled: bool):
         if not enabled:
             self._pooledLifetimes = []
+            self._pooledSeen = 0
         self._renderHistogram()
+
+    def _poolLifetimes(self, lifetime_ns):
+        """Add one scan's valid lifetimes to the pooled histogram's sample.
+
+        The pool is one array of at most ``POOL_MAX_VALUES``: below that every
+        value is kept; above it a uniform reservoir sample of all values
+        seen, so the histogram's shape is that of every scan pooled while
+        memory and the per-render cost stay bounded.
+        """
+        values = np.asarray(lifetime_ns, dtype=np.float32).ravel()
+        values = values[np.isfinite(values) & (values > 0)]
+        pool = self._pooledLifetimes[0] if self._pooledLifetimes else np.zeros(0, np.float32)
+        seen = int(getattr(self, '_pooledSeen', pool.size))
+        total = seen + values.size
+        if pool.size + values.size <= POOL_MAX_VALUES:
+            pool = np.concatenate([pool, values])
+        elif values.size:
+            rng = np.random.default_rng()
+            if pool.size < POOL_MAX_VALUES:   # fill up first
+                room = POOL_MAX_VALUES - pool.size
+                pool = np.concatenate([pool, values[:room]])
+                values = values[room:]
+                seen += room
+            # Each new value replaces a pooled one with probability
+            # POOL_MAX_VALUES / (values seen so far): the reservoir rule,
+            # vectorised per scan.
+            take = int(rng.binomial(values.size, min(1.0, POOL_MAX_VALUES / max(1, total))))
+            if take:
+                slots = rng.choice(pool.size, size=min(take, pool.size), replace=False)
+                pool[slots] = rng.choice(values, size=slots.size, replace=False)
+        self._pooledLifetimes = [pool]
+        self._pooledSeen = total
 
     def _onMeasureRepRate(self):
         if self._tt is None:
@@ -569,7 +635,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                      metadata=live.metadata, is_final=live.is_final,
                      gate_images=live.gate_images)
         if live.is_final and live.lifetime_ns is not None and self._widget.accumulateHistCheck.isChecked():
-            self._pooledLifetimes.append(np.asarray(live.lifetime_ns, dtype=np.float32).ravel())
+            self._poolLifetimes(live.lifetime_ns)
             self._renderHistogram()
 
     def _render(self, intensity, lifetime_ns, decay_counts, t_axis_ns, *, peak_ns, background_per_bin,
@@ -627,7 +693,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
     def _renderHistogram(self):
         widget = self._widget
         if widget.accumulateHistCheck.isChecked() and self._pooledLifetimes:
-            widget.updateLifetimeHistogram(np.concatenate(self._pooledLifetimes))
+            widget.updateLifetimeHistogram(self._pooledLifetimes[0])
             return
         render = getattr(self, '_lastRender', None)
         if render is None or render[1] is None:
@@ -799,7 +865,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                      tau_ns=float(products.global_tau_ns or 0.0), metadata=products.metadata,
                      is_final=True, gate_images=products.gate_images)
         if products.lifetime_ns is not None and self._widget.accumulateHistCheck.isChecked():
-            self._pooledLifetimes.append(np.asarray(products.lifetime_ns, dtype=np.float32).ravel())
+            self._poolLifetimes(products.lifetime_ns)
             self._renderHistogram()
         n = int((products.metadata or {}).get('frames_accumulated', 1) or 1)
         valid = bool((products.metadata or {}).get('frame_valid', True))
@@ -911,32 +977,155 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
     # ------------------------------------------------------------------ #
 
     def _onTriggerLevelEdited(self, role: str, volts: float):
+        """A level typed into the Signals table: written on the card's I/O
+        thread (the GUI never waits on the card); edits in quick succession
+        land in order. A refusal puts the card's level back in the box."""
         if self._tt is None:
             return
+        self._refreshLevelWarnings()
+        self._writeLevel(role, volts, keep=False)
+
+    def _writeLevel(self, role: str, volts: float, *, keep: bool):
+        card = self._card
         try:
-            self._tt.set_trigger_level(role, volts)
-            self._widget.setFooterStatus(f'{role} trigger level {volts:+.3f} V')
+            card.assertWritable('trigger level')
+            future = card.setTriggerLevelAsync(role, float(volts))
         except Exception as error:
-            self._widget.setFooterStatus(str(error), error=True)
+            self._onLevelWritten(role, volts, keep, error)
+            return
+        future.add_done_callback(lambda done: self._invokeOnControllerThread(
+            partial(self._onLevelWritten, role, volts, keep, done.exception())))
+
+    def _onLevelWritten(self, role, volts, keep, error):
+        if self._closed:
+            return
+        if error is not None:
+            self._widget.setFooterStatus(f'{role}: {error}', error=True)
             try:
                 self._widget.setTriggerLevel(role, self._tt.channels()[role].trigger_v)
             except Exception:
                 pass
+            self._refreshLevelWarnings()
+            return
+        self._widget.setTriggerLevel(role, volts)
+        self._refreshLevelWarnings()
+        text = f'{role} trigger level {volts:+.3f} V'
+        if keep:
+            text += self._keepLevel(role, volts)
+        else:
+            text += ' (until restart)'
+        self._widget.setFooterStatus(text)
 
-    def _onTriggerSweep(self, role: str):
+    def _refreshLevelWarnings(self, rates=None, *, filter_on=None):
+        """The check column: for every configured input, what is wrong with
+        its level, from the level alone and -- with a health sample -- from
+        what it counts. The sync's rate is compared with the selected
+        detector's laser_rep_rate_mhz when a sync is configured and the
+        conditional filter is off."""
+        if self._tt is None:
+            return
+        from imswitch.imcontrol.model.timeresolved.preflight import rep_rate_mismatch
+        from imswitch.imcontrol.model.workflows.time_tagger_facade import level_warnings
+        for role in self._tt.inputs():
+            level = self._widget.triggerLevel(role)
+            if level is None:
+                continue
+            rate = None if rates is None else rates.get(role)
+            warnings = level_warnings(self._card, role, level, rate_hz=rate,
+                                      scan_running=self._scanRunning)
+            if (self._isSync(role) and rate and filter_on is False
+                    and self.detector is not None):
+                mismatch = rep_rate_mismatch(rate, float(self._widget.getSetting('rep_rate_mhz')))
+                if mismatch:
+                    warnings.append(mismatch)
+            self._widget.setLevelWarnings(role, warnings)
+
+    def _onFindLevel(self, role: str):
+        """Find a trigger level for one input on the worker thread; the
+        result is shown, never applied: Apply is the user's."""
         if self._tt is None or not role:
+            return
+        from imswitch.imcontrol.model.workflows.time_tagger_facade import signal_kind
+        kind = signal_kind(role, self._card)
+        if kind.get('scan_only') and getattr(self._card, 'scanHeld', False):
+            self._widget.setLevelResult(
+                f'{role} fires only during a scan, and this scan holds the card (the '
+                'time-resolved detector takes part). Run the scan with the detector\'s '
+                '"enabled" set to False (Repeat on) and find the level then; until '
+                f'then keep about +0.5 V ({kind["typical"]}).', warn=True)
             return
 
         def body():
-            report = self._tt.channels()[role]
-            sign = -1.0 if report.channel < 0 else 1.0
-            levels = np.linspace(0.05, 1.2, 12) * sign
-            sweep = self._tt.trigger_sweep(role, levels, duration_s=0.2)
-            lines = [f'trigger sweep on {role} (original {report.trigger_v:+.3f} V restored):']
-            lines += [f'  {v:+.3f} V  {r:,.0f} Hz' for v, r in zip(sweep.levels_v, sweep.rates_hz)]
-            lines.append(f'  {sweep.summary()}')
-            self._invokeOnControllerThread(lambda: self._widget.setSignalsText('\n'.join(lines)))
-        self._runOnWorker(body, 'trigger sweep')
+            result = self._tt.find_trigger_level(role, duration_s=0.1)
+            self._invokeOnControllerThread(partial(self._showLevelResult, result))
+        self._runOnWorker(body, f'finding the {role} level')
+
+    def _showLevelResult(self, result):
+        if self._closed:
+            return
+        self._levelResult = result
+        lines = [result.summary(), f'  {"level (V)":>10}  rate (Hz)']
+        lines += [f'  {v:+10.3f}  {r:,.0f}' for v, r in zip(result.levels_v, result.rates_hz)]
+        self._widget.setSignalsText('\n'.join(lines))
+        applicable = result.verdict in APPLICABLE_VERDICTS and result.level_v is not None
+        line = result.block_line()
+        self._widget.setLevelResult(
+            result.summary() + (f'   Setup line: {line}' if line else ''),
+            can_apply=applicable, can_keep=applicable and result.field_name is not None,
+            can_copy=line is not None, warn=result.verdict != 'good')
+
+    def _onApplyLevel(self, keep: bool):
+        result = self._levelResult
+        if result is None or result.level_v is None or result.role is None:
+            return
+        self._widget.setTriggerLevel(result.role, result.level_v)
+        self._writeLevel(result.role, result.level_v, keep=keep)
+
+    def _isSync(self, name) -> bool:
+        """Whether an input carries a laser sync."""
+        try:
+            return self._card.channelInfo(name).kind == 'laser_sync'
+        except Exception:
+            return name == 'laser_sync'
+
+    def _keepLevel(self, role, volts) -> str:
+        """Write an applied level into the active setup file's timeTagger
+        block -- into the input's entry of the ``inputs`` map, or its role
+        field -- with the mechanism the laser presets and the shortcut
+        editor use (``configfiletools.saveSetupInfo`` of the in-memory
+        setup)."""
+        from imswitch.imcontrol.model import configfiletools
+        from imswitch.imcontrol.model.managers.TimeTaggerManager import ROLE_FIELDS
+        info = getattr(self._setupInfo, 'timeTagger', None)
+        inputs = dict(getattr(info, 'inputs', None) or {})
+        fields = ROLE_FIELDS.get(role)
+        if info is None or (role not in inputs and fields is None):
+            return '; not kept: this setup has no timeTagger block to keep it in'
+        level = round(float(volts), 3)
+        if role in inputs:
+            name = f'inputs.{role}.triggerV'
+            inputs[role] = replace(inputs[role], triggerV=level)
+            updated = replace(info, inputs=inputs)
+        else:
+            name = fields[1]
+            updated = replace(info, **{fields[1]: level})
+        try:
+            # The block is a frozen dataclass: the setup gets an updated copy.
+            self._setupInfo.timeTagger = updated
+            configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
+        except Exception as error:
+            self._logger.warning(f'Could not keep {name} in the setup file: {error}')
+            return f'; NOT kept in the setup file ({error}): copy the setup line instead'
+        return f'; kept in the setup file ({name} = {float(volts):.3f})'
+
+    def _onCopyLevel(self):
+        result = self._levelResult
+        line = result.block_line() if result is not None else None
+        if not line:
+            return
+        from qtpy import QtWidgets
+        QtWidgets.QApplication.clipboard().setText(line)
+        self._widget.setFooterStatus(f'copied: {line}')
 
     def _onScopeSnapshot(self):
         if self._tt is None:

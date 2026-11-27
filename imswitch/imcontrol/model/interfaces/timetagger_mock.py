@@ -146,13 +146,72 @@ SAMPLE_PRESETS: Dict[str, Callable[[], MockSample]] = {
 }
 
 
+def _variant_pattern(index: int, ny: int, nx: int) -> np.ndarray:
+    """A brightness pattern in (0.1, 1] that tells detector input ``index``
+    apart from every other: a ramp along x, along y, reversed, a checker."""
+    xs = np.linspace(0.1, 1.0, max(1, nx))[None, :].repeat(max(1, ny), axis=0)
+    ys = np.linspace(0.1, 1.0, max(1, ny))[:, None].repeat(max(1, nx), axis=1)
+    kind = (index - 1) % 4
+    if kind == 0:
+        return xs
+    if kind == 1:
+        return ys
+    if kind == 2:
+        return xs[:, ::-1]
+    yy, xx = np.mgrid[0:max(1, ny), 0:max(1, nx)]
+    cell = max(1, min(ny, nx) // 4)
+    return np.where(((yy // cell) + (xx // cell)) % 2 == 0, 1.0, 0.1)
+
+
+def sample_for_input(preset: str, index: int) -> MockSample:
+    """What detector input number ``index`` (0 = the first) of a card images.
+
+    The first input images the preset itself, exactly as a single-detector
+    card always has. Every further one images the preset's lifetimes plus
+    0.75 ns per index, with its rate shaped by a pattern of its own
+    (``_variant_pattern``), so a test can tell which input an image came
+    from -- two inputs never image the same thing.
+    """
+    base = SAMPLE_PRESETS.get(preset or "", _beads_sample)()
+    if index <= 0:
+        return base
+    shift = 0.75 * index
+
+    def rate(ny, nx, _b=base):
+        return np.asarray(_b.rate_map(ny, nx), dtype=np.float64) * _variant_pattern(index, ny, nx)
+
+    def tau(ny, nx, _b=base):
+        return np.asarray(_b.lifetime_map(ny, nx), dtype=np.float64) + shift
+
+    return MockSample(f"{base.name}#{index}", rate, tau,
+                      parked_rate_hz=base.parked_rate_hz,
+                      parked_lifetime_ns=base.parked_lifetime_ns + shift)
+
+
+def _same_input(model_channel, channel) -> bool:
+    """Whether ``channel`` (an int, or a list of them) is the model's input
+    ``model_channel``; never for an input the model does not have."""
+    if model_channel is None:
+        return False
+    if isinstance(channel, (list, tuple, set)):
+        return abs(int(model_channel)) in {abs(int(c)) for c in channel}
+    return abs(int(model_channel)) == abs(int(channel))
+
+
 @dataclass
 class SignalModel:
     """What the card's inputs see. Channels are physical input numbers."""
 
     photon_channel: int = 1
-    sync_channel: int = 2
-    line_channel: int = 3
+    photon_sources: Dict[int, MockSample] = field(default_factory=dict)
+    """ Further detector inputs, by signed channel, each with what it
+    images (``sample_for_input``): a second APD on the same card. The
+    photon physics (IRF, t0, dark counts, afterpulsing) is the first
+    detector's. """
+    sync_channel: Optional[int] = 2
+    """ ``None``: no laser sync cabled (a counting-only setup). """
+    line_channel: Optional[int] = 3
+    """ ``None``: no line clock cabled. """
     frame_channel: Optional[int] = None
     sted_channel: Optional[int] = None
     """ A photodiode on the STED beam: one edge per laser pulse,
@@ -171,6 +230,16 @@ class SignalModel:
     pulse_amplitude_v: Dict[int, float] = field(default_factory=dict)
     """ Per input: a SPAD's NIM pulse is about -0.5 V, a DAQ line about
     +1.2 V into 50 ohm. Defaults are filled in per role. """
+    input_rates_hz: Dict[int, float] = field(default_factory=dict)
+    """ Pulses per second arriving at further inputs (a second detector,
+    any TTL source), by physical input, before the comparator; give each
+    its ``pulse_amplitude_v`` too. """
+    noise_rate_hz: float = 0.0
+    """ Comparator triggers on electrical noise at a level of 0 V, on any
+    input and either polarity, falling off as ``exp(-|level| /
+    noise_width_v)``: what a real input counts with its level inside the
+    noise. ``0`` (the default) leaves it out. """
+    noise_width_v: float = 0.02
     laser_on: bool = True
     """ The excitation laser: off, the parked photon rate is dark counts only
     (what tutorial 03 measures). The mock cannot see the rig's lasers, so a
@@ -195,18 +264,21 @@ class SignalModel:
     two at construction. """
 
     def __post_init__(self):
-        amps = {
-            abs(self.photon_channel): -0.5,
-            abs(self.sync_channel): 0.8,
-            abs(self.line_channel): 1.2,
-        }
+        amps = {abs(self.photon_channel): -0.5}
+        if self.sync_channel is not None:
+            amps[abs(self.sync_channel)] = 0.8
+        if self.line_channel is not None:
+            amps[abs(self.line_channel)] = 1.2
         if self.frame_channel is not None:
             amps[abs(self.frame_channel)] = 1.2
         if self.sted_channel is not None:
             amps[abs(self.sted_channel)] = 0.8
         for ch, amp in amps.items():
             self.pulse_amplitude_v.setdefault(ch, amp)
-        if self.faults.get("wrong_sync_polarity"):
+        for ch in self.photon_sources:
+            # A NIM pulse on a falling-edge input, a TTL-like one on a rising.
+            self.pulse_amplitude_v.setdefault(abs(int(ch)), -0.5 if int(ch) < 0 else 1.0)
+        if self.faults.get("wrong_sync_polarity") and self.sync_channel is not None:
             self.pulse_amplitude_v[abs(self.sync_channel)] = -0.8
         override = self.faults.get("laser_rep_rate_mhz")
         if override:
@@ -223,14 +295,41 @@ class SignalModel:
     def tag_budget(self) -> float:
         return TAG_BUDGET_PER_MODEL.get(self.model, 8.5e6)
 
+    def photon_inputs(self) -> Dict[int, MockSample]:
+        """Every detector input (signed channel) and what it images."""
+        out = {int(self.photon_channel): self.sample}
+        out.update({int(k): v for k, v in self.photon_sources.items()})
+        return out
+
+    def photon_input(self, channel) -> Optional[int]:
+        """The signed detector channel on ``channel``'s input, or None."""
+        if channel is None:
+            return None
+        for ch in self.photon_inputs():
+            if abs(ch) == abs(int(channel)):
+                return ch
+        return None
+
+    def sample_for(self, channel) -> MockSample:
+        """What the detector on ``channel``'s input images (the first
+        detector's sample for any other input)."""
+        ch = self.photon_input(channel)
+        if ch is None or abs(ch) == abs(int(self.photon_channel)):
+            return self.sample
+        return self.photon_sources[ch]
+
     @classmethod
     def from_info(cls, info) -> "SignalModel":
-        """Build from a ``TimeTaggerInfo`` (roles, sample, faults)."""
+        """Build from a ``TimeTaggerInfo`` (inputs or roles, sample, faults)."""
+        if getattr(info, "inputs", None):
+            return cls._from_inputs(info)
         preset = SAMPLE_PRESETS.get(getattr(info, "mockSample", "") or "", _beads_sample)
         return cls(
             photon_channel=int(info.photonsChannel),
-            sync_channel=int(info.laserSyncChannel),
-            line_channel=int(info.lineClockChannel),
+            sync_channel=(int(info.laserSyncChannel)
+                          if info.laserSyncChannel is not None else None),
+            line_channel=(int(info.lineClockChannel)
+                          if info.lineClockChannel is not None else None),
             frame_channel=(int(info.frameClockChannel)
                            if info.frameClockChannel is not None else None),
             sted_channel=(int(info.stedPulseChannel)
@@ -238,6 +337,43 @@ class SignalModel:
             sample=preset(),
             faults=dict(getattr(info, "mockFaults", {}) or {}),
         )
+
+    @classmethod
+    def _from_inputs(cls, info) -> "SignalModel":
+        """An ``inputs`` block: every detector input images a sample of its
+        own (its ``mockSample``, else the block's varied per input), the
+        first one (the ``photons`` role's, else the first declared) carries
+        the photon physics; the role inputs are what they always were."""
+        resolved = info.resolvedInputs()
+        inputs, roles = resolved.inputs, resolved.roles
+
+        def channel(role):
+            name = roles.get(role)
+            return int(inputs[name].channel) if name is not None else None
+
+        detectors = resolved.detectorInputs()
+        first = roles.get("photons") or (detectors[0] if detectors else None)
+        block_preset = getattr(info, "mockSample", "") or "beads_two_lifetimes"
+        samples: Dict[str, MockSample] = {}
+        for index, name in enumerate(([first] if first else [])
+                                     + [d for d in detectors if d != first]):
+            preset = inputs[name].mockSample
+            samples[name] = (SAMPLE_PRESETS.get(preset, _beads_sample)() if preset
+                             else sample_for_input(block_preset, index))
+        amplitudes = {abs(int(inputs[n].channel)): (-0.5 if inputs[n].channel < 0 else 1.0)
+                      for n in samples}
+        model = cls(
+            photon_channel=int(inputs[first].channel) if first else 1,
+            photon_sources={int(inputs[n].channel): s for n, s in samples.items() if n != first},
+            sync_channel=channel("laser_sync"),
+            line_channel=channel("line_clock"),
+            frame_channel=channel("frame_clock"),
+            sted_channel=channel("sted_pulse"),
+            sample=samples.get(first) if first else _beads_sample(),
+            pulse_amplitude_v=amplitudes,
+            faults=dict(getattr(info, "mockFaults", {}) or {}),
+        )
+        return model
 
 
 # --------------------------------------------------------------------------- #
@@ -346,8 +482,9 @@ class MockTimeTagger:
     def filterOn(self) -> bool:
         trig, filt = self._conditionalFilter
         m = self._model
-        return (abs(m.photon_channel) in {abs(c) for c in trig}
-                and abs(m.sync_channel) in {abs(c) for c in filt})
+        triggers = {abs(c) for c in trig}
+        return (any(abs(ch) in triggers for ch in m.photon_inputs())
+                and _same_input(m.sync_channel, filt))
 
     def getOverflowsAndClear(self):
         with self._lock:
@@ -396,10 +533,20 @@ class MockTimeTagger:
             if not m.laser_on:
                 return m.dark_rate_hz
             return m.sample.parked_rate_hz * (1 + m.afterpulse_fraction) + m.dark_rate_hz
-        if abs(ch) == abs(m.sync_channel):
+        if m.photon_input(ch) is not None:
+            # A further detector: its own sample, the same detector physics.
+            if m.faults.get("dead_photons"):
+                return 0.0
+            if not m.laser_on:
+                return m.dark_rate_hz
+            parked = m.sample_for(ch).parked_rate_hz
+            return parked * (1 + m.afterpulse_fraction) + m.dark_rate_hz
+        if _same_input(m.sync_channel, ch):
             return m.rep_rate_hz
         if m.sted_channel is not None and abs(ch) == abs(m.sted_channel):
             return m.rep_rate_hz if m.laser_on else 0.0
+        if abs(ch) in m.input_rates_hz:
+            return float(m.input_rates_hz[abs(ch)])
         edges = self._edges.get(abs(ch))
         if edges is not None and self._scan_active and self._scan_duration_s > 0:
             return len(edges) / self._scan_duration_s
@@ -440,10 +587,16 @@ class MockTimeTagger:
             if n is not None:
                 raw = n / float(duration_s)
         rate = raw * self._trigger_factor(ch)
+        if m.noise_rate_hz > 0:
+            level = abs(self._triggerLevels.get(abs(ch), 0.5))
+            rate += m.noise_rate_hz * math.exp(-level / max(1e-6, m.noise_width_v))
         rate *= self._deadtime_factor(ch, rate)
-        if abs(ch) == abs(m.sync_channel) and self.filterOn:
-            # Only the first sync after each photon is transmitted.
-            rate = min(rate, self.channelRate(m.photon_channel))
+        if _same_input(m.sync_channel, ch) and self.filterOn:
+            # Only the first sync after each photon is transmitted (a
+            # photon on any filter-trigger input).
+            triggers = {abs(c) for c in self._conditionalFilter[0]}
+            photons = sum(self.channelRate(p) for p in m.photon_inputs() if abs(p) in triggers)
+            rate = min(rate, photons)
         rate /= self._eventDividers.get(abs(ch), 1)
         return rate
 
@@ -461,20 +614,22 @@ class MockTimeTagger:
         else:
             self._model.faults[str(name)] = value
 
-    def sample_truth(self, ny: int, nx: int):
+    def sample_truth(self, ny: int, nx: int, channel: Optional[int] = None):
         """What the sample really looks like on an ``ny`` x ``nx`` grid:
         ``(rate_map_hz, lifetime_map_ns)`` -- the truth a FLIM image is
-        compared against (tutorial 09)."""
-        sample = self._model.sample
+        compared against (tutorial 09). ``channel``: as the detector on
+        that input sees it (default: the first detector)."""
+        sample = self._model.sample if channel is None else self._model.sample_for(channel)
         return (np.asarray(sample.rate_map(int(ny), int(nx)), dtype=np.float64),
                 np.asarray(sample.lifetime_map(int(ny), int(nx)), dtype=np.float64))
 
     def transmittedRate(self) -> float:
         """All tags the USB link must carry per second."""
         m = self._model
-        channels = {abs(m.photon_channel), abs(m.sync_channel), abs(m.line_channel)}
-        if m.frame_channel is not None:
-            channels.add(abs(m.frame_channel))
+        channels = {abs(c) for c in (m.photon_channel, m.sync_channel,
+                                     m.line_channel, m.frame_channel)
+                    if c is not None}
+        channels |= {abs(c) for c in m.photon_sources}
         return sum(self.channelRate(c) for c in channels)
 
     def _budget_factor(self, duration_s: float) -> float:
@@ -498,10 +653,16 @@ class MockTimeTagger:
     def load_scan_edges(self, edges_ps: Dict[int, Iterable[float]],
                         duration_s: float) -> None:
         """Edge timestamps per physical input for the scan about to run."""
+        # A Flim that lives on from the previous scan (a repeat scan reuses
+        # it) has taken that scan's frame; tell it before the edges change.
+        for measurement in list(self.measurements):
+            hook = getattr(measurement, "_on_scan_loaded", None)
+            if hook is not None:
+                hook()
         self._edges = {}
         for channel, edges in edges_ps.items():
             arr = np.asarray(list(edges), dtype=np.int64)
-            if abs(int(channel)) == abs(self._model.line_channel) \
+            if _same_input(self._model.line_channel, channel) \
                     and self._model.faults.get("missing_line_clock"):
                 arr = arr[:0]
             self._edges[abs(int(channel))] = arr
@@ -545,7 +706,7 @@ class MockTimeTagger:
         if edges is None:
             return np.zeros(0, dtype=np.int64)
         bounces = int(self._model.faults.get("line_clock_bounce", 0) or 0)
-        if bounces > 0 and ch == abs(self._model.line_channel) and edges.size:
+        if bounces > 0 and _same_input(self._model.line_channel, ch) and edges.size:
             extra = (edges[:, None] + self.LINE_PULSE_WIDTH_PS
                      + np.arange(bounces, dtype=np.int64)[None, :] * self.BOUNCE_SPACING_PS)
             edges = np.sort(np.concatenate([edges, extra.reshape(-1)]))
@@ -592,16 +753,24 @@ class MockTimeTagger:
         """``'forward'``, ``'reverse'``, ``'garbage'`` (forward slots with the
         filter on: each click is measured against the previous photon's
         sync), or ``None`` (not a photon/sync pair)."""
+        return self._pair(start_channel, click_channel)[0]
+
+    def _pair(self, start_channel: int, click_channel: int):
+        """``(direction, signed photon channel)`` of a start/click pair: a
+        photon input against the sync, either way round, on any detector
+        input of the card; ``(None, None)`` for anything else."""
         m = self._model
-        p, s = abs(m.photon_channel), abs(m.sync_channel)
+        if m.sync_channel is None:
+            return None, None
+        s = abs(m.sync_channel)
         start, click = abs(int(start_channel)), abs(int(click_channel))
-        if (start, click) == (s, p):
-            return "garbage" if self.filterOn else "forward"
-        if (start, click) == (p, s):
-            return "reverse"
+        if start == s and m.photon_input(click) is not None:
+            return ("garbage" if self.filterOn else "forward"), m.photon_input(click)
+        if click == s and m.photon_input(start) is not None:
+            return "reverse", m.photon_input(start)
         if m.sted_channel is not None and (start, click) == (s, abs(m.sted_channel)):
-            return "sted"
-        return None
+            return "sted", None
+        return None, None
 
     def expected_histogram(self, start_channel: int, click_channel: int,
                            binwidth_ps: int, n_bins: int,
@@ -609,7 +778,7 @@ class MockTimeTagger:
                            background: np.ndarray) -> np.ndarray:
         """Expected counts per bin for ``photons`` with ``lifetime_ns`` on the
         histogram's own axis (what the card returns), for any leading shape."""
-        direction = self._direction_for(start_channel, click_channel)
+        direction, photon = self._pair(start_channel, click_channel)
         t_raw_ns = (np.arange(n_bins) + 0.5) * binwidth_ps * 1e-3
         photons = np.asarray(photons, dtype=np.float64)[..., None]
         background = np.asarray(background, dtype=np.float64)[..., None]
@@ -628,7 +797,10 @@ class MockTimeTagger:
             shape = np.exp(-0.5 * ((t_raw_ns - centre) / sigma) ** 2)
             total = shape.sum()
             return photons * shape / total if total > 0 else photons * flat
-        delay_ns = self._inputDelays.get(m.photon_channel, 0) * 1e-3
+        if photon is None or abs(photon) == abs(m.photon_channel):
+            delay_ns = self._inputDelays.get(m.photon_channel, 0) * 1e-3
+        else:
+            delay_ns = self._delay_ps(photon) * 1e-3
         if direction == "forward":
             # A photon delay moves the peak: setInputDelay(photons, -t0).
             t_forward = t_raw_ns - delay_ns
@@ -649,6 +821,31 @@ class MockTimeTagger:
 
     def sample_counts(self, expected: np.ndarray) -> np.ndarray:
         return self._rng.poisson(np.clip(expected, 0, None)).astype(np.uint32)
+
+    def pixel_maps(self, sample: MockSample, ny: int, nx: int, dwell_ps: float,
+                   offset_ps: int):
+        """``(rate_hz, lifetime_ns)`` per scan pixel as the markers sample it.
+
+        The line delay: a line clock reaching the card *late* against the
+        beam (the ``line_delay_ps`` fault, positive) starts the markers
+        late, so each pixel samples a later position and the image shifts
+        left; an early clock (negative fault: a D2 short of the galvo's
+        lag) the other way. A card input delay or a pattern offset moves
+        the markers by its own sign, so ``lineClockDelayPs`` cancels the
+        fault with the opposite sign: positive (the pattern) for an early
+        clock, negative (the card) for a late one.
+        """
+        m = self._model
+        rate = np.asarray(sample.rate_map(ny, nx), dtype=np.float64)
+        tau = np.asarray(sample.lifetime_map(ny, nx), dtype=np.float64)
+        lateness_ps = (float(m.faults.get("line_delay_ps", 0))
+                       + (self._delay_ps(m.line_channel) if m.line_channel is not None else 0)
+                       + offset_ps)
+        shift = int(round(lateness_ps / dwell_ps)) if dwell_ps else 0
+        if shift:
+            rate = np.roll(rate, -shift, axis=1)
+            tau = np.roll(tau, -shift, axis=1)
+        return rate, tau
 
     # -- lifecycle ------------------------------------------------------- #
 
@@ -773,16 +970,20 @@ class Histogram(_Measurement):
                 np.array(pulses), np.array(0.0), np.array(0.0),
             )
             return tagger.sample_counts(expected).astype(np.int64)
-        photons = tagger.channelRate(m.photon_channel) * duration * factor
+        photon = tagger._pair(self.start_channel, self.click_channel)[1]
+        if photon is None:
+            photon = m.photon_channel
+        sample = m.sample_for(photon)
+        photons = tagger.channelRate(photon) * duration * factor
         if m.faults.get("dead_photons") or not m.laser_on:
             photons = min(photons, m.dark_rate_hz * duration * factor)
-        dark = tagger._raw_rate(m.photon_channel) - m.sample.parked_rate_hz * (1 + m.afterpulse_fraction)
-        background = (max(0.0, dark) + m.sample.parked_rate_hz * m.afterpulse_fraction) \
-            * tagger._trigger_factor(m.photon_channel) * duration * factor
+        dark = tagger._raw_rate(photon) - sample.parked_rate_hz * (1 + m.afterpulse_fraction)
+        background = (max(0.0, dark) + sample.parked_rate_hz * m.afterpulse_fraction) \
+            * tagger._trigger_factor(photon) * duration * factor
         signal = max(0.0, photons - background)
         expected = tagger.expected_histogram(
             self.start_channel, self.click_channel, self.binwidth, self.n_bins,
-            np.array(signal), np.array(m.sample.parked_lifetime_ns),
+            np.array(signal), np.array(sample.parked_lifetime_ns),
             np.array(background),
         )
         return tagger.sample_counts(expected).astype(np.int64)
@@ -921,11 +1122,11 @@ class Scope(_Measurement):
             times = tagger.marker_times(channel)
         elif tagger.has_scan_edges(channel):
             times = tagger.stamped_edges(channel)
-        elif abs(channel) == abs(m.sync_channel):
+        elif _same_input(m.sync_channel, channel):
             period = m.period_ps
             first = math.ceil(t0 / period) * period
             times = np.arange(first, t1, period, dtype=np.float64)
-        elif abs(channel) == abs(m.photon_channel):
+        elif m.photon_input(channel) is not None:
             n = tagger._rng.poisson(tagger.channelRate(channel) * (t1 - t0) * 1e-12)
             times = np.sort(tagger._rng.uniform(t0, t1, size=int(n)))
         else:
@@ -944,7 +1145,7 @@ class Scope(_Measurement):
         traces = []
         for channel in self.event_channels:
             events = []
-            width = (m.period_ps / 2 if abs(channel) == abs(m.sync_channel)
+            width = (m.period_ps / 2 if _same_input(m.sync_channel, channel)
                      else self.CLOCK_WIDTH_PS)
             for t in self._edges_of(channel, t0, t1)[: self.n_max_events]:
                 events.append(_ScopeEvent(True, t - t0))
@@ -991,6 +1192,10 @@ class Flim(_Measurement):
     loaded edges carry enough markers, independent of any read. A test can
     delay that with ``complete_after_polls`` to exercise the worker's
     count-based final-frame detection in both orders against scan-done.
+
+    Like the vendor's, it acquires frame after frame: a Flim kept for the
+    next scan (a repeat scan) counts the previous scan's frame as acquired
+    when new edges are loaded, and draws a fresh frame from them.
     """
 
     def __init__(self, tagger, start_channel, click_channel,
@@ -1010,6 +1215,8 @@ class Flim(_Measurement):
         self.binwidth = int(binwidth)
         self._frame: Optional[np.ndarray] = None
         self._polls = 0
+        #: Frames of earlier scans this Flim acquired (see _on_scan_loaded).
+        self._completed = 0
         #: Test knob: the frame counts as closed only after this many
         #: ``getFramesAcquired`` calls. The default, 1, lets the detector's
         #: baseline read at arming see an open frame and the worker's first
@@ -1043,25 +1250,12 @@ class Flim(_Measurement):
             return frame
         dwell_s = dwell_ps * 1e-12
 
-        rate = np.asarray(m.sample.rate_map(ny_used, nx), dtype=np.float64)
-        tau = np.asarray(m.sample.lifetime_map(ny_used, nx), dtype=np.float64)
-        # The line delay. A line clock reaching the card *late* against the
-        # beam (the ``line_delay_ps`` fault, positive) starts the markers
-        # late, so each pixel samples a later position and the image shifts
-        # left; an early clock (negative fault: a D2 short of the galvo's
-        # lag) the other way. A card input delay or a pattern offset moves the
-        # markers by its own sign, so ``lineClockDelayPs`` cancels the fault
-        # with the opposite sign: positive (the pattern) for an early clock,
-        # negative (the card) for a late one.
-        lateness_ps = (float(m.faults.get("line_delay_ps", 0))
-                       + tagger._delay_ps(m.line_channel)
-                       + offset_ps)
-        shift = int(round(lateness_ps / dwell_ps)) if dwell_ps else 0
-        if shift:
-            rate = np.roll(rate, -shift, axis=1)
-            tau = np.roll(tau, -shift, axis=1)
+        photon = tagger._pair(self.start_channel, self.click_channel)[1]
+        if photon is None:
+            photon = m.photon_channel
+        rate, tau = tagger.pixel_maps(m.sample_for(photon), ny_used, nx, dwell_ps, offset_ps)
 
-        factor = tagger._trigger_factor(m.photon_channel)
+        factor = tagger._trigger_factor(photon)
         factor *= tagger._budget_factor(self._tagger._scan_duration_s or dwell_s * n_used)
         if m.faults.get("dead_photons"):
             factor = 0.0
@@ -1088,9 +1282,10 @@ class Flim(_Measurement):
         return self.getCurrentFrame()
 
     def getReadyFrameEx(self):
-        if self.getFramesAcquired() < 1:
-            return _FlimFrameInfo(np.zeros((self.n_pixels, self.n_bins), np.uint32), 0, valid=False)
-        return _FlimFrameInfo(self.getCurrentFrame(), 1)
+        if self.getFramesAcquired() - self._completed < 1:
+            return _FlimFrameInfo(np.zeros((self.n_pixels, self.n_bins), np.uint32),
+                                  self._completed, valid=False)
+        return _FlimFrameInfo(self.getCurrentFrame(), self._completed + 1)
 
     def getCurrentFrameIntensity(self):
         """Counts per second per pixel: the counts divided by the pixel's
@@ -1103,8 +1298,128 @@ class Flim(_Measurement):
     def getFramesAcquired(self):
         self._polls += 1
         if not self._markers_suffice():
-            return 0
-        return 1 if self._polls > self.complete_after_polls else 0
+            return self._completed
+        return self._completed + (1 if self._polls > self.complete_after_polls else 0)
+
+    def _on_scan_loaded(self):
+        """The card loads the next scan's edges: the current frame was
+        acquired if its markers sufficed, and the next one starts empty."""
+        if self._markers_suffice():
+            self._completed += 1
+        self._frame = None
+        self._polls = 0
+
+
+class CountBetweenMarkers(_Measurement):
+    """Counts of one input between a begin and an end marker, one value per
+    marker pair: with the pixel markers, a photon-counting image.
+
+    Modelled on the vendor class of the same name (``CountBetweenMarkers(
+    tagger, click_channel, begin_channel, end_channel, n_values)``, with
+    ``getData``, ``getBinWidths``, ``getIndex``, ``ready``, ``clear``) --
+    from memory, to be checked against the vendor documentation: in
+    particular that it fills its ``n_values`` once and then stops (``ready``
+    stays true until ``clear``), rather than wrapping round.
+
+    Geometry as ``Flim``: one row per edge of the begin generator's trigger
+    input, one column per pattern entry. The counts are the click input's
+    sample, through its comparator, dead-time-free: what the detector on
+    that input sees, per pixel dwell, plus its dark counts and afterpulses.
+    The frame counts as filled once the loaded edges carry ``n_values``
+    marker pairs; ``complete_after_polls`` delays that for tests, as on
+    ``Flim``.
+    """
+
+    def __init__(self, tagger, click_channel, begin_channel,
+                 end_channel=CHANNEL_UNUSED, n_values=1000):
+        super().__init__(tagger)
+        self.click_channel = int(click_channel)
+        self.begin_channel = int(begin_channel)
+        self.end_channel = int(end_channel)
+        self.n_values = int(n_values)
+        self._frame: Optional[np.ndarray] = None
+        self._filled = False
+        self._polls = 0
+        #: As on ``Flim``: the detector's baseline read at arming sees an
+        #: unfilled counter (the clocks have not run yet), the worker's
+        #: first look a filled one.
+        self.complete_after_polls = 1
+
+    def _geometry(self):
+        gen = self._tagger._generators.get(self.begin_channel)
+        if gen is None:
+            return 0, 0, 0.0, 0, 0.0
+        edges = self._tagger.edges(gen.trigger_channel)
+        ny, nx = len(edges), len(gen.pattern)
+        dwell_ps = float(gen.pattern[1] - gen.pattern[0]) if nx > 1 else 0.0
+        offset_ps = int(gen.pattern[0]) if nx else 0
+        end = self._tagger._generators.get(self.end_channel)
+        width_ps = (float(end.pattern[0] - gen.pattern[0])
+                    if end is not None and nx and len(end.pattern) else dwell_ps)
+        return ny, nx, dwell_ps, offset_ps, width_ps
+
+    def _markers_suffice(self) -> bool:
+        ny, nx, dwell_ps, _offset, _width = self._geometry()
+        return ny * nx >= self.n_values and dwell_ps > 0
+
+    def ready(self):
+        self._polls += 1
+        if not self._filled and self._markers_suffice() \
+                and self._polls > self.complete_after_polls:
+            self._filled = True
+        return self._filled
+
+    def _render(self) -> np.ndarray:
+        tagger = self._tagger
+        m = tagger._model
+        out = np.zeros(self.n_values, dtype=np.int32)
+        ny, nx, dwell_ps, offset_ps, width_ps = self._geometry()
+        if ny == 0 or nx == 0 or dwell_ps <= 0:
+            return out
+        n_used = min(self.n_values, ny * nx)
+        ny_used = n_used // nx
+        if ny_used == 0:
+            return out
+        width_s = max(0.0, width_ps) * 1e-12
+        if m.photon_input(self.click_channel) is None:
+            # Not a detector input (a clock, the sync, a marker): its own
+            # count rate, flat over the image.
+            expected = np.full((ny_used, nx), tagger.channelRate(self.click_channel) * width_s)
+        else:
+            rate, _tau = tagger.pixel_maps(m.sample_for(self.click_channel), ny_used, nx,
+                                           dwell_ps, offset_ps)
+            factor = tagger._trigger_factor(self.click_channel)
+            factor *= tagger._budget_factor(tagger._scan_duration_s or width_s * n_used)
+            if m.faults.get("dead_photons"):
+                factor = 0.0
+            # Photons, their afterpulses and the dark counts, as Flim sums them.
+            expected = (rate * (1 + m.afterpulse_fraction) + m.dark_rate_hz) * width_s * factor
+        out[:ny_used * nx] = tagger.sample_counts(expected).reshape(-1).astype(np.int32)
+        return out
+
+    def getData(self):
+        if self._frame is None:
+            self._frame = self._render()
+        return self._frame.copy()
+
+    def getBinWidths(self):
+        _ny, _nx, _dwell, _offset, width_ps = self._geometry()
+        return np.full(self.n_values, int(width_ps), dtype=np.int64)
+
+    def getIndex(self):
+        ny, nx, dwell_ps, offset_ps, _width = self._geometry()
+        gen = self._tagger._generators.get(self.begin_channel)
+        if gen is None:
+            return np.zeros(self.n_values, dtype=np.int64)
+        markers = self._tagger.marker_times(self.begin_channel)[: self.n_values]
+        out = np.zeros(self.n_values, dtype=np.int64)
+        out[: markers.size] = markers
+        return out
+
+    def clear(self):
+        self._frame = None
+        self._filled = False
+        self._polls = 0
 
 
 class MockTimeTaggerApi:
@@ -1123,6 +1438,7 @@ class MockTimeTaggerApi:
     EventGenerator = EventGenerator
     Scope = Scope
     Flim = Flim
+    CountBetweenMarkers = CountBetweenMarkers
 
     def __init__(self, rates_hz: Optional[Dict[int, float]] = None,
                  model: Optional[SignalModel] = None):
@@ -1150,6 +1466,7 @@ class MockTimeTaggerApi:
 
 __all__ = [
     "CHANNEL_UNUSED",
+    "CountBetweenMarkers",
     "SAMPLE_PRESETS",
     "TAG_BUDGET_PER_MODEL",
     "TEST_SIGNAL_RATE_HZ",
@@ -1164,4 +1481,5 @@ __all__ = [
     "SignalModel",
     "TimeDifferences",
     "decay_shape",
+    "sample_for_input",
 ]
