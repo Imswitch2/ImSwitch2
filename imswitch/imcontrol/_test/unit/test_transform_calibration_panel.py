@@ -165,6 +165,9 @@ def test_a_bead_fit_shows_the_numbers_saves_and_drives_the_pipeline(panel, files
     assert transform.units == 'um' and transform.source_frame == 'detector:Camera'
     assert transform.target_frame == 'scanner:galvo'
     assert transform.target_context.extra['axes'] == ['Y', 'X']
+    w.setHostIntegrationEnabled(True)
+    assert not w.applyCheck.isEnabled() and 'smart pipeline' in w.applyCapabilityLabel.text()   # µm: no overlay
+    w.setHostIntegrationEnabled(False)
     text = w.matrixView.toPlainText()
     assert reference_rule_matches(w, files)
     for snippet in ('Model: ', 'auto: ', 'Residual: RMS', 'nm', 'MIRRORED', 'µm per moving px'):

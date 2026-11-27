@@ -1212,6 +1212,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         supports_live_apply = bool(
             has_transform and self._transform is not None
             and self._transform.as_matrix() is not None
+            and str(self._transform.units) == "px"
         )
         live_apply_reason = (
             "Polynomial transforms can be fitted, saved, loaded and inspected, "
@@ -1219,6 +1220,11 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             "uses Napari's affine transform without resampling; nonlinear Apply "
             "will require an explicit live-frame resampling path."
         )
+        if has_transform and self._transform is not None and str(self._transform.units) != "px":
+            live_apply_reason = (
+                f"This transform maps into {self._transform.units} (scan coordinates), not into another "
+                "image's pixels: it is for the smart pipeline (Save under an id), not for a live overlay."
+            )
         enabled = has_transform and has_target and supports_live_apply
         self.applyCheck.setEnabled(enabled)
         self.applyTargetCombo.setEnabled(enabled)
