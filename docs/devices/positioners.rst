@@ -596,7 +596,8 @@ Marzhauser XY stage driven over RS-232.
         "MHXY": {
             "managerName": "MHXYStageManager",
             "managerProperties": {
-                "rs232device": "MHCOM"
+                "rs232device": "MHCOM",
+                "acceleration": 0.2
             },
             "axes": ["X", "Y"],
             "forPositioning": true,
@@ -623,6 +624,31 @@ Marzhauser XY stage driven over RS-232.
        up, ``false`` makes that an error that names it (the stage is
        reported as failed in Hardware status); ``true`` runs the stage on a
        simulated serial driver instead (a reported mock).
+   * - ``velocity``
+     - float or dict
+     - Optional. Travel speed in revolutions of the spindle per second
+       (Tango ``!vel``), one number for both axes or ``{"X": .., "Y": ..}``.
+       Accepted range 0.001..70 rev/s; anything else is refused at startup and
+       nothing is sent. Absent: the controller keeps its own value.
+   * - ``acceleration``
+     - float or dict
+     - Optional. Acceleration in m/s² (Tango ``!accel``), one number for both
+       axes or ``{"X": .., "Y": ..}``. Accepted range 0.01..20 m/s². Lower it
+       when the stage moves violently (e.g. 0.1–0.3). Absent: the controller
+       keeps its own value.
+
+**Speed and acceleration**
+
+Applied when the stage connects and again after every reconnect (a
+power-cycled controller is back at its defaults), then read back with
+``?vel x`` / ``?accel x`` and logged; a read-back that differs from the
+request, or an ``ERR`` reply, is a warning (motion stays enabled, at whatever
+the controller has). Commands and units follow the Märzhäuser TANGO
+instruction set (``!vel``/``?vel`` in rev/s, ``!accel``/``?accel`` in m/s²).
+Older firmware documents ``!vel`` as available in ``extmode 1`` only; the
+read-back in the log shows whether the controller accepted it. The mm/s that
+a rev/s corresponds to depends on the spindle pitch of the stage (1 rev/s is
+1 mm/s on a 1 mm pitch). Not yet tried on a rig.
 
 **PositionerInfo fields used**
 

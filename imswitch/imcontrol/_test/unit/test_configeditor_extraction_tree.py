@@ -120,8 +120,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 285 with feat/virtual-sample: the PMT's mockSample and the Hamamatsu's
     # mockRandomSeed.
     # 287 with feat/replay-settings: calibrationId on the NI-DAQ and AA AOTF
-    # lasers (the calibration store).
-    assert report.keys == 287
+    # lasers (the calibration store). 289: the Marzhauser stage's velocity
+    # and acceleration.
+    assert report.keys == 289
     assert report.alias_spellings == 10
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
@@ -146,8 +147,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure flags (all optional; required unchanged).
     # 219: the Swabian detector's optional measurement.
     # 221: the PMT's mockSample and the Hamamatsu's mockRandomSeed.
-    # 223: the two calibrationId.
-    assert report.optional == 223
+    # 223: the two calibrationId. 225: Marzhauser velocity/acceleration.
+    assert report.optional == 225
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -171,7 +172,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # AOTF lasers' calibCsvPath now read with .get(), and the step-board
     # laser's calibCsvPath, read with .get() since it resolves through the
     # shared calibration table on dev.
-    assert report.none_default_only == 62
+    # 64: Marzhauser velocity/acceleration (absent = controller untouched).
+    assert report.none_default_only == 64
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -197,8 +199,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 202: the Swabian detector's measurement row (photon_input has
     # click_role's row, click_role being its older spelling).
     # 204: the PMT's mockSample row and the Hamamatsu's mockRandomSeed.
-    # 206: the two calibrationId rows.
-    assert (report.docs_agree, report.docs_documented) == (206, 206)
+    # 206: the two calibrationId rows. 208: Marzhauser velocity/acceleration.
+    assert (report.docs_agree, report.docs_documented) == (208, 208)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

@@ -66,6 +66,14 @@ Unreleased
 
 **New Features**
 
+- **Märzhäuser (Tango) XY stage: speed and acceleration as setup settings.**
+  Optional ``velocity`` (rev/s, ``!vel``) and ``acceleration`` (m/s²,
+  ``!accel``) in the ``MHXYStageManager`` ``managerProperties``, one number for
+  both axes or per axis.  Applied when the stage connects and after every
+  reconnect, read back (``?vel`` / ``?accel``) and logged; out-of-range values
+  are refused at startup before anything is sent.  Absent keys leave the
+  controller as it is (the previous behaviour).  Not yet tried on a rig.
+
 - **Spot counting and a spot-triggered confocal revisit.** Two ImProcess
   processors share the SMLM localizer's net-gradient detection (without the
   fit), with an optional relative threshold (multiples of each frame's noise)

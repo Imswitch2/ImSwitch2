@@ -65,7 +65,28 @@ class MHXYStageManager(PositionerManager):
 
     - ``rs232device`` -- name of the defined rs232 communication channel
       through which the communication should take place
+    - ``velocity`` -- optional travel speed in revolutions of the spindle per
+      second (Tango ``!vel``), one number for both axes or ``{"X": .., "Y": ..}``
+    - ``acceleration`` -- optional acceleration in m/s² (Tango ``!accel``),
+      one number for both axes or ``{"X": .., "Y": ..}``
+
+    Speed and acceleration are applied when the stage connects and again after
+    every reconnect, then read back (``?vel`` / ``?accel``) and logged. When a
+    key is absent the controller keeps whatever it has (its own power-on value
+    or what another program set). Values outside the accepted ranges below are
+    refused with an error before anything is sent.
     """
+
+    #: Accepted ranges for ``velocity`` (rev/s) and ``acceleration`` (m/s²).
+    #: Tango instruction set: ``!vel``/``?vel`` in rev/s (read resolution
+    #: 0.001 rev/s), ``!accel``/``?accel`` in m/s²; the hardware speed range is
+    #: quoted as up to 70 rev/s. The acceleration ceiling here is deliberately
+    #: lower than the controller's own limit: the point of the setting is a
+    #: gentler stage, and a typo should not make it more violent.
+    VELOCITY_RANGE = (0.001, 70.0)
+    ACCELERATION_RANGE = (0.01, 20.0)
+    #: Read-back tolerance (relative) before a mismatch is warned about.
+    READBACK_RTOL = 0.02
 
     def __init__(self, positionerInfo, name, *args, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
@@ -104,10 +125,16 @@ class MHXYStageManager(PositionerManager):
                 mock_active=True,
             )
 
+        # Validated before any I/O: a bad value is a setup error, never sent.
+        self._motionProfile = self.parseMotionProfile(
+            positionerInfo.managerProperties or {}, list(positionerInfo.axes))
+
         super().__init__(positionerInfo, name, initialPosition=self._readHardwarePosition(
             list(positionerInfo.axes)
         ))
         self._lifecycle = _MHXYLifecycle(self)
+        if self.positionSynced:
+            self.applyMotionProfile()
 
         try:
             self.__logger.info(f"MHXYStage serial no: {self._rs232Manager.query('?readsn')}")
@@ -231,6 +258,105 @@ class MHXYStageManager(PositionerManager):
             if reconnect:
                 self._reconnectThread = None
 
+    @classmethod
+    def parseMotionProfile(cls, props, axes):
+        """``{'vel': {axis: v}, 'accel': {axis: a}}`` from managerProperties.
+
+        Absent keys give empty dicts (controller left alone). Raises
+        ``ValueError`` naming the key for anything not a finite number inside
+        the accepted range, or naming an axis the stage does not have.
+        """
+        profile = {}
+        for key, raw, cmd, (lo, hi), unit in (
+                ('velocity', props.get('velocity'), 'vel', cls.VELOCITY_RANGE, 'rev/s'),
+                ('acceleration', props.get('acceleration'), 'accel',
+                 cls.ACCELERATION_RANGE, 'm/s²')):
+            values = {}
+            if raw is not None:
+                if isinstance(raw, dict):
+                    unknown = set(raw) - set(axes)
+                    if unknown:
+                        raise ValueError(f'Marzhauser {key}: unknown axis {sorted(unknown)};'
+                                         f' the stage has {axes}.')
+                    items = dict(raw)
+                else:
+                    items = {axis: raw for axis in axes}
+                for axis, value in items.items():
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        raise ValueError(f'Marzhauser {key} for {axis}: {value!r} is not a number.')
+                    if isinstance(value, bool) or not math.isfinite(number) \
+                            or not lo <= number <= hi:
+                        raise ValueError(
+                            f'Marzhauser {key} for {axis}: {value!r} is outside the accepted'
+                            f' range {lo:g}..{hi:g} {unit}; nothing was sent to the stage.')
+                    values[axis] = number
+            profile[cmd] = values
+        return profile
+
+    def applyMotionProfile(self):
+        """Send the configured speed/acceleration and read them back.
+
+        Returns ``{'vel': {axis: readback}, 'accel': {...}}`` (``None`` for a
+        value that could not be read back). Nothing is sent when no profile is
+        configured. A failure is logged and reported in the returned dict; it
+        does not disable motion (the stage then runs at whatever the
+        controller had, as it did before this setting existed).
+        """
+        profile = self.__dict__.get('_motionProfile') or {}
+        result = {}
+        for cmd, values in profile.items():
+            if not values:
+                continue
+            result[cmd] = {}
+            for axis, value in values.items():
+                letter = axis.lower()
+                readback = None
+                try:
+                    self._sendSetting(f'!{cmd} {letter} {value:g}')
+                except Exception as exc:
+                    self.__logger.warning(
+                        f'Marzhauser: could not set {cmd} {axis}={value:g}: {exc}. '
+                        f'The controller keeps its previous value.')
+                try:   # read back either way: the log shows what the stage runs at
+                    readback = self._parseSingle(self._rs232Manager.query(f'?{cmd} {letter}'))
+                except Exception as exc:
+                    self.__logger.warning(f'Marzhauser: ?{cmd} {axis} failed: {exc}')
+                result[cmd][axis] = readback
+                if readback is None:
+                    self.__logger.warning(
+                        f'Marzhauser: {cmd} {axis} requested {value:g}, read-back failed.')
+                elif abs(readback - value) > self.READBACK_RTOL * abs(value) + 1e-3:
+                    self.__logger.warning(
+                        f'Marzhauser: {cmd} {axis} requested {value:g}, controller reports'
+                        f' {readback:g}.')
+                else:
+                    self.__logger.info(f'Marzhauser: {cmd} {axis} = {readback:g}')
+        self._appliedMotionProfile = result
+        return result
+
+    def _sendSetting(self, command):
+        """Tango ``!`` commands answer nothing on success; write without
+        waiting for a reply where the transport can, else fall back to the
+        query this driver uses for everything else. An ``ERR`` reply raises."""
+        write = getattr(self._rs232Manager, 'write', None)
+        reply = write(command) if callable(write) else self._rs232Manager.query(command)
+        if isinstance(reply, str) and reply.strip().upper().startswith('ERR'):
+            raise RuntimeError(f'controller answered {reply.strip()!r} to {command!r}')
+
+    @staticmethod
+    def _parseSingle(reply):
+        if reply is None:
+            return None
+        for token in str(reply).replace(',', ' ').split():
+            try:
+                value = float(token)
+            except ValueError:
+                continue
+            return value if math.isfinite(value) else None
+        return None
+
     def getDeviceLifecycle(self):
         if callable(getattr(self._rs232Manager, 'reconnectTransport', None)):
             return self._lifecycle
@@ -255,6 +381,8 @@ class MHXYStageManager(PositionerManager):
             self._usingMockFallback = False
             if not self.syncPositionFromHardware():
                 raise RuntimeError('Stage did not return a valid XY position after reconnect.')
+            # A power-cycled controller is back at its own defaults.
+            self.applyMotionProfile()
         except Exception as exc:
             self._setConnectionError(
                 exc, summary='Marzhauser reconnect failed; motion disabled',
