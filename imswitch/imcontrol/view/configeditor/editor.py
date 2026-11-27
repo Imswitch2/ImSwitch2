@@ -314,6 +314,7 @@ IMPROCESS_RECONSTRUCTOR_FALLBACK = [
 ]
 
 IMPROCESS_PROCESSOR_FALLBACK = [
+    "axis-swap",
     "bead-fwhm",
     "channel-merge",
     "channel-split",

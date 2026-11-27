@@ -497,6 +497,7 @@ linestep-sum            Reconstructor  Advanced Scan line steps summed per laser
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
 stack-subset            Processor      Crop/substack by labeled axis ranges
+axis-swap               Processor      Swap or reorder axes, and rename them
 stack-split             Processor      Split a stack axis into one result per plane
 stack-combine           Processor      Stack results on a new axis or concatenate an existing axis
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
@@ -589,6 +590,16 @@ its second input), and ``pick`` accepts only ``points``.
      - Any rank >= 2 result; ranges are addressed by axis label or index.
      - ``ArrayProcessingResult`` with the same rank and sliced data.  Lazy
        sources stay lazy when possible; stepped axes get scaled axis spacing.
+   * - ``axis-swap``
+     - Dimensions and channels
+     - Any rank >= 2 image.
+     - *Order* moves the array's axes, by label or 0-based index: two axes
+       to swap (``Z,T``) or every axis in its new order (``Z,X,Y``); each
+       axis keeps its label and scale. *Keep labels in place* leaves the
+       labels and scales where they are instead, so the data changes meaning
+       (``X,Y`` then transposes the image). *Labels* renames axes without
+       touching the array: all of them (``X,Y,T``) or pairs (``Z=T``). An
+       in-memory array is reordered as a view; a lazy source is read.
    * - ``projection``
      - Dimensions and channels
      - A stack: rank >= 3, as ImageJ's *Z Project* requires.  Auto prefers
