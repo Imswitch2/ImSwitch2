@@ -83,6 +83,17 @@ Unreleased
 
 **Bug Fixes**
 
+- **The NI-DAQ can no longer stay "busy" until ImSwitch is restarted.**  A
+  task that failed to close (after a failed scan, a Stop, or a stage/Z move)
+  kept the DAQ busy for good: nothing retried the close, and Stop had no run
+  left to stop.  Stop, the next scan and the next move now close what a
+  finished run left registered and clear busy only once the driver has
+  really released it.  A refused start says what holds the DAQ (scan, move,
+  or the tasks left open, and for how long).  Hardware status has a
+  **Reconnect** on the NI-DAQ rows that resets the DAQ -- ends the run,
+  closes every task, puts lines and lasers to rest -- or says exactly which
+  task the driver would not release.  A scan interrupted by something other
+  than an ordinary error is rolled back too.
 - **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
   used to do the whole stop on the thread that took the click: stop and close
   every NI-DAQ task (up to 2 s each), join the waiter threads, write the lines

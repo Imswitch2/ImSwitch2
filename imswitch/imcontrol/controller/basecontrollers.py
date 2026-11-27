@@ -1324,7 +1324,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return None
         if localToken is not None and activeRun is localToken:
             if activeIteration is not None or not sigScanStartingEmitted:
-                reason = 'Ignoring duplicate scan start from the active owner.'
+                reason = (
+                    'Ignoring duplicate scan start from the active owner: a '
+                    'scan (possibly started by tiling or a workflow) is '
+                    'already in progress.'
+                )
                 self._logger.warning(reason)
                 # Callers historically mark isRunning before entering this
                 # helper.  Restore the real iteration state so a duplicate
