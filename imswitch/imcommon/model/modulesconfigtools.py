@@ -24,8 +24,27 @@ def getEnabledModuleIds():
 def setEnabledModuleIds(moduleIds):
     global _modules
     _modules = dataclasses.replace(_modules, enabled=moduleIds)
-    with open(_modulesFilePath, 'w') as modulesFile:
-        modulesFile.write(_modules.to_json(indent=4))
+    _writeModulesFile()
+
+
+def _writeModulesFile():
+    """ Writes modules.json, unless it already says the same.
+
+    The file is replaced in one step (a temporary file beside it, then
+    os.replace): it is read at import, and a second ImSwitch -- or a second
+    test worker -- starting at that moment used to find it truncated and
+    fail with a JSONDecodeError. """
+    text = _modules.to_json(indent=4)
+    try:
+        with open(_modulesFilePath, 'r') as modulesFile:
+            if modulesFile.read() == text:
+                return
+    except OSError:
+        pass
+    temporary = f'{_modulesFilePath}.{os.getpid()}.tmp'
+    with open(temporary, 'w') as modulesFile:
+        modulesFile.write(text)
+    os.replace(temporary, _modulesFilePath)
 
 
 def getAvailableModules():
@@ -82,8 +101,7 @@ else:
     with open(_modulesFilePath, 'r') as modulesFile:
         _modules = _Modules.from_json(modulesFile.read(), infer_missing=True)
 
-with open(_modulesFilePath, 'w') as modulesFile:
-    modulesFile.write(_modules.to_json(indent=4))
+_writeModulesFile()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
