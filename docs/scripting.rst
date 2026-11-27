@@ -234,7 +234,7 @@ can decide whether to wait for the end of the recording
 runnable on a mock setup.
 
 Reading and setting the microscope
-===========================
+==================================
 Every device the setup file declares can be read as well as set, so a
 script can act on what it finds. The names come first --
 ``getDetectorNames()``, ``getLaserNames()``, ``getPositionerNames()``,
@@ -302,7 +302,7 @@ lock saved for this setup (see :ref:`focuslock-hold-relock`).
 
 :doc:`api/api.imcontrol` lists every function a script can call, with
 its signature and the widget that provides it.
-=======
+
 .. _scripting-inputs:
 
 Script inputs and the Script Runner panel
