@@ -1,7 +1,10 @@
 """The canvas widget: zoom, pan, overlays, and drops from the palette.
 
 Wheel zooms around the pointer; the middle button, or Space with the left
-button, pans; a left drag on empty canvas selects with a rubber band. The
+button, pans; a left drag on empty canvas selects with a rubber band.
+Sideways wheel events (a tilted wheel, a mouse driver's auto-scroll) never
+move the canvas: left to the scroll area they scrolled it sideways for as
+long as the wheel was held, with the pointer standing still. The
 kind legend sits bottom left, the zoom / fit / tidy controls bottom right,
 and an empty canvas says how to begin.
 """
@@ -17,6 +20,9 @@ from .items import EdgeItem, NodeItem
 
 #: What the palette puts on a drag: "<step kind>\n<plugin id>".
 STEP_MIME = "application/x-imswitch-workflow-step"
+
+#: How to move around the canvas, for tooltips.
+PAN_HINT = "Wheel: zoom around the pointer · drag with the middle button (or hold Space and drag): pan"
 
 _OVERLAY_STYLE = (
     "QFrame#canvasOverlay { background: rgba(23,33,43,230); border: 1px solid #2a3846; border-radius: 9px; }"
@@ -56,6 +62,7 @@ class CanvasView(QtWidgets.QGraphicsView):
         self.setAcceptDrops(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._panning = None
+        self._pan_button_held = None
         self._space = False
         self._build_overlays()
 
@@ -80,6 +87,7 @@ class CanvasView(QtWidgets.QGraphicsView):
         controls = QtWidgets.QHBoxLayout(self._controls)
         controls.setContentsMargins(6, 2, 6, 2)
         controls.setSpacing(2)
+        self._controls.setToolTip(PAN_HINT)
 
         def button(text, tip, slot):
             widget = QtWidgets.QToolButton()
@@ -103,7 +111,8 @@ class CanvasView(QtWidgets.QGraphicsView):
             "<b style='color:#e3e6ea'>An empty workflow</b><br><br>"
             "Drag a step here from the list on the left,<br>"
             "or double-click / press <b>Tab</b> to search for one.<br><br>"
-            "Then drag from a box's right side to another box's left side to connect them."
+            "Then drag from a box's right side to another box's left side to connect them.<br><br>"
+            "<span style='font-size:9.5pt'>Wheel zooms; drag with the middle button (or Space + left) to pan.</span>"
         )
         self._hint.hide()
         self._place_overlays()
@@ -173,12 +182,19 @@ class CanvasView(QtWidgets.QGraphicsView):
         self._zoom_changed()
 
     def wheelEvent(self, event) -> None:
+        # Only the vertical wheel does something here: it zooms. A pan in
+        # progress ignores the wheel, and sideways events (a tilted wheel, which
+        # many mice report while the wheel is pressed and repeat while it is held,
+        # or a driver's auto-scroll) are swallowed: the scroll area's default
+        # handling scrolled the canvas sideways, continuously, without the pointer
+        # moving.
+        event.accept()
+        if self._panning is not None:
+            return
         delta = event.angleDelta().y()
         if delta == 0:
-            super().wheelEvent(event)
             return
         self.zoom_by(math.pow(1.0015, delta), anchor=QtCore.QPointF(event.pos()) if hasattr(event, "pos") else None)
-        event.accept()
 
     def keyPressEvent(self, event) -> None:
         if event.key() == QtCore.Qt.Key_Space and not event.isAutoRepeat():
@@ -203,18 +219,43 @@ class CanvasView(QtWidgets.QGraphicsView):
     def focusNextPrevChild(self, _next: bool) -> bool:
         return False        # Tab opens the quick-add picker here
 
+    def _pan_button(self, button) -> bool:
+        return button == QtCore.Qt.MiddleButton or (button == QtCore.Qt.LeftButton and self._space)
+
+    def _start_pan(self, pos: QtCore.QPoint, button) -> None:
+        self._panning = QtCore.QPoint(pos)
+        self._pan_button_held = button
+        self.viewport().setCursor(QtCore.Qt.ClosedHandCursor)
+
+    def _end_pan(self) -> None:
+        self._panning = None
+        self._pan_button_held = None
+        if self._space:
+            self.viewport().setCursor(QtCore.Qt.OpenHandCursor)
+        else:
+            self.viewport().unsetCursor()
+
+    @property
+    def panning(self) -> bool:
+        return self._panning is not None
+
     def mousePressEvent(self, event) -> None:
-        if event.button() == QtCore.Qt.MiddleButton or (event.button() == QtCore.Qt.LeftButton and self._space):
-            self._panning = event.pos()
-            self.viewport().setCursor(QtCore.Qt.ClosedHandCursor)
+        if self._pan_button(event.button()):
+            self._start_pan(event.pos(), event.button())
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self._panning is not None:
+            if not event.buttons() & self._pan_button_held:
+                # The release went elsewhere (a popup, another window): stop
+                # panning instead of dragging the canvas with a free pointer.
+                self._end_pan()
+                super().mouseMoveEvent(event)
+                return
             delta = event.pos() - self._panning
-            self._panning = event.pos()
+            self._panning = QtCore.QPoint(event.pos())
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             event.accept()
@@ -223,16 +264,29 @@ class CanvasView(QtWidgets.QGraphicsView):
 
     def mouseReleaseEvent(self, event) -> None:
         if self._panning is not None:
-            self._panning = None
-            if self._space:
-                self.viewport().setCursor(QtCore.Qt.OpenHandCursor)
-            else:
-                self.viewport().unsetCursor()
+            if event.button() == self._pan_button_held:
+                self._end_pan()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
+    def focusOutEvent(self, event) -> None:
+        if self._space:
+            self._space = False
+            if self._panning is None:
+                self.viewport().unsetCursor()
+        super().focusOutEvent(event)
+
     def mouseDoubleClickEvent(self, event) -> None:
+        # Qt sends the second press of a quick double click as a double-click:
+        # for the pan buttons that is just another pan, not a quick-add.
+        if self._pan_button(event.button()):
+            self._start_pan(event.pos(), event.button())
+            event.accept()
+            return
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
         pos = self.mapToScene(event.pos())
         if self.scene().node_at(pos) is None and self.scene().edge_at(pos) is None:
             self.sigQuickAddHere.emit(pos)
@@ -304,4 +358,4 @@ class CanvasView(QtWidgets.QGraphicsView):
         super().dropEvent(event)
 
 
-__all__ = ["CanvasView", "STEP_MIME"]
+__all__ = ["CanvasView", "PAN_HINT", "STEP_MIME"]
