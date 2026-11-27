@@ -89,6 +89,10 @@ Unreleased
   frames above it, the minimum time between scans and the scan budget; the
   mock demo its threshold and move interval.  Files without controls load as
   before.
+- **Smart pipeline: rotate action.**  On a setup with rotators, a trigger can
+  turn a rotator to an angle (or by one), reserved for the run and moved with
+  its reservation like ``move-to``, bounded by a deadline, with the Rotator
+  panel updated afterwards; the angle can be an exposed parameter.
 - **Smart pipeline: flip-mirror, laser and setup-mode actions.**  On a setup
   with the device, a trigger can move a flip mirror (or filter wheel, light
   path) to a position, switch a laser on or off (optionally at a power), or

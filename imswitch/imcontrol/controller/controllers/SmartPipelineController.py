@@ -290,12 +290,25 @@ class SmartPipelineController(ImConWidgetController):
                 lasers[str(name)] = bool(getattr(manager[name], 'isBinary', False))
         except Exception:
             self.__logger.debug('Smart pipeline: the lasers could not be listed', exc_info=True)
+        rotators = {}
+        try:
+            for item in list(getattr(self._master, 'rotatorsManager', None) or []):
+                name = item[0] if isinstance(item, tuple) else item
+                rotators[str(name)] = None      # no rotator manager declares a range
+        except Exception:
+            self.__logger.debug('Smart pipeline: the rotators could not be listed', exc_info=True)
         try:
             modes = self._setupModeNames()
         except Exception:
             modes = None
         return SetupDevices(flip_mirrors=mirrors, lasers=lasers,
-                            setup_modes=tuple(modes) if modes is not None else None)
+                            setup_modes=tuple(modes) if modes is not None else None, rotators=rotators)
+
+    def _notifyRotator(self, name):
+        """ The Rotator panel reads and shows the angle (GUI thread). """
+        signal = getattr(self._commChannel, 'sigUpdateRotatorPosition', None)
+        if signal is not None:
+            self._marshal(lambda: signal.emit(name))
 
     # ------------------------------------------------------------------ #
     # The designer                                                        #
@@ -540,7 +553,9 @@ class SmartPipelineController(ImConWidgetController):
         actions = live_backend(self._master.positionersManager, snap=self._snap, marshal=self._marshal,
                                logger=self.__logger, scan=scan, devices=self._setupDevices(),
                                controllers=self._commChannel.controllerRegistry, apply_mode=self._applyMode,
-                               setup_modes=lambda: self._marshal(self._setupModeNames) or [])
+                               setup_modes=lambda: self._marshal(self._setupModeNames) or [],
+                               rotators=getattr(self._master, 'rotatorsManager', None),
+                               notify_rotator=self._notifyRotator)
         try:
             transforms = self._transforms()
             steps = self._stepRunner(document)

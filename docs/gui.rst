@@ -1898,7 +1898,16 @@ baseline length -- takes effect at the next arm even though it is applied.
 **Actions** (the designer lists them by category, *Category › Label (id)*):
 
 - *Scan* -- ``run-scan`` (below).
-- *Motion* -- ``move-to``: positioner axes to the first point.
+- *Motion* -- ``move-to``: positioner axes to the first point; ``rotate``: a
+  rotator (motorized rotation mount) to ``position`` degrees, or by it with
+  ``relative``. Like ``move-to`` it reserves the rotator for the run (the
+  Rotator panel and scripts are refused for it meanwhile), moves it with the
+  run's reservation, waits until its manager returns -- the shipped managers
+  return when the move is done -- for at most ``deadline_s`` (longer: the run
+  stops and the rotator stays reserved until it returns), and then the Rotator
+  panel shows the new angle. No rotator manager declares a range, so any angle
+  is accepted; a mount that falls back to a simulation during the move fails
+  the action. ``position`` can be exposed as a parameter.
 - *Light* -- ``laser``: a laser's emission on or off, and with ``set_power``
   its live power first, through the Laser panel (its row and the recorded
   metadata follow; the panel's own rule, read-only while a scan uses the
@@ -1911,8 +1920,8 @@ baseline length -- takes effect at the next arm even though it is applied.
 - *Recording* -- ``snap``.
 - *Other* -- ``wait``, ``log``.
 
-``laser``, ``flip-mirror`` and ``setup-mode`` are offered only on a setup that
-has a laser, a flip mirror, or setup modes. Arming in Validate or Experiment
+``rotate``, ``laser``, ``flip-mirror`` and ``setup-mode`` are offered only on
+a setup that has a rotator, a laser, a flip mirror, or setup modes. Arming in Validate or Experiment
 refuses a pipeline whose action names a device the setup does not have (in
 Visualize actions are skipped and it arms); Validate logs ``would set flip
 mirror 'Snouty' to position 1 (light sheet)`` / ``would switch laser '488'

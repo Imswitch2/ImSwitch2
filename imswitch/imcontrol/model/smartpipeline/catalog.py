@@ -4,7 +4,7 @@ Motion, Light, Devices, Recording, Other: how the designer sorts them).
 
 Always there: ``run-scan``, ``move-to``, ``snap``, ``wait``, ``log``. Only
 when the setup has the device (:func:`catalog` with a :class:`SetupDevices`):
-``flip-mirror`` (a flip mirror, filter wheel or light-path switch to a
+``rotate`` (a rotator to an angle, or by one), ``flip-mirror`` (a flip mirror, filter wheel or light-path switch to a
 position), ``laser`` (a laser on or off, optionally at a power) and
 ``setup-mode`` (apply a saved setup mode, as etSNOUTY switches to its event
 configuration on a trigger).
@@ -90,6 +90,21 @@ LASER = ActionSpec(
     description="Switch a laser's emission on or off (as its row in the Laser panel does), and with set_power "
                 "also set its live power to 'power' (in the laser's units) first; fails when the laser refuses.",
 )
+ROTATE = ActionSpec(
+    "rotate", label="Rotate", accepts=("any",),
+    params={"rotator": "", "position": 0.0, "relative": False, "deadline_s": 30.0},
+    hardware=True, category="Motion",
+    description="Turn a rotator (a motorized rotation mount) to 'position' degrees, or by it with 'relative', "
+                "on its manager with the pipeline's reservation (as move-to); waits until the manager returns "
+                "-- the shipped managers return when the move is done -- for at most deadline_s, then the "
+                "Rotator panel shows the new angle. Fails when the mount refuses, or falls back to a simulation.",
+    fields=(ParamField("position", "float", 0.0, label="Position", suffix="deg", decimals=3,
+                       help="Degrees: the angle, or the turn with 'relative'"),
+            ParamField("relative", "bool", False, label="Relative", help="Turn by 'position' from where it is"),
+            ParamField("deadline_s", "float", 30.0, label="Deadline", suffix="s", min=0.1,
+                       help="Longer than this and the move counts as not finished: the run stops and the "
+                            "rotator stays reserved until it returns")),
+)
 SETUP_MODE = ActionSpec(
     "setup-mode", label="Apply setup mode", accepts=("any",), params={"mode": ""}, hardware=True,
     category="Devices",
@@ -99,7 +114,7 @@ SETUP_MODE = ActionSpec(
 
 ACTION_SPECS = (MOVE_TO, SNAP, LOG, RUN_SCAN, WAIT)
 #: The actions that need a device of the setup; :func:`catalog` adds each when it is there.
-DEVICE_ACTION_SPECS = (FLIP_MIRROR, LASER, SETUP_MODE)
+DEVICE_ACTION_SPECS = (ROTATE, FLIP_MIRROR, LASER, SETUP_MODE)
 
 
 @dataclass(frozen=True)
@@ -107,11 +122,14 @@ class SetupDevices:
     """What the running setup has, for the device actions: ``flip_mirrors``
     maps a mirror to its position names (index = position), ``lasers`` a
     laser to whether it is binary (on/off only), ``setup_modes`` the saved
-    setup modes, or ``None`` when setup modes are not available at all."""
+    setup modes, or ``None`` when setup modes are not available at all,
+    ``rotators`` a rotator to its range in degrees (``None``: none declared)."""
 
     flip_mirrors: Mapping[str, tuple] = field(default_factory=dict)
     lasers: Mapping[str, bool] = field(default_factory=dict)
     setup_modes: tuple | None = None
+    #: rotator -> its (min, max) in degrees when its manager declares one, else ``None``.
+    rotators: Mapping[str, tuple | None] = field(default_factory=dict)
 
 
 def _choice(key: str, names, label: str, help: str = "") -> ParamField:
@@ -125,6 +143,10 @@ def catalog(devices: SetupDevices | None = None) -> ActionCatalog:
     device parameter a choice of the setup's names."""
     specs = list(ACTION_SPECS)
     if devices is not None:
+        rotators = dict(devices.rotators or {})
+        if rotators:
+            specs.append(replace(ROTATE, params={**ROTATE.params, "rotator": next(iter(rotators))},
+                                 fields=(_choice("rotator", rotators, "Rotator"), *ROTATE.fields)))
         mirrors = dict(devices.flip_mirrors or {})
         if mirrors:
             most = max((len(p) for p in mirrors.values()), default=2) or 2
@@ -181,7 +203,7 @@ def axis_targets(params: dict) -> list[tuple[str, str]]:
     return targets
 
 
-__all__ = ["ACTION_SPECS", "DEVICE_ACTION_SPECS", "FLIP_MIRROR", "LASER", "LOG", "MOVE_TO", "RUN_SCAN", "SETUP_MODE",
+__all__ = ["ACTION_SPECS", "DEVICE_ACTION_SPECS", "FLIP_MIRROR", "LASER", "LOG", "MOVE_TO", "ROTATE", "RUN_SCAN", "SETUP_MODE",
            "SNAP", "SetupDevices", "WAIT", "axis_targets", "catalog"]
 
 

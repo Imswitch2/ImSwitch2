@@ -34,6 +34,7 @@ from imswitch.imcontrol.model.smartpipeline.catalog import (
     LASER,
     LOG,
     MOVE_TO,
+    ROTATE,
     RUN_SCAN,
     SETUP_MODE,
     SNAP,
@@ -705,6 +706,116 @@ def _registry_of(controllers) -> dict:
     return registry or {}
 
 
+class RotateAdapter:
+    """``rotate``: a rotator to an angle (or by one) on its manager, like
+    ``move-to``: the rotator is reserved for the pipeline (``rotator:<name>``,
+    the admission key its manager's ``move_abs``/``move_rel`` check), the move
+    carries the reservation token and runs on the control executor with
+    ``deadline_s``; a move that does not return is quarantined (the run stops,
+    the rotator stays reserved until it returns). Then ``notify(name)`` -- the
+    comm channel's ``sigUpdateRotatorPosition`` on the GUI thread -- makes the
+    Rotator panel read and show the new angle, as the rotation scan does.
+
+    ``rotators`` is ``{name: (min, max) or None}`` of the setup; a move to a
+    mount that fell back to a simulation during the move fails (nothing
+    turned)."""
+
+    spec = ROTATE
+
+    def __init__(self, rotatorsManager, rotators: dict, *, executor=None, notify=None):
+        self._manager = rotatorsManager
+        self._rotators = {str(k): (tuple(v) if v else None) for k, v in dict(rotators or {}).items()}
+        self._executor = executor
+        self._notify = notify
+        self.quarantined: set[str] = set()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(name: str) -> str:
+        from imswitch.imcontrol.model.resources import rotator_key
+
+        return rotator_key(name)
+
+    def resources(self, params: dict) -> set[str]:
+        name = str(params.get("rotator") or "")
+        return {self._key(name)} if name else set()
+
+    def problems(self, params: dict) -> list[str]:
+        name = str(params.get("rotator") or "")
+        if name not in self._rotators:
+            return [f"rotate: no rotator {name!r} in this setup (have: {', '.join(self._rotators) or 'none'})"]
+        value = params.get("position")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)):
+            return [f"rotate: position {value!r} is not a number of degrees"]
+        limits = self._rotators[name]
+        if limits is not None and not params.get("relative"):
+            low, high = float(limits[0]), float(limits[1])
+            if not low <= float(value) <= high:
+                return [f"rotate: {name!r} turns from {low:g} to {high:g} deg, not to {float(value):g}"]
+        return []
+
+    def plan(self, request: ActionRequest) -> dict:
+        problems = self.problems(request.params)
+        if problems:
+            return {"message": f"would NOT rotate: {problems[0]}"}
+        params = request.params
+        how = "by" if params.get("relative") else "to"
+        return {"message": f"would rotate {params['rotator']!r} {how} {float(params['position']):g} deg"}
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        params = request.params
+        problems = self.problems(params)
+        if problems:
+            completion.fail(problems[0])
+            return completion
+        name, value = str(params["rotator"]), float(params["position"])
+        relative = bool(params.get("relative", False))
+        try:
+            manager = self._manager[name]
+        except Exception:  # noqa: BLE001 - absent since arm
+            completion.fail(f"rotate: no rotator {name!r} in this setup")
+            return completion
+        simulated = bool(getattr(manager, "isSimulated", False))
+
+        def step():
+            if relative:
+                manager.move_rel(value, owner=token)
+            else:
+                manager.move_abs(value, owner=token)
+
+        resource = self._key(name)
+        executor = self._executor
+        if executor is None:
+            from imswitch.imcontrol.model.measurement.controls import get_control_executor
+
+            executor = get_control_executor()
+        ok, cause = executor.run_step(resource, f"rotate {name}", step,
+                                      float(params.get("deadline_s") or ROTATE.params["deadline_s"]))
+        if not ok:
+            unfinished = "did not finish" in cause
+            if unfinished:
+                with self._lock:
+                    self.quarantined.add(resource)
+            completion.fail(f"rotate {name}: {cause}", ended=not unfinished)
+            return completion
+        if self._notify is not None:
+            try:
+                self._notify(name)
+            except Exception:  # noqa: BLE001 - the panel's display must not fail the move
+                pass
+        if not simulated and bool(getattr(manager, "isSimulated", False)):
+            completion.fail(f"rotate {name}: the mount fell back to a simulation during the move; it did not turn")
+            return completion
+        completion.complete({"rotator": name, "relative": relative, "requested_deg": value,
+                             "position_deg": float(getattr(manager, "position", float("nan")))})
+        return completion
+
+    def released(self, resource: str) -> None:
+        with self._lock:
+            self.quarantined.discard(resource)
+
+
 class FlipMirrorAdapter:
     """``flip-mirror``: the Flip Mirrors panel's ``move_flip`` (its followers
     move too, its row shows the new state), on the GUI thread.
@@ -1029,12 +1140,13 @@ class LiveActionBackend:
 
 def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, logger=None, scan=None,
                  devices: SetupDevices | None = None, controllers=None, apply_mode=None,
-                 setup_modes=None) -> LiveActionBackend:
+                 setup_modes=None, rotators=None, notify_rotator=None) -> LiveActionBackend:
     """The backend: move-to, snap, log, wait, -- with ``scan`` (a dict of
     ``controllers``, ``workflow``, ``capture``) -- run-scan, and the device
     actions of :func:`~.catalog.catalog` for what ``devices`` has (through
     the panels in ``controllers``; ``apply_mode``/``setup_modes`` apply and
-    list the setup modes)."""
+    list the setup modes; ``rotators`` is the rotators manager and
+    ``notify_rotator(name)`` refreshes the Rotator panel)."""
     adapters = [
         MoveToAdapter(positionersManager, executor=executor, logger=logger),
         SnapAdapter(snap, marshal),
@@ -1046,6 +1158,8 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
                                        capture=scan.get("capture"), logger=logger,
                                        recorder=scan.get("recorder")))
     if devices is not None:
+        if devices.rotators and rotators is not None:
+            adapters.append(RotateAdapter(rotators, devices.rotators, executor=executor, notify=notify_rotator))
         if devices.flip_mirrors:
             adapters.append(FlipMirrorAdapter(controllers, devices.flip_mirrors, marshal))
         if devices.lasers:
@@ -1060,7 +1174,7 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
 
 
 __all__ = ["BUSY_WAIT_S", "ActionAdapter", "FlipMirrorAdapter", "LaserAdapter", "LiveActionBackend", "LogAdapter",
-           "MoveToAdapter", "RunScanAdapter", "SetupModeAdapter", "SnapAdapter", "WaitAdapter", "live_backend",
+           "MoveToAdapter", "RotateAdapter", "RunScanAdapter", "SetupModeAdapter", "SnapAdapter", "WaitAdapter", "live_backend",
            "scan_panel_busy"]
 
 

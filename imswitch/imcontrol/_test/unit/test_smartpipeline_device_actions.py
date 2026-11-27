@@ -16,7 +16,7 @@ from imswitch.imcommon.model.workflow.steps import Workflow
 from imswitch.imcontrol.model.smartpipeline import ArmError, Engine, RunMode
 from imswitch.imcontrol.model.smartpipeline.catalog import SetupDevices, catalog
 from imswitch.imcontrol.model.smartpipeline.live_actions import (
-    FlipMirrorAdapter, LaserAdapter, SetupModeAdapter, live_backend,
+    FlipMirrorAdapter, LaserAdapter, RotateAdapter, SetupModeAdapter, live_backend,
 )
 from imswitch.imcontrol.model.smartpipeline.mock import ArrayFrameSource, FunctionStepRunner
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest
@@ -219,3 +219,128 @@ def test_the_panel_offers_the_device_actions_of_its_setup(panel):
     assert devices.setup_modes is None            # no setup-mode service in this session
     assert {'flip-mirror', 'laser'} <= set(controller._catalog().ids())
     assert 'setup-mode' not in controller._catalog()
+    assert 'rotate' not in controller._catalog()
+    panel.master.rotatorsManager = [('HWP', SimpleNamespace())]     # a MultiManager iterates (name, manager)
+    assert controller._setupDevices().rotators == {'HWP': None} and 'rotate' in controller._catalog()
+
+
+# -- rotate ----------------------------------------------------------------------------
+
+class FakeRotator:
+    def __init__(self, name, fallBack=False, fails=False):
+        self.name, self.position, self.isSimulated = name, 0.0, False
+        self.calls, self.fallBack, self.fails = [], fallBack, fails
+
+    def move_abs(self, value, owner=None):
+        self.calls.append(('abs', value, owner))
+        if self.fails:
+            raise RuntimeError('mount answered NAK')
+        self.position = float(value)
+        self.isSimulated = self.fallBack
+
+    def move_rel(self, value, owner=None):
+        self.calls.append(('rel', value, owner))
+        self.position += float(value)
+
+
+class FakeExecutor:
+    def __init__(self, hang=False):
+        self.hang, self.steps = hang, []
+
+    def run_step(self, resource, label, fn, deadline_s):
+        self.steps.append((resource, label, deadline_s))
+        if self.hang:
+            return False, f'{label} did not finish within {deadline_s:g} s'
+        try:
+            fn()
+        except Exception as exc:
+            return False, f'{type(exc).__name__}: {exc}'
+        return True, ''
+
+
+def test_rotate_is_offered_with_the_setups_rotators_in_the_motion_category():
+    assert 'rotate' not in catalog() and 'rotate' not in catalog(DEVICES)
+    full = catalog(SetupDevices(rotators={'HWP': None, 'QWP': (0.0, 180.0)}))
+    spec = full.get('rotate')
+    assert spec.category == 'Motion' and spec.params['rotator'] == 'HWP'
+    fields = {f.key: f for f in spec.fields}
+    assert fields['rotator'].options == ('HWP', 'QWP') and fields['position'].type == 'float'
+    assert fields['position'].suffix == 'deg' and fields['relative'].type == 'bool'
+    # position is a field a control can expose (float, with its unit)
+    from imswitch.imcommon.model.smartpipeline.descriptors import param_field
+
+    step = Action('turn', 'rotate', {'rotator': 'HWP', 'position': 22.5}, inputs=['x'])
+    assert param_field(step, 'position', full).suffix == 'deg'
+
+
+def test_rotate_reserves_the_rotator_moves_with_the_token_and_refreshes_the_panel():
+    hwp = FakeRotator('HWP')
+    shown, executor = [], FakeExecutor()
+    adapter = RotateAdapter({'HWP': hwp}, {'HWP': None, 'QWP': (0.0, 180.0)}, executor=executor, notify=shown.append)
+    assert adapter.resources({'rotator': 'HWP'}) == {'rotator:HWP'}
+    assert adapter.plan(_request('rotate', {'rotator': 'HWP', 'position': 22.5}))['message'] == \
+        "would rotate 'HWP' to 22.5 deg"
+    done = adapter.start(_request('rotate', {'rotator': 'HWP', 'position': 22.5, 'deadline_s': 5.0}), 'tok')
+    assert done.result == {'rotator': 'HWP', 'relative': False, 'requested_deg': 22.5, 'position_deg': 22.5}
+    assert hwp.calls == [('abs', 22.5, 'tok')] and shown == ['HWP']
+    assert executor.steps == [('rotator:HWP', 'rotate HWP', 5.0)]
+    by = adapter.start(_request('rotate', {'rotator': 'HWP', 'position': -5, 'relative': True}), 'tok')
+    assert by.done and hwp.position == 17.5 and hwp.calls[-1] == ('rel', -5.0, 'tok')
+
+
+def test_rotate_is_checked_at_arm_and_fails_soft():
+    adapter = RotateAdapter({'HWP': FakeRotator('HWP')}, {'HWP': None, 'QWP': (0.0, 180.0)},
+                            executor=FakeExecutor())
+    assert 'no rotator' in adapter.problems({'rotator': 'Nope', 'position': 1.0})[0]
+    assert 'not a number' in adapter.problems({'rotator': 'HWP', 'position': 'ten'})[0]
+    assert 'from 0 to 180' in adapter.problems({'rotator': 'QWP', 'position': 200.0})[0]
+    assert adapter.problems({'rotator': 'QWP', 'position': 200.0, 'relative': True}) == []
+    refused = RotateAdapter({'HWP': FakeRotator('HWP', fails=True)}, {'HWP': None}, executor=FakeExecutor())
+    failed = refused.start(_request('rotate', {'rotator': 'HWP', 'position': 1.0}), None)
+    assert failed.outcome == 'failed' and 'NAK' in failed.error
+    fell = RotateAdapter({'HWP': FakeRotator('HWP', fallBack=True)}, {'HWP': None}, executor=FakeExecutor())
+    failed = fell.start(_request('rotate', {'rotator': 'HWP', 'position': 1.0}), None)
+    assert failed.outcome == 'failed' and 'simulation' in failed.error
+    stuck = RotateAdapter({'HWP': FakeRotator('HWP')}, {'HWP': None}, executor=FakeExecutor(hang=True))
+    unfinished = stuck.start(_request('rotate', {'rotator': 'HWP', 'position': 1.0}), None)
+    assert unfinished.outcome == 'failed' and not unfinished.ended and stuck.quarantined == {'rotator:HWP'}
+    stuck.released('rotator:HWP')
+    assert stuck.quarantined == set()
+
+
+def test_a_trigger_rotates_in_an_experiment_with_the_reservation_and_arm_refuses_an_unknown_rotator():
+    from imswitch.imcontrol.model.resources import get_resource_registry
+    from imswitch.imcontrol.model.smartpipeline.run import PipelineRun
+
+    hwp = FakeRotator('HWP')
+    devices = SetupDevices(rotators={'HWP': None})
+    backend = live_backend({}, devices=devices, rotators={'HWP': hwp}, executor=FakeExecutor())
+    assert backend.resources_for(Workflow('p', [Live('cam', detector='Camera'),
+                                                Action('turn', 'rotate', {'rotator': 'HWP', 'position': 45.0},
+                                                       inputs=['cam'])])) == {'rotator:HWP'}
+    document = SmartPipelineDocument(Workflow('turn on trigger', [
+        Live('cam', detector='Camera'),
+        Gate('once', 'once', inputs=['cam']),
+        Action('turn', 'rotate', {'rotator': 'HWP', 'position': 45.0}, inputs=['once.fired']),
+    ]))
+    document.settings = PipelineSettings(roles={'scouting': '(unchanged)', 'idle': '(unchanged)'})
+    class _Source(ArrayFrameSource):
+        def start(self):
+            pass
+
+    run = PipelineRun(document, source=_Source([np.zeros((4, 4), np.float32)]),
+                      steps=FunctionStepRunner({}), actions=backend, mode=RunMode.EXPERIMENT,
+                      apply_mode=lambda name: None, resource_registry=get_resource_registry())
+    run.arm()
+    assert 'rotator:HWP' in run.reserved
+    token = run.token
+    run.start()
+    assert run.join(5)
+    assert hwp.calls and hwp.calls[0][:2] == ('abs', 45.0) and hwp.calls[0][2] == token
+    assert get_resource_registry().holder('rotator:HWP') is None      # released at stop
+    bad = SmartPipelineDocument(Workflow('p', [Live('cam', detector='Camera'), Gate('once', 'once', inputs=['cam']),
+                                               Action('turn', 'rotate', {'rotator': 'Gone', 'position': 1.0},
+                                                      inputs=['once.fired'])]))
+    with pytest.raises(ArmError, match="no rotator 'Gone'"):
+        Engine(bad, source=ArrayFrameSource([]), steps=FunctionStepRunner({}), actions=backend,
+               mode=RunMode.VALIDATE).arm()
