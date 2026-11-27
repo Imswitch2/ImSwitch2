@@ -89,6 +89,14 @@ jobs:
           # load an interactive Qt backend on the headless runner.
           MPLBACKEND: Agg
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          # A native crash (segfault/abort in Qt, pyqtgraph, numpy) kills an
+          # xdist worker and pytest only reports "worker 'gwN' crashed". With
+          # faulthandler on, the dying worker writes its Python stack (and
+          # every thread's) to stderr first, which names the code that was
+          # running. pytest enables this on its own, but the env var also
+          # covers crashes outside a test (import, collection, teardown at
+          # interpreter exit) and does not depend on that plugin.
+          PYTHONFAULTHANDLER: "1"
         # --timeout aborts any hung test instead of stalling the runner.
         # -n auto shards the lane across all runner cores; because plugin
         # autoload is disabled above, xdist must be loaded explicitly via
@@ -100,6 +108,12 @@ jobs:
             -n auto \
             --timeout=180 \
             -v
+      - name: Look for a killed worker (out of memory)
+        # A worker that vanishes with no Python stack at all was killed from
+        # outside (SIGKILL), most often by the kernel's OOM killer; faulthandler
+        # cannot catch that. The kernel log says so if it happened.
+        if: failure()
+        run: sudo dmesg 2>/dev/null | grep -i -E "out of memory|oom-kill|killed process" || echo "no OOM kill in the kernel log"
 
   build:
     name: Package Build
