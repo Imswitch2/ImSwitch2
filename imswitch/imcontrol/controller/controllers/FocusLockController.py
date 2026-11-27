@@ -6,11 +6,12 @@ import numpy as np
 from time import perf_counter
 import scipy.ndimage as ndi
 from skimage.feature import peak_local_max
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.framework import Signal, Thread, Timer
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import focus_lock_quality as flq
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import ImConWidgetController, _missingDevices
@@ -36,6 +37,18 @@ STATE_LOCKED = 'locked'
 STATE_SUSPENDED = 'suspended'        # a scan owns the actuator
 STATE_REACQUIRING = 'reacquiring'    # scan over, waiting for the signal back
 STATE_REACQUIRE_FAILED = 'reacquire-failed'
+STATE_HOLDING = 'holding'            # untrusted frames: Z frozen, setpoint kept
+STATE_LOST = 'lost'                  # held too long / relock failed: setpoint kept
+STATE_PAUSED = 'paused'              # an orchestrator (tiling) paused correction
+STATE_RELOCKING = 'relocking'        # bounded steps back to the stored setpoint
+
+#: Largest single PI correction ever applied, in micrometres. Larger steps
+#: hold the lock (Z frozen) instead of being sent.
+_SAFETY_STEP_UM = 3.0
+#: Minimum interval between repeated hold-reason log lines, seconds.
+_REASON_LOG_INTERVAL_S = 2.0
+#: Serialises the lazy creation of the cross-thread resume synchroniser.
+_SYNC_CREATE_LOCK = threading.Lock()
 
 
 class FocusLockController(ImConWidgetController):
@@ -98,6 +111,15 @@ class FocusLockController(ImConWidgetController):
         self._reacquireDone = threading.Event()
         self._reacquireDone.set()
         self._pendingMove = 0.0
+        self._flEngine = flq.FocusLockEngine()
+        self._resumeSyncState()
+        try:
+            self._setupNameForLock = (
+                getattr(configfiletools.loadOptions()[0], 'setupFileName', '') or '')
+        except Exception as error:
+            self._logger.warning('Focus lock: cannot read the setup name for '
+                                 'persistence: %s', error)
+            self._setupNameForLock = ''
 
         if self._setupInfo.focusLock is None:
             return
@@ -144,8 +166,14 @@ class FocusLockController(ImConWidgetController):
         )
         self._widget.focusCalibButton.clicked.connect(self.focusCalibrationStart)
         self._widget.calibCurveButton.clicked.connect(self.showCalibrationCurve)
+        self._widget.changeFocusActuatorAction.triggered.connect(
+            self._chooseFocusActuator
+        )
+        self._updateActuatorButtonTooltip()
 
         self._widget.twoFociBox.stateChanged.connect(self.twoFociVarChange)
+        self._loadStoredLockSettings()
+        self._connectRobustnessControls()
 
         self._commChannel.sigScanStarting.connect(self.scanUnlockFocus)
         self._commChannel.sigScanActuatorsResolved.connect(
@@ -157,6 +185,8 @@ class FocusLockController(ImConWidgetController):
         self._commChannel.registerFocusLock(self)
 
         self.setPointSignal = 0
+        # Immutable pair published by the GUI update loop for tiling diagnostics.
+        self._lastTiltFocusMeasurement = None
         self._lastPIUpdate = None
         self.locked = False
         self.aboutToLock = False
@@ -1285,6 +1315,14 @@ class FocusLockController(ImConWidgetController):
             self._preScanSetPoint = self.setPointSignal
 
         self.locked = False
+        engine = self.__dict__.get('_flEngine')
+        if engine is not None and engine.mode != flq.LOCKED:
+            # Holding / paused / relocking ends: the scan owns the axis now and
+            # reacquisition afterwards re-engages on the captured setpoint.
+            if engine.mode == flq.RELOCKING:
+                self._completeResume('failed', 'a scan took the focus axis')
+            engine.reengage(self._preScanSetPoint if self._preScanSetPoint is not None
+                            else self.setPointSignal)
         self._clearPendingCorrection()
         # Finding 5: without this, a pending "about to lock" kept running
         # through the scan and could re-engage mid-waveform, capturing its
@@ -1527,6 +1565,7 @@ class FocusLockController(ImConWidgetController):
         self.pi = PI(target, 0.001, kp, ki, nominalDt=self.focusTime / 1000.0)
         self._lastPIUpdate = None
         self._clearPendingCorrection()
+        self._lockEngine().reengage(target)
         self.locked = True
         self._reacquireFailed = False
         self._endReacquire(notify=False)
@@ -1535,8 +1574,11 @@ class FocusLockController(ImConWidgetController):
 
     def focusLockState(self) -> str:
         """Current lifecycle state -- see the ``STATE_*`` constants."""
+        engine = self.__dict__.get('_flEngine')
         if self.locked:
-            return STATE_LOCKED
+            mode = engine.mode if engine is not None else flq.LOCKED
+            return {flq.HOLDING: STATE_HOLDING, flq.PAUSED: STATE_PAUSED,
+                    flq.RELOCKING: STATE_RELOCKING}.get(mode, STATE_LOCKED)
         if self.aboutToLock:
             return STATE_REACQUIRING
         if (
@@ -1546,6 +1588,10 @@ class FocusLockController(ImConWidgetController):
             # Only when a lock is actually being held for us. A scan running
             # while the user never asked for a lock is not "suspended".
             return STATE_SUSPENDED
+        if engine is not None and engine.lost:
+            # Held too long, or a relock failed: not correcting, but the
+            # setpoint and reference are kept for Re-lock.
+            return STATE_LOST
         if self.__dict__.get('_reacquireFailed', False):
             # Distinct from UNLOCKED on purpose: the operator asked for a lock
             # and does not have one, which is not the same as never asking.
@@ -1557,13 +1603,17 @@ class FocusLockController(ImConWidgetController):
         """ The focus lock's state: ``'unlocked'``, ``'locked'``,
         ``'suspended'`` (a scan owns the focus axis and the lock is held for
         it), ``'reacquiring'`` (the scan is over and the lock waits for the
-        signal to come back) or ``'reacquire-failed'``. """
+        signal to come back), ``'reacquire-failed'``, ``'holding'`` (frames
+        not trustworthy: Z frozen, setpoint kept), ``'lost'`` (held too long
+        or a relock failed; setpoint kept), ``'paused'`` (pauseFocusLock) or
+        ``'relocking'`` (stepping back to the setpoint). """
         return self.focusLockState()
 
     @APIExport(runOnUIThread=True)
     def isFocusLocked(self) -> bool:
-        """ Whether the focus is locked right now. """
-        return bool(self.locked)
+        """ Whether the focus is locked and correcting right now (not
+        holding, paused or relocking). """
+        return self.focusLockState() == STATE_LOCKED
 
     @APIExport(runOnUIThread=True)
     def setFocusCameraActive(self, active: bool) -> None:
@@ -1602,18 +1652,358 @@ class FocusLockController(ImConWidgetController):
         not hold the workflow barrier. Never call this from the GUI thread:
         the barrier is advanced by ``update``, which runs there.
         """
+        engine = self.__dict__.get('_flEngine')
         lockWanted = bool(
             self.locked
             or self.aboutToLock
             or self.__dict__.get('_suspendedLock', False)
             or self.__dict__.get('_reacquireFailed', False)
+            or (engine is not None and engine.lost)
         )
         if not lockWanted:
             return True
+        deadline = perf_counter() + float(timeoutS)
         done = self.__dict__.get('_reacquireDone')
         if done is not None:
             done.wait(timeoutS)
-        return bool(self.locked)
+        # A lock that is holding or relocking may still come back by itself
+        # within the time left; paused and lost never do without a caller.
+        while self.focusLockState() in (STATE_HOLDING, STATE_RELOCKING):
+            remaining = deadline - perf_counter()
+            if remaining <= 0:
+                break
+            threading.Event().wait(min(0.02, remaining))
+        return self.focusLockState() == STATE_LOCKED
+
+    # ------------------------------------------------------------------
+    # Pause / resume / relock for orchestrators and scripts
+    # ------------------------------------------------------------------
+
+    def _resumeSyncState(self):
+        """Cross-thread hand-off for pause/resume (created once, thread-safe)."""
+        sync = self.__dict__.get('_resumeSync')
+        if sync is None:
+            with _SYNC_CREATE_LOCK:
+                sync = self.__dict__.get('_resumeSync')
+                if sync is None:
+                    sync = {'done': threading.Event(), 'cancel': threading.Event(),
+                            'token': None, 'result': None, 'reason': '',
+                            'lock': threading.Lock()}
+                    sync['done'].set()
+                    self._resumeSync = sync
+        return sync
+
+    def _onControllerThread(self) -> bool:
+        try:
+            return QtCore.QThread.currentThread() is self.thread()
+        except Exception:
+            return False       # test doubles built without __init__
+
+    def _runOnControllerThread(self, callback, timeoutS=2.0):
+        """Run ``callback`` on the controller thread and wait (bounded) for it.
+
+        Returns ``(ran, value)``. From the controller thread it runs inline.
+        """
+        if self._onControllerThread():
+            return True, callback()
+        box, done = {}, threading.Event()
+
+        def call():
+            try:
+                box['value'] = callback()
+            except Exception as error:      # reported to the waiting thread
+                box['error'] = error
+            finally:
+                done.set()
+
+        self._invokeOnControllerThreadIfNeeded(call)
+        if not done.wait(timeoutS):
+            return False, None
+        if 'error' in box:
+            raise box['error']
+        return True, box.get('value')
+
+    def _completeResume(self, result, reason=''):
+        sync = self._resumeSyncState()
+        with sync['lock']:
+            if sync['token'] is None:
+                return
+            sync['result'] = result
+            sync['reason'] = reason
+            sync['token'] = None
+            sync['done'].set()
+
+    def _pauseNow(self):
+        state = self.focusLockState()
+        if state in (STATE_LOCKED, STATE_HOLDING, STATE_RELOCKING):
+            engine = self._lockEngine()
+            if engine.mode == flq.RELOCKING:
+                self._completeResume('failed', 'paused again')
+            pi = self.__dict__.get('pi')
+            if pi is not None:
+                engine.setPoint = float(pi.setPoint)
+            engine.pause()
+            self._lastPIUpdate = None
+            self._clearPendingCorrection()
+            self._publishFocusLockState()
+        return self.focusLockState()
+
+    @APIExport()
+    def pauseFocusLock(self) -> str:
+        """ Pauses focus correction (Z held where it is, measurement ignored),
+        e.g. for an XY move. Returns the state afterwards: ``'paused'``, or
+        ``'unlocked'`` / ``'lost'`` / a scan state when there was no active
+        lock to pause. Safe from any thread; waits at most 2 s for the
+        focus lock's thread. Follow with resumeFocusLock. """
+        ran, state = self._runOnControllerThread(self._pauseNow)
+        if not ran:
+            self._logger.warning('Focus lock did not acknowledge pause within 2 s')
+            return 'no-answer'
+        return state
+
+    def _beginResume(self, settleS, timeoutS, token):
+        """Controller thread: start a relock toward the kept setpoint."""
+        sync = self._resumeSyncState()
+        if token is not None and sync['token'] is not token:
+            return                       # superseded or cancelled meanwhile
+        state = self.focusLockState()
+        engine = self._lockEngine()
+        if state == STATE_LOCKED:
+            self._completeResume('locked')
+            return
+        if state not in (STATE_PAUSED, STATE_HOLDING, STATE_LOST, STATE_RELOCKING):
+            self._completeResume('unlocked' if state == STATE_UNLOCKED else 'failed',
+                                 f'nothing to resume (state {state})')
+            return
+        if not self.focusCameraAcquisitionActive():
+            self._completeResume('failed', 'the focus camera is off')
+            return
+        setPoint = engine.setPoint
+        if setPoint is None and self.__dict__.get('pi') is not None:
+            setPoint = float(self.pi.setPoint)
+        if setPoint is None:
+            self._completeResume('failed', 'no setpoint stored')
+            return
+        engine.setPoint = float(setPoint)
+        if self.__dict__.get('pi') is None or not self.locked:
+            focusTime = self.__dict__.get('focusTime', 100.0)
+            self.pi = PI(engine.setPoint, 0.001, 0.0, 0.0, nominalDt=focusTime / 1000.0)
+        engine.beginRelock(perf_counter(), settleS, timeoutS)
+        self.locked = True
+        self._lastPIUpdate = None
+        self._clearPendingCorrection()
+        self._setLockButton(checked=True)
+        self._publishFocusLockState()
+
+    @APIExport()
+    def resumeFocusLock(self, settleS: float = 0.2, timeoutS: float = 10.0) -> str:
+        """ Resumes a paused (or holding / lost) focus lock: waits ``settleS``
+        seconds, then steps Z back toward the kept setpoint in bounded steps
+        (see the relock limits) and re-engages the loop. Blocks until done,
+        at most about ``settleS + timeoutS`` seconds. Returns ``'locked'``,
+        ``'failed'`` (Z back at the last good position, state ``'lost'``),
+        ``'unlocked'`` (no lock was wanted) or ``'cancelled'``
+        (cancelFocusLockResume). Call it from a script or worker thread, not
+        from the GUI thread. """
+        if self._onControllerThread():
+            raise RuntimeError('resumeFocusLock blocks; call it from a script or worker '
+                               'thread, or use the Re-lock button')
+        settleS = max(0.0, float(settleS))
+        timeoutS = max(0.0, float(timeoutS))
+        sync = self._resumeSyncState()
+        token = object()
+        with sync['lock']:
+            sync['token'] = token
+            sync['result'] = None
+            sync['reason'] = ''
+            sync['done'].clear()
+            sync['cancel'].clear()
+        self._invokeOnControllerThreadIfNeeded(
+            lambda: self._beginResume(settleS, timeoutS, token))
+        deadline = perf_counter() + settleS + timeoutS + 2.0
+        while True:
+            if sync['done'].wait(0.02):
+                return sync['result'] or 'failed'
+            if sync['cancel'].is_set() or perf_counter() > deadline:
+                why = 'cancelled' if sync['cancel'].is_set() else 'no answer in time'
+                with sync['lock']:
+                    if sync['token'] is token:
+                        sync['token'] = None
+                        sync['result'] = 'cancelled' if why == 'cancelled' else 'failed'
+                        sync['reason'] = why
+                        sync['done'].set()
+                self._invokeOnControllerThreadIfNeeded(lambda: self._abortRelock(why))
+                return sync['result'] or 'failed'
+
+    @APIExport()
+    def cancelFocusLockResume(self) -> None:
+        """ Cancels a resumeFocusLock wait (a Stop). Z stays where it is; the
+        lock is left 'lost' with its setpoint kept. Safe from any thread. """
+        self._resumeSyncState()['cancel'].set()
+
+    def _abortRelock(self, reason):
+        engine = self._lockEngine()
+        if engine.mode == flq.RELOCKING:
+            engine.abortRelock(reason)
+            self._enterLost(f'relock {reason}')
+
+    def relockTimeoutS(self) -> float:
+        """The relock timeout setting (for orchestrators sizing their wait)."""
+        return float(self._lockEngine().limits.timeoutS)
+
+    def getFocusLockResumeReason(self) -> str:
+        return self._resumeSyncState().get('reason', '')
+
+    def startRelock(self):
+        """Re-lock button: relock toward the kept setpoint, non-blocking."""
+        sync = self._resumeSyncState()
+        with sync['lock']:
+            sync['token'] = None
+        self._beginResume(0.0, self._lockEngine().limits.timeoutS, None)
+
+    @APIExport(runOnUIThread=True)
+    def getFocusLockStatus(self) -> dict:
+        """ Focus-lock state with the live frame confidence (0..1), the names
+        of the trust tests the last frame failed (``reasons``), why it is
+        holding (``heldFor``) or lost (``lostReason``), the thresholds in use
+        and whether they were learned, and the last relock result. """
+        snap = self._lockEngine().publish(self.focusLockState())
+        snap['relockLimits'] = dataclasses.asdict(self._lockEngine().limits)
+        snap['hold'] = dataclasses.asdict(self._lockEngine().supervisorSettings)
+        return snap
+
+    def getFocusLockStatusSnapshot(self) -> dict:
+        """Thread-safe copy of the last published status (no Qt calls)."""
+        engine = self.__dict__.get('_flEngine')
+        snap = engine.statusSnapshot() if engine is not None else {}
+        snap.setdefault('state', self.focusLockState())
+        return snap
+
+    @APIExport(runOnUIThread=True)
+    def setFocusLockHoldSettings(self, goodFramesToResume: int = 5,
+                                 holdTimeoutS: float = 5.0) -> None:
+        """ Consecutive trustworthy frames needed to leave 'holding', and how
+        long to hold before giving up to 'lost'. """
+        self._lockEngine().setHoldSettings(goodFramesToResume, holdTimeoutS)
+        self._syncRobustnessControls()
+        self._saveLockState()
+
+    @APIExport(runOnUIThread=True)
+    def setFocusLockRelockLimits(self, maxStepUm: float = 0.5, maxExcursionUm: float = 3.0,
+                                 tolerancePx: float = 1.0, timeoutS: float = 10.0,
+                                 searchEnabled: bool = False,
+                                 searchRangeUm: float = 2.0) -> None:
+        """ Relock safety limits: largest Z step (µm), largest total distance
+        from the last good Z (µm), error at which the loop takes over (px),
+        relock timeout (s), and the optional bounded Z search when the spot
+        is not on the camera (off by default). Refuses invalid values. """
+        engine = self._lockEngine()
+        limits = dataclasses.replace(
+            engine.limits, maxStepUm=float(maxStepUm), maxExcursionUm=float(maxExcursionUm),
+            tolerancePx=float(tolerancePx), timeoutS=float(timeoutS),
+            searchEnabled=bool(searchEnabled), searchRangeUm=float(searchRangeUm))
+        engine.limits = limits.validate()
+        self._syncRobustnessControls()
+        self._saveLockState()
+
+    @APIExport(runOnUIThread=True)
+    def reengagePreviousFocusLock(self) -> str:
+        """ Re-engages the lock saved for this setup and focus actuator (its
+        setpoint, reference and calibration) by a bounded relock from the
+        current Z. Never happens by itself. Returns the state afterwards
+        (``'relocking'`` when started). Raises RuntimeError when nothing
+        usable is stored or the focus camera is off. """
+        if not self.focusCameraAcquisitionActive():
+            raise RuntimeError('Start the focus camera before re-engaging the lock')
+        if self.focusLockState() not in (STATE_UNLOCKED, STATE_LOST):
+            raise RuntimeError('Unlock first: a lock is already active')
+        try:
+            stored = flq.load_lock_state(self.__dict__.get('_setupNameForLock', ''),
+                                         self.positioner)
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f'Stored focus lock unreadable: {error}') from error
+        if stored is None:
+            raise RuntimeError(f'No stored focus lock for {self.positioner}')
+        engine = self._lockEngine()
+        try:
+            engine.applyStoredLock(stored)
+        except (ValueError, KeyError, TypeError) as error:
+            raise RuntimeError(f'Stored focus lock not usable: {error}') from error
+        engine.lost = True
+        engine.lostReason = 're-engaging the stored lock'
+        self._beginResume(0.0, engine.limits.timeoutS, None)
+        return self.focusLockState()
+
+    def _saveLockState(self):
+        engine = self.__dict__.get('_flEngine')
+        positioner = self.__dict__.get('positioner')
+        if engine is None or positioner is None:
+            return
+        try:
+            flq.save_lock_state(
+                self.__dict__.get('_setupNameForLock', ''), positioner,
+                engine.toState({'positionerAxis': self.__dict__.get('positionerAxis'),
+                                'twoFoci': bool(self.__dict__.get('twoFociVar', False))}))
+        except Exception as error:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning(f'Focus lock: could not save its state: {error}')
+
+    def _loadStoredLockSettings(self):
+        """Startup / actuator switch: restore limits and hold settings only.
+        Nothing is engaged and nothing moves."""
+        engine = self._lockEngine()
+        try:
+            stored = flq.load_lock_state(self.__dict__.get('_setupNameForLock', ''),
+                                         self.positioner)
+        except Exception as error:
+            self._logger.warning(f'Focus lock: stored state ignored: {error}')
+            stored = None
+        self._storedLockAvailable = bool(stored and stored.get('setPoint') is not None
+                                         and stored.get('pxPerUm'))
+        if stored:
+            try:
+                engine.applyStoredSettings(stored)
+            except Exception as error:
+                self._logger.warning(f'Focus lock: stored limits ignored: {error}')
+        self._syncRobustnessControls()
+
+    def _connectRobustnessControls(self):
+        widget = self.__dict__.get('_widget')
+        if getattr(widget, 'relockButton', None) is None:
+            return
+        widget.relockButton.clicked.connect(self._onRelockClicked)
+        widget.reengageButton.clicked.connect(self._onReengageClicked)
+        widget.sigRobustnessSettingsChanged.connect(self._onRobustnessSettingsEdited)
+
+    def _syncRobustnessControls(self):
+        widget = self.__dict__.get('_widget')
+        setter = getattr(widget, 'setRobustnessSettings', None)
+        if not callable(setter):
+            return
+        engine = self._lockEngine()
+        setter(dataclasses.asdict(engine.supervisorSettings), dataclasses.asdict(engine.limits),
+               storedAvailable=bool(self.__dict__.get('_storedLockAvailable', False)))
+
+    def _onRobustnessSettingsEdited(self, values):
+        try:
+            self.setFocusLockHoldSettings(values['goodFramesToResume'], values['holdTimeoutS'])
+            self.setFocusLockRelockLimits(
+                values['maxStepUm'], values['maxExcursionUm'], values['tolerancePx'],
+                values['timeoutS'], values['searchEnabled'], values['searchRangeUm'])
+        except (ValueError, KeyError) as error:
+            self._logger.warning(f'Focus lock settings refused: {error}')
+            self._syncRobustnessControls()
+
+    def _onRelockClicked(self):
+        if self.focusLockState() in (STATE_LOST, STATE_HOLDING, STATE_PAUSED):
+            self.startRelock()
+
+    def _onReengageClicked(self):
+        try:
+            self.reengagePreviousFocusLock()
+        except RuntimeError as error:
+            QtWidgets.QMessageBox.warning(self._widget, 'Re-engage previous lock', str(error))
 
     def _publishFocusLockState(self):
         state = self.focusLockState()
@@ -1657,6 +2047,14 @@ class FocusLockController(ImConWidgetController):
                 self._widget.focusPlot.removeItem(lineLock)
         # An explicit unlock also abandons a reacquisition in flight, and stops
         # the scan handler from re-engaging a lock the user has since dropped.
+        # It also ends holding / lost / paused / relocking (setpoint and
+        # reference stay stored for an explicit "re-engage previous lock").
+        engine = self.__dict__.get('_flEngine')
+        if engine is not None:
+            wasRelocking = engine.mode == flq.RELOCKING
+            engine.disengage()
+            if wasRelocking:
+                self._completeResume('failed', 'unlocked by the user')
         self._suspendedLock = False
         self._preScanSetPoint = None
         self._reacquireFailed = False
@@ -1751,6 +2149,14 @@ class FocusLockController(ImConWidgetController):
         if self.__dict__.get('_shutdownComplete', False):
             return
         self._widget.calibrationDisplay.setText(f'1 px --> {cal_nm} nm')
+        self._widget.calibCurveButton.setEnabled(True)
+        try:
+            slope = float(self.__focusCalibThread.getData()['poly'][0])
+        except Exception:
+            slope = 1000.0 / float(cal_nm) if cal_nm else float('nan')
+        engine = self._lockEngine()
+        engine.pxPerUm = slope if np.isfinite(slope) and abs(slope) > 1e-6 else None
+        self._saveLockState()
 
     def _onFocusCalibrationThreadFinished(self):
         self._focusCalibrationActive = False
@@ -1797,21 +2203,27 @@ class FocusLockController(ImConWidgetController):
                 self._failReacquireIfOverdue()
             return
 
-        img, setPointSignal, timestamp = result
+        img, setPointSignal, timestamp = result[:3]
+        features = result[3] if len(result) > 3 else None
         self.setPointSignal = setPointSignal
+        self._lastTiltFocusMeasurement = (float(setPointSignal), perf_counter())
         self._widget.center.setValue(self.setPointSignal)
+        engine = self._lockEngine()
+        engine.observe(features, setPointSignal)
         # move
         if self._focusCalibrationActive:
             pass
         elif self.locked:
-            value_move = self.updatePI(timestamp)
-            # updatePI drops the lock mid-tick on a safety trip. Re-read the
-            # flag rather than trusting the branch this tick was entered on,
-            # so a correction is never applied to a lock that no longer exists.
-            if self.locked:
-                self._applyCorrection(value_move)
+            mode = engine.mode
+            if mode == flq.PAUSED:
+                pass            # an orchestrator is moving XY: measurement ignored
+            elif mode == flq.RELOCKING:
+                self._relockTick(features, setPointSignal)
+            else:
+                self._lockedTick(features, setPointSignal, timestamp)
         elif self.aboutToLock:
            self.aboutToLockUpdate()
+        self._publishRobustness()
         # udpate graphics
         self.updateSetPointData()
         self._widget.camImg.setImage(img)
@@ -1821,6 +2233,159 @@ class FocusLockController(ImConWidgetController):
                                                 self.setPointData[1:self.currPoint])
         else:
             self._widget.focusPlotCurve.setData(self.timeData, self.setPointData)
+
+    # ------------------------------------------------------------------
+    # Hold / lost / pause / relock (logic in focus_lock_quality)
+    # ------------------------------------------------------------------
+
+    def _lockEngine(self):
+        """The lock's Qt-free engine; created on first use so controllers
+        built without ``__init__`` (test doubles) get one too."""
+        engine = self.__dict__.get('_flEngine')
+        if engine is None:
+            engine = flq.FocusLockEngine()
+            self._flEngine = engine
+        return engine
+
+    def _lockedTick(self, features, signal, timestamp):
+        """One frame while locked or holding: trust it, then correct or hold."""
+        engine = self._lockEngine()
+        before = engine.supervisor.state
+        action = engine.lockedFrame(features, signal, perf_counter())
+        if action == 'apply':
+            value_move = self.updatePI(timestamp)
+            # updatePI holds (or a caller may drop the lock) mid-tick on a
+            # safety trip. Re-read the state rather than trusting the branch
+            # this tick was entered on, so a correction is never applied to a
+            # lock that is no longer correcting.
+            if self.locked and engine.supervisor.state == flq.LOCKED \
+                    and engine.mode == flq.LOCKED:
+                self._applyCorrection(value_move)
+        elif action == 'resume':
+            self._logger.info('Focus lock: frames trustworthy again; correcting.')
+            self._restartLoop(engine.setPoint if engine.setPoint is not None
+                              else getattr(self.__dict__.get('pi'), 'setPoint', signal))
+        elif action == 'lost':
+            self._enterLost(engine.lostReason)
+        else:
+            if before == flq.LOCKED and engine.supervisor.state == flq.HOLDING:
+                self._onEnterHolding(engine.supervisor.lastReasons)
+            else:
+                self._logHoldReason(engine.supervisor.lastReasons)
+        self._publishFocusLockState()
+
+    def _onEnterHolding(self, reasons):
+        """Freeze Z: no correction, no integration, nothing carried forward."""
+        self._lastPIUpdate = None
+        self._clearPendingCorrection()
+        self._lastReasonLog = (tuple(reasons), perf_counter())
+        logger = self.__dict__.get('_logger')
+        if logger is not None:
+            logger.warning('Focus lock holding Z (setpoint kept): ' +
+                           (', '.join(reasons) or 'untrusted frame'))
+
+    def _logHoldReason(self, reasons):
+        last = self.__dict__.get('_lastReasonLog')
+        now = perf_counter()
+        reasons = tuple(reasons)
+        if last is not None and (last[0] == reasons or now - last[1] < _REASON_LOG_INTERVAL_S):
+            return
+        self._lastReasonLog = (reasons, now)
+        logger = self.__dict__.get('_logger')
+        if logger is not None and reasons:
+            logger.warning('Focus lock still holding: ' + ', '.join(reasons))
+
+    def _restartLoop(self, setPoint):
+        """Fresh PI on the kept setpoint: no windup, no derivative kick."""
+        widget = self.__dict__.get('_widget')
+        try:
+            kp = float(widget.kpEdit.text())
+            ki = float(widget.kiEdit.text())
+        except (ValueError, AttributeError):
+            pi = self.__dict__.get('pi')
+            kp = getattr(pi, 'kp', 0.0) / 0.001 if pi is not None else 0.0
+            ki = getattr(pi, 'ki', 0.0) / 0.001 if pi is not None else 0.0
+        focusTime = self.__dict__.get('focusTime', 100.0)
+        self.pi = PI(setPoint, 0.001, kp, ki, nominalDt=focusTime / 1000.0)
+        self._lastPIUpdate = None
+        self._clearPendingCorrection()
+        self._lockEngine().reengage(setPoint)
+
+    def _enterLost(self, reason):
+        """Give up correcting; keep setpoint and reference for a relock."""
+        engine = self._lockEngine()
+        if not engine.lost:
+            engine.markLost(reason)
+        pi = self.__dict__.get('pi')
+        if engine.setPoint is None and pi is not None:
+            engine.setPoint = float(pi.setPoint)
+        self.locked = False
+        self._lastPIUpdate = None
+        self._clearPendingCorrection()
+        self._setLockButton(checked=False)
+        logger = self.__dict__.get('_logger')
+        if logger is not None:
+            logger.warning(f'Focus lock lost ({reason}); Z left where it is, setpoint '
+                           f'kept. Use Re-lock to return to it.')
+        self._saveLockState()
+        self._publishFocusLockState()
+
+    def _relockTick(self, features, signal):
+        engine = self._lockEngine()
+        try:
+            decision = engine.relockFrame(features, signal, perf_counter())
+        except Exception as error:
+            engine.abortRelock(f'error: {error}')
+            self._finishRelock(False, f'error: {error}', exc=True)
+            return
+        if decision.action == 'move':
+            try:
+                self.movePositioner(decision.stepUm)
+            except Exception as error:
+                # Leave Z wherever the failed command left it; report.
+                engine.abortRelock(f'move failed: {error}')
+                self._finishRelock(False, f'move failed: {error}', exc=True)
+                return
+            engine.noteRelockMove(decision.stepUm)
+        elif decision.action == 'success':
+            self._restartLoop(engine.setPoint)
+            self._finishRelock(True, decision.reason)
+        elif decision.action == 'fail':
+            if decision.stepUm:
+                try:
+                    self.movePositioner(decision.stepUm)   # back to the last good Z
+                    engine.noteRestored(decision.stepUm)
+                except Exception as error:
+                    self._logger.error(f'Focus lock: could not return to the last good '
+                                       f'Z after a failed relock: {error}')
+            self._finishRelock(False, decision.reason)
+        self._publishFocusLockState()
+
+    def _finishRelock(self, success, reason, *, exc=False):
+        engine = self._lockEngine()
+        if success:
+            self.locked = True
+            self._setLockButton(checked=True)
+            self._logger.info(f'Focus lock re-engaged at its setpoint ({reason}).')
+        else:
+            self._enterLost(f'relock failed: {reason}')
+        self._completeResume('locked' if success else 'failed',
+                             reason if not success else '')
+        self._publishFocusLockState()
+        return engine
+
+    def _publishRobustness(self):
+        engine = self.__dict__.get('_flEngine')
+        if engine is None:
+            return
+        snap = engine.publish(self.focusLockState())
+        widget = self.__dict__.get('_widget')
+        show = getattr(widget, 'setLockQuality', None)
+        if callable(show):
+            try:
+                show(snap)
+            except Exception:
+                pass
 
     def _applyCorrection(self, step):
         """Issue a correction once it is worth a hardware command.
@@ -1838,6 +2403,9 @@ class FocusLockController(ImConWidgetController):
         move = self._pendingMove
         self._pendingMove = 0.0
         self.movePositioner(move)
+        engine = self.__dict__.get('_flEngine')
+        if engine is not None:
+            engine.noteApplied(move)
 
     def _clearPendingCorrection(self):
         """Drop any carried-forward correction.
@@ -1931,13 +2499,18 @@ class FocusLockController(ImConWidgetController):
 
         move = self.pi.update(self.setPointSignal, dt)
 
-        if abs(move) > 3:
-            self._logger.warning(f'Safety unlocking! Current move step: {move:.3f}.')
-            self.unlockFocus()
+        if abs(move) > _SAFETY_STEP_UM:
+            # Hold instead of unlocking for good: Z stays where it is, the
+            # setpoint is kept, and the loop resumes by itself once frames are
+            # trustworthy again (or gives up to "lost" after the hold timeout).
+            engine = self._lockEngine()
+            reason = engine.holdForSafety(perf_counter(), move)
+            self._logger.warning(f'Focus lock safety hold: {reason}; not applied.')
+            self._lastPIUpdate = None
+            self._clearPendingCorrection()
+            self._publishFocusLockState()
             # Report no motion, not the step that tripped the guard. The caller
-            # applies whatever this returns, so returning `move` here made the
-            # safety unlock self-defeating: it dropped the lock and then issued
-            # the very oversized move it exists to prevent, on the way out.
+            # applies whatever this returns.
             return 0.0
         return move
 
@@ -1951,10 +2524,12 @@ class FocusLockController(ImConWidgetController):
             self._clearPendingCorrection()
             self.lockPosition = zpos
             self.locked = True
+            self._lockEngine().engage(self.setPointSignal, perf_counter())
             self._widget.focusLockGraph.lineLock = self._widget.focusPlot.addLine(
                 y=self.setPointSignal, pen='r'
             )
             self._setLockButton(checked=True)
+            self._saveLockState()
 
     def _setLockButton(self, *, checked):
         """Keep the button's checked state and its caption in step.
@@ -1969,6 +2544,93 @@ class FocusLockController(ImConWidgetController):
             self._widget.lockButton.setText('Unlock' if checked else 'Lock')
         except Exception:
             pass
+
+    def _focusZCandidates(self):
+        """Visible and hidden positioners with a usable Z positioning axis."""
+        names = []
+        for name, info in self._setupInfo.positioners.items():
+            if not getattr(info, 'forPositioning', False) or 'Z' not in (getattr(info, 'axes', ()) or ()):
+                continue
+            try:
+                manager = self._master.positionersManager[name]
+            except (KeyError, AttributeError):
+                continue
+            if 'Z' not in (getattr(manager, 'axes', ()) or ()):
+                continue
+            if not callable(getattr(manager, 'move', None)) or not callable(
+                getattr(manager, 'get_abs', None)
+            ):
+                continue
+            names.append(name)
+        return names
+
+    def _updateActuatorButtonTooltip(self):
+        button = getattr(self._widget, 'focusActuatorButton', None)
+        if button is not None:
+            button.setToolTip(
+                f'Current focus Z actuator: {self.positioner} (session only). '
+                f'Startup default: {self._setupInfo.focusLock.positioner}'
+            )
+
+    def _chooseFocusActuator(self):
+        candidates = self._focusZCandidates()
+        if not candidates:
+            QtWidgets.QMessageBox.warning(self._widget, 'Focus Z actuator',
+                                          'No Z-capable positioning devices available.')
+            return
+        selected, ok = QtWidgets.QInputDialog.getItem(
+            self._widget, 'Change focus Z actuator',
+            'Focus Z actuator (session only; unlock first):',
+            candidates, candidates.index(self.positioner) if self.positioner in candidates else 0,
+            False,
+        )
+        if ok and selected and selected != self.positioner:
+            try:
+                self.setFocusZActuator(selected)
+            except (ValueError, RuntimeError, KeyError) as error:
+                QtWidgets.QMessageBox.warning(self._widget, 'Cannot switch focus Z actuator',
+                                              str(error))
+
+    def setFocusZActuator(self, name: str):
+        """Change only the runtime actuator, without moving either device.
+
+        The camera worker remains running. No lock or calibration sweep may own
+        the old axis, and a tile worker must not change its underlying actuator.
+        """
+        if name not in self._focusZCandidates():
+            raise ValueError(f'No suitable focus Z actuator named {name!r}')
+        if name == self.positioner:
+            return
+        if (self.focusLockState() not in (STATE_UNLOCKED, STATE_LOST)
+                or self.__dict__.get('_scanSuspendDepth', 0)
+                or self.__dict__.get('_focusCalibrationActive', False)
+                or bool(getattr(self.__focusCalibThread, 'isRunning', lambda: False)())
+                or getattr(self._commChannel, '_tilingActive', False)):
+            raise RuntimeError('Unlock focus and finish calibration, scanning and tiling before switching')
+        manager = self._master.positionersManager[name]
+        if getattr(manager, 'isAvailable', True) is False:
+            raise RuntimeError(f'Focus Z actuator {name!r} is unavailable')
+        if getattr(manager, 'requiresReference', False) and not getattr(manager, 'isReferenced', False):
+            raise RuntimeError(f'Focus Z actuator {name!r} needs referencing first')
+        # Resolve before changing state. Keep the setup file's configured axis
+        # untouched: that setting belongs to the original startup positioner.
+        self.positioner = name
+        self.positionerAxis = 'Z'
+        self._clearPendingCorrection()
+        self._lastPIUpdate = None
+        self._preScanSetPoint = None
+        self._reacquireFailed = False
+        self._endReacquire(notify=False)
+        self._lastTiltFocusMeasurement = None
+        # Setpoint, reference and calibration belong to the old actuator. The
+        # new one's stored lock (if any) is offered by "re-engage previous".
+        self._flEngine = flq.FocusLockEngine()
+        self._loadStoredLockSettings()
+        self._widget.calibrationDisplay.setText('No calibration for this actuator')
+        self._widget.calibCurveButton.setEnabled(False)
+        self._updateActuatorButtonTooltip()
+        self._publishFocusLockState()
+        self._logger.info('Focus lock Z actuator changed to %s for this session', name)
 
     def _resolvePositionerAxis(self):
         """Resolve which axis to use for focus-lock movements."""
@@ -1985,6 +2647,48 @@ class FocusLockController(ImConWidgetController):
     def getPositionerAbs(self):
         """Get absolute position from the configured positioner axis."""
         return self._master.positionersManager[self.positioner].get_abs(self.positionerAxis)
+
+    def getTiltCalibrationSnapshot(self):
+        """Read-only, non-polling snapshot for experimental XY/Z tilt logging.
+
+        Called by the tiling *worker*, so read only scalar/immutable state and
+        the positioner's cached get_abs() value. No widgets or serial requests.
+        Samples may be slightly asynchronous to the DAC command; this is a
+        deliberately lightweight calibration experiment, not a synchronizer.
+        """
+        state = self.focusLockState()
+        reading = self.__dict__.get('_lastTiltFocusMeasurement')
+        signal, age = (None, None) if reading is None else (
+            reading[0], max(0.0, perf_counter() - reading[1])
+        )
+        pi = getattr(self, 'pi', None)
+        setpoint = float(pi.setPoint) if state == STATE_LOCKED and pi is not None else None
+        positioner = self._master.positionersManager[self.positioner]
+        z = float(positioner.get_abs(self.positionerAxis))
+        dac_voltage = None
+        dac_clamped = False
+        # SerialDacZManager exposes its voltage calibration but no readback;
+        # detect when its cached position could disagree with the applied DAC.
+        if all(hasattr(positioner, name) for name in (
+            '_offset_voltage', '_volts_per_um', '_min_voltage', '_max_voltage',
+        )):
+            dac_voltage = (float(positioner._offset_voltage)
+                           + z * float(positioner._volts_per_um))
+            dac_clamped = not (positioner._min_voltage <= dac_voltage
+                               <= positioner._max_voltage)
+        return {
+            'focus_z_um': z,
+            'focus_signal_px': signal,
+            'focus_setpoint_px': setpoint,
+            'focus_error_px': (signal - setpoint if signal is not None
+                               and setpoint is not None else None),
+            'measurement_age_s': age,
+            'max_measurement_age_s': max(1.0, 5.0 / float(self.updateFreq)),
+            'lock_state': state,
+            'positioner_available': bool(getattr(positioner, 'isAvailable', True)),
+            'dac_voltage_v': dac_voltage,
+            'dac_voltage_clamped': dac_clamped,
+        }
 
     def movePositioner(self, value):
         """Move the configured positioner axis."""
@@ -2036,6 +2740,7 @@ class ProcessDataThread(Thread):
                         break
                     continue
                 setPointSignal = self.update(self._controller.twoFociVar)
+                features = self.measureFeatures()
             except Exception as e:
                 self._controller._logger.error(
                     f'Focus signal update failed: {e}', exc_info=True
@@ -2045,7 +2750,7 @@ class ProcessDataThread(Thread):
                 continue
 
             with self._resultLock:
-                self._result = (img, setPointSignal, perf_counter())
+                self._result = (img, setPointSignal, perf_counter(), features)
 
             # Pace the worker to the configured update rate instead of
             # spinning: the camera cannot deliver useful new information
@@ -2057,6 +2762,31 @@ class ProcessDataThread(Thread):
             )
             if self._stopRequested.wait(waitTime):
                 break
+
+    def measureFeatures(self):
+        """Trust features of the frame ``update`` just estimated, or None.
+
+        Runs on this worker (about 0.6 ms on a 400x400 frame, against ~7 ms
+        for the Gaussian filter ``update`` already does). A failure here
+        costs only the trust check of this frame -- logged once -- never the
+        focus estimate itself.
+        """
+        filtered = self.__dict__.get('_lastFiltered')
+        peak = self.__dict__.get('_lastPeak')
+        if filtered is None or peak is None:
+            return None
+        controller = self._controller
+        engine = controller.__dict__.get('_flEngine')
+        reference = engine.reference if engine is not None else None
+        try:
+            return flq.measure_frame(
+                filtered, self.latestimg, int(peak[0]), int(peak[1]), reference,
+                twoFoci=bool(controller.__dict__.get('twoFociVar', False)))
+        except Exception as error:
+            if not self.__dict__.get('_featureErrorLogged', False):
+                self._featureErrorLogged = True
+                controller._logger.warning(f'Focus lock trust features unavailable: {error}')
+            return None
 
     @staticmethod
     def _spotCentre(window, frame):
@@ -2167,6 +2897,8 @@ class ProcessDataThread(Thread):
         yhigh = min(frame_w, (centercoords2[1] + subsizey))
 
         imagearraygfsub = imagearraygf[xlow:xhigh, ylow:yhigh]
+        self._lastFiltered = imagearraygf
+        self._lastPeak = (int(centercoords2[0]), int(centercoords2[1]))
         massCenter = (self._spotCentre(imagearraygfsub, imagearraygf),)
         # Re-reference the window-local centroid to the frame by adding where
         # the window actually starts. This added the *peak* coordinate instead,

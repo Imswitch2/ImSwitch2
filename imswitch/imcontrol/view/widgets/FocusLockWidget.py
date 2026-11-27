@@ -2,6 +2,8 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.framework import Signal
+
 from imswitch.imcontrol.view import guitools as guitools
 from .basewidgets import Widget
 from .DetectorSettingsTree import DetectorSettingsTree
@@ -9,6 +11,9 @@ from .DetectorSettingsTree import DetectorSettingsTree
 
 class FocusLockWidget(Widget):
     """Widget containing focus lock interface."""
+
+    #: dict of the hold / relock settings after an edit (controller validates).
+    sigRobustnessSettingsChanged = Signal(dict)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -66,6 +71,16 @@ class FocusLockWidget(Widget):
         self.focusCalibButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
                                             QtWidgets.QSizePolicy.Expanding)
         self.calibCurveButton = guitools.BetterPushButton('See calib')
+        self.focusActuatorButton = QtWidgets.QToolButton()
+        self.focusActuatorButton.setText('⚙')
+        self.focusActuatorButton.setToolTip('Focus lock settings (including Z actuator)')
+        self.focusActuatorButton.setAutoRaise(True)
+        self.focusActuatorMenu = QtWidgets.QMenu(self.focusActuatorButton)
+        self.changeFocusActuatorAction = self.focusActuatorMenu.addAction(
+            'Change focus Z actuator…'
+        )
+        self.focusActuatorButton.setMenu(self.focusActuatorMenu)
+        self.focusActuatorButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.calibrationDisplay = QtWidgets.QLineEdit('No calibration')
         self.calibrationDisplay.setReadOnly(True)
         self.focusCalibrationWindow = FocusCalibrationWindow()
@@ -109,7 +124,11 @@ class FocusLockWidget(Widget):
         focusGrid.addWidget(self.calibToEdit, 2, 1)
         focusGrid.addWidget(self.focusCalibButton, 1, 2, 2, 1)
         focusGrid.addWidget(self.calibrationDisplay, 3, 0, 1, 2)
-        focusGrid.addWidget(self.calibCurveButton, 3, 2)
+        calibRow = QtWidgets.QHBoxLayout()
+        calibRow.setContentsMargins(0, 0, 0, 0)
+        calibRow.addWidget(self.calibCurveButton)
+        calibRow.addWidget(self.focusActuatorButton)
+        focusGrid.addLayout(calibRow, 3, 2)
         focusGrid.addWidget(self.kpLabel, 1, 3)
         focusGrid.addWidget(self.kpEdit, 1, 4)
         focusGrid.addWidget(self.kiLabel, 2, 3)
@@ -119,6 +138,8 @@ class FocusLockWidget(Widget):
         focusGrid.addWidget(self.twoFociBox, 3, 5)
         focusGrid.addWidget(self.cameraAcqButton, 1, 6, 2, 1)
         focusGrid.addWidget(self.lockStateLabel, 3, 6)
+
+        focusGrid.addWidget(self._buildRobustnessBox(), 4, 0, 1, 7)
 
         self._cameraTabLayout = QtWidgets.QVBoxLayout()
         self.cameraTab.setLayout(self._cameraTabLayout)
@@ -134,6 +155,136 @@ class FocusLockWidget(Widget):
         self.setLayout(layout)
         layout.addWidget(self.tabs, 3)
         layout.addWidget(self.webcamGraph, 2)
+
+    def _buildRobustnessBox(self):
+        """Hold / relock: live confidence, the failed trust test, the limits."""
+        box = QtWidgets.QGroupBox('Hold and relock')
+        box.setCheckable(False)
+        grid = QtWidgets.QGridLayout(box)
+        grid.setContentsMargins(6, 4, 6, 4)
+        self.confidenceLabel = QtWidgets.QLabel('Confidence: –')
+        self.confidenceLabel.setToolTip(
+            'Normalised correlation of the spot with the reference taken at lock '
+            'time (1 = identical). Frames failing any trust test hold Z.')
+        self.reasonLabel = QtWidgets.QLabel('')
+        self.reasonLabel.setToolTip('Trust test(s) the last frame failed, or why the '
+                                    'lock is held / lost.')
+        self.reasonLabel.setWordWrap(True)
+        self.relockButton = guitools.BetterPushButton('Re-lock')
+        self.relockButton.setToolTip(
+            'Step Z back toward the kept setpoint in bounded steps (needs a '
+            'calibration), then lock again.')
+        self.relockButton.setEnabled(False)
+        self.reengageButton = guitools.BetterPushButton('Re-engage previous lock')
+        self.reengageButton.setToolTip(
+            'Load the setpoint, reference and calibration saved for this setup and '
+            'focus actuator, and relock to it from the current Z (bounded). Never '
+            'happens by itself.')
+        self.reengageButton.setEnabled(False)
+
+        def spin(minimum, maximum, step, decimals, suffix, tip):
+            box_ = QtWidgets.QDoubleSpinBox()
+            box_.setRange(minimum, maximum)
+            box_.setSingleStep(step)
+            box_.setDecimals(decimals)
+            box_.setSuffix(suffix)
+            box_.setToolTip(tip)
+            box_.setKeyboardTracking(False)
+            return box_
+
+        self.goodFramesEdit = QtWidgets.QSpinBox()
+        self.goodFramesEdit.setRange(1, 1000)
+        self.goodFramesEdit.setToolTip('Consecutive trustworthy frames to leave holding')
+        self.goodFramesEdit.setKeyboardTracking(False)
+        self.holdTimeoutEdit = spin(0.1, 600, 0.5, 1, ' s', 'Hold this long, then give up '
+                                    '(lost; setpoint kept)')
+        self.relockStepEdit = spin(0.01, 10, 0.1, 2, ' µm', 'Largest single relock Z step')
+        self.relockExcursionEdit = spin(0.01, 50, 0.5, 2, ' µm',
+                                        'Largest total Z distance from the last good Z')
+        self.relockTolEdit = spin(0.05, 50, 0.1, 2, ' px',
+                                  'Error at which the loop takes over from relock')
+        self.relockTimeoutEdit = spin(0.5, 600, 1, 1, ' s', 'Give up relocking after')
+        self.searchBox = QtWidgets.QCheckBox('Z search')
+        self.searchBox.setToolTip('When the spot is not on the camera, search ± range '
+                                  'around the last good Z (bounded by the excursion '
+                                  'limit). Off by default.')
+        self.searchRangeEdit = spin(0.01, 50, 0.5, 2, ' µm', 'Search range ±')
+        row = 0
+        grid.addWidget(self.confidenceLabel, row, 0, 1, 2)
+        grid.addWidget(self.reasonLabel, row, 2, 1, 3)
+        grid.addWidget(self.relockButton, row, 5)
+        grid.addWidget(self.reengageButton, row, 6, 1, 2)
+        row += 1
+        for col, (label, edit) in enumerate((
+                ('Good frames', self.goodFramesEdit), ('Hold', self.holdTimeoutEdit),
+                ('Step', self.relockStepEdit), ('Max ΔZ', self.relockExcursionEdit))):
+            grid.addWidget(QtWidgets.QLabel(label), row, 2 * col)
+            grid.addWidget(edit, row, 2 * col + 1)
+        row += 1
+        for col, (label, edit) in enumerate((
+                ('Tolerance', self.relockTolEdit), ('Timeout', self.relockTimeoutEdit))):
+            grid.addWidget(QtWidgets.QLabel(label), row, 2 * col)
+            grid.addWidget(edit, row, 2 * col + 1)
+        grid.addWidget(self.searchBox, row, 4)
+        grid.addWidget(self.searchRangeEdit, row, 5)
+        self._robustnessEdits = (self.goodFramesEdit, self.holdTimeoutEdit, self.relockStepEdit,
+                                 self.relockExcursionEdit, self.relockTolEdit,
+                                 self.relockTimeoutEdit, self.searchRangeEdit)
+        for edit in self._robustnessEdits:
+            edit.valueChanged.connect(self._emitRobustnessSettings)
+        self.searchBox.toggled.connect(self._emitRobustnessSettings)
+        return box
+
+    def robustnessSettings(self):
+        return {
+            'goodFramesToResume': int(self.goodFramesEdit.value()),
+            'holdTimeoutS': float(self.holdTimeoutEdit.value()),
+            'maxStepUm': float(self.relockStepEdit.value()),
+            'maxExcursionUm': float(self.relockExcursionEdit.value()),
+            'tolerancePx': float(self.relockTolEdit.value()),
+            'timeoutS': float(self.relockTimeoutEdit.value()),
+            'searchEnabled': bool(self.searchBox.isChecked()),
+            'searchRangeUm': float(self.searchRangeEdit.value()),
+        }
+
+    def _emitRobustnessSettings(self, *_):
+        if not self.__dict__.get('_syncingRobustness', False):
+            self.sigRobustnessSettingsChanged.emit(self.robustnessSettings())
+
+    def setRobustnessSettings(self, hold, limits, *, storedAvailable=False):
+        """Show the controller's values without echoing them back."""
+        self._syncingRobustness = True
+        try:
+            self.goodFramesEdit.setValue(int(hold['goodFramesToResume']))
+            self.holdTimeoutEdit.setValue(float(hold['holdTimeoutS']))
+            self.relockStepEdit.setValue(float(limits['maxStepUm']))
+            self.relockExcursionEdit.setValue(float(limits['maxExcursionUm']))
+            self.relockTolEdit.setValue(float(limits['tolerancePx']))
+            self.relockTimeoutEdit.setValue(float(limits['timeoutS']))
+            self.searchBox.setChecked(bool(limits['searchEnabled']))
+            self.searchRangeEdit.setValue(float(limits['searchRangeUm']))
+        finally:
+            self._syncingRobustness = False
+        self.reengageButton.setEnabled(bool(storedAvailable))
+
+    def setLockQuality(self, status):
+        """Live confidence and the failed test(s), from the controller."""
+        confidence = status.get('confidence')
+        self.confidenceLabel.setText(
+            'Confidence: –' if confidence is None else f'Confidence: {confidence:.3f}')
+        state = status.get('state')
+        if state == 'lost':
+            text = status.get('lostReason') or 'lost'
+        elif state == 'holding':
+            text = 'held: ' + (', '.join(status.get('heldFor') or status.get('reasons') or [])
+                               or 'untrusted frame')
+        elif status.get('reasons'):
+            text = 'last frame: ' + ', '.join(status['reasons'])
+        else:
+            text = ''
+        if self.reasonLabel.text() != text:
+            self.reasonLabel.setText(text)
+        self.relockButton.setEnabled(state in ('lost', 'holding', 'paused'))
 
     def setFocusCameraSettings(self, detectorName, detectorModel, detectorParameters,
                                detectorActions, supportedBinnings, roiInfos,
@@ -316,6 +467,10 @@ class FocusLockWidget(Widget):
         'suspended': ('Suspended (scan)', 'orange'),
         'reacquiring': ('Reacquiring…', 'orange'),
         'reacquire-failed': ('Lock lost after scan', 'red'),
+        'holding': ('Holding Z (frames untrusted)', 'orange'),
+        'lost': ('Lost — setpoint kept', 'red'),
+        'paused': ('Paused', 'orange'),
+        'relocking': ('Relocking…', 'orange'),
     }
 
     def showCalibrationCurve(self, data):

@@ -62,6 +62,20 @@ Unreleased
   quick second middle press (which Qt delivers as a double-click) as a pan
   instead of opening the step search.  The empty canvas and the zoom controls'
   tooltip say how to pan.  Shared by ImProcess and the smart-pipeline designer.
+- **Tilt compensation: limits that always apply, fit gates, a safe return.**
+  Apply now refuses, before any movement, a calibration steeper than
+  15 µm/mm, a run whose Z would leave its start by more than 30 µm or step
+  more than 5 µm (all settings in the panel, which shows the predicted
+  excursion), any tile outside the calibrated area, an unreferenced Z, and a
+  target outside the Z output range -- with or without Pre-check.  Recording
+  rejects fit outliers and reports a quality gate; loading refuses fits with
+  fewer than four points, RMS above 1 µm or a worst residual above 3 µm (old
+  files lacking residuals must be re-recorded).  Foreign or old calibrations
+  need confirmation.  XY returns to the origin with Z following the plane; a
+  Z left uncompensated is reported in the popup and the run result (no popup
+  for Timelapse runs).  The run reserves its XY and Z positioners; a run that
+  keeps nothing is refused; Timelapse tilings block the focus-actuator switch
+  like GUI tilings.  Simulated only.
 
 - **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
   used to do the whole stop on the thread that took the click: stop and close
@@ -174,6 +188,38 @@ Unreleased
   preflight) appears only for a pipeline that measures a ROI set -- a
   pipeline without ROIs needs no segmentation to arm; the segmentation
   settings fold away; the panel is narrower.
+- **Focus lock: hold instead of unlock, lost, relock, saved lock.**  Every
+  focus-camera frame is checked against a reference taken at lock time by
+  independent tests (signal, intensity, correlation, width, second peak,
+  saturation, clipping, jump, estimator agreement, stale frame); thresholds
+  are learned from the first 3 s after locking with fixed fallbacks.  A frame
+  that fails, or a PI step above 3 µm, holds Z (no correction, no integration,
+  setpoint kept) instead of dropping the lock; *N* stricter good frames resume
+  it, a hold timeout makes it *lost* (setpoint and reference kept).  The panel
+  shows the state, the live confidence and the failed test; **Re-lock** steps Z
+  back to the setpoint in clamped steps (needs the calibration; max step and
+  total excursion are settings, Z returns to the last good position on
+  failure).  Setpoint, reference, calibration and limits are saved per setup
+  and focus actuator; **Re-engage previous lock** uses them, never at startup.
+  New scripting functions: ``pauseFocusLock``, ``resumeFocusLock``,
+  ``cancelFocusLockResume``, ``getFocusLockStatus``, ``setFocusLockHoldSettings``,
+  ``setFocusLockRelockLimits``, ``reengagePreviousFocusLock``.  Simulated only;
+  not yet tried on a rig.
+
+- **Tiling: pause the focus lock during stage moves.**  Optional, off by
+  default (free-running tiling and timelapse tilings): the lock is paused for
+  each XY move and relocked before each tile; each tile's focus status goes
+  into ``tiles.json`` (``focus_lock_tiles``) and the run result, a failed relock
+  leaves the last good Z, marks the tile and tries again on the next one, and
+  Stop cancels a relock in flight.
+
+- **Märzhäuser (Tango) XY stage: speed and acceleration as setup settings.**
+  Optional ``velocity`` (rev/s, ``!vel``) and ``acceleration`` (m/s²,
+  ``!accel``) in the ``MHXYStageManager`` ``managerProperties``, one number for
+  both axes or per axis.  Applied when the stage connects and after every
+  reconnect, read back (``?vel`` / ``?accel``) and logged; out-of-range values
+  are refused at startup before anything is sent.  Absent keys leave the
+  controller as it is (the previous behaviour).  Not yet tried on a rig.
 
 - **Spot counting and a spot-triggered confocal revisit.** Two ImProcess
   processors share the SMLM localizer's net-gradient detection (without the
@@ -273,6 +319,12 @@ Unreleased
 - **BeadRec reconstructs XZ, YZ and XYZ bead scans.** The ``beadrec`` reconstructor only accepted a scan over X and Y: an XZ or YZ recording had no raster it recognised, and an XYZ recording was refused for its Z loop. Any two scan axes now give an image (``Z, X`` for XZ, ``Z, Y`` for YZ) and all three a ``Z, Y, X`` volume, one per condition when the scan has line steps. Frames are placed by their recorded coordinates, a coarser Z step is resampled to the lateral pixel size, and a single-plane Z loop leaves an XY image. Z must record its step, as X and Y must. A volume is fitted as its XY, XZ and YZ sections through the bead's intensity centroid (``fit_sections``); every fit now names the image axes its ``x``/``y`` parameters refer to. See :ref:`Bead-scan reconstruction <improcess-beadrec>`.
 
 **Behaviour Changes**
+
+- **The focus lock's safety trip holds instead of unlocking.**  An oversized
+  correction (> 3 µm) is still never applied, but the lock now holds Z and
+  resumes by itself on good frames (or becomes *lost* after the hold timeout)
+  instead of unlocking for good.  ``isFocusLocked()`` is true only while the
+  lock is actually correcting.
 
 - **The Expert panel's Detectors tab decides what a detector records.** A binding was saved and read by nothing. A camera's binding -- the events it takes, its frames per step, its phases -- is now checked against its trigger line, step by step, before anything runs, and a disagreement refuses the program with the step and phase; the recording's layout and frame counts come from the binding. Point-detector bindings declare an image of whole steps; anything else is refused as not built. A detector without a binding is recorded as its line fires, as before. See :doc:`expert-scanning`.
 - **The Expert panel runs a program on the engine its devices are on** instead of always on ``scan.engine``: a pulse program for a laser on a Teensy runs on the Teensy beside an NI-DAQ, with no setup change. Devices on ``scan.engine`` and the engines wired to follow it run together; devices on engines that do not run together are refused, naming which device is on which engine; a program with no device on an engine runs on ``scan.engine``, which also stays the engine of the Advanced and SimplePointScan panels. **What this setup can scan…** says when a program runs on each engine. See :doc:`devices/scan_engines`.

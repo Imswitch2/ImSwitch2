@@ -2,18 +2,18 @@
   "coverage": {
     "alias_spellings": 10,
     "constrained": 55,
-    "docs_agree": 209,
-    "docs_documented": 209,
-    "keys": 290,
+    "docs_agree": 211,
+    "docs_documented": 211,
+    "keys": 292,
     "managers": 72,
-    "none_default_only": 63,
+    "none_default_only": 65,
     "none_only": 16,
-    "optional": 226,
+    "optional": 228,
     "reads_any": 68,
     "refs": 15,
     "required": 64,
     "typed_by_code": 137,
-    "typed_with_docs": 234,
+    "typed_with_docs": 236,
     "typed_with_examples": 179,
     "uncertain": 0,
     "unresolved_reads": 0,
@@ -391,7 +391,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 4,
       "required": 0
     },
     "MPBLaserManager": {

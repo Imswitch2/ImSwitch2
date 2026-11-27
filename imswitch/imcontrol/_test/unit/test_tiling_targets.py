@@ -379,3 +379,15 @@ def test_the_detection_controls_are_gone(widget):
     for name in ('tuneSegmentationButton', 'runCellTargetingButton',
                  'navigateToggle', 'setCellTargetingEnabled'):
         assert not hasattr(widget, name), name
+
+
+def test_save_only_preview_off_preserves_target_list_but_disables_map_clicks(widget):
+    widget.setTargets(RECORDS)
+    widget.setClickMode(CLICK_ADD_TARGET)
+    widget.buildOverviewCheck.setChecked(False)
+    assert not widget.clickModeCombo.isEnabled()
+    assert widget.getClickMode() == CLICK_NONE
+    assert widget.targetsTable.rowCount() == len(RECORDS)
+    assert widget.loadTargetsButton.isEnabled()
+    widget.buildOverviewCheck.setChecked(True)
+    assert widget.clickModeCombo.isEnabled()

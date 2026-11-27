@@ -608,6 +608,66 @@ Tiling troubleshooting
        structure.
 
 
+Stage tilt Apply: safety limits
+-------------------------------
+
+**Apply** commands the compensation Z from a recorded plane.  These checks
+always run, before anything moves, whatever **Pre-check** says:
+
+* the calibration's X and Y slopes are within **Max slope** (default
+  15 µm/mm), the predicted Z never leaves the run's start Z by more than
+  **Max ΔZ** (default 30 µm) and never steps more than **Max step**
+  (default 5 µm) in one move -- the panel shows the calibration's date, RMS and
+  slopes and the predicted maximum excursion before **Start**;
+* every tile lies inside the calibrated XY area (no extrapolation), and the
+  run's span fits inside the calibrated span;
+* a Z positioner that needs referencing is referenced, and every target is
+  inside its output (DAC / NI-DAQ voltage) range.
+
+A calibration is only selectable when its fit passes the quality gate: at
+least four points, RMS ≤ 1 µm and worst residual ≤ 3 µm.  Recording rejects
+outliers (a residual above 3.5 robust sigmas and 0.2 µm, at most a quarter of
+the points) and reports them in ``tilt_fit.json``.  An older file that lacks
+the residuals the gate needs is refused with a request to re-record it.  A
+calibration recorded on another setup, without a setup name, or older than
+30 days needs an explicit confirmation when it is chosen; Apply never starts
+by itself.
+
+On the way back to the origin (end, Stop or error) XY returns in short
+segments with Z following the plane, so the objective tracks the sample
+surface the whole way: restoring Z first, or XY first, would each push the
+objective toward the sample by the full predicted ΔZ on one sign of tilt.  If
+the XY return fails, Z stays matched to the XY that was reached; the popup
+and the run result say where Z was left.  A Timelapse (workflow) run reports
+in its run result instead of a popup.  The XY stage and the compensation Z
+are reserved for the run, so a script or another action trying to move them
+is refused cleanly instead of colliding.  A run with neither **Build mosaic
+preview** nor **Save tiles** is refused (it would keep nothing), except a
+calibration-only recording.
+
+Focus lock during stage moves
+-----------------------------
+
+**Pause focus lock during moves** (Acquisition group, off by default) is for
+free-running tiling with an engaged focus lock.  Before each XY move the lock
+is paused (Z held, frames ignored); after the move and the settle time it is
+relocked to the kept setpoint in bounded steps (:ref:`focuslock-hold-relock`)
+before the tile is taken.  Each tile's status -- ``locked``, ``held``,
+``relock-failed`` or ``relock-cancelled`` -- goes into ``tiles.json`` under
+``focus_lock_tiles`` and into the run result.  A failed relock leaves Z at the
+last good position, the tile is taken there and marked, and the next tile
+tries again; the run message names the tiles that were not locked.  The return
+to the origin is paused the same way and relocked at the end; after a Stop the
+lock is left paused (Z held) and **Re-lock** in the Focus Lock panel brings it
+back.  **Stop** cancels a relock in flight.  Triggered tiling ignores the
+option: its scans already suspend and reacquire the lock.
+
+With tilt **Record**, a point is sampled after the relock, so it records the Z
+the lock holds only when the relock succeeded (otherwise the sample is marked
+by the lock state).  **Apply** on the focus lock's own actuator still requires
+the lock to be unlocked, so the option has nothing to pause there; Apply on a
+different actuator and the pause option work together.
+
 .. seealso::
 
    :doc:`setupinfo-reference` for the ``tiling`` configuration section, and

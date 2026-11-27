@@ -412,7 +412,7 @@ class _Stage:
 
 def _runSavingScan(
     tmp_path, monkeypatch, grid=(2, 2), step_um=64.0, tile=None,
-    save_format='TIFF',
+    save_format='TIFF', build_overview=True, orientation=(False, False, False),
 ):
     """Run a scan with saving on, against the real RecordingManager storer."""
     from imswitch.imcontrol.model.managers.RecordingManager import RecordingManager
@@ -464,7 +464,7 @@ def _runSavingScan(
     ctrl._scanThread = object()
     ctrl._closed = True
     ctrl._registrationReport = None
-    ctrl._orientation = (False, False, False)
+    ctrl._orientation = orientation
     ctrl._lastSaveFolder = None
     ctrl._logger = _Logger()
 
@@ -486,7 +486,8 @@ def _runSavingScan(
         step_um=step_um,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.0, register_tiles=False,
-        orientation=(False, False, False), save_tiles=True,
+        orientation=orientation, save_tiles=True,
+        build_overview=build_overview,
     )
     return ctrl, tmp_path / 'run'
 
@@ -500,6 +501,53 @@ def test_saving_writes_tiles_mosaic_and_sidecars(tmp_path, monkeypatch):
     assert MANIFEST_NAME in names
     assert any(n.startswith('mosaic') for n in names)
     assert sum(1 for n in names if n.startswith('tile_')) == 4
+
+
+
+def test_saved_only_tiling_skips_mosaic_but_keeps_reconstructable_tiles(
+    tmp_path, monkeypatch,
+):
+    """Large grids can save tiles without allocating a stitched canvas."""
+    pytest.importorskip('tifffile')
+    # StitchedImage must never be allocated in the saved-only branch.
+    monkeypatch.setattr(
+        'imswitch.imcontrol.controller.controllers.TilingController.StitchedImage',
+        lambda *a, **k: pytest.fail('Saved-only tiling constructed a mosaic'),
+    )
+    ctrl, folder = _runSavingScan(
+        tmp_path, monkeypatch, build_overview=False, grid=(2, 2),
+        step_um=64.0,
+    )
+
+    assert ctrl._stitcher is None
+    assert not list(folder.glob('mosaic*'))
+    assert len(list(folder.glob('tile_*_CAM.ome.tiff'))) == 4
+    payload = json.loads((folder / MANIFEST_NAME).read_text())
+    assert payload['completed'] is True
+    assert len(payload['tiles']) == 4
+    assert all(tile['correction_px'] == [0., 0.] for tile in payload['tiles'])
+    assert {tuple(tile['grid']): tuple(tile['pixel_xy']) for tile in payload['tiles']} == {
+        (0, 0): (0., 0.),
+        (1, 0): (64., 0.),
+        (1, 1): (64., 64.),
+        (0, 1): (0., 64.),
+    }
+    text = (folder / TILE_CONFIG_NAME).read_text()
+    assert 'tile_x+01_y+01_CAM.ome.tiff; ; (64.000, 64.000)' in text
+
+
+def test_saved_only_tiling_respects_mosaic_orientation_in_sidecars(
+    tmp_path, monkeypatch,
+):
+    pytest.importorskip('tifffile')
+    _, folder = _runSavingScan(
+        tmp_path, monkeypatch, build_overview=False, grid=(2, 2),
+        step_um=64.0, orientation=(True, False, True),
+    )
+    payload = json.loads((folder / MANIFEST_NAME).read_text())
+    positions = {tuple(tile['grid']): tuple(tile['pixel_xy']) for tile in payload['tiles']}
+    assert positions[(1, 0)] == (0., 64.)
+    assert positions[(0, 1)] == (-64., 0.)
 
 
 def test_saved_tiles_carry_their_stage_position(tmp_path, monkeypatch):

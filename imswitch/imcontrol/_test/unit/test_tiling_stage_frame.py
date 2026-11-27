@@ -517,3 +517,263 @@ def test_pi_clamps_a_pathological_gap():
 
     # dt/nominalDt is 600 here; the clamp caps the integral step at 5x.
     assert pi.out == pytest.approx(5.0)
+
+
+def test_free_running_tilt_samples_after_existing_settle_before_acquire(
+        monkeypatch, tmp_path):
+    """No new dwell; all coordinates come from the tiling worker's XY frame."""
+    import csv
+    import json
+    from imswitch.imcontrol.model.workflows.stage_tilt_calibration import StageTiltRecorder
+
+    stage = _OffsetFrameStage({'X': 3000.0, 'Y': 5000.0})
+    history = []
+
+    class _CapturingDetector(_SimpleDetector):
+        def getLatestFrameShared(self):
+            history.append(('acquire', dict(stage.position)))
+            return super().getLatestFrameShared()
+
+    class _Detectors(_LeaseManager):
+        def __getitem__(self, name):
+            return camera
+
+    camera = _CapturingDetector()
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._master = SimpleNamespace(
+        positionersManager={'STAGE': stage}, detectorsManager=_Detectors(),
+    )
+    ctrl._setupInfo = SimpleNamespace(
+        positioners={'STAGE': SimpleNamespace(axes=['X', 'Y'])},
+        focusLock=SimpleNamespace(positioner='FocusPiezoDAC'),
+    )
+    ctrl._stopRequested = False
+    ctrl._stitcher = None
+    ctrl._originXY = None
+    ctrl._gridPositions = []
+    ctrl._scanAcqHandle = None
+    ctrl._scanning = True
+    ctrl._scanThread = object()
+    ctrl._closed = True
+    ctrl._logger = _Logger()
+    ctrl._saveRoot = lambda _info: tmp_path
+
+    def snapshot():
+        x, y = stage.position['X'], stage.position['Y']
+        history.append(('sample', dict(stage.position)))
+        return dict(
+            focus_z_um=3.0 + .01*x - .02*y,
+            focus_signal_px=20.1, focus_setpoint_px=20.0,
+            focus_error_px=.1, measurement_age_s=.01,
+            max_measurement_age_s=1., lock_state='locked',
+            positioner_available=True, dac_voltage_v=1.,
+            dac_voltage_clamped=False,
+        )
+
+    ctrl._commChannel = SimpleNamespace(
+        getTiltCalibrationSnapshot=snapshot,
+        _focusLock=SimpleNamespace(positioner='FocusPiezoDAC',
+                                   focusLockState=lambda: 'locked'),
+    )
+    sleeps = []
+    monkeypatch.setattr(
+        'imswitch.imcontrol.controller.controllers.TilingController.new_tilt_calibration_folder',
+        lambda name='': tmp_path / 'tiling_000',
+    )
+    monkeypatch.setattr(
+        'imswitch.imcontrol.controller.controllers.TilingController.time.sleep',
+        lambda seconds: sleeps.append(seconds),
+    )
+    TilingController._runScan(
+        ctrl, SimpleNamespace(xyPositioner='STAGE', camera='CAM'),
+        n_tiles_x=3, n_tiles_y=3, pattern=SPIRAL, step_um=100,
+        blend_overlaps=False, intensity_correction=False,
+        settle_s=2.25, save_tiles=False, record_tilt=True,
+    )
+    # Initial dwell + one per subsequent tile, and one final settle to
+    # measure Z drift after the stage has returned to its origin.
+    assert sleeps.count(2.25) == 10
+    samples = [i for i, (kind, _) in enumerate(history) if kind == 'sample']
+    # One origin sample before and one after the scan bracket the nine
+    # per-tile samples; each per-tile sample precedes its acquisition.
+    assert len(samples) == 11
+    assert all(history[idx+1][0] == 'acquire' for idx in samples[1:-1])
+    folders = list(tmp_path.glob('tiling_*/tilt_fit.json'))
+    assert len(folders) == 1
+    result = json.loads(folders[0].read_text())
+    assert result['n_valid_tiles'] == 9
+    assert result['fit']['slope_x_um_per_um'] == pytest.approx(.01)
+    assert result['fit']['slope_y_um_per_um'] == pytest.approx(-.02)
+    assert not list(tmp_path.rglob('tile_*_CAM*'))  # Save tiles remained off
+
+@pytest.mark.parametrize('stop_after,max_voltage', [(None, 2.), (3, 2.), (None, 1.35)])
+def test_open_loop_tilt_compensation_follows_xy_and_restores_origin(
+        monkeypatch, tmp_path, stop_after, max_voltage):
+    """A tile's relative Z move precedes the *existing* settle/acquire.
+
+    Cancellation must unwind both stage XY and our own commanded Z.
+    """
+    import csv
+    import json
+    from pathlib import Path
+    from imswitch.imcontrol.model.workflows.stage_tilt_compensation import TiltPlane
+
+    history = []
+    stage = _OffsetFrameStage({'X': 1200., 'Y': 2200.})
+    stage.position.update(X=1200., Y=2200.)
+    original_xy = dict(stage.position)
+    original_move = stage.move
+
+    def stage_move(distance, axis):
+        history.append(('xy', axis, distance))
+        original_move(distance, axis)
+
+    stage.move = stage_move
+
+    class _DAC:
+        isAvailable = True
+        _offset_voltage = 1.
+        _volts_per_um = .05
+        _min_voltage = 0.
+        _max_voltage = 2.
+
+        def __init__(self):
+            self.z = 6.0
+
+        def get_abs(self, axis='Z'):
+            return self.z
+
+        def move(self, distance, axis='Z'):
+            history.append(('z', distance))
+            self.z += distance
+
+        def setPosition(self, target, axis='Z'):
+            assert axis == 'Z'
+            self.move(target - self.z, axis)
+            return True
+
+    dac = _DAC()
+    dac._max_voltage = max_voltage
+
+    class _Focus:
+        positioner = 'FocusPiezoDAC'
+
+        def focusLockState(self):
+            return 'unlocked'
+
+        def focusCameraAcquisitionActive(self):
+            return True
+
+        def getPositionerAbs(self):
+            return dac.get_abs()
+
+        def movePositioner(self, dz):
+            dac.move(dz)
+
+    focus = _Focus()
+
+    def snapshot():
+        x, y = stage.position['X'], stage.position['Y']
+        expected_z = (6. - .00926 * (x - 1200.) - .00296 * (y - 2200.))
+        signal = 20 + 10 * (dac.z - expected_z)
+        history.append(('snapshot', signal))
+        return dict(lock_state='unlocked', focus_signal_px=signal,
+                    measurement_age_s=.01, max_measurement_age_s=1.,
+                    positioner_available=True)
+
+    class _Detectors(_LeaseManager):
+        def __getitem__(self, name):
+            return _SimpleDetector()
+
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._master = SimpleNamespace(
+        positionersManager={'Stage': stage, 'FocusPiezoDAC': dac},
+        detectorsManager=_Detectors(),
+    )
+    ctrl._setupInfo = SimpleNamespace(
+        positioners={'Stage': SimpleNamespace(axes=['X', 'Y'])},
+        focusLock=SimpleNamespace(positioner='FocusPiezoDAC'),
+    )
+    ctrl._commChannel = SimpleNamespace(
+        _focusLock=focus, getTiltCalibrationSnapshot=snapshot,
+    )
+    ctrl._logger = _Logger()
+    ctrl._closed = True
+    ctrl._stopRequested = False
+    ctrl._scanning = True
+    ctrl._scanThread = object()
+    ctrl._stitcher = None
+    ctrl._scanAcqHandle = None
+    ctrl._originXY = None
+    ctrl._gridPositions = []
+    ctrl._saveRoot = lambda _info: tmp_path
+
+    class _Source:
+        pointAttributes = None
+
+        def __init__(self):
+            self.count = 0
+
+        def prepare(self):
+            pass
+
+        def finish(self):
+            pass
+
+        def acquire(self):
+            self.count += 1
+            history.append(('acquire', self.count))
+            if self.count == stop_after:
+                ctrl._stopRequested = True
+            return np.ones((4, 4), dtype=np.uint16), True
+
+    source = _Source()
+    ctrl._makeTileSource = lambda *_args: source
+    ctrl._resolveSaveSet = lambda *_args: ['CAM']
+    monkeypatch.setattr(
+        'imswitch.imcontrol.controller.controllers.TilingController.time.sleep',
+        lambda seconds: history.append(('sleep', seconds)),
+    )
+    plane = TiltPlane(
+        path=Path('test.json'), sha256='a' * 64,
+        xy_positioner='Stage', focus_positioner='FocusPiezoDAC',
+        slope_x=-.00926, slope_y=-.00296,
+        x_bounds=(1100., 1300.), y_bounds=(2100., 2300.),
+        rms_residual_um=.0593,
+    )
+    TilingController._runScan(
+        ctrl, SimpleNamespace(xyPositioner='Stage', camera='CAM'),
+        n_tiles_x=3, n_tiles_y=3, pattern=SPIRAL, step_um=100.,
+        blend_overlaps=False, intensity_correction=False,
+        settle_s=2.5, tilt_plane=plane,
+        precheck_tilt=(max_voltage < 2.),
+    )
+    if max_voltage < 2.:
+        # The full Z envelope is rejected *before* any XY or Z movement.
+        assert source.count == 0
+        assert not stage.absoluteMoves
+        assert not [e for e in history if e[0] in ('xy', 'z', 'acquire')]
+        assert stage.position == pytest.approx(original_xy)
+        assert dac.z == pytest.approx(6.)
+        return
+    n = stop_after or 9
+    assert source.count == n
+    assert stage.position == pytest.approx(original_xy)
+    assert dac.z == pytest.approx(6.)
+    assert len([event for event in history if event[0] == 'sleep']) == n
+    # Each acquired tile has a fresh sample immediately beforehand.
+    assert all(history[i - 1][0] == 'snapshot'
+               for i, event in enumerate(history) if event[0] == 'acquire')
+    # All feed-forward commands happen before the next settle, not after it.
+    for i, event in enumerate(history):
+        if event[0] == 'z' and i + 1 < len(history) and history[i + 1][0] == 'sleep':
+            assert history[i + 2][0] == 'snapshot'
+    report = next(tmp_path.glob('tiling_*/tilt_validation.json'))
+    info = json.loads(report.read_text())
+    assert info['completed'] == (stop_after is None)
+    assert info['n_recorded_tiles'] == n
+    assert info['n_valid_focus_samples'] == n
+    assert info['max_abs_focus_signal_delta_px'] < 1e-8
+    with (report.parent / 'tilt_compensation.csv').open(newline='') as file:
+        assert len(list(csv.DictReader(file))) == n
+    assert (report.parent / 'tilt_validation.png').exists()

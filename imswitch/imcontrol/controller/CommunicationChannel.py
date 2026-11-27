@@ -340,6 +340,13 @@ class CommunicationChannel(SignalInterface):
         if getattr(self, '_focusLock', None) is controller:
             self._focusLock = None
 
+    def getTiltCalibrationSnapshot(self) -> dict:
+        """Read the registered focus lock without polling any hardware."""
+        controller = self._focusLock
+        if controller is None:
+            raise RuntimeError('No focus lock is configured for tilt calibration')
+        return controller.getTiltCalibrationSnapshot()
+
     def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
         """ Block until the focus lock is holding again, or gives up.
 

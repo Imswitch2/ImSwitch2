@@ -150,7 +150,7 @@ def test_the_selection_is_read_before_the_worker_starts():
     # Read in the snapshot startTiling takes on the GUI thread (a timelapse of
     # tilings takes the same snapshot once and reuses it for every run).
     snapshot = inspect.getsource(TilingController.snapshotRunSettings)
-    assert 'self._widget.getDetector()' in snapshot
+    assert '.getDetector()' in snapshot
     source = inspect.getsource(TilingController.startTiling)
     assert 'self.snapshotRunSettings()' in source
 

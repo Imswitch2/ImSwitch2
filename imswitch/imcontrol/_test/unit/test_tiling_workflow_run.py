@@ -359,3 +359,76 @@ def test_start_tiling_still_runs_the_widget_snapshot_on_a_thread(
     assert {'setRunning', 'setProgress'} <= set(harness.ctrl._widget.calls)
     # The targets are drawn again on the overview the run is about to build.
     assert 'sigTargetsChanged' in [name for name, _ in harness.emitted]
+
+
+def test_workflow_can_save_without_allocating_a_mosaic(harness, tmp_path):
+    """Save-only scan retains both the dataset and the dev target list."""
+    harness.ctrl._targets.add(stage_xy=(12.0, 34.0), source='manual')
+    result = harness.run(
+        _settings(build_overview=False), tmp_path / 'without-mosaic'
+    )
+    assert result.completed is True
+    assert result.tiles_acquired == 4
+    assert harness.ctrl._stitcher is None
+    assert 'mosaic' not in harness.events
+    assert harness.events.count('save') == 4
+    assert len(harness.ctrl._targets) == 1
+    assert (tmp_path / 'without-mosaic' / MANIFEST_NAME).exists()
+
+
+def test_tilt_calibration_only_is_not_mistaken_for_workflow_tiling(
+        harness, tmp_path):
+    result = harness.run(
+        _settings(tilt_calibration_only=True, record_tilt=True),
+        tmp_path / 't0',
+    )
+    assert result.completed is False
+    assert 'Calibration-only' in result.message
+    assert not harness.events
+
+
+def test_tilt_sampling_precedes_illumination_gated_capture(
+        harness, tmp_path, monkeypatch):
+    """Tilt observations and dev's per-tile laser gate coexist."""
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module(
+        'imswitch.imcontrol.controller.controllers.TilingController'
+    )
+    event_log = harness.events
+    harness.ctrl._commChannel._focusLock = SimpleNamespace(
+        positioner='Fine', focusLockState=lambda: 'locked'
+    )
+    harness.ctrl._tiltSnapshot = lambda: {'lock_state': 'locked'}
+
+    class _Recorder:
+        def __init__(self, folder, **kwargs):
+            self.folder = folder
+
+        def record_origin(self, **kwargs):
+            event_log.append('focus-origin')
+
+        def record(self, *, tile_index, **kwargs):
+            event_log.append(f'focus{tile_index - 1}')
+
+        def finish(self, *, completed):
+            return {'fit': None, 'completed': completed}
+
+    monkeypatch.setattr(module, 'StageTiltRecorder', _Recorder)
+    monkeypatch.setattr(
+        module, 'new_tilt_calibration_folder', lambda name='': tmp_path / 'calibration'
+    )
+    gate = _Gate(harness.events)
+    result = harness.run(
+        _settings(build_overview=False, record_tilt=True),
+        tmp_path / 't0', gate,
+    )
+    assert result.completed is True
+    assert harness.ctrl._stitcher is None
+    for index in range(4):
+        assert event_log.index(f'focus{index}') < event_log.index(f'on{index}')
+        assert event_log.index(f'on{index}') < event_log.index(f'off{index}')
+        assert event_log.index(f'off{index}') < event_log.index('save',
+            event_log.index(f'off{index}'))
+    assert gate.before == gate.after == [0, 1, 2, 3]

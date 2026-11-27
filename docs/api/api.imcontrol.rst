@@ -95,6 +95,13 @@ api.imcontrol
 
       Always available.
 
+   .. method:: cancelFocusLockResume() -> None
+
+      Cancels a resumeFocusLock wait (a Stop). Z stays where it is; the
+      lock is left 'lost' with its setpoint kept. Safe from any thread.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
    .. method:: changed3StepDelayPar(d3StepDelay)
 
       Sets the Point scan widget's delay before each step of the third
@@ -236,7 +243,19 @@ api.imcontrol
       The focus lock's state: ``'unlocked'``, ``'locked'``,
       ``'suspended'`` (a scan owns the focus axis and the lock is held for
       it), ``'reacquiring'`` (the scan is over and the lock waits for the
-      signal to come back) or ``'reacquire-failed'``.
+      signal to come back), ``'reacquire-failed'``, ``'holding'`` (frames
+      not trustworthy: Z frozen, setpoint kept), ``'lost'`` (held too long
+      or a relock failed; setpoint kept), ``'paused'`` (pauseFocusLock) or
+      ``'relocking'`` (stepping back to the setpoint).
+
+      Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: getFocusLockStatus() -> dict
+
+      Focus-lock state with the live frame confidence (0..1), the names
+      of the trust tests the last frame failed (``reasons``), why it is
+      holding (``heldFor``) or lost (``lostReason``), the thresholds in use
+      and whether they were learned, and the last relock result.
 
       Needs *FocusLock* in ``availableWidgets``.
 
@@ -574,7 +593,8 @@ api.imcontrol
 
    .. method:: isFocusLocked() -> bool
 
-      Whether the focus is locked right now.
+      Whether the focus is locked and correcting right now (not
+      holding, paused or relocking).
 
       Needs *FocusLock* in ``availableWidgets``.
 
@@ -738,6 +758,16 @@ api.imcontrol
 
       Needs *Rotator* in ``availableWidgets``.
 
+   .. method:: pauseFocusLock() -> str
+
+      Pauses focus correction (Z held where it is, measurement ignored),
+      e.g. for an XY move. Returns the state afterwards: ``'paused'``, or
+      ``'unlocked'`` / ``'lost'`` / a scan state when there was no active
+      lock to pause. Safe from any thread; waits at most 2 s for the
+      focus lock's thread. Follow with resumeFocusLock.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
    .. method:: planReplayFromFile(filePath: 'str', dataset: 'Optional[str]' = None) -> 'Dict[str, Any]'
 
       Describes what loading the settings of the recording ``filePath``
@@ -804,6 +834,16 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: reengagePreviousFocusLock() -> str
+
+      Re-engages the lock saved for this setup and focus actuator (its
+      setpoint, reference and calibration) by a bounded relock from the
+      current Z. Never happens by itself. Returns the state afterwards
+      (``'relocking'`` when started). Raises RuntimeError when nothing
+      usable is stored or the focus camera is off.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
    .. method:: removeTarget(targetId: int) -> bool
 
       Drop one target by id; returns whether it existed.
@@ -850,6 +890,19 @@ api.imcontrol
       control.
 
       Needs *Reservation* in ``availableWidgets``.
+
+   .. method:: resumeFocusLock(settleS: float = 0.2, timeoutS: float = 10.0) -> str
+
+      Resumes a paused (or holding / lost) focus lock: waits ``settleS``
+      seconds, then steps Z back toward the kept setpoint in bounded steps
+      (see the relock limits) and re-engages the loop. Blocks until done,
+      at most about ``settleS + timeoutS`` seconds. Returns ``'locked'``,
+      ``'failed'`` (Z back at the last good position, state ``'lost'``),
+      ``'unlocked'`` (no lock was wanted) or ``'cancelled'``
+      (cancelFocusLockResume). Call it from a script or worker thread, not
+      from the GUI thread.
+
+      Needs *FocusLock* in ``availableWidgets``.
 
    .. method:: runLaserOnRawUnits(laserName: 'str') -> 'bool'
 
@@ -999,6 +1052,22 @@ api.imcontrol
       scan owns the focus axis is engaged when the scan ends
       (waitForFocusLock waits for that). Raises RuntimeError when the focus
       camera is off.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: setFocusLockHoldSettings(goodFramesToResume: int = 5, holdTimeoutS: float = 5.0) -> None
+
+      Consecutive trustworthy frames needed to leave 'holding', and how
+      long to hold before giving up to 'lost'.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: setFocusLockRelockLimits(maxStepUm: float = 0.5, maxExcursionUm: float = 3.0, tolerancePx: float = 1.0, timeoutS: float = 10.0, searchEnabled: bool = False, searchRangeUm: float = 2.0) -> None
+
+      Relock safety limits: largest Z step (µm), largest total distance
+      from the last good Z (µm), error at which the loop takes over (px),
+      relock timeout (s), and the optional bounded Z search when the spot
+      is not on the camera (off by default). Refuses invalid values.
 
       Needs *FocusLock* in ``availableWidgets``.
 

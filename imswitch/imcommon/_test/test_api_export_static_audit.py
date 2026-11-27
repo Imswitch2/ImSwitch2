@@ -26,7 +26,17 @@ _RECORD_TO_MEMORY = (
     'imcontrol/_test/unit/test_record_scan_to_memory.py::'
     'test_every_widget_access_happens_on_the_controller_thread.'
 )
+_FOCUS_RESUME = (
+    'Blocks on the caller (script / tiling worker) thread until the relock '
+    'ends, so it cannot run on the UI thread; the relock itself and every '
+    'widget access are handed to _invokeOnControllerThreadIfNeeded, which runs '
+    'them on the GUI thread. Pinned by imcontrol/_test/unit/'
+    'test_focus_lock_hold_relock.py::'
+    'test_pause_and_resume_touch_widgets_only_on_the_controller_thread.'
+)
 ALLOWED = {
+    'imcontrol/controller/controllers/FocusLockController.py::'
+    'FocusLockController.resumeFocusLock': _FOCUS_RESUME,
     'imcontrol/controller/controllers/RecordingController.py::'
     'RecordingController.recordScanToMemory': _RECORD_TO_MEMORY,
     'imcontrol/controller/controllers/RecordingController.py::'

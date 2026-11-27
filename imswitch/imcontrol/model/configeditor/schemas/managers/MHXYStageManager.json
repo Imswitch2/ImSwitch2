@@ -2,6 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "properties": {
+    "acceleration": {
+      "description": "Optional. Acceleration in m/s² (Tango ``!accel``), one number for both",
+      "x-imswitch-kind": [
+        "number",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number",
+        "docs:object"
+      ]
+    },
     "rs232device": {
       "description": "Name of the RS-232 channel registered in ``rs232sManager``.",
       "x-imswitch-kind": "string",
@@ -19,6 +32,19 @@
       "x-imswitch-source": [
         "code:default:boolean",
         "code:optional(get)"
+      ]
+    },
+    "velocity": {
+      "description": "Optional. Travel speed in revolutions of the spindle per second",
+      "x-imswitch-kind": [
+        "number",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number",
+        "docs:object"
       ]
     }
   },

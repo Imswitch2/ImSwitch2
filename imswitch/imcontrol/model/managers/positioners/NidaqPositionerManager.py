@@ -89,7 +89,8 @@ class NidaqPositionerManager(PositionerManager):
         return True
 
     def setPosition(self, position, axis):
-        self._setPosition(position, axis, raise_on_error=False)
+        # Let callers detect an explicitly rejected analog write.
+        return self._setPosition(position, axis, raise_on_error=False)
 
     def resetToCurrent(self):
         self.setPosition(self._position[self.axes[0]], self.axes[0])

@@ -3,8 +3,10 @@
   "device": {
     "managerName": "MHXYStageManager",
     "managerProperties": {
+      "acceleration": 1.5,
       "rs232device": "example",
-      "useMockOnFailure": true
+      "useMockOnFailure": true,
+      "velocity": 1.5
     }
   }
 }
