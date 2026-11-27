@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import os
 from pathlib import Path
 from typing import Any, Dict
@@ -18,7 +19,6 @@ from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.model.resources import get_resource_registry
-from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
@@ -28,6 +28,7 @@ from .SetupModeController import SetupModeController
 from .SmartMicroscopyModeService import SmartMicroscopyModeService
 from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
+from .runtime_panels import PanelService, reportStartupProblems
 
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
@@ -77,6 +78,8 @@ class ImConMainController(MainController):
         self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
         self.__mainView.sigOpenRecordingFolder.connect(self.openRecordingFolder)
         self.__mainView.recordingFolderDialog.sigSaveRequested.connect(self.saveRecordingFolder)
+        self.__mainView.sigOpenSetupFolder.connect(self.openSetupFolder)
+        self.__mainView.setupFolderDialog.sigSaveRequested.connect(self.saveSetupFolder)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # The Config Studio, while it is open. One window at a time: a second
@@ -111,25 +114,15 @@ class ImConMainController(MainController):
 
         self.controllers = {}
 
-        # Extra kwargs forwarded to specific controllers that need view-layer objects
-        _imageWidget = self.__mainView.widgets.get('Image')
-        _extraKwargs = {
-            # Viewer Tools' line/rectangle/intensity buttons select the Line
-            # Profile panel's modes, so it is handed the panel too.
-            'ViewerTools': {
-                'imageWidget': _imageWidget,
-                'lineProfileWidget': self.__mainView.widgets.get('LineProfile'),
-            },
-        }
-
-        for widgetKey, widget in self.__mainView.widgets.items():
-            self.controllers[widgetKey] = self.__factory.createController(
-                (getattr(controllers, f'{widgetKey}Controller')
-                if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
-                widget,
-                **_extraKwargs.get(widgetKey, {})
-            )
+        # One controller per panel the view built -- through the same code
+        # that adds a panel while running (runtime_panels.PanelService). A
+        # non-core panel that fails is left out and reported below.
+        self.__panels = PanelService(
+            view=self.__mainView, factory=self.__factory, setupInfo=self.__setupInfo,
+            master=self.__masterController, controllers=self.controllers,
+            activeSetupPath=self.__activeSetupPath,
+        )
+        self.__panels.buildStartupControllers()
 
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
         if 'SetupModes' in self.controllers:
@@ -322,6 +315,15 @@ class ImConMainController(MainController):
                 self.__mainView
             )
 
+        # Panels added later (View > Add panel…) get what startup gave these.
+        self.__panels.attach(
+            setupModeController=self.setupModeController,
+            smartModeService=self.smartModeService,
+            shortcutManager=self.__shortcutManager,
+        )
+        if hasattr(self.__mainView, 'sigOpenAddPanel'):
+            self.__mainView.sigOpenAddPanel.connect(self.openAddPanel)
+
         # The panels only got their rows once their controllers ran, so the
         # dock proportions the view guessed while they were still empty are
         # re-derived here.  Before the saved layout is restored: a saved
@@ -353,6 +355,12 @@ class ImConMainController(MainController):
         # Everything is built and any saved layout has been applied: settle the
         # dock proportions once the window is actually on screen.
         self.__mainView.scheduleInitialDockLayout()
+
+        reportStartupProblems(
+            self.__mainView, self.__panels.startupProblems(),
+            lambda view, title, text: guitools.showWarning(
+                view, title, text, unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S),
+        )
 
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)
@@ -405,6 +413,18 @@ class ImConMainController(MainController):
     @property
     def shortcutManager(self):
         return self.__shortcutManager
+
+    @property
+    def panelService(self):
+        return self.__panels
+
+    def openAddPanel(self):
+        """ View > Add panel…: the panels that can be added to this session. """
+        self.__panels.openAddPanelDialog()
+
+    def addPanel(self, key):
+        """ Add panel ``key`` to this session (see runtime_panels). """
+        return self.__panels.addPanel(key)
 
     def loadParamsFromHDF5(self):
         """ Load the settings stored in a user-picked HDF5 snap/recording into
@@ -478,7 +498,9 @@ class ImConMainController(MainController):
 
         options, _ = configfiletools.loadOptions()
 
-        self.pickSetupController.setSetups(configfiletools.getSetupList())
+        folder = configfiletools.getSetupFilesDir(options)
+        self.pickSetupController.setFolder(folder)
+        self.pickSetupController.setSetups(configfiletools.getSetupList(folder))
         self.pickSetupController.setSelectedSetup(options.setupFileName)
         if not self.__mainView.showPickSetupDialogBlocking():
             return
@@ -491,9 +513,8 @@ class ImConMainController(MainController):
         if not proceed:
             return
 
-        options = dataclasses.replace(options, setupFileName=setupFileName)
-        configfiletools.saveOptions(options)
-        self._restartAfterShutdown()
+        configfiletools.saveSetupChoice(setupFileName)
+        self._restartAfterShutdown(setupChosen=True)
 
     def saveWidgetState(self):
         """Save widget states to a JSON file selected by the user."""
@@ -699,6 +720,67 @@ class ImConMainController(MainController):
         dialog.setStatus('')
         dialog.accept()
 
+    def openSetupFolder(self):
+        """Show the setup-folder editor, seeded with the folder and setup in use."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.setupFolderDialog
+        dialog.setValues(configfiletools.getSetupFilesDir(options), options.setupFileName)
+        self.__mainView.showSetupFolderDialog()
+
+    def saveSetupFolder(self, values):
+        """Take setups from another folder: save it and the setup chosen from
+        it, then restart, as Pick hardware setup does.
+
+        A restart, not a switch in place: the running session keeps writing
+        laser presets and ROIs into the setup file it loaded, and only a new
+        start makes the new folder's setup the one it runs and writes. A
+        folder that cannot be one, or that holds no setup to start with,
+        keeps the dialog open with the reason.
+        """
+        from imswitch.imcontrol.model import setupfolder
+
+        dialog = self.__mainView.setupFolderDialog
+        try:
+            folder = dirtools.checkedFolderPath(values.get('setupFolder'))
+        except ValueError as e:
+            dialog.setStatus(str(e))
+            return
+        setupFileName = str(values.get('setupFileName') or '')
+        if not setupFileName or not os.path.isfile(setupfolder.setupFilePath(folder, setupFileName)):
+            dialog.setStatus(
+                'This folder holds no setup file for ImSwitch to start with. Put one'
+                ' there first, e.g. with Save As… in the Config Studio (Hardware >'
+                ' Edit hardware configuration…).'
+            )
+            return
+
+        options, _ = configfiletools.loadOptions()
+        setting = setupfolder.setupFolderSetting(folder)
+        if (setting == getattr(options, 'setupFolder', '')
+                and setupFileName == options.setupFileName):
+            dialog.setStatus('')
+            dialog.accept()
+            return
+
+        if not guitools.askYesNoQuestion(
+            self.__mainView, 'Restart ImSwitch?',
+            f'ImSwitch will restart using "{setupFileName}" from {folder}. Continue?'
+        ):
+            return
+        try:
+            configfiletools.saveOptions(dataclasses.replace(options, setupFolder=setting))
+            # Choosing the setup here is choosing it as the one to start with
+            # (a --setup this run was started with must not hold it back).
+            configfiletools.saveSetupChoice(setupFileName)
+        except Exception as e:
+            self.__logger.error(f'Could not save the setup folder: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the setup folder: {e}')
+            return
+        self.__logger.info(f'Setup folder set to {folder}, setup {setupFileName}')
+        dialog.setStatus('')
+        dialog.accept()
+        self._restartAfterShutdown(setupChosen=True)
+
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.
 
@@ -744,8 +826,9 @@ class ImConMainController(MainController):
             return
         self.__configEditor = None
 
+        setupChosen = editor.active_config_changed
         needsRestart = (
-            editor.active_config_changed
+            setupChosen
             or (self.__activeSetupPath is not None
                 and self.__activeSetupPath in editor.saved_files())
         )
@@ -757,9 +840,11 @@ class ImConMainController(MainController):
         # Off the editor's own closeEvent before touching the main window: the
         # answer may be to close the application, and doing that from inside a
         # widget that is still closing is asking for trouble.
-        QtCore.QTimer.singleShot(0, self._promptRestartAfterConfigEdit)
+        QtCore.QTimer.singleShot(
+            0, functools.partial(self._promptRestartAfterConfigEdit, setupChosen=setupChosen)
+        )
 
-    def _promptRestartAfterConfigEdit(self):
+    def _promptRestartAfterConfigEdit(self, setupChosen=False):
         proceed = guitools.askYesNoQuestion(
             self.__mainView,
             'Restart ImSwitch?',
@@ -769,9 +854,9 @@ class ImConMainController(MainController):
         )
         if not proceed:
             return
-        self._restartAfterShutdown()
+        self._restartAfterShutdown(setupChosen=setupChosen)
 
-    def _restartAfterShutdown(self):
+    def _restartAfterShutdown(self, setupChosen=False):
         """ Close the application, then come back up.
 
         Deliberately not ``ostools.restartSoftware()``: that replaces the
@@ -779,8 +864,12 @@ class ImConMainController(MainController):
         finalized and the new process inherits whatever they were doing. Asking
         for the restart and closing the window runs the ordinary shutdown
         first, and ``launchApp`` re-execs once it is done.
+
+        ``setupChosen``: the user picked the setup to start with, so a
+        ``--setup`` this run was started with must not override it.
         """
-        ostools.restartAfterShutdown(self.__mainView.window().close)
+        arguments = configfiletools.restartArgumentsForSetupChoice() if setupChosen else None
+        ostools.restartAfterShutdown(self.__mainView.window().close, arguments=arguments)
 
     def setSessionNote(self, note: str) -> None:
         """Publish the operator's free-text note for this session.

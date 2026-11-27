@@ -9,13 +9,15 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from imswitch.imcommon.view.LogWidget import LogWidget
+from imswitch.imcontrol.model import panels
 from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
-from . import widgets
+from . import panel_docks, widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
 from .ReplaySettingsDialog import ReplaySettingsDialog
+from .SetupFolderDialog import SetupFolderDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -168,6 +170,8 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenConfigEditor = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
     sigOpenRecordingFolder = QtCore.Signal()
+    sigOpenSetupFolder = QtCore.Signal()
+    sigOpenAddPanel = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -189,6 +193,9 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
         self.replaySettingsDialog = ReplaySettingsDialog(self)
+        self.setupFolderDialog = SetupFolderDialog(
+            self, appliesWhen='Saving restarts ImSwitch with the setup chosen here.'
+        )
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -196,6 +203,10 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.factory = widgets.WidgetFactory(options)
         self.docks = {}
         self.widgets = {}
+        # Panels that failed to build at startup ({key: error}), and the
+        # placeholders standing in docks for panels whose section is missing.
+        self.panelBuildErrors = {}
+        self.panelPlaceholders = {}
 
         # Menu bar. Each menu answers one question:
         #   File        -- what goes into, or comes back out of, saved files
@@ -257,6 +268,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         hardware.addAction(self.configEditorAction)
 
+        self.addPanelAction = QtWidgets.QAction('Add panel…', self)
+        self.addPanelAction.setToolTip(
+            'Add a panel to this session without restarting, and optionally'
+            ' save it to the setup file.'
+        )
+        self.addPanelAction.triggered.connect(self.sigOpenAddPanel)
+        view.addAction(self.addPanelAction)
+
         # Checkable, but left unconnected until the dock it toggles exists --
         # the menu bar is built before the dock area.
         self.logAction = QtWidgets.QAction('Log', self, checkable=True)
@@ -312,6 +331,15 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.recordingFolderAction.triggered.connect(self.sigOpenRecordingFolder)
         preferences.addAction(self.recordingFolderAction)
 
+        self.setupFolderAction = QtWidgets.QAction('Setup folder…', self)
+        self.setupFolderAction.setToolTip(
+            'Which folder this computer takes hardware setup files from'
+            ' (subfolders included), and the setup to use from it.'
+            ' ImSwitch restarts.'
+        )
+        self.setupFolderAction.triggered.connect(self.sigOpenSetupFolder)
+        preferences.addAction(self.setupFolderAction)
+
         self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
         self.memoryLimitsAction.setToolTip(
             'How much memory ImSwitch may use on this computer for recording'
@@ -349,6 +377,9 @@ class ImConMainView(QtWidgets.QMainWindow):
             for key, info in _DEFAULT_LEFT_DOCK_INFOS.items():
                 if key not in placed:
                     leftDockInfos[key] = info
+
+        # Kept for panels added later, which go where this layout puts them.
+        self._panelDockInfos = {'right': rightDockInfos, 'left': leftDockInfos}
 
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
@@ -633,6 +664,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.recordingFolderDialog.raise_()
         self.recordingFolderDialog.activateWindow()
 
+    def showSetupFolderDialog(self):
+        """Raise the setup-folder editor."""
+        self.setupFolderDialog.show()
+        self.setupFolderDialog.raise_()
+        self.setupFolderDialog.activateWindow()
+
     def showSessionNotesDialog(self):
         """Raise the (modeless) session-notes editor, opening it if needed."""
         self.sessionNotesDialog.show()
@@ -689,13 +726,23 @@ class ImConMainView(QtWidgets.QMainWindow):
         prevDock = None
         prevDockYPosition = -1
         for widgetKey, dockInfo in dockInfoDict.items():
-            self.widgets[widgetKey] = self.factory.createWidget(
-                getattr(widgets, f'{widgetKey}Widget')
-                if widgetKey != 'Scan' else
-                getattr(widgets, f'{widgetKey}Widget{resolve_scan_info(self.viewSetupInfo.scan).frontend_type}')
-            )
+            try:
+                self._createPanelWidget(widgetKey)
+            except Exception as e:
+                # One optional panel must not stop ImControl; the core ones
+                # still do, as the rest of the application assumes them.
+                if panels.isFatalAtStartup(widgetKey):
+                    raise
+                self.__logger.error(f'Panel {widgetKey} could not be built and is left out: {e}',
+                                    exc_info=True)
+                self.panelBuildErrors[widgetKey] = f'{type(e).__name__}: {e}'
+                self._forgetAvailableWidget(widgetKey)
+                continue
             self.docks[widgetKey] = Dock(dockInfo.name, size=(1, 1))
-            self.docks[widgetKey].addWidget(self.widgets[widgetKey])
+            if widgetKey in self.widgets:
+                self.docks[widgetKey].addWidget(self.widgets[widgetKey])
+            else:
+                self.docks[widgetKey].addWidget(self.panelPlaceholders[widgetKey])
             if prevDock is None:
                 dockArea.addDock(self.docks[widgetKey], position)
             elif dockInfo.yPosition > prevDockYPosition:
@@ -707,6 +754,110 @@ class ImConMainView(QtWidgets.QMainWindow):
             docks.append(prevDock)
 
         return docks
+
+    # ------------------------------------------------------------------
+    # Panels: built at startup or added while running (see panel_docks)
+    # ------------------------------------------------------------------
+
+    def _createPanelWidget(self, widgetKey):
+        """ Build the widget of panel ``widgetKey`` into ``self.widgets`` --
+        or, when the panel would do nothing for want of its setup section, a
+        placeholder saying so into ``self.panelPlaceholders``. """
+        if panel_docks.needsPlaceholder(widgetKey, self.viewSetupInfo):
+            placeholder = panel_docks.NotConfiguredPanel(panels.panelSpec(widgetKey))
+            self.panelPlaceholders[widgetKey] = placeholder
+            return placeholder
+        widget = self.factory.createWidget(
+            getattr(widgets, f'{widgetKey}Widget')
+            if widgetKey != 'Scan' else
+            getattr(widgets, f'{widgetKey}Widget{resolve_scan_info(self.viewSetupInfo.scan).frontend_type}')
+        )
+        self.widgets[widgetKey] = widget
+        return widget
+
+    def addPanel(self, widgetKey):
+        """ Build and dock panel ``widgetKey`` while running; returns its
+        widget. Already docked: shown and raised instead. On failure nothing
+        of it is left behind and the exception propagates. """
+        if widgetKey in self.docks:
+            self.showPanel(widgetKey)
+            return self.widgets.get(widgetKey)
+        layoutBefore = getattr(self, '_defaultDockState', None)
+        # removePanel() puts the default layout back if the panel is undone.
+        self._layoutBeforePanel = {**getattr(self, '_layoutBeforePanel', {}),
+                                   widgetKey: layoutBefore}
+        try:
+            widget = self._createPanelWidget(widgetKey)
+            if widgetKey not in self.widgets:
+                raise RuntimeError(f'{widgetKey} still lacks its setup section')
+            self.docks[widgetKey] = panel_docks.addPanelDock(self, widgetKey, widget)
+            self._rememberAvailableWidget(widgetKey)
+            self.applyContentAwareDockSizing()
+        except Exception:
+            self.removePanel(widgetKey)
+            raise
+        return widget
+
+    def removePanel(self, widgetKey):
+        """ Undo addPanel (or a placeholder's replacement) for ``widgetKey``. """
+        widget = self.widgets.pop(widgetKey, None)
+        placeholder = self.panelPlaceholders.get(widgetKey)
+        if placeholder is not None and widgetKey in self.docks:
+            # A panel that replaced its placeholder goes back to it.
+            dock = self.docks[widgetKey]
+            if widget is not None:
+                widget.setParent(None)
+            dock.addWidget(placeholder)
+            placeholder.show()
+        else:
+            panel_docks.removePanelDock(self, widgetKey)
+            self.panelPlaceholders.pop(widgetKey, None)
+            self._forgetAvailableWidget(widgetKey)
+            undo = getattr(self, '_layoutBeforePanel', {})
+            if widgetKey in undo:
+                self._defaultDockState = undo.pop(widgetKey)
+        if widget is not None:
+            widget.deleteLater()
+
+    def replacePlaceholder(self, widgetKey):
+        """ Build the real widget of a panel that waited for its section, in
+        its dock; returns it. On failure the placeholder stays. """
+        placeholder = self.panelPlaceholders.get(widgetKey)
+        dock = self.docks.get(widgetKey)
+        if placeholder is None or dock is None:
+            return self.addPanel(widgetKey)
+        try:
+            widget = self._createPanelWidget(widgetKey)
+            if widget is placeholder:
+                raise RuntimeError(f'{widgetKey} still lacks its setup section')
+            placeholder.hide()
+            placeholder.setParent(None)
+            dock.addWidget(widget)
+        except Exception:
+            self.removePanel(widgetKey)
+            raise
+        self.applyContentAwareDockSizing()
+        self.showPanel(widgetKey)
+        return widget
+
+    def dropPlaceholder(self, widgetKey):
+        """ Forget the placeholder once its panel is built for good. """
+        placeholder = self.panelPlaceholders.pop(widgetKey, None)
+        if placeholder is not None:
+            placeholder.deleteLater()
+
+    def showPanel(self, widgetKey):
+        panel_docks.showPanel(self, widgetKey)
+
+    def _rememberAvailableWidget(self, widgetKey):
+        available = self.viewSetupInfo.availableWidgets
+        if isinstance(available, list) and widgetKey not in available:
+            available.append(widgetKey)
+
+    def _forgetAvailableWidget(self, widgetKey):
+        available = self.viewSetupInfo.availableWidgets
+        if isinstance(available, list) and widgetKey in available:
+            available.remove(widgetKey)
 
 
 # Stretch factors are relative, and pyqtgraph turns them into splitter sizes

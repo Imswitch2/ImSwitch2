@@ -77,7 +77,7 @@ def devices_in(setup: dict) -> Iterator[tuple[str, str, dict]]:
 
 def shipped_setups() -> dict[str, dict]:
     return {path.name: json.loads(path.read_text(encoding="utf-8"))
-            for path in sorted(SHIPPED_SETUPS.glob("*.json"))}
+            for path in sorted(SHIPPED_SETUPS.rglob("*.json"))}
 
 
 def value_shape_fixtures() -> dict[str, dict]:

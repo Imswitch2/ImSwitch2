@@ -66,7 +66,13 @@ class MemoryOptions:
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass(frozen=True)
 class Options:
-    setupFileName: str  # JSON file that contains setup info
+    #: The setup file in use, named relative to the setup folder with '/'
+    #: separators (``mock/point_scanning/simple_mock_setup.json``), or by
+    #: its absolute path when it lives elsewhere. See ``setupfolder``.
+    setupFileName: str
+    #: Where this computer keeps its setup files (Preferences > Setup
+    #: folder…); empty for the default ``<ImSwitchConfig>/imcontrol_setups``.
+    setupFolder: str = ''
     recording: RecordingOptions = field(default_factory=RecordingOptions)
     watcher: WatcherOptions = field(default_factory=WatcherOptions)
     memory: MemoryOptions = field(default_factory=MemoryOptions)

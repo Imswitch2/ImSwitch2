@@ -2,17 +2,15 @@ import os
 
 import pytest
 
-from imswitch.imcommon.model.dirtools import DataFileDirs
 from imswitch.imcontrol.view.guitools.ViewSetupInfo import ViewSetupInfo
 
 
 def _example_setup_files():
-    setup_dir = os.path.join(DataFileDirs.UserDefaults, 'imcontrol_setups')
-    return [
-        os.path.join(setup_dir, file_name)
-        for file_name in sorted(os.listdir(setup_dir))
-        if file_name.endswith('.json')
-    ]
+    from imswitch.imcontrol.model import setupfolder
+
+    setup_dir = setupfolder.shippedSetupFolder()
+    return [setupfolder.setupFilePath(setup_dir, name)
+            for name in setupfolder.listSetupFiles(setup_dir)]
 
 
 @pytest.mark.parametrize('setup_path', _example_setup_files(), ids=os.path.basename)
