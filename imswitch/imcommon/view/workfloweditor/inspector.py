@@ -808,7 +808,8 @@ class Inspector(QtWidgets.QScrollArea):
         if not document.controls:
             layout.addWidget(_muted(
                 "No controls. Right-click a step's parameter and choose Expose as control… to set it by name "
-                "when the workflow runs (--set, a manifest column, the run dialog)."))
+                "when the workflow runs (--set, a manifest column, the run dialog; for a smart pipeline, the "
+                "Smart Pipeline panel's Parameters box)."))
             return
         for control in document.controls:
             layout.addWidget(self._control_card(control))
