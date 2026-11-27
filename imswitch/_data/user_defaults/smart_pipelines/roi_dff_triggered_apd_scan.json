@@ -1,7 +1,7 @@
 {
   "name": "ROI dF/F triggered APD scan",
-  "schema": 1,
-  "description": "Widefield camera in, confocal APD scan out (Advanced scan panel). The first reference_frames frames are averaged and segmented ONCE into cell ROIs (Otsu); the mask is then frozen. Per ROI the pipeline measures F, a baseline F0 (mean of the first baseline_frames frames) and dF/F; ROIs at or above the threshold for K frames in a row trigger (a ROI that triggered rests for the refractory period); of the triggered ROIs only the strongest is kept; the gates pass at most one scan per min-interval and at most the count-limit scans per run; the ROI's bounding box goes through the named camera->scan calibration (all four corners) and the Advanced panel scans exactly that box, padded by the margin, clamped to the scanner range (skipped with a logged reason when it does not fit), with the panel's own settings put back afterwards. The roles are '(unchanged)': arming applies no setup mode and Stop puts nothing back, so set the lasers, camera and scan panel as you want them before arming (or name your own setup modes there). Set the placeholders marked in the user docs: the camera name (steps 'cam', 'dff.frame', 'tf' source), the calibration id (step 'tf'), the lasers and axes of the scan step, the threshold and the roles. Run it first in Validate mode (dry run): everything runs, the scan action only logs the rectangle it WOULD scan. Then in Experiment.",
+  "schema": 2,
+  "description": "Widefield camera in, confocal APD scan out (Advanced scan panel). The first reference_frames frames are averaged and segmented ONCE into cell ROIs (Otsu); the mask is then frozen. Per ROI the pipeline measures F, a baseline F0 (mean of the first baseline_frames frames) and dF/F; ROIs at or above the threshold for K frames in a row trigger (a ROI that triggered rests for the refractory period); of the triggered ROIs only the strongest is kept; the gates pass at most one scan per min-interval and at most the count-limit scans per run; the ROI's bounding box goes through the named camera->scan calibration (all four corners) and the Advanced panel scans exactly that box, padded by the margin, clamped to the scanner range (skipped with a logged reason when it does not fit), with the panel's own settings put back afterwards. The roles are '(unchanged)': arming applies no setup mode and Stop puts nothing back, so set the lasers, camera and scan panel as you want them before arming (or name your own setup modes there). Set the placeholders marked in the user docs: the camera name (steps 'cam', 'dff.frame', 'tf' source), the calibration id (step 'tf'), the lasers and axes of the scan step and the roles. The dF/F threshold, the frames above it, the minimum time between scans and the scan budget are exposed parameters: set them in the Smart Pipeline panel's Parameters box (also while armed). Run it first in Validate mode (dry run): everything runs, the scan action only logs the rectangle it WOULD scan. Then in Experiment.",
   "metadata": {
     "smart_pipeline": {
       "roles": {
@@ -10,6 +10,40 @@
       }
     }
   },
+  "controls": [
+    {
+      "name": "dff_threshold",
+      "targets": [
+        "dff.threshold"
+      ],
+      "label": "dF/F threshold",
+      "help": "A ROI triggers when its dF/F is at least this (0.3 = 30 % above its baseline) for 'Frames above' frames in a row"
+    },
+    {
+      "name": "frames_above",
+      "targets": [
+        "dff.min_consecutive"
+      ],
+      "label": "Frames above",
+      "help": "Frames in a row a ROI must stay at or above the threshold before it triggers"
+    },
+    {
+      "name": "cooldown_s",
+      "targets": [
+        "rest.seconds"
+      ],
+      "label": "Min. time between scans",
+      "help": "At most one triggered scan per this many seconds"
+    },
+    {
+      "name": "max_scans",
+      "targets": [
+        "budget.count"
+      ],
+      "label": "Max. scans per run",
+      "help": "The pipeline triggers at most this many scans, then only watches"
+    }
+  ],
   "steps": [
     {
       "step": "live",
@@ -61,34 +95,34 @@
       "step": "gate",
       "id": "triggered",
       "rule": "condition",
-      "params": {
-        "min_count": 1
-      },
       "inputs": [
         "best"
-      ]
+      ],
+      "params": {
+        "min_count": 1
+      }
     },
     {
       "step": "gate",
       "id": "rest",
       "rule": "min-interval",
-      "params": {
-        "seconds": 5.0
-      },
       "inputs": [
         "triggered"
-      ]
+      ],
+      "params": {
+        "seconds": 5.0
+      }
     },
     {
       "step": "gate",
       "id": "budget",
       "rule": "count-limit",
-      "params": {
-        "count": 10
-      },
       "inputs": [
         "rest"
-      ]
+      ],
+      "params": {
+        "count": 10
+      }
     },
     {
       "step": "transform",
@@ -130,7 +164,7 @@
       "inputs": [
         "tf"
       ],
-      "timeout_s": 120
+      "timeout_s": 120.0
     },
     {
       "step": "sink",

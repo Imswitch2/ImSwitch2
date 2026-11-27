@@ -1033,7 +1033,8 @@ def _body_issues(step: "Map", outer: list, registry, *, contract_problem=None, n
     return issues
 
 
-def validate(workflow: Workflow, registry=None, *, contract_problem=None, normalize_format=None) -> list[Issue]:
+def validate(workflow: Workflow, registry=None, *, contract_problem=None, normalize_format=None,
+             field_for=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
     With a registry: plugin ids, arity and ports are checked too. Without,
@@ -1048,7 +1049,9 @@ def validate(workflow: Workflow, registry=None, *, contract_problem=None, normal
     canonically and raises ``ValueError`` for one the host cannot write.
     Without either, that check is skipped. ImProcess's ``PluginRegistry``
     supplies both, and ``imswitch.improcess.workflows.steps.validate``
-    defaults them to ImProcess's even without a registry.
+    defaults them to ImProcess's even without a registry. ``field_for`` lets
+    a host's own step kinds be control targets (see
+    :func:`~imswitch.imcommon.model.workflow.prepare.control_states`).
     """
     if contract_problem is None:
         contract_problem = getattr(registry, "contract_problem", None)
@@ -1057,7 +1060,7 @@ def validate(workflow: Workflow, registry=None, *, contract_problem=None, normal
     from imswitch.imcommon.model.workflow.prepare import check_recipe
 
     return check_recipe(workflow, registry, contract_problem=contract_problem,
-                        normalize_format=normalize_format)
+                        normalize_format=normalize_format, field_for=field_for)
 
 
 def validate_plain(workflow: Workflow, registry=None, *, contract_problem=None,

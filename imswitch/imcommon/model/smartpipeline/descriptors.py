@@ -68,6 +68,32 @@ def gate_fields(step) -> tuple[ParamField, ...]:
     return _GATE_FIELDS.get(str(getattr(step, "rule", "condition")), ())
 
 
+def action_fields_of(spec, params=None) -> tuple[ParamField, ...]:
+    """The parameters of an action: its catalogue entry's declared fields
+    (``spec.fields``), the others derived from their defaults; with no entry
+    (an unknown action) the fields the step's own ``params`` imply."""
+    if spec is None:
+        return spec_from_defaults(dict(params or {}))
+    declared = {field.key: field for field in (getattr(spec, "fields", None) or ())}
+    return tuple(declared.get(key) or field for key, field in
+                 ((key, spec_from_defaults({key: value})[0]) for key, value in spec.params.items()))
+
+
+def param_field(step, key: str, actions: ActionCatalog | None = None) -> ParamField | None:
+    """The field of ``step.params[key]`` for a gate or an action (what a
+    workflow control exposing it shows and checks), else ``None``. The hook
+    :func:`~imswitch.imcommon.model.workflow.prepare.control_states` takes as
+    ``field_for`` for a pipeline."""
+    if isinstance(step, Gate):
+        fields = gate_fields(step)
+    elif isinstance(step, Action):
+        spec = actions.get(step.action) if actions is not None else None
+        fields = action_fields_of(spec, step.params)
+    else:
+        return None
+    return next((field for field in fields if field.key == key), None)
+
+
 def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog | None = None) -> tuple[StepDescriptor, ...]:
     """Descriptors for ``live``, ``transform``, ``gate``, ``action`` and ``sink``.
 
@@ -96,9 +122,7 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
 
     def action_fields(step) -> tuple[ParamField, ...]:
         spec = actions.get(getattr(step, "action", "")) if actions is not None else None
-        if spec is None:
-            return spec_from_defaults(dict(getattr(step, "params", {}) or {}))
-        return spec_from_defaults(spec.params)
+        return action_fields_of(spec, getattr(step, "params", {}) or {})
 
     action_help = "; ".join(f"{spec.id}: {spec.description}" for spec in (actions.specs() if actions else ())
                             if spec.description)
@@ -153,7 +177,7 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
     )
 
 
-__all__ = ["PIPELINE_CATEGORY", "gate_fields", "pipeline_descriptors"]
+__all__ = ["PIPELINE_CATEGORY", "action_fields_of", "gate_fields", "param_field", "pipeline_descriptors"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

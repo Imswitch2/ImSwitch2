@@ -316,7 +316,7 @@ class WorkflowDocument:
     def issues(self) -> list[Issue]:
         """Everything wrong, the runtime's checks first, the editor's after."""
         registry = self.catalog.registry if self.catalog is not None else None
-        found = list(validate(self.workflow, registry))
+        found = list(validate(self.workflow, registry, field_for=self._field_for))
         found.extend(self._editor_issues())
         return found
 
@@ -706,19 +706,31 @@ class WorkflowDocument:
     def _registry(self):
         return self.catalog.registry if self.catalog is not None else None
 
+    def _field_for(self, step, key: str):
+        """A registered step kind's parameter field (its descriptor's), so a
+        control may expose it too (a pipeline's gate interval, an action's
+        margin); ``None`` for anything else."""
+        descriptor = self.descriptor_for(step)
+        if descriptor is None or not hasattr(step, "params"):
+            return None
+        return next((field for field in descriptor.params_fields(step) if field.key == key), None)
+
+    def _control_states(self, trial, **kwargs):
+        from imswitch.imcommon.model.workflow.prepare import control_states
+
+        return control_states(trial, self._registry(), field_for=self._field_for, **kwargs)
+
     def control_state(self, name: str):
         """The control's :class:`~imswitch.imcommon.model.workflow.prepare.ControlState`:
         its targets (active unless bypassed), combined field and value. A
         control whose targets are all bypassed is given the field its targets
         would have, so it stays editable (it writes their parameters)."""
-        from imswitch.imcommon.model.workflow.prepare import control_states
-
         control = self.control(name)
         trial = Workflow(self.workflow.name, self.workflow.steps, controls=[control])
-        states, _issues = control_states(trial, self._registry())
+        states, _issues = self._control_states(trial)
         state = states.get(name)
         if state is not None and not state.active:
-            everything, _issues = control_states(trial, self._registry(), reason_for=lambda _sid: "")
+            everything, _issues = self._control_states(trial, reason_for=lambda _sid: "")
             inactive = everything.get(name)
             if inactive is not None:
                 inactive.targets = list(state.targets)
@@ -754,17 +766,15 @@ class WorkflowDocument:
         if parsed is None or not self.has(parsed[0]):
             return
         step = self.step(parsed[0])
-        if isinstance(step, (Reconstruct, Process)):
+        if isinstance(step, (Reconstruct, Process)) or self._field_for(step, parsed[1]) is not None:
             step.params = {**dict(step.params or {}), parsed[1]: value}
 
     def _target_problems(self, name: str) -> list[str]:
         """What the target rules (plan 4.5) say about control ``name``, checked
         on its own: another control's problems do not refuse an edit of this
         one (names and ownership are checked by the operations themselves)."""
-        from imswitch.imcommon.model.workflow.prepare import control_states
-
         trial = Workflow(self.workflow.name, self.workflow.steps, controls=[self.control(name)])
-        _states, issues = control_states(trial, self._registry())
+        _states, issues = self._control_states(trial)
         return [issue.message for issue in issues]
 
     def _guarded(self, name: str, change) -> None:
@@ -858,7 +868,7 @@ class WorkflowDocument:
         if parsed is None or not self.has(parsed[0]):
             return
         entry = self.entry_for(self.step(parsed[0]))
-        field = entry.field(parsed[1]) if entry is not None else None
+        field = entry.field(parsed[1]) if entry is not None else self._field_for(self.step(parsed[0]), parsed[1])
         problem = field.problem_with(value) if field is not None else None
         if problem:
             raise DocumentError(f"{target} cannot take {value!r}: {problem}")

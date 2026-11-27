@@ -273,7 +273,9 @@ def _rewrite(recipe: Workflow, upstream: Mapping[str, Ref]):
             for index, (was, now) in enumerate(zip(before, (str(ref) for ref in copied.inputs))):
                 if was != now:
                     rewired[(copied.id, index)] = (was, now)
-        elif not isinstance(copied, Source):
+        elif not isinstance(copied, Source) and hasattr(copied, "inputs"):
+            # (a host's own source kind -- a smart pipeline's live detector --
+            # reads nothing and has no ``inputs``)
             refs = []
             for index, ref in enumerate(copied.inputs):
                 new = resolve_ref(ref, upstream)
@@ -324,12 +326,20 @@ def _field(plugin, param):
     return fields_by_key(spec_for(plugin)).get(param)
 
 
-def control_states(recipe: Workflow, registry=None, reason_for=None) -> tuple[dict[str, ControlState], list[Issue]]:
+def control_states(recipe: Workflow, registry=None, reason_for=None, *,
+                   field_for=None) -> tuple[dict[str, ControlState], list[Issue]]:
     """Every control's targets, activity, combined field and file value, and
     the issues its entry and targets raise (plan 4.5).
 
     ``reason_for(step_id)`` says why a step's targets are inactive in this
     run ("" when active); by default a bypassed step's are.
+
+    ``field_for(step, param) -> ParamField | None`` is the host's say on the
+    parameters of steps that are neither ``process`` nor ``reconstruct`` (a
+    smart pipeline's gates and actions, whose fields the host's descriptors
+    declare): a step it gives a field for may be a target, with that field;
+    without the hook (or when it returns ``None``) only processing and
+    reconstruction parameters can be.
     """
     by_id = {step.id: step for step in recipe.steps}
     if reason_for is None:
@@ -374,8 +384,28 @@ def control_states(recipe: Workflow, registry=None, reason_for=None) -> tuple[di
                 issues.append(Issue(where, f"control {name!r}: target {text!r} names no step{hint}"))
                 continue
             if not isinstance(step, (Reconstruct, Process)):
-                issues.append(Issue(step_id, f"control {name!r}: {text!r} is a {step.kind} step; a control "
-                                             "sets parameters of reconstruct and process steps"))
+                spec = field_for(step, param) if field_for is not None else None
+                if spec is None:
+                    if field_for is not None and isinstance(getattr(step, "params", None), dict):
+                        issues.append(Issue(step_id, f"control {name!r}: a {step.kind} step has no parameter "
+                                                     f"{param!r}"))
+                    else:
+                        issues.append(Issue(step_id, f"control {name!r}: {text!r} is a {step.kind} step; a "
+                                                     "control sets parameters of reconstruct and process steps"))
+                    continue
+                if text in owner:
+                    issues.append(Issue(step_id, f"{text!r} is set by two controls, {owner[text]!r} and {name!r}"))
+                    continue
+                owner[text] = name
+                if spec.type not in CONTROL_FIELD_TYPES:
+                    issues.append(Issue(step_id, f"control {name!r}: {text!r} is a {spec.type} parameter; a "
+                                                 f"control takes {', '.join(CONTROL_FIELD_TYPES)}"))
+                    continue
+                reason = reason_for(step_id) or ""
+                target = TargetState(text, step_id, param, active=not reason, reason=reason)
+                state.targets.append(target)
+                if target.active:
+                    state.fields.append((text, spec, dict(step.params or {}).get(param, spec.default)))
                 continue
             if text in owner:
                 issues.append(Issue(step_id, f"{text!r} is set by two controls, {owner[text]!r} and {name!r}"))
@@ -638,7 +668,7 @@ def _result_bound(bindings) -> set[str]:
 
 
 def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, strict: bool,
-             contract_problem=None, normalize_format=None):
+             contract_problem=None, normalize_format=None, field_for=None):
     """Shared by :func:`prepare_run` (``strict``: raise) and :func:`check_recipe`."""
     issues: list[Issue] = []
     by_id = {step.id: step for step in recipe.steps}
@@ -684,7 +714,7 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
             return FEEDS_REPLACED
         return ""
 
-    states, control_issues = control_states(recipe, registry, reason_for)
+    states, control_issues = control_states(recipe, registry, reason_for, field_for=field_for)
     for state in states.values():
         # The value the targets hold must be one the control's field can
         # show and check: a hand-edited "2,5" for a number is the file's
@@ -774,7 +804,7 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
 def prepare_run(recipe: Workflow, *, registry=None, values: Mapping[str, Any] | None = None,
                 bindings: Mapping[str, Any] | None = None, bound: Iterable[str] | None = None,
                 subset: Iterable[str] | None = None, contract_problem=None,
-                normalize_format=None) -> PreparedRun:
+                normalize_format=None, field_for=None) -> PreparedRun:
     """The plain workflow to run for ``recipe``, with this run's control
     ``values`` (raw :class:`ControlText` or typed) applied.
 
@@ -785,14 +815,16 @@ def prepare_run(recipe: Workflow, *, registry=None, values: Mapping[str, Any] | 
     problem with the recipe, or :class:`ControlValueError` for the first value
     that cannot be used, before anything runs. ``contract_problem`` and
     ``normalize_format`` are :func:`~imswitch.imcommon.model.workflow.steps.validate`'s
-    host hooks.
+    host hooks, ``field_for`` :func:`control_states`'.
     """
     prepared, _issues, _error = _prepare(recipe, registry, values, bindings, bound, subset, strict=True,
-                                         contract_problem=contract_problem, normalize_format=normalize_format)
+                                         contract_problem=contract_problem, normalize_format=normalize_format,
+                                         field_for=field_for)
     return prepared
 
 
-def check_recipe(recipe: Workflow, registry=None, *, contract_problem=None, normalize_format=None) -> list[Issue]:
+def check_recipe(recipe: Workflow, registry=None, *, contract_problem=None, normalize_format=None,
+                 field_for=None) -> list[Issue]:
     """Everything wrong with ``recipe`` that can be known before running,
     without raising: its controls and bypasses, then the plain workflow it
     prepares to with no values, bindings or subset. For a schema-1 workflow
@@ -800,7 +832,8 @@ def check_recipe(recipe: Workflow, registry=None, *, contract_problem=None, norm
     if not recipe.controls and not any(getattr(step, "bypass", False) for step in recipe.steps):
         return validate_plain(recipe, registry, contract_problem=contract_problem, normalize_format=normalize_format)
     _prepared, issues, _error = _prepare(recipe, registry, None, None, None, None, strict=False,
-                                         contract_problem=contract_problem, normalize_format=normalize_format)
+                                         contract_problem=contract_problem, normalize_format=normalize_format,
+                                         field_for=field_for)
     return issues
 
 
@@ -813,11 +846,13 @@ def recipe_notes(recipe: Workflow, registry=None) -> list[str]:
     return list(prepared.notes)
 
 
-def describe_controls(recipe: Workflow, registry=None, *, bound: Iterable[str] | None = None) -> list[dict]:
+def describe_controls(recipe: Workflow, registry=None, *, bound: Iterable[str] | None = None,
+                      field_for=None) -> list[dict]:
     """Each control as data, for the ``controls`` command and dialogs: name,
     label, help, its combined field, the file's value, and its targets with
     whether they run."""
-    prepared, _issues, _error = _prepare(recipe, registry, None, None, bound, None, strict=False)
+    prepared, _issues, _error = _prepare(recipe, registry, None, None, bound, None, strict=False,
+                                         field_for=field_for)
     described = []
     for control in recipe.controls:
         state = prepared.controls.get(control.name)

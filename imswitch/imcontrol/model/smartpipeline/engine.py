@@ -559,6 +559,40 @@ class Engine:
             pass
         self.armed = False
 
+    def set_params(self, changes: dict, *, why: str = "", timeout_s: float = 1.0) -> None:
+        """Change step parameters of the running pipeline (an exposed
+        parameter edited while armed): ``changes`` is ``{(step id, key): value}``.
+
+        Applied between two ticks, all at once (each step's ``params`` is
+        replaced, never edited in place, so an action starting on another
+        thread reads either the old or the new set); a processing step and a
+        gate use them from the next frame, an action from its next start.
+        Logged as ``parameter`` events. Raises :class:`EngineError` when a
+        step does not exist or has no parameters, or when a tick does not end
+        within ``timeout_s`` (nothing is changed then)."""
+        by_id = {step.id: step for step in self.workflow.steps}
+        for (step_id, key) in changes:
+            step = by_id.get(step_id)
+            if step is None or not isinstance(getattr(step, "params", None), dict):
+                raise EngineError(f"no step {step_id!r} with parameters to set {key!r} on")
+        if not self._lock.acquire(timeout=max(0.0, float(timeout_s))):
+            raise EngineError("the pipeline is busy with a frame; try again")
+        try:
+            before = {}
+            updated: dict[str, dict] = {}
+            for (step_id, key), value in changes.items():
+                params = updated.setdefault(step_id, dict(by_id[step_id].params))
+                before[(step_id, key)] = params.get(key)
+                params[key] = value
+            for step_id, params in updated.items():
+                by_id[step_id].params = params
+            now = self.clock()
+            for (step_id, key), value in changes.items():
+                self.log.append(self._tick, now, step_id, "parameter", key=key, value=value,
+                                was=before[(step_id, key)], **({"why": why} if why else {}))
+        finally:
+            self._lock.release()
+
     def _fail(self, step_id: str, message: str) -> None:
         if self.summary.error is None:
             self.summary.error = f"{step_id}: {message}"

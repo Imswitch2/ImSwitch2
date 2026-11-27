@@ -761,6 +761,27 @@ class LiveActionBackend:
             keys |= adapter.resources({**spec.params, **step.params})
         return keys
 
+    def resources_for_step(self, action_id: str, params: dict) -> set[str]:
+        """The resource keys one action step needs with ``params`` (its
+        catalogue defaults under them); none for an action without adapter."""
+        adapter = self.adapter(action_id)
+        if adapter is None:
+            return set()
+        return set(adapter.resources({**adapter.spec.params, **dict(params or {})}))
+
+    def step_problems(self, action_id: str, params: dict) -> list[str]:
+        """Why one action step cannot run on this setup with ``params`` (a
+        device it names is absent), from its adapter's ``problems``; [] when
+        it can, or when the adapter checks nothing."""
+        adapter = self.adapter(action_id)
+        check = getattr(adapter, "problems", None)
+        if not callable(check):
+            return []
+        try:
+            return [str(p) for p in check({**adapter.spec.params, **dict(params or {})})]
+        except Exception as exc:  # noqa: BLE001 - a check that fails is itself the problem
+            return [f"{action_id}: {type(exc).__name__}: {exc}"]
+
     def quarantined(self) -> set[str]:
         found: set[str] = set()
         for adapter in self._adapters.values():

@@ -282,7 +282,10 @@ def validate_pipeline(workflow: Workflow, *, registry=None, actions: ActionCatal
     action ids, their parameters and the frames checkable; without them
     those checks are skipped, not failed.
     """
-    issues = list(validate(workflow, registry, contract_problem=contract_problem, normalize_format=normalize_format))
+    from imswitch.imcommon.model.smartpipeline.descriptors import param_field
+
+    issues = list(validate(workflow, registry, contract_problem=contract_problem, normalize_format=normalize_format,
+                           field_for=lambda step, key: param_field(step, key, actions)))
     steps = list(workflow.steps)
     try:
         settings = pipeline_settings(workflow)
