@@ -76,6 +76,9 @@ class SmartPipelineController(ImConWidgetController):
         self._saveWarnings = []       # why an Experiment run could not save, shown in a dry run
         self._shownGeometry = {}      # detector -> the scan geometry the live view shows (axes), or None
         self._marksGeometry = None    # the geometry the overlay's marks belong to
+        self._parameters = []         # the loaded pipeline's exposed parameters (ExposedParameter)
+        self._parameterValues = {}    # name -> value set in the panel, where it differs from the file
+        self._savedParameters = {}    # pipeline file -> {name: value}: the panel's values, kept across starts
         shown = getattr(self._commChannel, 'sigScanGeometryShown', None)
         if shown is not None:
             shown.connect(self._onScanGeometryShown)
@@ -92,6 +95,11 @@ class SmartPipelineController(ImConWidgetController):
         self._widget.sigStopClicked.connect(self.stop)
         self._widget.sigSaveLogClicked.connect(self.saveLog)
         self._widget.sigModeChanged.connect(lambda _mode: (self._saveState(), self._updateButtons()))
+        for name, slot in (('sigParameterEdited', self.setParameter),
+                           ('sigResetParametersClicked', self.resetParameters)):
+            signal = getattr(self._widget, name, None)
+            if signal is not None:
+                signal.connect(slot)
         for name, slot in (('sigSegmentClicked', self.segmentRois), ('sigDrawClicked', self.drawRoi),
                            ('sigDeleteRoisClicked', self.deleteSelectedRois), ('sigClearRoisClicked', self.clearRois),
                            ('sigSaveRoisClicked', self.saveRoisAs), ('sigLoadRoisClicked', self.loadRoisFrom),
@@ -105,6 +113,9 @@ class SmartPipelineController(ImConWidgetController):
         self._commChannel.sigUpdateImage.connect(self._onPreviewImage)
 
         state = _loadState()
+        saved = state.get('parameters')
+        self._savedParameters = {str(k): dict(v) for k, v in saved.items() if isinstance(v, dict)} \
+            if isinstance(saved, dict) else {}
         if hasattr(self._widget, 'setUseRois'):
             self._widget.setUseRois(state.get('use_rois', True))
         if state.get('mode') in ('visualize', 'validate', 'experiment'):
@@ -155,6 +166,7 @@ class SmartPipelineController(ImConWidgetController):
         self._widget.setIssues(self._issues)
         self._updateButtons()
         self._onDocumentForRois()
+        self._onDocumentForParameters()
         return self._document is not None
 
     def _check(self, document):
@@ -298,6 +310,148 @@ class SmartPipelineController(ImConWidgetController):
             self.setPipelinePath(str(saved))      # the file as the designer left it
 
     # ------------------------------------------------------------------ #
+    # The exposed parameters                                              #
+    # ------------------------------------------------------------------ #
+    #: What the Parameters box says when nothing else needs saying.
+    PARAMETERS_NOTE = ('Applies from the next frame while armed; a start-up setting (the ROI mask, the '
+                       'baseline length) at the next arm.')
+
+    def _onDocumentForParameters(self):
+        """ A (re)loaded pipeline: its exposed parameters, with the values the
+        panel kept for this file (a kept value its parameter no longer takes
+        is dropped, with a note). """
+        from imswitch.imcontrol.model.smartpipeline.parameters import checked_value, exposed_parameters
+
+        self._parameters, self._parameterValues = [], {}
+        document = self._document
+        dropped = []
+        if document is not None:
+            registry = self._improcessRegistry() if self._needsImprocess(document) else None
+            try:
+                self._parameters = exposed_parameters(document.workflow, registry=registry, actions=self._catalog())
+            except Exception:
+                self.__logger.warning('Smart pipeline: the exposed parameters could not be read', exc_info=True)
+            kept = dict(self._savedParameters.get(self._path or '', {}))
+            for parameter in self._parameters:
+                if parameter.name not in kept or not parameter.usable:
+                    continue
+                try:
+                    value = checked_value(parameter, kept[parameter.name])
+                except ValueError as e:
+                    dropped.append(f'{parameter.label}: {e}')
+                    continue
+                if value != parameter.file_value:
+                    self._parameterValues[parameter.name] = value
+        if dropped:
+            self._showParameters('Back to the file\'s value: ' + '; '.join(dropped), 'warn')
+            self._rememberParameters()
+        else:
+            self._showParameters()
+
+    def _parameterRows(self):
+        rows = []
+        for parameter in self._parameters:
+            spec = parameter.spec
+            rows.append({
+                'name': parameter.name, 'label': parameter.label, 'help': parameter.help,
+                'type': spec.type if spec is not None else 'text', 'unit': parameter.unit,
+                'min': spec.min if spec is not None else None, 'max': spec.max if spec is not None else None,
+                'decimals': spec.decimals if spec is not None else None,
+                'step': spec.step if spec is not None else None,
+                'options': list(spec.options) if spec is not None else [],
+                'value': self._parameterValues.get(parameter.name, parameter.file_value),
+                'file_value': parameter.file_value, 'problem': parameter.problem,
+            })
+        return rows
+
+    def _showParameters(self, note='', level='info'):
+        if not hasattr(self._widget, 'setParameters'):
+            return
+        self._widget.setParameters(self._parameterRows())
+        self._widget.setParametersNote(note or (self.PARAMETERS_NOTE if self._parameters else ''), level)
+        self._widget.setResetParametersEnabled(bool(self._parameterValues))
+
+    def _rememberParameters(self):
+        if not self._path:
+            return
+        if self._parameterValues:
+            self._savedParameters[self._path] = dict(self._parameterValues)
+        else:
+            self._savedParameters.pop(self._path, None)
+        self._saveState()
+
+    def parameterValues(self):
+        """ {name: value} the next arm uses: the file's, with the panel's over them. """
+        return {p.name: self._parameterValues.get(p.name, p.file_value) for p in self._parameters if p.usable}
+
+    def setParameter(self, name, value):
+        """ An exposed parameter set in the panel: checked, kept for this
+        pipeline file, used at the next arm and -- while armed -- applied to
+        the running pipeline when that is safe. Returns whether it was taken. """
+        from imswitch.imcontrol.model.smartpipeline.parameters import checked_value
+
+        parameter = next((p for p in self._parameters if p.name == name), None)
+        if parameter is None or not parameter.usable:
+            return False
+        current = self._parameterValues.get(name, parameter.file_value)
+        try:
+            value = checked_value(parameter, value)
+        except ValueError as e:
+            self._widget.setParameterValue(name, current)
+            self._widget.setParametersNote(f'{parameter.label}: {e}', 'error')
+            return False
+        if value == parameter.file_value:
+            self._parameterValues.pop(name, None)
+        else:
+            self._parameterValues[name] = value
+        self._rememberParameters()
+        self._widget.markParameter(name, value, parameter.file_value)
+        self._widget.setResetParametersEnabled(bool(self._parameterValues))
+        if value != current:
+            note, level = self._applyParametersLive({name: value})
+            self._widget.setParametersNote(f'{parameter.label} = {value!r}: {note}', level)
+        return True
+
+    def resetParameters(self):
+        """ Every exposed parameter back to the file's value (also in a running pipeline). """
+        changed = {name: p.file_value for p in self._parameters
+                   for name in [p.name] if name in self._parameterValues and p.usable}
+        self._parameterValues = {}
+        self._rememberParameters()
+        note, level = self._applyParametersLive(changed) if changed else ('', 'info')
+        self._showParameters(f'Back to the file\'s values: {note}' if changed else '', level)
+
+    def _applyParametersLive(self, values):
+        """ Applies ``values`` to the running pipeline when one is armed and
+        that is safe; (what happened, level) for the panel. """
+        from imswitch.imcontrol.model.smartpipeline import EngineError
+        from imswitch.imcontrol.model.smartpipeline.parameters import changes_for, live_refusal
+
+        run = self._run
+        if run is None or run.state not in (ARMED, RUNNING):
+            return 'used when the pipeline is armed.', 'info'
+        changes = changes_for(self._parameters, values)
+        refusal = live_refusal(run.engine.workflow, changes, run.actions)
+        if refusal:
+            return f'kept for the next arm ({refusal}).', 'warn'
+        try:
+            run.engine.set_params(changes, why='set in the panel')
+        except EngineError as e:
+            return f'not applied now ({e}); used at the next arm.', 'warn'
+        return 'applied to the running pipeline from the next frame.', 'info'
+
+    def _documentWithParameters(self, document):
+        """ The document to arm, with the panel's parameter values written into
+        their steps (a copy; the file is not changed). """
+        from imswitch.imcontrol.model.smartpipeline.parameters import apply_changes, changes_for
+
+        if not self._parameterValues:
+            return document
+        copy = SmartPipelineDocument.from_dict(document.to_dict())
+        apply_changes(copy.workflow, changes_for(self._parameters, self._parameterValues))
+        return copy
+
+    # ------------------------------------------------------------------ #
     # Arm / stop                                                          #
     # ------------------------------------------------------------------ #
     def arm(self):
@@ -306,7 +460,7 @@ class SmartPipelineController(ImConWidgetController):
         if self._document is None or self._issues:
             self._updateButtons()
             return
-        document = self._document
+        document = self._documentWithParameters(self._document)
         mode = RunMode.of(self._widget.getMode())
         source = LiveFrameSource(self._master.detectorsManager, document.source.detector,
                                  logger=self.__logger)
@@ -363,6 +517,9 @@ class SmartPipelineController(ImConWidgetController):
         self._watch = self._watchBaseline(document)
         for check in checks:
             log.append(0, time.monotonic(), 'preflight', check.level, topic=check.topic, text=check.text)
+        if self._parameters:
+            log.append(0, time.monotonic(), 'pipeline', 'parameters', values=self.parameterValues(),
+                       changed=sorted(self._parameterValues))
         try:
             run.arm()
         except ArmError as e:
@@ -399,11 +556,16 @@ class SmartPipelineController(ImConWidgetController):
         return source.detector if isinstance(source, Live) and source.detector else None
 
     def _roiDffSteps(self, document=None):
+        """ The steps the ROI set is for (roi-dff measuring a segmented or a
+        file mask); none for a pipeline that needs no ROIs (a whole-frame
+        threshold, a processor that finds its own points, roi-dff reading
+        labels another step makes). """
+        from imswitch.imcontrol.model.smartpipeline.roi_set import roi_set_steps
+
         document = document or self._document
         if document is None:
             return []
-        return [step for step in document.workflow.steps
-                if isinstance(step, Process) and step.processor == 'roi-dff']
+        return roi_set_steps(document.workflow)
 
     def _cameraIdentity(self, camera):
         from imswitch.imcontrol.model.smartpipeline.live_source import frame_identity_of
@@ -429,6 +591,9 @@ class SmartPipelineController(ImConWidgetController):
         steps = self._roiDffSteps()
         if not hasattr(self._widget, 'setRois'):
             return
+        if hasattr(self._widget, 'setRoisVisible'):
+            # A pipeline that measures no ROI set shows no ROIs box (and arming asks for none).
+            self._widget.setRoisVisible(bool(steps))
         enabled = camera is not None and bool(steps)
         self._widget.setRoiControlsEnabled(enabled, '' if enabled else
                                            'The pipeline has no live camera and roi-dff step to give ROIs to')
@@ -481,7 +646,7 @@ class SmartPipelineController(ImConWidgetController):
         rois = self._rois
         if not hasattr(self._widget, 'showRoiOverlay'):
             return
-        if rois is None or not len(rois) or not self._widget.isShowRois():
+        if rois is None or not len(rois) or not self._widget.isShowRois() or not self._roiDffSteps():
             self._widget.hideRoiOverlay()
             return
         from imswitch.imcontrol.controller.display_transform import apply_display_transform
@@ -789,7 +954,7 @@ class SmartPipelineController(ImConWidgetController):
                 checks.append(Check(OK, 'Scan', f'{sourceName!r} panel ({"Advanced" if advanced else "simple"}), '
                                                 'idle'))
             checks.extend(self._laserChecks(params, experiment))
-            rois = self._rois if (self._rois is not None and len(self._rois)
+            rois = self._rois if (self._rois is not None and len(self._rois) and self._roiDffSteps(document)
                                   and self._widget.isUseRois()) else None
             widget = getattr(panel, '_widget', None)
             if rois is not None and transform is not None and advanced and widget is not None:
@@ -1328,7 +1493,8 @@ class SmartPipelineController(ImConWidgetController):
             os.makedirs(os.path.dirname(_stateFilePath), exist_ok=True)
             with open(_stateFilePath, 'w', encoding='utf-8') as file:
                 json.dump({'path': self._path, 'mode': self._widget.getMode(),
-                           'use_rois': bool(getattr(self._widget, 'isUseRois', lambda: True)())}, file, indent=2)
+                           'use_rois': bool(getattr(self._widget, 'isUseRois', lambda: True)()),
+                           'parameters': self._savedParameters}, file, indent=2, default=str)
         except OSError:
             self.__logger.warning('Could not save the smart pipeline state', exc_info=True)
 

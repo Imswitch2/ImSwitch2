@@ -347,8 +347,26 @@ def polygon_mask(vertices_rc, shape) -> np.ndarray:
     return mask
 
 
-__all__ = ["ELLIPSE_POINTS", "RoiSet", "detector_points_to_display", "display_polygon_to_detector",
-           "polygon_mask", "segment", "shape_polygon"]
+#: The mask sources of a roi-dff step the panel's ROI set stands in for:
+#: segmenting at arm (which the set replaces when the user wants it) and a
+#: label file. ``input`` reads the labels another step makes: no ROI set.
+ROI_SET_MASK_SOURCES = ("segment", "file")
+
+
+def roi_set_steps(workflow) -> list:
+    """The steps of ``workflow`` that measure ROIs the panel's ROI set can
+    give them (roi-dff, mask from ``segment`` or ``file``), in file order.
+    A pipeline without one needs no ROIs and no segmentation: the panel
+    hides its ROIs box and arming asks for neither."""
+    from imswitch.imcommon.model.workflow.steps import Process
+
+    return [step for step in getattr(workflow, "steps", ())
+            if isinstance(step, Process) and step.processor == "roi-dff"
+            and str((step.params or {}).get("mask_source", "segment")) in ROI_SET_MASK_SOURCES]
+
+
+__all__ = ["ELLIPSE_POINTS", "ROI_SET_MASK_SOURCES", "RoiSet", "detector_points_to_display",
+           "display_polygon_to_detector", "polygon_mask", "roi_set_steps", "segment", "shape_polygon"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

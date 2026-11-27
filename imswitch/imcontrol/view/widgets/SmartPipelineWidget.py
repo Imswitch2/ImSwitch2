@@ -15,11 +15,20 @@ _MODE_TIPS = {
 }
 _MAX_LOG_LINES = 2000
 THRESHOLD_METHODS = ('otsu', 'triangle', 'yen', 'local', 'manual')
+#: Secondary text: what a pipeline does, the run's details.
+_MUTED = 'color: #8c8c8c;'
 
 
 class SmartPipelineWidget(Widget):
-    """ Chooses a smart-pipeline file, arms it in a run mode, shows its
-    status and event log. """
+    """ Chooses a smart-pipeline file, shows the parameters it exposes, arms
+    it in a run mode, shows its state, its ROIs (when it measures ROIs) and
+    its event log.
+
+    Four boxes, top to bottom in the order an operator goes through them:
+    *Pipeline* (the file, what it does, what is wrong with it), *Parameters*
+    (what the pipeline exposes; hidden when it exposes nothing), *Run* (mode,
+    Arm/Stop, the state, what arming checked), *ROIs* (only for a pipeline
+    that measures the panel's ROI set), then the *Event log*. """
 
     sigBrowseClicked = QtCore.Signal()
     sigReloadClicked = QtCore.Signal()
@@ -28,6 +37,9 @@ class SmartPipelineWidget(Widget):
     sigStopClicked = QtCore.Signal()
     sigSaveLogClicked = QtCore.Signal()
     sigModeChanged = QtCore.Signal(str)
+    # The exposed parameters
+    sigParameterEdited = QtCore.Signal(str, object)   # (control name, value)
+    sigResetParametersClicked = QtCore.Signal()
     # The ROIs
     sigSegmentClicked = QtCore.Signal()
     sigDrawClicked = QtCore.Signal(str)                # rectangle / ellipse / polygon
@@ -47,13 +59,17 @@ class SmartPipelineWidget(Widget):
         self.pipelineLabel = QtWidgets.QLabel()
         self.pipelineLabel.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
                                          QtWidgets.QSizePolicy.Preferred)
-        self.browseButton = guitools.BetterPushButton('Choose pipeline…')
+        self.pipelineLabel.setStyleSheet('font-weight: bold;')
+        self.browseButton = guitools.BetterPushButton('Choose…')
+        self.browseButton.setToolTip('Choose a pipeline file (smart_pipelines in your ImSwitch folder)')
         self.reloadButton = guitools.BetterPushButton('Reload')
+        self.reloadButton.setToolTip('Read the file again (after editing it elsewhere)')
         self.designButton = guitools.BetterPushButton('Design…')
         self.designButton.setToolTip('Open the pipeline in the workflow editor (a new one when none is chosen)')
 
         self.summaryLabel = QtWidgets.QLabel()
         self.summaryLabel.setWordWrap(True)
+        self.summaryLabel.setStyleSheet(_MUTED)
         self.issuesLabel = QtWidgets.QLabel()
         self.issuesLabel.setWordWrap(True)
         self.issuesLabel.setStyleSheet('color: #d9534f;')
@@ -68,59 +84,78 @@ class SmartPipelineWidget(Widget):
         for mode in RUN_MODES:
             self.modeBox.addItem(_MODE_LABELS[mode], mode)
             self.modeBox.setItemData(self.modeBox.count() - 1, _MODE_TIPS[mode], QtCore.Qt.ToolTipRole)
+        self.modeBox.setToolTip('\n'.join(f'{_MODE_LABELS[m]}: {_MODE_TIPS[m]}' for m in RUN_MODES))
         self.armButton = guitools.BetterPushButton('Arm')
         self.stopButton = guitools.BetterPushButton('Stop')
         self.stopButton.setEnabled(False)
 
         self.stateLabel = QtWidgets.QLabel('Idle')
         self.stateLabel.setStyleSheet('font-weight: bold; padding: 2px 6px; border-radius: 3px;')
+        self.stateLabel.setToolTip('What the pipeline is doing now')
         self.countersLabel = QtWidgets.QLabel()
         self.countersLabel.setWordWrap(True)
         self.statusLabel = QtWidgets.QLabel()
         self.statusLabel.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
                                        QtWidgets.QSizePolicy.Preferred)
+        self.statusLabel.setStyleSheet(_MUTED)
+        self.statusLabel.hide()
 
         self.logView = QtWidgets.QPlainTextEdit()
         self.logView.setReadOnly(True)
         self.logView.setMaximumBlockCount(_MAX_LOG_LINES)
         self.logView.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
+        self.logView.setMinimumHeight(120)
+        self.logView.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.saveLogButton = guitools.BetterPushButton('Save log…')
         self.clearLogButton = guitools.BetterPushButton('Clear')
 
+        # -- Pipeline
+        self.pipelineBox = QtWidgets.QGroupBox('Pipeline')
         fileRow = QtWidgets.QHBoxLayout()
-        fileRow.addWidget(QtWidgets.QLabel('Pipeline:'))
-        fileRow.addWidget(self.pipelineLabel, 1)
         fileRow.addWidget(self.browseButton)
         fileRow.addWidget(self.reloadButton)
         fileRow.addWidget(self.designButton)
+        fileRow.addStretch(1)
+        pipelineLayout = QtWidgets.QVBoxLayout(self.pipelineBox)
+        pipelineLayout.addWidget(self.pipelineLabel)
+        pipelineLayout.addLayout(fileRow)
+        pipelineLayout.addWidget(self.summaryLabel)
+        pipelineLayout.addWidget(self.issuesLabel)
 
+        # -- Run
+        self.runBox = QtWidgets.QGroupBox('Run')
         runRow = QtWidgets.QHBoxLayout()
         runRow.addWidget(QtWidgets.QLabel('Mode:'))
         runRow.addWidget(self.modeBox)
         runRow.addWidget(self.armButton)
         runRow.addWidget(self.stopButton)
-        runRow.addWidget(self.statusLabel, 1)
+        runRow.addStretch(1)
+        stateRow = QtWidgets.QHBoxLayout()
+        stateRow.addWidget(self.stateLabel, 0, QtCore.Qt.AlignTop)
+        stateRow.addWidget(self.countersLabel, 1)
+        runLayout = QtWidgets.QVBoxLayout(self.runBox)
+        runLayout.addLayout(runRow)
+        runLayout.addLayout(stateRow)
+        runLayout.addWidget(self.statusLabel)
+        runLayout.addWidget(self.preflightLabel)
 
+        # -- Event log
+        self.logBox = QtWidgets.QGroupBox('Event log')
         logRow = QtWidgets.QHBoxLayout()
-        logRow.addWidget(QtWidgets.QLabel('Event log'))
         logRow.addStretch(1)
         logRow.addWidget(self.clearLogButton)
         logRow.addWidget(self.saveLogButton)
+        logLayout = QtWidgets.QVBoxLayout(self.logBox)
+        logLayout.addWidget(self.logView, 1)
+        logLayout.addLayout(logRow)
 
         layout = QtWidgets.QVBoxLayout()
         self.setLayout(layout)
-        layout.addLayout(fileRow)
-        layout.addWidget(self.summaryLabel)
-        layout.addWidget(self.issuesLabel)
-        layout.addWidget(self.preflightLabel)
-        layout.addLayout(runRow)
-        stateRow = QtWidgets.QHBoxLayout()
-        stateRow.addWidget(self.stateLabel)
-        stateRow.addWidget(self.countersLabel, 1)
-        layout.addLayout(stateRow)
+        layout.addWidget(self.pipelineBox)
+        layout.addWidget(self._buildParametersBox())
+        layout.addWidget(self.runBox)
         layout.addWidget(self._buildRoiBox())
-        layout.addLayout(logRow)
-        layout.addWidget(self.logView, 1)
+        layout.addWidget(self.logBox, 1)
 
         # The ROIs on the live view (outlines, ids, a layer to draw on); none
         # without a viewer (a headless panel).
@@ -149,6 +184,149 @@ class SmartPipelineWidget(Widget):
         )
 
         self.setPipelinePath(None)
+        self.setRunState('idle', 'Idle')
+
+    # ------------------------------------------------------------------ #
+    # The exposed parameters                                              #
+    # ------------------------------------------------------------------ #
+    def _buildParametersBox(self):
+        box = QtWidgets.QGroupBox('Parameters')
+        box.setToolTip('What the pipeline exposes (expose more in Design…: right-click a step parameter, '
+                       'Expose as control…). A value set here is kept for this pipeline file; the file '
+                       'itself is not changed.')
+        self.parametersBox = box
+        self.parametersForm = QtWidgets.QFormLayout()
+        self.parametersForm.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        self.parametersNote = QtWidgets.QLabel()
+        self.parametersNote.setWordWrap(True)
+        self.parametersNote.setStyleSheet(_MUTED)
+        self.resetParametersButton = guitools.BetterPushButton('Reset to file')
+        self.resetParametersButton.setToolTip('Back to the values the pipeline file holds')
+        self.resetParametersButton.clicked.connect(self.sigResetParametersClicked)
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addWidget(self.parametersNote, 1)
+        bottom.addWidget(self.resetParametersButton, 0, QtCore.Qt.AlignTop)
+        boxLayout = QtWidgets.QVBoxLayout(box)
+        boxLayout.addLayout(self.parametersForm)
+        boxLayout.addLayout(bottom)
+        self._parameterWidgets = {}
+        self._parameterLabels = {}
+        box.hide()
+        return box
+
+    def setParameters(self, rows, note=''):
+        """ The exposed parameters, one row each: dicts with ``name``,
+        ``label``, ``type`` (int, float, bool, text, select, path), ``value``,
+        ``file_value``, and optionally ``unit``, ``help``, ``min``, ``max``,
+        ``decimals``, ``step``, ``options``, ``problem``. The box hides
+        when there are none. """
+        while self.parametersForm.rowCount():
+            self.parametersForm.removeRow(0)
+        self._parameterWidgets, self._parameterLabels = {}, {}
+        rows = list(rows or [])
+        for row in rows:
+            name = row['name']
+            label = QtWidgets.QLabel(row.get('label') or name)
+            editor = self._parameterEditor(row)
+            tip = row.get('help') or ''
+            if row.get('problem'):
+                editor.setEnabled(False)
+                tip = f"Cannot be set: {row['problem']}" + (f'\n{tip}' if tip else '')
+            label.setToolTip(tip)
+            editor.setToolTip(tip)
+            self.parametersForm.addRow(label, editor)
+            self._parameterWidgets[name] = editor
+            self._parameterLabels[name] = (label, row.get('label') or name, tip)
+            self.markParameter(name, row.get('value'), row.get('file_value'))
+        self.parametersBox.setVisible(bool(rows))
+        self.setParametersNote(note)
+
+    def _parameterEditor(self, row):
+        kind = row.get('type')
+        name = row['name']
+        value = row.get('value')
+        emit = lambda v, n=name: self.sigParameterEdited.emit(n, v)  # noqa: E731
+        if kind in ('int', 'float'):
+            spin = QtWidgets.QSpinBox() if kind == 'int' else QtWidgets.QDoubleSpinBox()
+            low = row.get('min')
+            high = row.get('max')
+            if kind == 'int':
+                spin.setRange(int(low) if low is not None else -2 ** 31 + 1,
+                              int(high) if high is not None else 2 ** 31 - 1)
+            else:
+                decimals = row.get('decimals')
+                spin.setDecimals(int(decimals) if decimals is not None else 4)
+                spin.setRange(float(low) if low is not None else -1e9, float(high) if high is not None else 1e9)
+            if row.get('step'):
+                spin.setSingleStep(row['step'])
+            if row.get('unit'):
+                spin.setSuffix(f" {row['unit']}")
+            spin.setKeyboardTracking(False)       # one edit on Enter / arrows, not one per keystroke
+            spin.setMaximumWidth(160)
+            if value is not None:
+                spin.setValue(value)
+            spin.valueChanged.connect(lambda v, s=spin: emit(int(v) if isinstance(s, QtWidgets.QSpinBox)
+                                                             else float(v)))
+            return spin
+        if kind == 'bool':
+            check = QtWidgets.QCheckBox()
+            check.setChecked(bool(value))
+            check.toggled.connect(lambda on: emit(bool(on)))
+            return check
+        if kind == 'select':
+            combo = QtWidgets.QComboBox()
+            options = list(row.get('options') or [])
+            for option in options:
+                combo.addItem(str(option), option)
+            index = next((i for i, o in enumerate(options) if o == value), -1)
+            combo.setCurrentIndex(index)
+            combo.activated.connect(lambda i, c=combo: emit(c.itemData(i)))
+            return combo
+        edit = QtWidgets.QLineEdit('' if value is None else str(value))
+        edit.editingFinished.connect(lambda e=edit: emit(e.text()))
+        return edit
+
+    def markParameter(self, name, value, fileValue):
+        """ Shows whether ``name`` differs from the file (bold label, the
+        file's value in its tooltip). """
+        entry = self._parameterLabels.get(name)
+        if entry is None:
+            return
+        label, text, tip = entry
+        changed = value is not None and fileValue is not None and value != fileValue
+        label.setText(f'<b>{text}</b>' if changed else text)
+        label.setToolTip((tip + '\n' if tip else '') + (f'Changed here; the file has {fileValue!r}' if changed
+                                                         else 'As in the file'))
+
+    def setParameterValue(self, name, value):
+        """ Shows ``value`` without emitting an edit (a value refused, a reset). """
+        editor = self._parameterWidgets.get(name)
+        if editor is None or value is None:
+            return
+        blocker = QtCore.QSignalBlocker(editor)
+        if isinstance(editor, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            editor.setValue(value)
+        elif isinstance(editor, QtWidgets.QCheckBox):
+            editor.setChecked(bool(value))
+        elif isinstance(editor, QtWidgets.QComboBox):
+            editor.setCurrentIndex(max(0, editor.findData(value)))
+        else:
+            editor.setText(str(value))
+        del blocker
+
+    def getParameterEditor(self, name):
+        return self._parameterWidgets.get(name)
+
+    def setParametersNote(self, text, level='info'):
+        colour = {'warn': '#c88a00', 'error': '#d9534f'}.get(level)
+        self.parametersNote.setStyleSheet(f'color: {colour};' if colour else _MUTED)
+        self.parametersNote.setText(text or '')
+
+    def getParametersNote(self):
+        return self.parametersNote.text()
+
+    def setResetParametersEnabled(self, enabled):
+        self.resetParametersButton.setEnabled(bool(enabled))
 
     # ------------------------------------------------------------------ #
     # The ROIs                                                            #
@@ -157,6 +335,7 @@ class SmartPipelineWidget(Widget):
         box = QtWidgets.QGroupBox('ROIs')
         box.setToolTip('The cells the pipeline measures: see them on the camera image before arming, '
                        're-segment, draw, delete, save and load them.')
+        self.roiBox = box
         self.roiSummaryLabel = QtWidgets.QLabel('No ROIs yet: segment the camera image or draw them.')
         self.roiSummaryLabel.setWordWrap(True)
         self.showRoisCheck = QtWidgets.QCheckBox('Show on image')
@@ -168,16 +347,23 @@ class SmartPipelineWidget(Widget):
 
         self.thresholdBox = QtWidgets.QComboBox()
         self.thresholdBox.addItems(THRESHOLD_METHODS)
+        self.thresholdBox.setToolTip('How the segmentation threshold is found (not the dF/F trigger threshold)')
         self.thresholdValue = QtWidgets.QDoubleSpinBox()
         self.thresholdValue.setRange(-1e9, 1e9)
         self.thresholdValue.setDecimals(2)
+        self.thresholdValue.setMaximumWidth(110)
         self.thresholdValue.setToolTip('Manual threshold (counts); used when the method is "manual"')
+        self.thresholdBox.currentTextChanged.connect(
+            lambda method: self.thresholdValue.setEnabled(method == 'manual'))
+        self.thresholdValue.setEnabled(False)
         self.smoothSigma = QtWidgets.QDoubleSpinBox()
         self.smoothSigma.setRange(0, 100)
         self.smoothSigma.setDecimals(2)
+        self.smoothSigma.setSuffix(' px')
         self.smoothSigma.setToolTip('Gaussian smoothing before the threshold, pixels')
         self.minArea = QtWidgets.QSpinBox()
         self.minArea.setRange(1, 10 ** 7)
+        self.minArea.setSuffix(' px')
         self.minArea.setToolTip('Smallest ROI kept, pixels')
         self.averageFrames = QtWidgets.QSpinBox()
         self.averageFrames.setRange(1, 1000)
@@ -199,6 +385,7 @@ class SmartPipelineWidget(Widget):
         self.deleteRoisButton.setToolTip('Delete the ROIs selected in the list or clicked on the image; '
                                          'the other ROIs keep their ids')
         self.clearRoisButton = guitools.BetterPushButton('Clear')
+        self.clearRoisButton.setToolTip('Delete every ROI')
         self.saveRoisButton = guitools.BetterPushButton('Save…')
         self.loadRoisButton = guitools.BetterPushButton('Load…')
 
@@ -207,23 +394,43 @@ class SmartPipelineWidget(Widget):
         self.roiList.setMaximumHeight(110)
 
         form = QtWidgets.QGridLayout()
-        form.addWidget(QtWidgets.QLabel('Threshold:'), 0, 0)
-        form.addWidget(self.thresholdBox, 0, 1)
-        form.addWidget(self.thresholdValue, 0, 2)
+        form.addWidget(QtWidgets.QLabel('Mask threshold:'), 0, 0)
+        thresholdRow = QtWidgets.QHBoxLayout()
+        thresholdRow.addWidget(self.thresholdBox)
+        thresholdRow.addWidget(self.thresholdValue)
+        thresholdRow.addStretch(1)
+        form.addLayout(thresholdRow, 0, 1, 1, 3)
         form.addWidget(QtWidgets.QLabel('Smooth σ:'), 1, 0)
         form.addWidget(self.smoothSigma, 1, 1)
         form.addWidget(QtWidgets.QLabel('Min area:'), 1, 2)
         form.addWidget(self.minArea, 1, 3)
-        form.addWidget(QtWidgets.QLabel('Average frames:'), 2, 0)
+        form.addWidget(QtWidgets.QLabel('Average:'), 2, 0)
         form.addWidget(self.averageFrames, 2, 1)
-        form.addWidget(self.fillHolesCheck, 2, 2)
-        form.addWidget(self.clearBorderCheck, 2, 3)
+        form.addWidget(self.fillHolesCheck, 2, 2, 1, 2)
+        form.addWidget(self.clearBorderCheck, 3, 2, 1, 2)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
 
         top = QtWidgets.QHBoxLayout()
         top.addWidget(self.roiSummaryLabel, 1)
-        top.addWidget(self.showRoisCheck)
+        top.addWidget(self.showRoisCheck, 0, QtCore.Qt.AlignTop)
+        # The segmentation settings come from the pipeline; shown on demand.
+        self.segmentationSettings = QtWidgets.QWidget()
+        self.segmentationSettings.setLayout(form)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.segmentationSettings.hide()
+        self.segmentationSettingsButton = QtWidgets.QToolButton()
+        self.segmentationSettingsButton.setText('Settings')
+        self.segmentationSettingsButton.setCheckable(True)
+        self.segmentationSettingsButton.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.segmentationSettingsButton.setArrowType(QtCore.Qt.RightArrow)
+        self.segmentationSettingsButton.setAutoRaise(True)
+        self.segmentationSettingsButton.setToolTip('How Segment now finds the cells (from the pipeline when it '
+                                                   'is loaded)')
+        self.segmentationSettingsButton.toggled.connect(self._showSegmentationSettings)
         segmentRow = QtWidgets.QHBoxLayout()
         segmentRow.addWidget(self.segmentButton)
+        segmentRow.addWidget(self.segmentationSettingsButton)
         segmentRow.addStretch(1)
         segmentRow.addWidget(self.useRoisCheck)
         drawRow = QtWidgets.QHBoxLayout()
@@ -237,8 +444,8 @@ class SmartPipelineWidget(Widget):
 
         boxLayout = QtWidgets.QVBoxLayout(box)
         boxLayout.addLayout(top)
-        boxLayout.addLayout(form)
         boxLayout.addLayout(segmentRow)
+        boxLayout.addWidget(self.segmentationSettings)
         boxLayout.addLayout(drawRow)
         boxLayout.addWidget(self.roiList)
         boxLayout.addLayout(editRow)
@@ -253,6 +460,17 @@ class SmartPipelineWidget(Widget):
         self.roiList.itemSelectionChanged.connect(
             lambda: self.sigRoiSelectionChanged.emit(self.getSelectedRois()))
         return box
+
+    def _showSegmentationSettings(self, shown):
+        self.segmentationSettings.setVisible(bool(shown))
+        self.segmentationSettingsButton.setArrowType(QtCore.Qt.DownArrow if shown else QtCore.Qt.RightArrow)
+
+    def setRoisVisible(self, visible):
+        """ The ROIs box, shown only for a pipeline that measures the panel's ROI set. """
+        self.roiBox.setVisible(bool(visible))
+
+    def isRoisVisible(self):
+        return not self.roiBox.isHidden()
 
     def getSegmentationParameters(self):
         return {'threshold_method': self.thresholdBox.currentText(),
@@ -340,7 +558,7 @@ class SmartPipelineWidget(Widget):
             self.pipelineLabel.setText(os.path.basename(path))
             self.pipelineLabel.setToolTip(path)
         else:
-            self.pipelineLabel.setText('(none)')
+            self.pipelineLabel.setText('No pipeline chosen')
             self.pipelineLabel.setToolTip('')
         self.reloadButton.setEnabled(bool(path))
 
@@ -408,6 +626,7 @@ class SmartPipelineWidget(Widget):
     def setStatus(self, text, toolTip=''):
         self.statusLabel.setText(text)
         self.statusLabel.setToolTip(toolTip or text)
+        self.statusLabel.setVisible(bool(text))
 
     def appendLog(self, text):
         self.logView.appendPlainText(text)
