@@ -107,11 +107,17 @@ def test_metadata_mismatches_are_reported_not_just_refused(processor_id):
     first = _result("recA", scales=[0.065, 0.065], unit="um")
     scaled = _result("recB", scales=[0.13, 0.13], unit="um")
     united = _result("recC", scales=[0.065, 0.065], unit="nm")
-    shaped = _result("recD", shape=(6, 5))
+    shaped = _result("recD", shape=(6, 5), scales=[0.065, 0.065], unit="um")
 
     processor = _processor(processor_id)
     for other, expected in ((scaled, "scales"), (united, "unit"), (shaped, "shape")):
         ok, reason = processor.check_inputs([first, other])
+        if processor_id == "stack-combine" and expected == "shape":
+            # A size difference is something Stack/Combine's padding option
+            # can resolve, so the panel-level check leaves it to the
+            # parameters (the refusal comes at apply time, with the reason).
+            assert ok is True
+            continue
         assert ok is False
         assert other.name in reason and expected in reason
 

@@ -181,16 +181,44 @@ new results:
   channels of one multi-layer result can be merged among themselves; the
   planes of a plain stack are not listed individually — split it first with
   *Split stack*, which the dialog says when a single stack is checked.
-* *Stack/Combine...* — stack same-shaped selected results along a new axis, or
-  concatenate compatible results along an existing axis. Axis labels, pixel
-  scales and scale units must agree. Two differences are forgiven because
-  they are not differences in the pixels: singleton axes one input has and
-  another lacks (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a
-  ``(Y, X)`` image; the combined result keeps only the axes they share, the
-  join axis included), and a length unit stated differently (``nm`` against
-  ``um``, converted before the scales are compared; the output takes the
-  first input's unit). The same applies to *Merge channels* and to the
+* *Stack/Combine...* — combine the selected results into one: stack them
+  along a new axis, concatenate them along an existing axis, or (the dialog's
+  default, *Automatic*) do whichever fits. Axis labels, pixel scales and scale
+  units must agree, so physically different arrays never silently become one
+  calibrated stack. Two differences are forgiven because they are not
+  differences in the pixels: singleton axes one input has and another lacks
+  (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a ``(Y, X)`` image;
+  the combined result keeps only the axes they share, the join axis
+  included), and a length unit stated differently (``nm`` against ``um``,
+  converted before the scales are compared; the output takes the first
+  input's unit). The same applies to *Merge channels* and to the
   compatibility check of the *Image calculator*.
+
+  The dialog offers, rather than only refuses. It says in words what the
+  current settings will do and the shape and axes of the result, and it
+  updates as the options change. *Automatic* stacks equal-rank inputs on a new
+  axis and appends lower-rank data to the axis it lacks: a ``Y, X`` plane to
+  a ``Z, Y, X`` stack, a stack to a ``T, Z, Y, X`` series, several planes and
+  a stack in any order. The planes come in the order listed and the result's
+  axis labels and scales are the higher-rank input's. When the labels do not
+  say which axis is missing, an *Append along* chooser appears, filled in with
+  the likeliest axis. *Pad to a common size* handles inputs that agree in
+  everything but the size of the Y/X plane: each is padded to the largest
+  size, centred or at the origin (top-left corner), with zeros, NaN (float
+  data) or the edge pixels. Only the plane is padded, never the number of Z,
+  T or C planes, and never to more than 2 times an input's size along an axis
+  unless *Allow padding beyond 2x* is ticked, so a 64 px image is not buried
+  in a 4096 px one by mistake; the share of padding is shown, with a warning
+  from a quarter of the result. What was padded, per input and axis, is kept
+  in the result's ``metadata["padding"]``. Padding is not resampling: inputs
+  whose pixel scales differ are still refused, with a pointer to
+  *Scale/Resize*, and mismatched axis labels or order point to *Swap /
+  Relabel Axes*. When the inputs differ only by size, rank, or both, the
+  dialog shows the one-click option (*Pad to common size*, *Append to axis
+  Z*, or both) together with the resulting shape. The result always has a
+  pixel grid of its own, as before. Workflows and scripts that give
+  ``mode: stack`` or ``concatenate`` and no padding parameters behave exactly
+  as they always did.
 * *Image calculator...* — combine exactly two loaded results with pixel-wise
   add, subtract, multiply, divide, minimum, maximum, average or absolute
   difference operations.  A label mask published by the ROI manager's
@@ -627,11 +655,17 @@ its second input), and ``pick`` accepts only ``points``.
        label ``C``.
    * - ``stack-combine``
      - Dimensions and channels
-     - Two or more rank >= 2 results. Stacking requires identical shape;
-       concatenation permits different lengths only on the chosen join axis.
-       Axis labels, pixel scales and scale units must agree.
+     - Two or more rank >= 2 results. By default stacking requires identical
+       shape; concatenation permits different lengths only on the chosen join
+       axis. ``mode: auto`` also appends lower-rank data to the one axis it
+       lacks, and ``pad: pad`` (with ``pad_anchor`` ``centre``/``origin``,
+       ``pad_value`` ``0``/``nan``/``edge``, ``pad_max_ratio`` default 2, 0 =
+       no limit) pads the Y/X plane to the largest size; ``append_axis``
+       settles an ambiguous append. Axis labels, pixel scales and scale units
+       must always agree.
      - ``ArrayProcessingResult`` with either a new leading axis or an enlarged
        existing axis. A new axis label may not duplicate an existing label.
+       What was padded is recorded in ``metadata["padding"]``.
    * - ``make-composite``
      - Visualization
      - Rank >= 3 result with a multi-plane ``C``, ``Channel``, ``Channels``

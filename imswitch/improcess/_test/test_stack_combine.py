@@ -503,3 +503,607 @@ def test_dialog_combines_checked_component_with_plain_result(qapp):
     out = StackCombineProcessor().apply(params["results"][0], params)
     assert out.data.shape == (2, 8, 10)
     assert out.axis_labels == ["Z", "Y", "X"]
+
+
+# =============================================================================
+# Padding, appending and the offers that go with them
+# =============================================================================
+
+from imswitch.improcess.processors.combine import (  # noqa: E402
+    CombineMismatch,
+    align_results,
+    combine_results,
+    preferred_candidate,
+)
+
+
+def _filled(shape, labels, name, value, scales=None, dtype=np.float32):
+    return ArrayProcessingResult(
+        name=name,
+        data=np.full(shape, value, dtype=dtype),
+        axis_labels=list(labels),
+        axis_scales=list(scales) if scales else None,
+        scale_unit="um" if scales else "px",
+    )
+
+
+def _ok(results, **kwargs):
+    ok, reason = combine_compatibility(results, **kwargs)
+    assert ok, reason
+
+
+def _refused(results, **kwargs):
+    ok, reason = combine_compatibility(results, **kwargs)
+    assert not ok
+    return reason
+
+
+# -- padding -------------------------------------------------------------------
+
+def test_a_size_mismatch_is_still_refused_by_default_and_the_message_offers_padding():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((9, 12), ["Y", "X"], "b", 2)
+    reason = _refused([a, b], mode="stack")
+    assert "(9, 12)" in reason and "pad" in reason
+    with pytest.raises(CombineMismatch) as raised:
+        stack_results([a, b])
+    assert raised.value.kind == "size"
+
+
+def test_pad_centres_the_smaller_input_with_zeros_and_records_it():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((9, 12), ["Y", "X"], "b", 2)
+
+    out = stack_results([a, b], pad="pad")
+
+    assert out.data.shape == (2, 9, 12)
+    # 8 -> 9: nothing before, one after; 10 -> 12: one on each side.
+    expected = np.zeros((9, 12), np.float32)
+    expected[0:8, 1:11] = 1
+    np.testing.assert_array_equal(out.data[0], expected)
+    np.testing.assert_array_equal(out.data[1], 2)
+    padding = out.metadata["padding"]
+    assert padding["anchor"] == "centre" and padding["value"] == "0"
+    assert padding["inputs"] == [{
+        "input": "a", "original_shape": [8, 10], "padded_shape": [9, 12],
+        "before": {"X": 1}, "after": {"Y": 1, "X": 1},
+    }]
+    assert padding["fraction"] == pytest.approx(1 - (8 * 10 + 9 * 12) / (2 * 9 * 12), abs=1e-5)
+    assert out.axis_labels == ["Z", "Y", "X"]
+
+
+def test_pad_at_the_origin_keeps_the_input_in_its_corner():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((9, 12), ["Y", "X"], "b", 2)
+
+    out = stack_results([a, b], pad="pad", pad_anchor="origin")
+
+    expected = np.zeros((9, 12), np.float32)
+    expected[0:8, 0:10] = 1
+    np.testing.assert_array_equal(out.data[0], expected)
+    padding = out.metadata["padding"]
+    assert padding["inputs"][0]["before"] == {}
+    assert padding["inputs"][0]["after"] == {"Y": 1, "X": 2}
+    # Nothing was added before the first input, so its pixels did not move.
+    assert padding["first_input_grid_preserved"] is True
+    # Centre padding of the first input moves them.
+    centred = stack_results([a, b], pad="pad")
+    assert centred.metadata["padding"]["first_input_grid_preserved"] is False
+
+
+def test_pad_values_zero_nan_and_edge():
+    a, b = _filled((2, 2), ["Y", "X"], "a", 5), _filled((4, 4), ["Y", "X"], "b", 1)
+    a.data[:] = [[1, 2], [3, 4]]
+
+    nan = stack_results([a, b], pad="pad", pad_anchor="origin", pad_value="nan")
+    assert np.isnan(nan.data[0][2:]).all() and np.isnan(nan.data[0][:, 2:]).all()
+    np.testing.assert_array_equal(nan.data[0][:2, :2], [[1, 2], [3, 4]])
+
+    edge = stack_results([a, b], pad="pad", pad_anchor="origin", pad_value="edge")
+    np.testing.assert_array_equal(
+        edge.data[0], [[1, 2, 2, 2], [3, 4, 4, 4], [3, 4, 4, 4], [3, 4, 4, 4]]
+    )
+
+
+def test_nan_padding_refuses_integer_data_in_the_check():
+    a = _filled((8, 10), ["Y", "X"], "a", 1, dtype=np.uint16)
+    b = _filled((9, 12), ["Y", "X"], "b", 1, dtype=np.uint16)
+    reason = _refused([a, b], mode="stack", pad="pad", pad_value="nan")
+    assert "floating" in reason and "uint16" in reason
+    _ok([a, b], mode="stack", pad="pad", pad_value="0")
+    out = stack_results([a, b], pad="pad", pad_value="edge")
+    assert out.data.dtype == np.uint16
+
+
+def test_padding_limit_refuses_a_small_image_in_a_big_one_unless_allowed():
+    big, small = _filled((64, 64), ["Y", "X"], "big", 1), _filled((16, 16), ["Y", "X"], "small", 1)
+    reason = _refused([big, small], mode="stack", pad="pad")
+    assert "'small'" in reason and "4.0x" in reason and "2x limit" in reason
+    with pytest.raises(CombineMismatch) as raised:
+        stack_results([big, small], pad="pad")
+    assert raised.value.kind == "pad_limit"
+    # Exactly the limit is fine, and the limit is a parameter; 0 lifts it.
+    _ok([big, _filled((32, 32), ["Y", "X"], "half", 1)], mode="stack", pad="pad")
+    _ok([big, small], mode="stack", pad="pad", pad_max_ratio=4)
+    assert stack_results([big, small], pad="pad", pad_max_ratio=0).data.shape == (2, 64, 64)
+
+
+def test_padding_does_not_forgive_scales_labels_or_units():
+    a = _filled((8, 10), ["Y", "X"], "a", 1, scales=[0.5, 0.5])
+    b = _filled((9, 12), ["Y", "X"], "b", 1, scales=[0.4, 0.4])
+    reason = _refused([a, b], mode="stack", pad="pad")
+    assert "scales" in reason and "Scale/Resize" in reason and "not resampling" in reason
+
+    wrong = _filled((9, 12), ["X", "Y"], "b", 1, scales=[0.5, 0.5])
+    reason = _refused([a, wrong], mode="stack", pad="pad")
+    assert "axes" in reason and "Swap / Relabel Axes" in reason
+
+    px = _filled((9, 12), ["Y", "X"], "b", 1)
+    assert "unit" in _refused([a, px], mode="stack", pad="pad")
+
+
+def test_only_the_plane_is_padded_never_the_z_t_or_c_count():
+    a = _filled((3, 8, 10), ["Z", "Y", "X"], "a", 1)
+    b = _filled((4, 8, 10), ["Z", "Y", "X"], "b", 1)
+    reason = _refused([a, b], mode="stack", new_axis_label="T", pad="pad")
+    assert "only the last two" in reason
+    # ...which concatenating takes care of.
+    assert concatenate_results([a, b], join_axis=0).data.shape == (7, 8, 10)
+
+
+def test_concatenate_pads_the_plane_but_not_the_join_axis():
+    a = _filled((3, 8, 10), ["Z", "Y", "X"], "a", 1)
+    b = _filled((2, 9, 10), ["Z", "Y", "X"], "b", 2)
+    assert "outside the join axis" in _refused([a, b], mode="concatenate", join_axis=0)
+
+    out = concatenate_results([a, b], join_axis=0, pad="pad", pad_anchor="origin")
+
+    assert out.data.shape == (5, 9, 10)
+    assert out.metadata["padding"]["inputs"][0]["after"] == {"Y": 1}
+    np.testing.assert_array_equal(out.data[:3, :8], 1)
+    np.testing.assert_array_equal(out.data[:3, 8:], 0)
+    np.testing.assert_array_equal(out.data[3:], 2)
+
+
+def test_three_inputs_are_padded_to_the_largest_per_axis():
+    shapes = [(8, 12), (10, 10), (9, 11)]
+    results = [_filled(s, ["Y", "X"], f"r{i}", i) for i, s in enumerate(shapes)]
+    out = stack_results(results, pad="pad")
+    assert out.data.shape == (3, 10, 12)
+
+
+def test_unpadded_results_carry_no_padding_metadata():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((8, 10), ["Y", "X"], "b", 2)
+    out = stack_results([a, b], pad="pad")
+    assert "padding" not in out.metadata
+    assert out.metadata == stack_results([a, b]).metadata
+
+
+def test_legacy_singleton_inputs_can_be_padded_too():
+    out = stack_results([_legacy(), _plain(shape=(9, 12))], axis_label="C", pad="pad")
+    assert out.data.shape == (2, 9, 12)
+    assert out.axis_labels == ["C", "Y", "X"]
+
+
+# -- appending (auto) ------------------------------------------------------------
+
+def test_auto_appends_a_plane_to_a_stack_in_either_selection_order():
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1, scales=[2.0, 0.5, 0.5])
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9, scales=[0.5, 0.5])
+
+    after = combine_results([stack, plane], mode="auto")
+    assert after.data.shape == (4, 8, 10)
+    assert after.axis_labels == ["Z", "Y", "X"]
+    assert after.axis_scales == pytest.approx([2.0, 0.5, 0.5])
+    np.testing.assert_array_equal(after.data[:3], 1)
+    np.testing.assert_array_equal(after.data[3], 9)
+    assert after.metadata["mode"] == "concatenate"
+    assert after.metadata["join_axis"] == "Z"
+    assert after.metadata["appended"] == ["plane"]
+    assert after.metadata["requested_mode"] == "auto"
+
+    # The plane first: it leads the output, and the labels and scales are
+    # the stack's, not the first selected input's.
+    before = combine_results([plane, stack], mode="auto")
+    assert before.data.shape == (4, 8, 10)
+    assert before.axis_labels == ["Z", "Y", "X"]
+    assert before.axis_scales == pytest.approx([2.0, 0.5, 0.5])
+    np.testing.assert_array_equal(before.data[0], 9)
+    np.testing.assert_array_equal(before.data[1:], 1)
+
+
+def test_auto_appends_a_stack_to_a_4d_stack():
+    four = _filled((2, 3, 8, 10), ["T", "Z", "Y", "X"], "four", 1)
+    three = _filled((3, 8, 10), ["Z", "Y", "X"], "three", 7)
+    for order, where in (([four, three], 2), ([three, four], 0)):
+        out = combine_results(order, mode="auto", axis_label="C")
+        assert out.data.shape == (3, 3, 8, 10)
+        assert out.axis_labels == ["T", "Z", "Y", "X"]
+        np.testing.assert_array_equal(out.data[where], 7)
+
+
+def test_auto_takes_several_planes_and_one_stack_in_selection_order():
+    stack = _filled((2, 4, 5), ["Z", "Y", "X"], "stack", 1)
+    first = _filled((4, 5), ["Y", "X"], "p1", 8)
+    second = _filled((4, 5), ["Y", "X"], "p2", 9)
+    out = combine_results([first, stack, second], mode="auto")
+    assert out.data.shape == (4, 4, 5)
+    assert [float(plane[0, 0]) for plane in out.data] == [8, 1, 1, 9]
+    assert out.metadata["appended"] == ["p1", "p2"]
+    assert out.metadata["source_results"] == ["p1", "stack", "p2"]
+
+
+def test_auto_stacks_equal_rank_inputs_exactly_as_stack_does():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((8, 10), ["Y", "X"], "b", 2)
+    auto = combine_results([a, b], mode="auto", axis_label="C")
+    plain = stack_results([a, b], axis_label="C")
+    np.testing.assert_array_equal(auto.data, plain.data)
+    assert auto.axis_labels == plain.axis_labels
+    assert auto.metadata["mode"] == "stack"
+    # ...and equal-rank 3D stacks stack onto a new 4D axis, they are not joined.
+    s1, s2 = (_filled((3, 8, 10), ["Z", "Y", "X"], n, 1) for n in "ab")
+    assert combine_results([s1, s2], mode="auto", axis_label="T").data.shape == (2, 3, 8, 10)
+
+
+def test_auto_keeps_the_singleton_tolerance_of_stack():
+    out = combine_results([_legacy(), _plain()], mode="auto", axis_label="C")
+    assert out.data.shape == (2, 8, 10)
+    assert out.axis_labels == ["C", "Y", "X"]
+
+
+def test_auto_pads_and_appends_together():
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((7, 9), ["Y", "X"], "plane", 9)
+    reason = _refused([stack, plane], mode="auto")
+    assert "(7, 9)" in reason
+    out = combine_results([stack, plane], mode="auto", pad="pad", pad_anchor="origin")
+    assert out.data.shape == (4, 8, 10)
+    assert out.metadata["padding"]["inputs"][0]["original_shape"] == [1, 7, 9]
+    assert out.metadata["padding"]["inputs"][0]["after"] == {"Y": 1, "X": 1}
+    np.testing.assert_array_equal(out.data[3, :7, :9], 9)
+    np.testing.assert_array_equal(out.data[3, 7:], 0)
+
+
+def test_auto_asks_when_the_labels_do_not_say_which_axis():
+    four = _filled((2, 2, 8, 10), ["Z", "Z", "Y", "X"], "four", 1)
+    three = _filled((2, 8, 10), ["Z", "Y", "X"], "three", 7)
+    with pytest.raises(CombineMismatch) as raised:
+        align_results([four, three], mode="auto")
+    assert raised.value.kind == "ambiguous"
+    assert raised.value.candidates == ((0, "Z"), (1, "Z"))
+    assert preferred_candidate([(0, "T"), (1, "Z")]) == (1, "Z")
+    assert preferred_candidate([(2, "C"), (3, "S")]) == (2, "C")
+    # The answer settles it, as an index when the label cannot.
+    out = combine_results([four, three], mode="auto", append_axis="1")
+    assert out.data.shape == (2, 3, 8, 10)
+    with pytest.raises(CombineMismatch):
+        align_results([four, three], mode="auto", append_axis="Q")
+
+
+def test_append_axis_must_be_one_the_inputs_can_join_along():
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    assert combine_results([stack, plane], mode="auto", append_axis="Z").data.shape == (4, 8, 10)
+    assert combine_results([stack, plane], mode="auto", append_axis="0").data.shape == (4, 8, 10)
+    with pytest.raises(CombineMismatch) as raised:
+        align_results([stack, plane], mode="auto", append_axis="Y")
+    assert "cannot be appended along 'Y'" in str(raised.value)
+
+
+def test_auto_refuses_what_is_not_one_missing_axis_and_says_why():
+    four = _filled((2, 3, 8, 10), ["T", "Z", "Y", "X"], "four", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    reason = _refused([four, plane], mode="auto")
+    assert "lacks 2 axes" in reason
+
+    three_z = _filled((3, 8, 10), ["Z", "Y", "X"], "z", 1)
+    three_t = _filled((2, 8, 10), ["T", "Y", "X"], "t", 1)
+    assert "different axes" in _refused([four, three_z, three_t], mode="auto")
+
+    relabelled = _filled((8, 10), ["X", "Y"], "swapped", 1)
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    reason = _refused([stack, relabelled], mode="auto")
+    assert "Swap / Relabel Axes" in reason
+
+
+def test_auto_does_not_forgive_scales_units_or_sizes_of_a_plane_by_default():
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1, scales=[1.0, 0.5, 0.5])
+    wrong = _filled((8, 10), ["Y", "X"], "plane", 9, scales=[0.4, 0.4])
+    assert "Scale/Resize" in _refused([stack, wrong], mode="auto", pad="pad")
+    px = _filled((8, 10), ["Y", "X"], "plane", 9)
+    assert "unit" in _refused([stack, px], mode="auto")
+
+
+def test_stack_and_concatenate_modes_do_not_append_on_their_own():
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    assert not combine_compatibility([stack, plane], mode="stack", new_axis_label="T")[0]
+    assert combine_compatibility([stack, plane], mode="concatenate", join_axis=0)[0]
+
+
+def test_composite_and_rgb_results_are_combined_as_before(qapp):
+    from imswitch.improcess.processors.make_composite.processor import MakeCompositeProcessor
+
+    base = ArrayProcessingResult(
+        name="c", data=np.ones((2, 8, 10), np.float32), axis_labels=["C", "Y", "X"]
+    )
+    composite = MakeCompositeProcessor().apply(base, {})
+    out = stack_results([composite, composite], axis_label="T")
+    assert out.data.shape == (2, *np.asarray(composite.data).shape)
+
+
+# -- compatibility ---------------------------------------------------------------
+
+def test_default_params_reproduce_todays_behaviour():
+    defaults = StackCombineProcessor.default_params()
+    assert defaults["mode"] == "stack" and defaults["pad"] == "none"
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((8, 12), ["Y", "X"], "b", 1)
+    with pytest.raises(ValueError):
+        StackCombineProcessor().apply(a, {"results": [a, b], "mode": "stack"})
+    with pytest.raises(ValueError):
+        StackCombineProcessor().apply(a, {**defaults, "results": [a, b]})
+
+
+def test_apply_takes_the_new_parameters_as_a_workflow_would_write_them():
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((9, 12), ["Y", "X"], "b", 1)
+    out = StackCombineProcessor().apply(
+        a, {"results": [a, b], "mode": "stack", "pad": True, "pad_value": 0, "axis_label": "C"}
+    )
+    assert out.data.shape == (2, 9, 12)
+    out = StackCombineProcessor().apply(
+        a, {"results": [a, b], "pad": "pad", "pad_value": float("nan"), "pad_anchor": "origin"}
+    )
+    assert np.isnan(out.data[0][8:]).all()
+    with pytest.raises(ValueError):
+        StackCombineProcessor().apply(a, {"results": [a, b], "mode": "sideways"})
+
+
+def test_check_inputs_accepts_what_an_option_could_combine_and_refuses_the_rest():
+    processor = StackCombineProcessor()
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    small = _filled((7, 9), ["Y", "X"], "small", 9)
+    assert processor.check_inputs([stack, plane])[0]
+    assert processor.check_inputs([stack, small])[0]
+    assert processor.check_inputs([plane, small])[0]
+
+    assert not processor.check_inputs([plane])[0]
+    ok, reason = processor.check_inputs(
+        [plane, _filled((8, 10), ["Y", "X"], "scaled", 1, scales=[0.5, 0.5])]
+    )
+    assert not ok and "unit" in reason
+    ok, reason = processor.check_inputs([stack, _filled((8, 10), ["X", "Y"], "swapped", 1)])
+    assert not ok and "Swap / Relabel Axes" in reason
+    # An ambiguous append is a choice the parameters make.
+    four = _filled((2, 2, 8, 10), ["Z", "Z", "Y", "X"], "four", 1)
+    assert processor.check_inputs([four, stack])[0]
+
+
+def test_check_does_not_read_lazy_data_when_padding_or_appending():
+    lazy_stack = ArrayProcessingResult(
+        name="stack", data=_ShapeOnlyArray((3, 8, 10)), axis_labels=["Z", "Y", "X"]
+    )
+    lazy_plane = ArrayProcessingResult(
+        name="plane", data=_ShapeOnlyArray((7, 9)), axis_labels=["Y", "X"]
+    )
+    _ok([lazy_stack, lazy_plane], mode="auto", pad="pad", pad_value="nan")
+    ok, _ = StackCombineProcessor().check_inputs([lazy_stack, lazy_plane])
+    assert ok
+    description = align_results([lazy_stack, lazy_plane], mode="auto", pad="pad").describe()
+    assert "Appends 'plane' to the Z axis" in description
+    assert "(4, 8, 10)" in description
+
+
+def test_param_widget_round_trips_the_parameters(qapp):
+    processor = StackCombineProcessor()
+    widget = processor.make_param_widget(None)
+    assert widget.get_values() == processor.default_params()
+    values = {
+        "mode": "auto", "join_axis": 2, "name": "n", "axis_label": "T", "append_axis": "Z",
+        "pad": "pad", "pad_anchor": "origin", "pad_value": "edge", "pad_max_ratio": 3.5,
+    }
+    widget.set_values(values)
+    assert widget.get_values() == values
+
+
+# -- the dialog ------------------------------------------------------------------
+
+def _ok_enabled(dialog):
+    return dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+
+
+def _run(dialog):
+    params = dialog.selected_params()
+    results = params["results"]
+    return StackCombineProcessor().apply(results[0], params)
+
+
+def test_dialog_defaults_to_automatic_and_says_what_it_will_do(qapp):
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((8, 10), ["Y", "X"], "b", 2)
+    dialog = StackCombineDialog([a, b])
+    assert dialog.modeCombo.currentData() == "auto"
+    assert "Stacks 2 inputs along a new Z axis" in dialog.planLabel.text()
+    assert "(2, 8, 10)" in dialog.planLabel.text()
+    assert dialog.selected_params()["mode"] == "stack"
+    assert not dialog.offerPadButton.isVisibleTo(dialog)
+
+
+def test_dialog_offers_to_pad_a_size_mismatch_and_shows_the_shape(qapp):
+    a, b = _filled((8, 10), ["Y", "X"], "a", 1), _filled((9, 12), ["Y", "X"], "b", 2)
+    dialog = StackCombineDialog([a, b])
+
+    assert not _ok_enabled(dialog)
+    assert "(9, 12)" in dialog.statusLabel.text()
+    assert dialog.offerPadButton.isVisibleTo(dialog)
+    assert "(2, 9, 12)" in dialog.offerPadButton.text()
+    assert not dialog.offerAppendButton.isVisibleTo(dialog)
+
+    dialog.offerPadButton.click()
+
+    assert _ok_enabled(dialog)
+    assert dialog.padCheck.isChecked()
+    assert "Pads 'a' (8, 10) -> (9, 12)" in dialog.planLabel.text()
+    assert dialog.statusLabel.text() == ""
+    assert not dialog.offerPadButton.isVisibleTo(dialog)
+    params = dialog.selected_params()
+    assert params["pad"] == "pad" and params["pad_anchor"] == "centre"
+    assert params["pad_value"] == "0" and params["pad_max_ratio"] == 2.0
+    assert _run(dialog).data.shape == (2, 9, 12)
+
+    # The plan follows the options live.
+    dialog.padAnchorCombo.setCurrentIndex(dialog.padAnchorCombo.findData("origin"))
+    assert "origin" in dialog.planLabel.text()
+    assert dialog.selected_params()["pad_anchor"] == "origin"
+    dialog.padCheck.setChecked(False)
+    assert not _ok_enabled(dialog)
+    assert "pad_anchor" not in dialog.selected_params()
+
+
+def test_dialog_warns_about_heavy_padding_and_refuses_extreme_padding(qapp):
+    big, small = _filled((64, 64), ["Y", "X"], "big", 1), _filled((40, 40), ["Y", "X"], "small", 1)
+    dialog = StackCombineDialog([big, small])
+    dialog.offerPadButton.click()
+    assert _ok_enabled(dialog)
+    assert "Warning" in dialog.warningLabel.text() and "%" in dialog.warningLabel.text()
+
+    tiny = _filled((16, 16), ["Y", "X"], "tiny", 1)
+    dialog = StackCombineDialog([big, tiny])
+    assert not dialog.offerPadButton.isVisibleTo(dialog)  # past the limit: no one-click offer
+    dialog.padCheck.setChecked(True)
+    assert not _ok_enabled(dialog)
+    assert "Allow padding beyond 2x" in dialog.statusLabel.text()
+    dialog.padLargeCheck.setChecked(True)
+    assert _ok_enabled(dialog)
+    assert dialog.selected_params()["pad_max_ratio"] == 0.0
+
+
+def test_dialog_appends_a_plane_to_a_stack_by_default(qapp):
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    dialog = StackCombineDialog([stack, plane])
+
+    assert _ok_enabled(dialog)
+    assert "Appends 'plane' to the Z axis of 'stack'" in dialog.planLabel.text()
+    assert "(4, 8, 10)" in dialog.planLabel.text()
+    params = dialog.selected_params()
+    assert params["mode"] == "auto" and params["append_axis"] == "Z"
+    assert "axis_label" not in params
+    assert dialog.nameEdit.text() == "Concatenated"
+    assert _run(dialog).data.shape == (4, 8, 10)
+
+    # Selection order: move the plane first.
+    dialog.inputWidget.inputList.setCurrentRow(1)
+    dialog.inputWidget._move_selected(-1)
+    assert dialog.selected_params()["results"] == [plane, stack]
+    out = _run(dialog)
+    np.testing.assert_array_equal(out.data[0], 9)
+    assert out.axis_labels == ["Z", "Y", "X"]
+
+
+def test_dialog_offers_to_append_when_stack_mode_is_chosen(qapp):
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((8, 10), ["Y", "X"], "plane", 9)
+    dialog = StackCombineDialog([stack, plane])
+    dialog.modeCombo.setCurrentIndex(dialog.modeCombo.findData("stack"))
+
+    assert not _ok_enabled(dialog)
+    assert dialog.offerAppendButton.isVisibleTo(dialog)
+    assert dialog.offerAppendButton.text().startswith("Append to axis Z")
+    assert "(4, 8, 10)" in dialog.offerAppendButton.text()
+    dialog.offerAppendButton.click()
+    assert _ok_enabled(dialog)
+    assert dialog.modeCombo.currentData() == "auto"
+
+
+def test_dialog_offers_to_append_and_pad_together(qapp):
+    stack = _filled((3, 8, 10), ["Z", "Y", "X"], "stack", 1)
+    plane = _filled((7, 9), ["Y", "X"], "plane", 9)
+    dialog = StackCombineDialog([stack, plane])
+
+    # Automatic already appends, so padding is the only thing missing.
+    assert not _ok_enabled(dialog)
+    assert dialog.offerPadButton.isVisibleTo(dialog)
+    assert "(4, 8, 10)" in dialog.offerPadButton.text()
+    assert not dialog.offerBothButton.isVisibleTo(dialog)
+
+    # From an explicit Stack both are missing, and one click gives both.
+    dialog.modeCombo.setCurrentIndex(dialog.modeCombo.findData("stack"))
+    assert not dialog.offerPadButton.isVisibleTo(dialog)
+    assert not dialog.offerAppendButton.isVisibleTo(dialog)
+    assert dialog.offerBothButton.isVisibleTo(dialog)
+    assert "Append to axis Z and pad to common size" in dialog.offerBothButton.text()
+    assert "(4, 8, 10)" in dialog.offerBothButton.text()
+    dialog.offerBothButton.click()
+    assert _ok_enabled(dialog)
+    out = _run(dialog)
+    assert out.data.shape == (4, 8, 10)
+    assert "padding" in out.metadata
+
+
+def test_dialog_asks_which_axis_when_the_labels_do_not_say(qapp):
+    four = _filled((2, 2, 8, 10), ["Z", "Z", "Y", "X"], "four", 1)
+    three = _filled((2, 8, 10), ["Z", "Y", "X"], "three", 7)
+    dialog = StackCombineDialog([four, three])
+
+    assert dialog.appendAxisCombo.isVisibleTo(dialog)
+    assert dialog.appendAxisCombo.count() == 2
+    assert "do not say which axis" in dialog.planLabel.text()
+    assert _ok_enabled(dialog)  # pre-filled with the best guess
+    first = dialog.selected_params()
+    assert first["mode"] == "auto" and first["append_axis"] == "0"
+    dialog.appendAxisCombo.setCurrentIndex(1)
+    assert dialog.selected_params()["append_axis"] == "1"
+    assert _run(dialog).data.shape == (2, 3, 8, 10)
+
+
+def test_dialog_prefers_z_over_t_as_the_guess(qapp):
+    four = _filled((2, 3, 8, 10), ["T", "Z", "Y", "X"], "four", 1)
+    three = _filled((3, 8, 10), ["Z", "Y", "X"], "three", 7)
+    dialog = StackCombineDialog([four, three])
+    # Unambiguous by labels: no question is asked.
+    assert not dialog.appendAxisCombo.isVisibleTo(dialog)
+    assert dialog.selected_params()["append_axis"] == "T"
+
+
+def test_dialog_scale_mismatch_points_to_scale_resize_and_offers_nothing(qapp):
+    a = _filled((8, 10), ["Y", "X"], "a", 1, scales=[0.5, 0.5])
+    b = _filled((9, 12), ["Y", "X"], "b", 1, scales=[0.4, 0.4])
+    dialog = StackCombineDialog([a, b])
+
+    assert not _ok_enabled(dialog)
+    text = dialog.statusLabel.text()
+    assert "pixel scales" in text and "Scale/Resize" in text
+    for button in (dialog.offerPadButton, dialog.offerAppendButton, dialog.offerBothButton):
+        assert not button.isVisibleTo(dialog)
+    dialog.padCheck.setChecked(True)
+    assert not _ok_enabled(dialog)
+    assert "Scale/Resize" in dialog.statusLabel.text()
+
+
+def test_dialog_label_mismatch_points_to_swap_relabel_axes(qapp):
+    a = _filled((8, 10), ["Y", "X"], "a", 1)
+    b = _filled((8, 10), ["T", "X"], "b", 1)
+    dialog = StackCombineDialog([a, b])
+    assert not _ok_enabled(dialog)
+    assert "Swap / Relabel Axes" in dialog.statusLabel.text()
+    assert not dialog.offerPadButton.isVisibleTo(dialog)
+
+
+def test_dialog_shows_the_fundamental_problem_instead_of_offering_to_pad(qapp):
+    # The size differs too, but padding would not make these combinable.
+    a = _filled((8, 10), ["Y", "X"], "a", 1, scales=[0.5, 0.5])
+    b = _filled((9, 12), ["Y", "X"], "b", 1, scales=[0.4, 0.4])
+    dialog = StackCombineDialog([a, b])
+    assert "scales" in dialog.statusLabel.text()
+    assert not dialog.offerPadButton.isVisibleTo(dialog)
+
+
+def test_dialog_explicit_modes_still_return_their_old_params(qapp):
+    a = _filled((3, 8, 10), ["Z", "Y", "X"], "a", 1)
+    b = _filled((5, 8, 10), ["Z", "Y", "X"], "b", 1)
+    dialog = StackCombineDialog([a, b])
+    dialog.modeCombo.setCurrentIndex(dialog.modeCombo.findData("stack"))
+    params = dialog.selected_params()
+    assert params["mode"] == "stack" and params["axis_label"] == "T"
+    dialog.modeCombo.setCurrentIndex(dialog.modeCombo.findData("concatenate"))
+    params = dialog.selected_params()
+    assert params["mode"] == "concatenate" and params["join_axis"] == 0
+    assert "pad" not in params and "append_axis" not in params
+    assert _run(dialog).data.shape == (8, 8, 10)
