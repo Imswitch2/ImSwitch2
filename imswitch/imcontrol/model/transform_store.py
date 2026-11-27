@@ -192,8 +192,38 @@ def list_records(folder=None) -> list[dict]:
     return out
 
 
+class TransformStore:
+    """The calibrations folder as the Transform Calibration panel's store
+    (``exists``, ``save``, ``archive``, ``load``, ``list``, ``folder``)."""
+
+    def __init__(self, folder=None):
+        self._folder = folder
+
+    @property
+    def folder(self) -> Path:
+        return calibrations_root(self._folder)
+
+    def exists(self, calibration_id: str) -> bool:
+        return exists(calibration_id, self._folder)
+
+    def save(self, transform: SpatialTransform, calibration_id: str, *, overwrite: bool = False,
+             report: Optional[str] = None, figure: Optional[Callable[[Path], Any]] = None, **frames) -> dict:
+        return save_record(transform, calibration_id, self._folder, overwrite=overwrite, report=report,
+                           figure=figure, **frames)
+
+    def archive(self, calibration_id: str) -> str:
+        return archive(calibration_id, self._folder)
+
+    def load(self, calibration) -> SpatialTransform:
+        return load_record(calibration, self._folder)
+
+    def list(self) -> list[dict]:
+        return list_records(self._folder)
+
+
 __all__ = [
     "TRANSFORMS_DIRNAME",
+    "TransformStore",
     "archive",
     "calibrations_root",
     "entry_path",

@@ -4109,7 +4109,7 @@ def _load_widget_registry() -> dict:
             ("AlignXY",        "Rotational alignment tool"),
             ("AlignmentLine",  "Line alignment overlay"),
             ("ULenses",        "uLenses tool"),
-            ("TransformCalibration", "General image transform calibration"),
+            ("TransformCalibration", "Transform calibration: beads (camera → scan), foci grid, clicked point pairs"),
             ("BFTimelapse",    "Brightfield timelapse"),
         ],
         "Advanced": [

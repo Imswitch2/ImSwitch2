@@ -113,11 +113,14 @@ PANELS: Dict[str, PanelSpec] = {spec.key: spec for spec in (
     _spec('AlignXY', 'Rotational Alignment Tool', 'Analysis', _L, requiresPanels=('Image',)),
     _spec('AlignmentLine', 'Alignment Tool', 'Analysis', _L, requiresPanels=('Image',)),
     _spec('ULenses', 'uLenses Tool', 'Analysis', _L, requiresPanels=('Image',)),
-    # Fits a transform between two images (snapped live or loaded from
-    # files) and can show a live layer through it: an overlay tool over the
-    # viewer; its uLens strategy reads the uLenses panel when there is one.
+    # Fits a transform between two images or recordings (snapped live,
+    # loaded from files, or two bead recordings for the camera -> scan
+    # calibration; beads, foci grids or clicked point pairs) and can show a
+    # live layer through it. Without the Image panel the file-based methods
+    # still work (no live snap, no Apply). Its uLens strategy reads the
+    # uLenses panel when there is one. Touches no hardware: loadable.
     _spec('TransformCalibration', 'Transform Calibration', 'Analysis', _L,
-          requiresPanels=('Image',), wiredPeers=('ULenses',)),
+          wiredPeers=('ULenses',)),
     _spec('FFT', 'FFT Tool', 'Analysis', _L),
     # Lifetime 2.0 (dev): the FLIM histogram became the Lifetime widget (a
     # widgetLayout naming FLIMHist builds it). It is built on the setup's one

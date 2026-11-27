@@ -61,10 +61,12 @@ def extraKwargsFor(key: str, viewWidgets: Dict[str, object]) -> dict:
     if key == 'ULenses':
         return {'imageWidget': viewWidgets.get('Image')}
     if key == 'TransformCalibration':
-        # Its uLens-grid strategy takes its guesses from the uLenses panel.
+        # Its uLens-grid strategy takes its guesses from the uLenses panel;
+        # its file dialogs start in the Recording panel's folder.
         return {
             'imageWidget': viewWidgets.get('Image'),
             'ulensesWidget': viewWidgets.get('ULenses'),
+            'recordingWidget': viewWidgets.get('Recording'),
         }
     return {}
 

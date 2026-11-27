@@ -79,11 +79,12 @@ def test_a_fit_from_clicks_reports_each_pairs_residual_and_singles_out_a_bad_cli
     result = fit_point_pairs(SOURCE, clicked, "similarity_reflect")
     assert result.fit.inliers.all() and result.fit.residuals.n_points == 6   # least squares: nothing dropped
     assert len(result.residuals) == 6 and result.loo is not None
-    assert result.worst == 3
+    assert result.worst == 3 and result.suspicious() == 3
     assert result.loo[3] > 5 and result.loo[3] > 2 * np.nanmax(np.delete(result.loo, 3))
     good = fit_point_pairs(np.delete(SOURCE, 3, 0), np.delete(clicked, 3, 0), "similarity_reflect")
     np.testing.assert_allclose(good.fit.transform.map_points(SOURCE), TRUTH.map_points(SOURCE), atol=0.5)
     assert good.fit.residuals.rms < 0.5
+    assert good.suspicious() is None            # no click stands out when all are good
 
 
 def test_with_exactly_the_minimum_the_fit_passes_through_every_click():

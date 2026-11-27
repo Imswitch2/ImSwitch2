@@ -338,6 +338,22 @@ class PairFit:
             return None
         return int(np.nanargmax(score))
 
+    def suspicious(self, factor: float = 3.0) -> int | None:
+        """The pair whose leave-one-out residual is more than ``factor``
+        times the median of the others' -- a click that disagrees with the
+        rest -- or ``None`` when none stands out (or there are too few
+        pairs to tell: at least three leave-one-out residuals are needed)."""
+        if self.loo is None:
+            return None
+        finite = np.isfinite(self.loo)
+        if finite.sum() < 3:
+            return None
+        worst = int(np.nanargmax(self.loo))
+        others = np.delete(self.loo, worst)
+        others = others[np.isfinite(others)]
+        typical = float(np.median(others)) if len(others) else 0.0
+        return worst if self.loo[worst] > factor * max(typical, 1e-12) else None
+
 
 def _ls_fit(model: str, source: np.ndarray, target: np.ndarray, degree: int,
             input_shape: tuple[int, int] | None) -> ModelFit:

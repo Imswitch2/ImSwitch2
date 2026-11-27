@@ -158,7 +158,10 @@ class PointPickerDialog(QtWidgets.QDialog):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self.table.setMinimumHeight(120)
+        self.table.setMinimumHeight(150)
+        self.table.horizontalHeaderItem(4).setToolTip(
+            "Where this pair's Moving point lands when the transform is fitted to the OTHER pairs, "
+            "against where it was clicked: a bad click stands out here (red).")
 
         self.snapCheck = QtWidgets.QCheckBox("Snap to spot centre within")
         self.snapCheck.setToolTip("Move each click onto the brightness centre of the spot under it.")
@@ -192,7 +195,7 @@ class PointPickerDialog(QtWidgets.QDialog):
         split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         split.addWidget(images)
         split.addWidget(lower)
-        split.setSizes([560, 200])
+        split.setSizes([500, 260])
         root = QtWidgets.QVBoxLayout(self)
         root.addWidget(self.instructions)
         root.addWidget(split, 1)
@@ -229,9 +232,9 @@ class PointPickerDialog(QtWidgets.QDialog):
         pair_fit = owner.manualPairFit
         worst = None
         _, _, complete = editor.complete_pairs()
-        if pair_fit is not None and pair_fit.loo is not None and pair_fit.worst is not None \
-                and pair_fit.worst < len(complete):
-            worst = int(complete[pair_fit.worst])
+        suspicious = pair_fit.suspicious() if pair_fit is not None else None
+        if suspicious is not None and suspicious < len(complete):
+            worst = int(complete[suspicious])
         open_index = editor.open_pair
         self.moving.setPoints([p.source for p in editor.pairs], open_index, worst)
         self.reference.setPoints([p.target for p in editor.pairs], open_index, worst)

@@ -485,6 +485,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._verification: dict | None = None
         self._picker: QtWidgets.QWidget | None = None
         self._id_edited = False
+        self._world_defaults_applied = False
+        self._method_chosen = False
+        self._model_chosen = False
 
         self._buildUi()
         for spec in builtin_correspondence_specs():
@@ -559,6 +562,11 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
                 QtCore.Qt.ToolTipRole,
             )
         self.modelCombo.setCurrentIndex(0)
+        for combo in (self.modelCombo, self.correspondenceCombo):
+            # Long labels must not widen a narrow dock: the combo elides, its popup does not.
+            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(14)
+            combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.modelHintLabel = QtWidgets.QLabel()
         self.modelHintLabel.setVisible(False)
         self.transformParametersButton = guitools.BetterPushButton("Inspect / tune…")
@@ -608,8 +616,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.verifyButton.setToolTip(
             "Check this transform on another pair of images of the same kind: no fitting, the localized "
             "Reference points are compared with the mapped Moving ones.")
-        self.predictRowSpin = self._coordinateSpin()
-        self.predictColSpin = self._coordinateSpin()
+        self.predictRowSpin = self._coordinateSpin("row ")
+        self.predictColSpin = self._coordinateSpin("col ")
         self.predictButton = guitools.BetterPushButton("Predict")
         self.predictButton.setToolTip("Where a Moving pixel lands in the Reference's coordinates.")
         self.predictResultLabel = QtWidgets.QLabel("")
@@ -697,9 +705,12 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         transform_actions.addWidget(self.fitTransformButton)
         transform_actions.addWidget(self.transformParametersButton)
         transform_actions.addStretch(1)
-        transform_actions.addWidget(QtWidgets.QLabel("Residual limit:"))
-        transform_actions.addWidget(self.residualLimitSpin)
         transform.addLayout(transform_actions)
+        limit = QtWidgets.QHBoxLayout()
+        limit.addWidget(QtWidgets.QLabel("Refuse residuals above:"))
+        limit.addWidget(self.residualLimitSpin)
+        limit.addStretch(1)
+        transform.addLayout(limit)
         transform.addWidget(self.statusLabel)
         transform.addWidget(self.verdictLabel)
         transform.addWidget(self.matrixView)
@@ -710,9 +721,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         result_actions.addStretch(1)
         transform.addLayout(result_actions)
         predict = QtWidgets.QHBoxLayout()
-        predict.addWidget(QtWidgets.QLabel("Moving px row"))
+        predict.addWidget(QtWidgets.QLabel("Moving pixel"))
         predict.addWidget(self.predictRowSpin)
-        predict.addWidget(QtWidgets.QLabel("col"))
         predict.addWidget(self.predictColSpin)
         predict.addWidget(self.predictButton)
         predict.addStretch(1)
@@ -733,7 +743,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.applyCapabilityLabel.setWordWrap(True)
         self.applyCapabilityLabel.setVisible(False)
         self.applyTargetCombo = guitools.BetterComboBox()
-        self.applyTargetCombo.setMinimumWidth(170)
+        self.applyTargetCombo.setMinimumWidth(120)
         self.setStartupButton = guitools.BetterPushButton("Set as startup")
         self.setStartupButton.setToolTip(
             "Save/use this named transform as the calibration loaded at startup."
@@ -775,6 +785,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.snapTargetButton.clicked.connect(lambda *_: self.sigSnapTargetRequested.emit())
         self.correspondenceCombo.currentIndexChanged.connect(self._correspondenceChanged)
         self.modelCombo.currentIndexChanged.connect(self._modelChanged)
+        self.correspondenceCombo.activated.connect(lambda *_: setattr(self, "_method_chosen", True))
+        self.modelCombo.activated.connect(lambda *_: setattr(self, "_model_chosen", True))
         self.localizationParametersButton.clicked.connect(
             lambda *_: self.openWorkspace("localization")
         )
@@ -853,24 +865,27 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             details.setText("Details ▾" if checked else "Details ▸")
 
         details.toggled.connect(toggle)
-        grid.addWidget(thumbnail, 0, 0, 3, 1, QtCore.Qt.AlignTop)
+        grid.addWidget(thumbnail, 0, 0, 4, 1, QtCore.Qt.AlignTop)
         grid.addLayout(buttons, 0, 1)
         grid.addWidget(label, 1, 1)
+        grid.addWidget(coordinates, 2, 1)
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(coordinates, 1)
         row.addLayout(choices)
+        row.addStretch(1)
         row.addWidget(details)
-        grid.addLayout(row, 2, 1)
-        grid.addWidget(info, 3, 0, 1, 2)
-        grid.addWidget(warnings, 4, 0, 1, 2)
+        grid.addLayout(row, 3, 1)
+        grid.addWidget(info, 4, 0, 1, 2)
+        grid.addWidget(warnings, 5, 0, 1, 2)
         grid.setColumnStretch(1, 1)
         return {"frame": frame, "thumbnail": thumbnail, "detector": detector, "choices": choices,
                 "choiceWidgets": {}, "details": details, "info": info, "warnings": warnings,
                 "coordinates": coordinates}
 
     @staticmethod
-    def _coordinateSpin() -> QtWidgets.QDoubleSpinBox:
+    def _coordinateSpin(prefix: str) -> QtWidgets.QDoubleSpinBox:
         spin = QtWidgets.QDoubleSpinBox()
+        spin.setPrefix(prefix)
+        spin.setMaximumWidth(110)
         spin.setRange(-1e6, 1e6)
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
@@ -1356,8 +1371,27 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             # Clicks belong to the images they were made on.
             self._pair_editor.clear()
         self._clearLocalizationRole(role)
+        if role == "target" and source.has_world:
+            self._applyWorldDefaults(source)
         if self.selectedCorrespondence() == MANUAL:
             self._manualPairsChanged()
+
+    def _applyWorldDefaults(self, source: CalibrationSource) -> None:
+        """The first time a Reference with world coordinates (a scan) arrives:
+        the choices of the camera -> scan bead calibration -- the Beads method
+        and the Auto (similarity, mirror allowed; affine if clearly better)
+        model unless the user picked others in the combos, and a 0.25 µm
+        residual limit unless a limit was set."""
+        if self._world_defaults_applied:
+            return
+        self._world_defaults_applied = True
+        if not self._method_chosen and self.selectedCorrespondence() != MANUAL \
+                and "beads" in self._correspondence_specs:
+            self.setSelectedCorrespondence("beads")
+        if not self._model_chosen and "similarity_or_affine" in self._model_specs:
+            self.setSelectedModel("similarity_or_affine")
+        if self.residualLimitSpin.value() == 0 and source.world_units in ("um", "µm"):
+            self.residualLimitSpin.setValue(0.25)
 
     def source(self, role: str) -> CalibrationSource | None:
         """The calibration source installed as Moving or Reference."""
@@ -1385,6 +1419,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         for name, (options, current) in dict(source.choices).items():
             choice = QtWidgets.QComboBox()
             choice.setToolTip(str(name).replace("_", " ").capitalize())
+            choice.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            choice.setMinimumContentsLength(16)
             for text, value in options:
                 choice.addItem(str(text), value)
             index = next((k for k, (_t, value) in enumerate(options) if value == current), 0)
@@ -1394,7 +1430,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             slot["choiceWidgets"][name] = choice
         if source.has_world:
             axes = ", ".join(str(a) for a in source.world_axes) or "world"
-            slot["coordinates"].setText(f"Coordinates: {axes} in {source.world_units} ({source.kind})")
+            units = "µm" if source.world_units in ("um", "µm") else source.world_units
+            slot["coordinates"].setText(f"Coordinates: {axes} in {units} ({source.kind})")
         else:
             slot["coordinates"].setText(f"Coordinates: pixels ({source.kind})")
         lines = list(source.lines)
@@ -2296,9 +2333,11 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         elif self._pair_fit is not None:
             residuals = self._pair_fit.fit.residuals
             text += f"; RMS {_length_text(residuals.rms, residuals.unit)}"
-            worst = self._pair_fit.worst
-            if worst is not None and self._pair_fit.loo is not None:
-                text += f"; most suspicious: pair {worst + 1}"
+            worst = self._pair_fit.suspicious()
+            if worst is not None:
+                index = int(self._pair_editor.complete_pairs()[2][worst])
+                text += (f"; pair {index + 1} disagrees with the others (leave-one-out "
+                         f"{_length_text(self._pair_fit.loo[worst], residuals.unit)}): check that click")
         self.manualStatusLabel.setText(text)
         self._updateEnabledState()
         self._emitStateChanged()
@@ -2584,8 +2623,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             self.residualLabel.setText("Residuals: n/a")
         else:
             self._setStatus(
-                f"✓ {residuals.n_points} pairs · RMS {residuals.rms:.3f} "
-                f"{residuals.unit} · max {residuals.max:.3f} {residuals.unit}"
+                f"✓ {residuals.n_points} pairs · RMS {_length_text(residuals.rms, residuals.unit)} "
+                f"· max {_length_text(residuals.max, residuals.unit)}"
             )
             self.residualLabel.setText(f"Residuals: {residuals.summary()}")
         self.matrixView.setPlainText(self.reportText())
@@ -2688,7 +2727,7 @@ def _verification_text(report: Mapping[str, Any]) -> str:
 
 def _length_text(value: float, unit: str) -> str:
     if unit in ("um", "µm"):
-        return f"{value * 1000:.0f} nm"
+        return f"{value * 1000:.1f} nm" if value < 0.1 else f"{value * 1000:.0f} nm"
     return f"{value:.3f} {unit}"
 
 

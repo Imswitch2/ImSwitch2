@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from imswitch.imcommon.view import guitools
 from imswitch.imcontrol.controller.display_transform import (
     display_transform_from_properties,
 )
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, transform_store
 from imswitch.imcontrol.model.SetupInfo import (
     CalibrationsInfo,
     TransformCalibrationSetupInfo,
@@ -29,17 +30,31 @@ class TransformCalibrationController(ImConWidgetController):
 
     Calibration/fitting remains in imcommon. This controller supplies live
     displayed images, ImControl's uLens localizer, napari registration targets,
-    setup persistence and detector-context validation.
+    setup persistence and detector-context validation -- and, for
+    calibrations from recordings (the camera -> scan bead calibration that
+    used to have its own Hardware-menu window): reading ImSwitch HDF5/Zarr
+    recordings with what they hold and the warnings about them
+    (``model/bead_calibration``), the warnings that need the running setup,
+    and the calibrations folder to save under an id
+    (``model/transform_store``: ``transforms/<id>.json`` plus the smart
+    pipeline's ``<id>.json``). No hardware is touched by any of it.
     """
 
     calibrationKey = "image_registration"
 
-    def __init__(self, *args, imageWidget=None, ulensesWidget=None, **kwargs):
+    #: The scan's fast-axis choices offered for a scan recording.
+    FAST_AXIS_CHOICES = (("Fast axis: auto (as this setup scans it)", None), ("Fast axis: swept (galvo)", True),
+                         ("Fast axis: stepped (stage, piezo)", False))
+
+    def __init__(self, *args, imageWidget=None, ulensesWidget=None, recordingWidget=None,
+                 calibrationsFolder=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.__logger = initLogger(self, tryInheritParent=True)
         self._imageWidget = imageWidget
         self._ulensesWidget = ulensesWidget
+        self._recordingWidget = recordingWidget
         self._appliedTarget = None
+        self._calibrationsFolder = calibrationsFolder   # None: <ImSwitchConfig>/calibrations
 
         self.calibrationDir = os.path.join(
             dirtools.UserFileDirs.Root,
@@ -61,9 +76,16 @@ class TransformCalibrationController(ImConWidgetController):
         self._widget.sigApplyTargetChanged.connect(self._applyTargetChanged)
         self._widget.sigSetStartupRequested.connect(self.setAsStartupCalibration)
 
+        # Calibrations from recordings, saved under an id for the smart pipeline.
+        self._widget.setRecordingReader(self.readRecording)
+        self._widget.setPairWarningProvider(self.pairWarnings)
+        self._widget.setCalibrationStore(transform_store.TransformStore(self._calibrationsFolder))
+        self._widget.setBackgroundExecution(True)
+        self._widget.setDefaultFolder(self._recordingFolder())
+
         if self._imageWidget is None:
             self._widget.setStatus(
-                "Transform calibration requires the Image widget to be enabled."
+                "No Image panel: live Snap and Apply are off; calibrations from files work."
             )
             self._widget.setHostIntegrationEnabled(False)
             return
@@ -378,6 +400,123 @@ class TransformCalibrationController(ImConWidgetController):
         if not os.path.isabs(path):
             path = os.path.join(self.calibrationDir, path)
         return os.path.abspath(path)
+
+    # -- recordings ------------------------------------------------------------
+
+    def _recordingFolder(self):
+        try:
+            return self._recordingWidget.folderEdit.text() or None
+        except Exception:  # noqa: BLE001 - a start folder is a convenience
+            return None
+
+    def readRecording(self, path, role, detector=None, fast_axis=None):
+        """An ImSwitch recording (HDF5 file or Zarr folder) as a calibration
+        source: the detector's frames averaged, what the file holds and the
+        warnings about it; a point-scan detector's image comes with its scan
+        geometry (pixel -> scan position, µm), so a calibration against it
+        maps into scan coordinates."""
+        from imswitch.imcommon.algorithms.transforms.bead_registration import scan_axes, scan_geometry_affine
+        from imswitch.imcommon.view.widgets.TransformCalibrationWidget import CalibrationSource
+        from imswitch.imcontrol.model import bead_calibration as bc
+
+        path = Path(path)
+        detectors, preferred = bc.preferred_detector(path, "camera" if role == "source" else "scan")
+        chosen = detector if detector in detectors else preferred
+        probe = bc.read_recording(path, chosen)
+        kind = "scan" if bc.is_scan_detector(probe) else "camera"
+        swept = None
+        if kind == "scan":
+            swept = fast_axis if fast_axis is not None else self._fastAxisSwept(probe)
+        summary = bc.summarize_recording(path, kind, chosen, fast_axis_swept=swept)
+        warnings = list(summary.warnings)
+        if role == "source" and kind == "scan":
+            warnings.append(f"{summary.detector} is a scan detector: the transform maps Moving pixels, so the "
+                            "camera recording usually goes here and the scan recording under Reference")
+        source = CalibrationSource(
+            image=summary.recording.image, name=f"{path.name} ({summary.detector})", path=path,
+            lines=list(summary.lines), warnings=warnings, detectors=list(summary.detectors),
+            detector=summary.detector, kind=f"{kind} recording", payload=summary)
+        if kind == "camera":
+            source.context = summary.context
+        elif summary.geometry is not None:
+            geometry = summary.geometry
+            axes = bc._physical_order(summary.recording, geometry)
+            pixel_to_world, axes = scan_geometry_affine(geometry, axes)
+            context = bc.scan_context_from_recording(summary.recording, geometry)
+            extra = {**dict(context.extra), "axes": list(axes), "units": "um",
+                     "scan_geometry": {"axes": scan_axes(geometry)}}
+            source.context = replace(context, extra=extra)
+            source.pixel_to_world = pixel_to_world
+            source.world_axes = tuple(axes)
+            source.world_units = "um"
+            source.world_frame = "scanner:galvo"
+        else:
+            source.context = AcquisitionContext(detector=summary.detector, image_shape=summary.recording.image.shape)
+        if kind == "scan":
+            source.choices = {"fast_axis": (list(self.FAST_AXIS_CHOICES), fast_axis)}
+        return source
+
+    def _fastAxisSwept(self, recording):
+        """How the fast axis of a scan recording moved, when the panel does
+        not say: what this setup does with that device, else ``None`` (the
+        model's default: the recording's own record, else swept unless a mock)."""
+        try:
+            from imswitch.imcontrol.model import bead_calibration as bc
+            from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import is_smooth_scan_axis
+
+            names = [str(d) for d in bc._seq(recording.attrs.get("ScanStage:scan_axis_devices")) if str(d) != "None"]
+            info = self._setupInfo.positioners[names[0]]
+            return bool(is_smooth_scan_axis(names[0], info.managerProperties))
+        except Exception:  # noqa: BLE001 - a device this setup lacks
+            return None
+
+    def _runningSetupHash(self):
+        """The setup hash this session writes into its recordings. The
+        published one is used, not a fresh hash of the setup info: panels and
+        settings changed while running alter the setup info, and a file
+        recorded minutes ago would then look like another setup's."""
+        from imswitch.imcontrol.model import replay
+
+        try:
+            published = self._commChannel.sharedAttrs[replay.SETUP_HASH_KEY]
+            if published:
+                return str(published)
+        except Exception:  # noqa: BLE001 - not published: hash the setup info
+            pass
+        try:
+            return replay.computeSetupHash(self._setupInfo.to_dict())
+        except Exception:  # noqa: BLE001 - the comparison is best effort
+            return None
+
+    def _currentCameraIdentity(self, detector):
+        try:
+            from imswitch.imcontrol.model.smartpipeline.live_source import frame_identity_of
+
+            manager = self._master.detectorsManager[detector]
+        except Exception:  # noqa: BLE001 - a detector this setup lacks: nothing to compare
+            return None
+        return frame_identity_of(manager)
+
+    def pairWarnings(self, moving, reference):
+        """Warnings that need both recordings, the running setup or the
+        camera's current grid (different setups, another setup than the
+        running one, a camera grid that changed since the recording)."""
+        from imswitch.imcontrol.model import bead_calibration as bc
+
+        def summary(source):
+            payload = getattr(source, "payload", None)
+            return payload if isinstance(payload, bc.RecordingSummary) else None
+
+        first, second = summary(moving), summary(reference)
+        if first is None and second is None:
+            return []
+        identity = self._currentCameraIdentity(first.detector) if first is not None and first.context else None
+        warnings = bc.compare_summaries(first, second, running_setup_hash=self._runningSetupHash(),
+                                        current_camera_identity=identity)
+        if first is not None and second is not None and first.role == second.role == "camera":
+            warnings.append("both are camera recordings: the result maps pixels to pixels. For a camera -> "
+                            "scan calibration pick the APD scan recording as Reference")
+        return warnings
 
     def closeEvent(self):
         self._clearAppliedTarget()
