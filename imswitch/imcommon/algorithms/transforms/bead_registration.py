@@ -45,7 +45,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from scipy import stats
 
 from .correspondence.beads import (
     BeadDetections,
@@ -54,7 +53,7 @@ from .correspondence.beads import (
     detect_beads,
     match_point_sets,
 )
-from .estimate import ModelFit, fit_transform
+from .estimate import ModelFit, _f_test, fit_transform, select_similarity_or_affine
 from .model import AcquisitionContext, ResidualStats, SpatialTransform
 from .models.affine import AffineTransform
 
@@ -63,6 +62,7 @@ __all__ = [
     "BeadRegistrationError",
     "BeadRegistrationOptions",
     "decompose_affine",
+    "fit_bead_pairs",
     "register_bead_images",
     "scan_axes",
     "scan_geometry_affine",
@@ -147,7 +147,8 @@ def decompose_affine(matrix: Any) -> dict:
 @dataclass(frozen=True)
 class BeadRegistrationOptions:
     """``camera`` / ``scan`` detection keywords for :func:`detect_beads`
-    (``sigma_px``, ``threshold``, ``saturation``, ``min_separation_sigma``)
+    (``sigma_px``, ``threshold``, ``saturation``, ``min_separation_sigma``,
+    ``measure_psf`` -- off by default: the spot scale is estimated, no PSF fit)
     in each image's own pixels; ``model`` ``"auto"``,
     ``"similarity_reflect"`` or ``"affine"``; ``tolerance`` the pairing
     distance in scan units (``None``: a quarter of the median scan-bead
@@ -250,13 +251,27 @@ class BeadRegistration:
         return "\n".join(lines)
 
 
-def _f_test(rss_small: float, rss_large: float, n_pairs: int, extra: int = 2, dof_large: int = 6) -> float:
-    dof = 2 * n_pairs - dof_large
-    if dof <= 0:
-        return 1.0
-    if rss_large <= 0:
-        return 0.0 if rss_small > 0 else 1.0
-    return float(stats.f.sf(((rss_small - rss_large) / extra) / (rss_large / dof), extra, dof))
+def fit_bead_pairs(source: Any, target: Any, options: BeadRegistrationOptions | None = None,
+                   tolerance: float = 2.0) -> tuple[ModelFit, str, float, float]:
+    """The model choice of the bead registration on paired points: the model
+    ``options.model`` asks for (``"auto"``: :func:`~.estimate.select_similarity_or_affine`),
+    robustly fitted with ``tolerance`` as the inlier threshold. Returns the
+    fit, the rule in words, and the similarity and affine RMS on the pairs
+    both call inliers."""
+    options = options or BeadRegistrationOptions()
+    need = max(3, int(options.min_beads))
+    auto, auto_rule = select_similarity_or_affine(
+        source, target, allow_mirror=options.allow_mirror, residual_threshold=tolerance, min_pairs=need,
+        min_pairs_affine=options.min_beads_affine)
+    selection = auto.selection or {}
+    rms_sim = float(selection.get("similarity_rms") or 0.0)
+    rms_aff = float(selection.get("affine_rms") or 0.0)
+    if options.model in ("similarity_reflect", "similarity"):
+        kind = "similarity_reflect" if options.allow_mirror else "similarity"
+        return fit_transform(kind, source, target, residual_threshold=tolerance), "asked for", rms_sim, rms_aff
+    if options.model == "affine":
+        return fit_transform("affine", source, target, residual_threshold=tolerance), "asked for", rms_sim, rms_aff
+    return auto, auto_rule, rms_sim, rms_aff
 
 
 def register_bead_images(camera_image: Any, scan_image: Any, scan_geometry: Any,
@@ -269,6 +284,8 @@ def register_bead_images(camera_image: Any, scan_image: Any, scan_geometry: Any,
     module docstring). ``scan_geometry`` is the scan image's geometry
     (``{"axes": [{"device", "step_um", "first_um"}, ...]}``, fast first)."""
     options = options or BeadRegistrationOptions()
+    if options.model == "similarity_or_affine":
+        options = replace(options, model="auto")
     if options.model not in ("auto", "similarity_reflect", "similarity", "affine"):
         raise BeadRegistrationError(f"model must be auto, similarity_reflect or affine, not {options.model!r}")
     pixel_to_um, target_axes = scan_geometry_affine(scan_geometry, options.target_axes)
@@ -291,28 +308,7 @@ def register_bead_images(camera_image: Any, scan_image: Any, scan_geometry: Any,
         raise BeadRegistrationError(str(error)) from None
     i, j = match.pairs[:, 0], match.pairs[:, 1]
     src, dst = camera.positions[i], scan_um[j]
-    similarity_kind = "similarity_reflect" if options.allow_mirror else "similarity"
-    sim = fit_transform(similarity_kind, src, dst, residual_threshold=tolerance)
-    aff = fit_transform("affine", src, dst, residual_threshold=tolerance)
-    both = sim.inliers & aff.inliers
-    if both.sum() < need:
-        both = sim.inliers
-    rss_sim = float(np.sum(np.linalg.norm(sim.mapped_points - dst, axis=1)[both] ** 2))
-    rss_aff = float(np.sum(np.linalg.norm(aff.mapped_points - dst, axis=1)[both] ** 2))
-    n_both = int(both.sum())
-    rms_sim, rms_aff = math.sqrt(rss_sim / n_both), math.sqrt(rss_aff / n_both)
-    if options.model in ("similarity_reflect", "similarity"):
-        chosen, rule = sim, "asked for"
-    elif options.model == "affine":
-        chosen, rule = aff, "asked for"
-    elif n_both < options.min_beads_affine:
-        chosen, rule = sim, f"auto: {n_both} pairs, fewer than {options.min_beads_affine} for an affine"
-    else:
-        p = _f_test(rss_sim, rss_aff, n_both)
-        if p < 0.01 and rms_aff < 0.9 * rms_sim:
-            chosen, rule = aff, f"auto: the affine lowers the RMS by {100 * (1 - rms_aff / rms_sim):.0f} % (F-test p={p:.1e})"
-        else:
-            chosen, rule = sim, f"auto: the affine is not significantly better (F-test p={p:.2g})"
+    chosen, rule, rms_sim, rms_aff = fit_bead_pairs(src, dst, options, tolerance)
     warnings = []
     scale = math.sqrt(abs(np.linalg.det(chosen.transform.as_matrix()[:2, :2])))
     if options.camera_pixel_um:
@@ -344,6 +340,7 @@ def register_bead_images(camera_image: Any, scan_image: Any, scan_geometry: Any,
         "similarity_rms_um": rms_sim, "affine_rms_um": rms_aff,
         "rotation_deg": g["rotation_deg"], "scale_um_per_px": g["scale"], "mirror": g["mirror"],
         "camera_psf_sigma_px": camera.sigma_px, "scan_psf_sigma_px": scan.sigma_px,
+        "camera_spot_scale": camera.scale_source, "scan_spot_scale": scan.scale_source,
         "source_points": "camera (row, col) pixel centres; (0, 0) = centre of the first pixel of the frame (ROI, binned)",
         **dict(provenance or {}),
     }

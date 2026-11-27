@@ -47,6 +47,7 @@ __all__ = [
     "fit_parameter_specs",
     "fit_parameter_defaults",
     "normalize_fit_parameters",
+    "select_similarity_or_affine",
 ]
 
 
@@ -146,6 +147,21 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
         ),
         parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
+    "similarity_or_affine": EstimatorSpec(
+        name="similarity_or_affine",
+        label="Auto: similarity (mirror allowed), affine only if clearly better",
+        dof=4,
+        min_samples=2,
+        description=(
+            "Fits a similarity of either handedness and a free affine to the same "
+            "pairs and keeps the affine only when it lowers the residual "
+            "significantly (F-test p < 0.01 and at least 10 % lower RMS) and at "
+            "least 10 pairs exist; otherwise the similarity. The choice and its "
+            "reason are reported. The default for two different detectors "
+            "(a camera against a point scanner)."
+        ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
+    ),
     "rigid": EstimatorSpec(
         name="rigid",
         label="Rigid (3 DOF)",
@@ -237,7 +253,7 @@ def normalize_fit_parameters(
 class ModelFit:
     """The outcome of :func:`fit_transform`."""
 
-    __slots__ = ("transform", "residuals", "inliers", "mapped_points", "estimator")
+    __slots__ = ("transform", "residuals", "inliers", "mapped_points", "estimator", "selection")
 
     def __init__(
         self,
@@ -246,12 +262,16 @@ class ModelFit:
         inliers: np.ndarray,
         mapped_points: np.ndarray,
         estimator: str,
+        selection: Mapping[str, Any] | None = None,
     ) -> None:
         self.transform = transform
         self.residuals = residuals
         self.inliers = inliers
         self.mapped_points = mapped_points
         self.estimator = estimator
+        #: For a model-selecting estimator (``similarity_or_affine``): which
+        #: model was asked for, which won and why (``rule``), and both RMS.
+        self.selection = None if selection is None else dict(selection)
 
     def __repr__(self) -> str:
         return f"ModelFit({self.estimator}, {self.residuals.summary()})"
@@ -314,6 +334,12 @@ def fit_transform(
             f"residual_threshold must be positive, got {residual_threshold}"
         )
 
+    if spec.name == "similarity_or_affine":
+        chosen, _rule = select_similarity_or_affine(
+            source, target, residual_threshold=float(residual_threshold),
+            max_trials=int(max_trials), random_state=random_state,
+        )
+        return chosen
     if spec.name == "identity":
         model: TransformModel = IdentityTransform(ndim=2)
     elif spec.name == "rotation90":
@@ -353,6 +379,73 @@ def fit_transform(
         mapped_points=mapped,
         estimator=spec.name,
     )
+
+
+def _f_test(rss_small: float, rss_large: float, n_pairs: int, extra: int = 2, dof_large: int = 6) -> float:
+    """p-value of the extra parameters of the larger (affine) model."""
+    from scipy import stats
+
+    dof = 2 * n_pairs - dof_large
+    if dof <= 0:
+        return 1.0
+    if rss_large <= 0:
+        return 0.0 if rss_small > 0 else 1.0
+    return float(stats.f.sf(((rss_small - rss_large) / extra) / (rss_large / dof), extra, dof))
+
+
+def select_similarity_or_affine(
+    source_points: Any,
+    target_points: Any,
+    *,
+    allow_mirror: bool = True,
+    residual_threshold: float = 2.0,
+    min_pairs: int = 2,
+    min_pairs_affine: int = 10,
+    max_trials: int = 500,
+    random_state: int | None = 0,
+) -> tuple[ModelFit, str]:
+    """Fit a similarity (``similarity_reflect`` when ``allow_mirror``) and an
+    affine and keep the affine only when it is clearly better.
+
+    Both are fitted robustly; their residuals are compared on the pairs that
+    are inliers of both (of the similarity alone when fewer than
+    ``min_pairs`` are). With fewer than ``min_pairs_affine`` such pairs the
+    similarity is kept; otherwise the affine wins when an F-test of its two
+    extra parameters gives p < 0.01 *and* it lowers the RMS by at least
+    10 %. Returns the chosen fit (its ``selection`` says what happened) and
+    the rule in words."""
+    source = as_points(source_points, 2, label="source_points")
+    target = as_points(target_points, 2, label="target_points")
+    similarity_kind = "similarity_reflect" if allow_mirror else "similarity"
+    common = dict(residual_threshold=residual_threshold, max_trials=max_trials, random_state=random_state)
+    sim = fit_transform(similarity_kind, source, target, **common)
+    if len(source) < ESTIMATORS["affine"].min_samples:
+        rule = f"auto: {len(source)} pairs, too few for an affine"
+        sim.selection = {"requested": "similarity_or_affine", "chosen": similarity_kind, "rule": rule,
+                         "similarity_rms": float(sim.residuals.rms), "affine_rms": None}
+        return sim, rule
+    aff = fit_transform("affine", source, target, **common)
+    both = sim.inliers & aff.inliers
+    if both.sum() < max(1, int(min_pairs)):
+        both = sim.inliers
+    if not both.any():
+        both = np.ones(len(source), dtype=bool)
+    rss_sim = float(np.sum(np.linalg.norm(sim.mapped_points - target, axis=1)[both] ** 2))
+    rss_aff = float(np.sum(np.linalg.norm(aff.mapped_points - target, axis=1)[both] ** 2))
+    n_both = int(both.sum())
+    rms_sim, rms_aff = float(np.sqrt(rss_sim / n_both)), float(np.sqrt(rss_aff / n_both))
+    if n_both < min_pairs_affine:
+        chosen, rule = sim, f"auto: {n_both} pairs, fewer than {min_pairs_affine} for an affine"
+    else:
+        p = _f_test(rss_sim, rss_aff, n_both)
+        if p < 0.01 and rms_aff < 0.9 * rms_sim:
+            chosen, rule = aff, (f"auto: the affine lowers the RMS by {100 * (1 - rms_aff / rms_sim):.0f} % "
+                                 f"(F-test p={p:.1e})")
+        else:
+            chosen, rule = sim, f"auto: the affine is not significantly better (F-test p={p:.2g})"
+    chosen.selection = {"requested": "similarity_or_affine", "chosen": chosen.estimator, "rule": rule,
+                        "similarity_rms": rms_sim, "affine_rms": rms_aff, "compared_pairs": n_both}
+    return chosen, rule
 
 
 def estimate_affine(

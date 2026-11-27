@@ -7,14 +7,21 @@ mirror image of the other), any scale, any shift, and fields of view that
 only partly overlap (a scan usually covers a sub-region of the camera field).
 
 * **Localisation** (:func:`detect_beads`, one image at a time): background
-  removed with a wide Gaussian, a difference-of-Gaussians band-pass matched to
-  the PSF, local maxima above ``threshold`` robust noise levels (MAD), then a
-  symmetric 2-D Gaussian fit per bead for the sub-pixel centre and its width.
-  The PSF sigma is measured from the brightest peaks when not given, so the
-  two images may have different PSFs, backgrounds and SNR. Rejected and
-  counted: saturated beads, beads too near the edge for a fit, beads with a
-  neighbour closer than ``min_separation_sigma`` sigmas (merged pairs), and
-  fits whose width is far from the median (aggregates, debris).
+  removed with a wide Gaussian, a difference-of-Gaussians band-pass at the
+  spot scale, local maxima above ``threshold`` robust noise levels (MAD), then
+  a symmetric 2-D Gaussian fit per bead for the sub-pixel centre. The spot
+  scale is, by default, *estimated* without fitting anything
+  (:func:`estimate_spot_scale`: the scale at which a scale-normalised
+  Laplacian-of-Gaussian responds most at the brightest peaks), so the two
+  images may have different spot sizes, backgrounds and SNR and nothing in
+  this default depends on deriving a PSF. Rejected and counted: saturated
+  beads, beads too near the edge for a fit, beads whose fit fails, beads
+  with a neighbour closer than ``min_separation_sigma`` scales (merged pairs)
+  and beads whose fitted width is far from the median one (aggregates,
+  debris). **Opt-in** (``measure_psf=True``): the PSF sigma is measured by
+  Gaussian fits of the brightest peaks first and widths are judged against
+  it; a given ``sigma_px`` is used as it is, likewise. On the ImSwitch mock
+  bead recordings both find the same beads and give the same transform.
 * **Pairing** (:func:`match_point_sets`): every bead and pairs of its nearest
   neighbours form triangles; their side-length ratios do not change under
   rotation, scale or mirroring, so triangles are matched across the two sets
@@ -60,6 +67,7 @@ __all__ = [
     "BeadMatchError",
     "bead_strategy_spec",
     "detect_beads",
+    "estimate_spot_scale",
     "match_point_sets",
     "similarity_from_points",
 ]
@@ -77,8 +85,10 @@ class BeadMatchError(ValueError):
 class BeadDetections:
     """Beads in one image: ``positions`` ``(N, 2)`` (row, col) px, brightest
     first; ``amplitudes`` and ``sigmas`` (px) from the fit; ``sigma_px`` the
-    PSF sigma used; ``noise`` the band-passed noise; ``rejected`` reason ->
-    count; ``candidates`` every peak above threshold (for inspection)."""
+    spot scale used; ``noise`` the band-passed noise; ``rejected`` reason ->
+    count; ``candidates`` every peak above threshold (for inspection);
+    ``scale_source`` how ``sigma_px`` was obtained: ``"estimated"`` (the
+    default, no PSF fit), ``"measured"`` (``measure_psf``) or ``"given"``."""
 
     positions: np.ndarray
     amplitudes: np.ndarray
@@ -87,6 +97,7 @@ class BeadDetections:
     noise: float
     rejected: Mapping[str, int] = field(default_factory=dict)
     candidates: np.ndarray | None = None
+    scale_source: str = "estimated"
 
     def __len__(self) -> int:
         return int(self.positions.shape[0])
@@ -163,23 +174,58 @@ def _measure_sigma(image: np.ndarray, guess: float, threshold: float) -> float:
     return max(0.5, sigma)
 
 
+#: Scales tried by :func:`estimate_spot_scale` (px).
+_SCALES = tuple(float(v) for v in np.geomspace(0.7, 8.0, 16))
+
+
+def estimate_spot_scale(image: Any, threshold: float = 6.0, *, peaks: int = 60) -> float:
+    """The Gaussian sigma (px) of the spots in ``image``, without fitting.
+
+    Blob scale selection: at the ``peaks`` brightest local maxima the
+    scale-normalised Laplacian-of-Gaussian ``-s^2 LoG_s`` is evaluated for
+    scales 0.7 .. 8 px; it peaks at ``s = sigma`` for a Gaussian spot. The
+    median over the peaks is returned. Never fails: with no peak at all it
+    returns 1.5 px (a diffraction-limited spot sampled at about Nyquist)."""
+    data = np.asarray(image, dtype=np.float64)
+    if data.ndim != 2:
+        raise ValueError(f"spot scale needs a 2-D image, got shape {data.shape}")
+    rows, cols, _ = _candidates(data, 2.0, threshold)
+    rows, cols = rows[:peaks], cols[:peaks]
+    if len(rows) == 0:
+        return 1.5
+    flat = data - ndimage.gaussian_filter(data, 4.0 * _SCALES[-1], mode="nearest")
+    response = np.array([-(s * s) * ndimage.gaussian_laplace(flat, s, mode="nearest")[rows, cols]
+                         for s in _SCALES])
+    return float(np.median(np.asarray(_SCALES)[np.argmax(response, axis=0)]))
+
+
 def detect_beads(image: Any, *, sigma_px: float | None = None, threshold: float = 6.0,
                  saturation: float | None = None, min_separation_sigma: float = 4.0,
                  edge_sigma: float = 2.5, width_tolerance: float = 0.5,
-                 max_beads: int = 2000) -> BeadDetections:
+                 max_beads: int = 2000, measure_psf: bool = False) -> BeadDetections:
     """Sub-pixel bead centres in a 2-D image (see the module docstring).
 
-    ``sigma_px`` the PSF sigma (``None``/0: measured); ``threshold`` in robust
-    noise units of the band-passed image; ``saturation`` the value at or
-    above which a pixel counts as saturated (``None``: the integer dtype's
-    maximum; float images are not checked)."""
+    ``sigma_px`` the spot (PSF) sigma in px, used as given; ``None``/0: the
+    scale is estimated (:func:`estimate_spot_scale`, no PSF fit) -- or, with
+    ``measure_psf``, measured by Gaussian fits of the brightest beads.
+    Beads whose fitted width differs from a given or measured sigma -- or,
+    by default, from the median fitted width -- by more than
+    ``width_tolerance`` are rejected. ``threshold`` in robust noise units of the band-passed
+    image; ``saturation`` the value at or above which a pixel counts as
+    saturated (``None``: the integer dtype's maximum; float images are not
+    checked)."""
     raw = np.asarray(image)
     if raw.ndim != 2:
         raise ValueError(f"bead detection needs a 2-D image, got shape {raw.shape}")
     if saturation is None and np.issubdtype(raw.dtype, np.integer):
         saturation = float(np.iinfo(raw.dtype).max)
     data = raw.astype(np.float64)
-    sigma = float(sigma_px) if sigma_px else _measure_sigma(data, 1.5, threshold)
+    if sigma_px:
+        sigma, source = float(sigma_px), "given"
+    elif measure_psf:
+        sigma, source = _measure_sigma(data, 1.5, threshold), "measured"
+    else:
+        sigma, source = max(0.5, estimate_spot_scale(data, threshold)), "estimated"
     rows, cols, noise = _candidates(data, sigma, threshold)
     rejected = {"saturated": 0, "edge": 0, "fit": 0, "width": 0, "merged": 0}
     found = []
@@ -201,13 +247,19 @@ def detect_beads(image: Any, *, sigma_px: float | None = None, threshold: float 
         found.append(fit)
     candidates = np.column_stack([rows, cols]).astype(np.float64) if len(rows) else np.zeros((0, 2))
     if not found:
-        return BeadDetections(np.zeros((0, 2)), np.zeros(0), np.zeros(0), sigma, noise, rejected, candidates)
+        return BeadDetections(np.zeros((0, 2)), np.zeros(0), np.zeros(0), sigma, noise, rejected, candidates,
+                              source)
     arr = np.asarray(found, dtype=np.float64)
-    # Widths against the PSF sigma (measured from the brightest beads, or
-    # given): an aggregate or an unresolved pair is wider than one bead.
-    width_ok = np.abs(arr[:, 3] / sigma - 1.0) <= width_tolerance
-    rejected["width"] += int((~width_ok).sum())
-    arr = arr[width_ok]
+    # An aggregate or an unresolved pair is wider than one bead. Widths are
+    # judged against the PSF sigma when it was measured or given, and against
+    # the median fitted width otherwise -- which cannot reject most beads, so
+    # the default path never fails for want of a PSF (with fewer than three
+    # beads, against the estimated scale: too few to calibrate with anyway).
+    reference = sigma if source != "estimated" or len(arr) < 3 else float(np.median(arr[:, 3]))
+    if reference:
+        width_ok = np.abs(arr[:, 3] / reference - 1.0) <= width_tolerance
+        rejected["width"] += int((~width_ok).sum())
+        arr = arr[width_ok]
     if len(arr) >= 2:
         dist, _ = spatial.cKDTree(arr[:, :2]).query(arr[:, :2], k=2)
         isolated = dist[:, 1] >= min_separation_sigma * sigma
@@ -215,7 +267,7 @@ def detect_beads(image: Any, *, sigma_px: float | None = None, threshold: float 
         arr = arr[isolated]
     arr = arr[np.argsort(-arr[:, 2])][:max_beads]
     return BeadDetections(arr[:, :2].copy(), arr[:, 2].copy(), arr[:, 3].copy(), sigma, noise, rejected,
-                          candidates)
+                          candidates, source)
 
 
 # --------------------------------------------------------------------------
@@ -421,10 +473,19 @@ def match_point_sets(source, target, *, tolerance: float, neighbours: int = 6, a
 
 _LOCALIZATION_SPECS = {
     "psf_sigma_px": ParameterSpec(
-        0.0, float, "PSF sigma (px, 0 = measure)",
-        "Gaussian sigma of a bead's image in this image's pixels. 0 measures it from the "
-        "brightest beads, so the two images may have different PSFs.",
+        0.0, float, "Spot size sigma (px, 0 = estimate)",
+        "Gaussian sigma of a bead's image in this image's pixels. 0 estimates the scale from "
+        "the brightest beads without fitting a PSF, so the two images may have different spot "
+        "sizes. A value given here is used as it is, and beads whose fitted width differs from "
+        "it by more than half are rejected.",
         minimum=0.0, step=0.1, decimals=2, group="Bead detection"),
+    "measure_psf": ParameterSpec(
+        False, bool, "Measure the PSF (optional)",
+        "Measure the PSF sigma by Gaussian fits of the brightest beads instead of estimating "
+        "the spot scale, and reject beads whose fitted width differs from it by more than half "
+        "(aggregates, debris). Not needed for a calibration: the default gives the same "
+        "transform; use it to inspect the PSF or to reject aggregates.",
+        advanced=True, group="Bead detection"),
     "threshold": ParameterSpec(
         6.0, float, "Detection threshold (noise units)",
         "Band-passed peak height in robust noise levels. Lower it for dim beads, raise it "
@@ -474,7 +535,8 @@ def _localize_beads(image: np.ndarray, parameters: Mapping[str, Any]) -> ImageLo
     found = detect_beads(
         image, sigma_px=float(parameters["psf_sigma_px"]) or None, threshold=float(parameters["threshold"]),
         saturation=float(parameters["saturation"]) or None,
-        min_separation_sigma=float(parameters["min_separation_sigma"]))
+        min_separation_sigma=float(parameters["min_separation_sigma"]),
+        measure_psf=bool(parameters.get("measure_psf", False)))
     diagnostics = LocalizationDiagnostics(detected_points=found.candidates, refined_points=found.positions)
     if len(found) < 3:
         raise LocalizationFailure(
@@ -482,7 +544,8 @@ def _localize_beads(image: np.ndarray, parameters: Mapping[str, Any]) -> ImageLo
             f"{dict(found.rejected)}); lower the threshold or use a denser bead sample", diagnostics)
     return ImageLocalizationResult(
         points=found.positions,
-        metadata={"bead_count": len(found), "psf_sigma_px": found.sigma_px, "noise": found.noise,
+        metadata={"bead_count": len(found), "psf_sigma_px": found.sigma_px, "scale_source": found.scale_source,
+                  "noise": found.noise,
                   "rejected": dict(found.rejected),
                   "pixel_size": (float(parameters["pixel_size_row"]), float(parameters["pixel_size_col"]))},
         diagnostics=diagnostics, payload=found)

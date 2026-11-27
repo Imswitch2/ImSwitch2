@@ -681,6 +681,7 @@ def test_every_advertised_estimator_is_fittable():
         "polynomial",
         "similarity",
         "similarity_reflect",
+        "similarity_or_affine",
         "rigid",
         "translation",
         "rotation90",

@@ -12,6 +12,7 @@ from .beads import (
     BeadMatchError,
     bead_strategy_spec,
     detect_beads,
+    estimate_spot_scale,
     match_point_sets,
 )
 from .foci_grid import (
@@ -45,6 +46,7 @@ __all__ = [
     "BeadMatchError",
     "bead_strategy_spec",
     "detect_beads",
+    "estimate_spot_scale",
     "match_point_sets",
     "GridCorrespondence",
     "GridCorrespondenceResolution",
