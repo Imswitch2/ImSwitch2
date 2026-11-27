@@ -2,7 +2,8 @@
 
     python -m imswitch.imscripting._test.tutorial_runner SETUP SCRIPT [--timeout S]
 
-SETUP is a file name from ``_data/user_defaults/imcontrol_setups`` or a path.
+SETUP is the name of a shipped setup under ``_data/user_defaults/imcontrol_setups``
+(its file name is enough; the examples are sorted into subfolders) or a path.
 ImControl is built from it offscreen, the script gets the scope the Scripting
 tab gives it (``api``, ``controllers``, ``mainWindow`` and the actions such as
 ``getLogger`` and ``runScanAndWait``), and it runs on ImScripting's own
@@ -31,9 +32,9 @@ def _setupPath(setup):
     path = Path(setup)
     if path.is_absolute() or path.exists():
         return path
-    import imswitch
+    from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 
-    return Path(imswitch.__file__).parent / '_data' / 'user_defaults' / 'imcontrol_setups' / setup
+    return shippedSetupPath(setup)
 
 
 class _MainWindowStub:

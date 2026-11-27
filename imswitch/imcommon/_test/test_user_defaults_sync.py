@@ -139,6 +139,54 @@ def test_setup_files_are_never_deleted(roots):
     assert not report.removed
 
 
+def test_an_untouched_setup_sorted_into_a_subfolder_leaves_the_top(roots):
+    # The example setups moved from imcontrol_setups/ into mock/<modality>/
+    # etc.: the untouched old copy goes once the new one is in place, so the
+    # user's folder ends up sorted too.
+    source, user = roots
+    _write(source / 'imcontrol_setups' / 'mock' / 'scan' / 'mock.json', NEW)
+    _write(user / 'imcontrol_setups' / 'mock.json', OLD)
+    history = {'imcontrol_setups/mock.json': {dirtools.defaultContentHash(OLD)},
+               'imcontrol_setups/mock/scan/mock.json': {dirtools.defaultContentHash(NEW)}}
+    trash = _Trash()
+
+    report = dirtools.syncUserDefaults(source, user, history, trash=trash)
+
+    assert (user / 'imcontrol_setups' / 'mock' / 'scan' / 'mock.json').read_bytes() == NEW
+    assert not (user / 'imcontrol_setups' / 'mock.json').exists()
+    assert report.moved == ['imcontrol_setups/mock.json -> imcontrol_setups/mock/scan/mock.json']
+    assert not report.removed
+
+
+def test_an_edited_setup_stays_where_it_was_when_its_default_moves(roots):
+    # ImSwitch writes presets into the setup it runs, so the rig's own copy
+    # is often "edited": it stays, and the options keep naming it.
+    source, user = roots
+    _write(source / 'imcontrol_setups' / 'mock' / 'mock.json', NEW)
+    _write(user / 'imcontrol_setups' / 'mock.json', EDITED)
+    history = {'imcontrol_setups/mock.json': {dirtools.defaultContentHash(OLD)}}
+    trash = _Trash()
+
+    report = dirtools.syncUserDefaults(source, user, history, trash=trash)
+
+    assert (user / 'imcontrol_setups' / 'mock.json').read_bytes() == EDITED
+    assert (user / 'imcontrol_setups' / 'mock' / 'mock.json').read_bytes() == NEW
+    assert trash.paths == [] and not report.moved
+
+
+def test_a_setup_whose_name_is_shipped_twice_is_not_taken_for_moved(roots):
+    source, user = roots
+    _write(source / 'imcontrol_setups' / 'a' / 'mock.json', NEW)
+    _write(source / 'imcontrol_setups' / 'b' / 'mock.json', NEW)
+    _write(user / 'imcontrol_setups' / 'mock.json', OLD)
+    history = {'imcontrol_setups/mock.json': {dirtools.defaultContentHash(OLD)}}
+
+    report = dirtools.syncUserDefaults(source, user, history, trash=_Trash())
+
+    assert (user / 'imcontrol_setups' / 'mock.json').is_file()
+    assert not report.moved
+
+
 def test_a_failed_trash_is_reported_not_raised(roots):
     source, user = roots
     source.mkdir(parents=True)

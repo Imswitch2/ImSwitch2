@@ -37,7 +37,8 @@ from imswitch.imcontrol.view.widgets.ScanWidgetSimplePointScan import (
     ScanWidgetSimplePointScan,
 )
 
-SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/galvo_apd_simple_mock_scan_setup.json'
+SETUP = ('imswitch/_data/user_defaults/imcontrol_setups/mock/point_scanning/'
+         'galvo_apd_simple_mock_scan_setup.json')
 
 
 class _Main:
