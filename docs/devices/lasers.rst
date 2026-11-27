@@ -565,6 +565,7 @@ channel (A–H) over RS232.
        ``useMockOnFailure`` mock.
    * - ``useMockOnFailure``
      - bool
+     - ``false``
      - Defaults to ``false``: when the serial port did not open the
        controller is reported **not connected**, commands are refused with
        the channel's name, and a reconnect from Hardware status brings every
