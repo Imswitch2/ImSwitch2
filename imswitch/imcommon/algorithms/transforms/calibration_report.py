@@ -52,7 +52,7 @@ def _length(value: float, unit: str) -> str:
 def describe_transform(transform: SpatialTransform, fit: Any = None, *, axes: Sequence[str] | None = None) -> list[str]:
     """The lines a person judging a calibration reads first."""
     provenance = dict(transform.provenance or {})
-    unit = str(transform.units)
+    unit = "µm" if str(transform.units) in ("um", "µm") else str(transform.units)
     estimator = getattr(fit, "estimator", None) or provenance.get("estimator") or transform.kind
     selection = getattr(fit, "selection", None) or provenance.get("model_selection") or {}
     rule = selection.get("rule") if isinstance(selection, dict) else None

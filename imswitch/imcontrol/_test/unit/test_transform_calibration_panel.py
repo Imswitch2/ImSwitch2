@@ -167,7 +167,7 @@ def test_a_bead_fit_shows_the_numbers_saves_and_drives_the_pipeline(panel, files
     assert transform.target_context.extra['axes'] == ['Y', 'X']
     text = w.matrixView.toPlainText()
     assert reference_rule_matches(w, files)
-    for snippet in ('Model: ', 'auto: ', 'Residual: RMS', 'nm', 'MIRRORED', 'um per moving px'):
+    for snippet in ('Model: ', 'auto: ', 'Residual: RMS', 'nm', 'MIRRORED', 'µm per moving px'):
         assert snippet in text, snippet
     # The same geometry as the command line / calibrate_from_files.
     assert _field_error(transform).max() < 0.08
@@ -176,6 +176,12 @@ def test_a_bead_fit_shows_the_numbers_saves_and_drives_the_pipeline(panel, files
     np.testing.assert_allclose(transform.map_points(camera_px), reference.transform.map_points(camera_px),
                                atol=0.005)
     _shot(w, 'panel_bead_fit.png')
+    # The inspection workspace draws the pairs in Reference pixels although the fit is in µm.
+    w.openWorkspace('transform')
+    QtWidgets.QApplication.processEvents()
+    xs, ys = w._workspace.transformViewer.correspondence.mapped.getData()
+    assert len(xs) and np.all((xs > -5) & (xs < 245)) and np.all((ys > -5) & (ys < 205))
+    _shot(w._workspace, 'workspace_bead_fit.png', size=(1280, 820))
     # Save under the id: record + pipeline entry + figure + report.
     paths = w.saveToStore()
     assert paths is not None and not panel.asked.overwrite

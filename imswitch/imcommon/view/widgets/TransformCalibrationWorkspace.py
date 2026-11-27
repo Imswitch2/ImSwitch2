@@ -614,6 +614,9 @@ def _formatTransformDetails(transform: Any, fit: Any) -> str:
         estimator = dict(getattr(transform, "provenance", {}) or {}).get("estimator")
     estimator = str(estimator or getattr(transform, "kind", "transform"))
     lines = [f"Model: {estimator}"]
+    # The output side's units: pixels, or µm for a scan Reference.
+    unit = str(getattr(transform, "units", "px") or "px")
+    unit = "µm" if unit in ("um", "µm") else unit
 
     matrix = transform.as_matrix()
     if matrix is not None and np.asarray(matrix).shape == (3, 3):
@@ -632,7 +635,7 @@ def _formatTransformDetails(transform: Any, fit: Any) -> str:
         rotation = float(np.degrees(np.arctan2(col_axis[0], col_axis[1])))
         lines.extend(
             [
-                f"Translation: row {matrix[0, 2]:+.4f} px · col {matrix[1, 2]:+.4f} px",
+                f"Translation: row {matrix[0, 2]:+.4f} {unit} · col {matrix[1, 2]:+.4f} {unit}",
                 f"Axis scale: row {row_scale:.6f} · col {col_scale:.6f}",
                 f"Mapped +col rotation: {rotation:+.4f} deg",
                 f"Mapped axis angle: {axis_angle:.4f} deg (90 deg = no shear)",
