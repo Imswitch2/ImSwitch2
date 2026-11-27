@@ -347,3 +347,66 @@ def test_choosing_a_cloak_in_the_form_shows_its_tab_and_hiding_keeps_its_options
     assert dlg.result_data["cloak"] == "SimpleMoNaLISA"
     assert dlg.result_data["simplePointScan"] == current["simplePointScan"]
     assert "simpleMoNaLISA" not in dlg.result_data
+
+
+def test_beta_timing_legacy_setup_stays_unconfigured_on_apply(qapp):
+    """Return-time-only setups display blank move/settle: no silent migration."""
+    current = {
+        'scanDesigner': 'BetaScanDesigner',
+        'scanDesignerParams': {'return_time': .03, 'extra_param': 'preserve'},
+    }
+    dlg = _scanDialog(current)
+    assert 'Beta timing' in _tabTitles(dlg)
+    assert 'move_time' in dlg._beta_timing_notice.text()
+    assert dlg._field_widgets[('nested:scanDesignerParams', 'return_time')]._w.text() == '30'
+    assert dlg._field_widgets[('nested:scanDesignerParams', 'move_time')]._w.text() == ''
+    dlg._try_apply()
+    assert dlg.result_data['scanDesignerParams'] == current['scanDesignerParams']
+
+
+def test_beta_timing_edit_writes_seconds_and_preserves_other_params(qapp):
+    from PyQt5.QtTest import QTest
+
+    current = {'scanDesigner': 'BetaScanDesigner',
+               'scanDesignerParams': {'return_time': .03, 'unrelated': 42}}
+    dlg = _scanDialog(current)
+    for key, text in [('move_time', '0.5'), ('settle_time', '1.25')]:
+        w = dlg._field_widgets[('nested:scanDesignerParams', key)]._w
+        QTest.keyClicks(w, text)
+    assert dlg._beta_timing_notice.isHidden()
+    dlg._try_apply()
+    params = dlg.result_data['scanDesignerParams']
+    assert params == {'return_time': .03, 'unrelated': 42,
+                      'move_time': pytest.approx(.0005),
+                      'settle_time': pytest.approx(.00125)}
+
+
+def test_beta_timing_editor_issue_links_to_scan_configuration():
+    legacy = {'scan': {'scanDesigner': 'BetaScanDesigner',
+                       'scanDesignerParams': {'return_time': .03}}}
+    assert 'fixsection:scan' in editor._beta_timing_editor_issues(legacy)[0][1]
+    legacy['scan']['scanDesignerParams'].update(move_time=.002, settle_time=.002)
+    assert not editor._beta_timing_editor_issues(legacy)
+
+
+def test_beta_scan_timing_fields_are_hidden_for_other_scan_designers(qapp):
+    dlg = _scanDialog({'scanDesigner': 'GalvoScanDesigner',
+                       'scanDesignerParams': {'return_time': .03}})
+    assert 'Beta timing' in _tabTitles(dlg, visible=False)
+    assert dlg._beta_timing_notice.isHidden()
+
+
+def test_beta_timing_edit_merges_with_advanced_json_params(qapp):
+    from PyQt5.QtTest import QTest
+
+    dlg = _scanDialog({'scanDesigner': 'BetaScanDesigner',
+                       'scanDesignerParams': {'return_time': .03}})
+    json_field = dlg._field_widgets[('field', 'scanDesignerParams')]._w
+    json_field.selectAll()
+    QTest.keyClicks(json_field, '{"return_time": 0.03, "custom": 5}')
+    settle_field = dlg._field_widgets[('nested:scanDesignerParams', 'settle_time')]._w
+    QTest.keyClicks(settle_field, '1')
+    dlg._try_apply()
+    assert dlg.result_data['scanDesignerParams'] == {
+        'return_time': .03, 'custom': 5, 'settle_time': .001,
+    }

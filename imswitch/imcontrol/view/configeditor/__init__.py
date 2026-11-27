@@ -6,14 +6,21 @@ and an installed or frozen ImSwitch has no ``utility_scripts/`` directory to
 reach into. ``utility_scripts/imswitch_config_editor.py`` is kept as a
 launcher for the standalone run.
 
-Importing this package pulls in the whole editor, including its manager
-catalog and built-in templates, so imcontrol imports it lazily -- when the
-menu action fires, not at startup.
+The editor scans its manager catalog and every built-in template when it is
+imported, so this package loads it only when ``MainWindow`` or ``main`` is
+asked for -- imcontrol does that when the menu action fires, not at startup.
+:mod:`.section_form`, the section form ImControl also shows when a panel is
+added at run time, can be imported without it.
 """
 
-from .editor import MainWindow, main
-
 __all__ = ['MainWindow', 'main']
+
+
+def __getattr__(name):
+    if name in __all__:
+        from . import editor
+        return getattr(editor, name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

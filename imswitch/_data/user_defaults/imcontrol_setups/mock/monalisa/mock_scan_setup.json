@@ -53,7 +53,9 @@
         "scanWidgetType": "MoNaLISA",
         "scanDesigner": "BetaScanDesigner",
         "scanDesignerParams": {
-            "return_time": 0.01
+            "return_time": 0.01,
+            "move_time": 0.002,
+            "settle_time": 0.002
         },
         "TTLCycleDesigner": "BetaTTLCycleDesigner",
         "TTLCycleDesignerParams": {},

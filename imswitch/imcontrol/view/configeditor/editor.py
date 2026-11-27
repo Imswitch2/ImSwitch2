@@ -23,10 +23,11 @@ import os
 import re
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import glob
 from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QFont, QPalette, QColor
+from imswitch.imcontrol.model import setupfolder as _setupfolder
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
@@ -68,6 +69,15 @@ except Exception as e:
     import logging
     logging.getLogger(__name__).warning(f"Failed to import model helpers: {e}")
     pass
+
+from imswitch.imcontrol.view.configeditor import section_form as _section_form
+from imswitch.imcontrol.view.configeditor.section_form import (  # noqa: F401  (re-exported)
+    _MISSING, _INTEGER_TEXT, _NUMBER_TEXT, _OPTION_ESCAPES, FieldWidget,
+    _build_default_section, _display_to_json, _field_default,
+    _field_option_label, _json_to_display, _option_label, _parse_freeform_value,
+    _parse_number,
+)
+
 
 # =============================================================================
 # Authoritative category registry
@@ -138,7 +148,46 @@ def _imswitch_user_root() -> Path:
 
 
 def _default_setup_dir() -> Path:
+    """The setup folder ImSwitch uses when ``setupFolder`` is not set."""
     return _imswitch_user_root() / "imcontrol_setups"
+
+
+def _read_options(options_path) -> dict:
+    """The contents of an ``imcontrol_options.json``; {} when unreadable."""
+    if not options_path:
+        return {}
+    try:
+        with open(options_path, encoding="utf-8") as fh:
+            options = json.load(fh)
+        return options if isinstance(options, dict) else {}
+    except Exception:
+        return {}
+
+
+def _configured_setup_dir(options_path=None) -> Path:
+    """The setup folder ImSwitch takes setups from: ``setupFolder`` of the
+    options file (Preferences > Setup folder…), else the default one. Without
+    ``options_path`` the options file is looked for where ImSwitch keeps it."""
+    if options_path is None:
+        options_path = next(
+            (str(Path(root) / "imcontrol_options.json")
+             for root in MainWindow._OPTIONS_SEARCH_ROOTS
+             if (Path(root) / "imcontrol_options.json").is_file()),
+            "",
+        )
+    setting = str(_read_options(options_path).get("setupFolder") or "").strip()
+    return Path(os.path.expanduser(setting)) if setting else _default_setup_dir()
+
+
+def _is_within(path, folder) -> bool:
+    """Whether ``path`` is ``folder`` or lies anywhere below it."""
+    if not path or not folder:
+        return False
+    try:
+        Path(path).resolve().relative_to(Path(folder).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _default_config_dir() -> Path:
@@ -271,25 +320,11 @@ def _load_category_schemas() -> dict:
 def _load_section_schemas() -> dict:
     """Load singleton-section schemas from builtin_templates/sections/.
 
-    Returns a dict keyed by the top-level JSON key (e.g. ``"focusLock"``,
-    ``"scan"``). Section schemas use ``fields`` for direct children and may
-    also use the same ``nested`` mapping as device schemas for structured
-    child dictionaries. They additionally carry ``section``, ``group``
-    (``"system"`` or ``"extras"``), and optional ``legacy`` flags.
+    The loading itself lives in :mod:`.section_form`, which ImControl also
+    uses to configure a panel at run time; the editor adds the resolution of
+    its dynamic option placeholders.
     """
-    sections: dict = {}
-    base = Path(__file__).resolve().parent / "builtin_templates" / "sections"
-    if base.is_dir():
-        for f in sorted(base.glob("*.json")):
-            try:
-                with open(f, encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except Exception:
-                continue
-            key = data.get("key") or f.stem
-            _resolve_section_dynamic_options(data)
-            sections[key] = data
-    return sections
+    return _section_form.load_section_schemas(_resolve_section_dynamic_options)
 
 
 #: Plugin lists used when ImProcess cannot be imported — the Config Studio is
@@ -500,37 +535,8 @@ for _lst in CAT_MANAGERS.values():
 # =============================================================================
 # Helpers for reading / writing device data
 # =============================================================================
-def _json_to_display(value, field_type: str) -> str:
-    """Convert a JSON value to a display string for a text/select widget."""
-    if _coercion_module is not None:
-        return _coercion_module.json_to_display(value, field_type)
-    # Fallback implementation
-    if value is None:
-        return "null"
-    if field_type in ("int", "float"):
-        return str(value)
-    return str(value)
+# _json_to_display / _display_to_json live in section_form.py.
 
-
-def _display_to_json(text: str, field_type: str):
-    """Convert a display string back to the correct Python type."""
-    if _coercion_module is not None:
-        return _coercion_module.display_to_json(text, field_type)
-    # Fallback implementation
-    text = text.strip()
-    if text.lower() == "null":
-        return None
-    if field_type == "int":
-        try:
-            return int(text)
-        except ValueError:
-            return text
-    if field_type == "float":
-        try:
-            return float(text)
-        except ValueError:
-            return text
-    return text
 
 
 def _get_category_for_manager(manager_name: str) -> str | None:
@@ -887,39 +893,8 @@ def _build_default_device(manager_name: str) -> dict:
     return d
 
 
-def _build_default_section(schema: dict) -> dict:
-    """Return a new section dict pre-filled with this schema's field defaults."""
-    out: dict = {}
-    for f in schema.get("fields", []):
-        v = f.get("default", "")
-        tp = f.get("type", "text")
-        if tp == "bool":
-            out[f["key"]] = bool(v) if isinstance(v, bool) else False
-        elif tp == "multiselect":
-            if isinstance(v, list):
-                out[f["key"]] = list(v)
-            elif isinstance(v, str) and v.strip():
-                out[f["key"]] = [x.strip() for x in v.split(",") if x.strip()]
-            else:
-                out[f["key"]] = []
-        elif tp == "json":
-            if isinstance(v, str) and v.strip():
-                try:
-                    out[f["key"]] = json.loads(v)
-                except json.JSONDecodeError:
-                    out[f["key"]] = {}
-            elif v == "":
-                out[f["key"]] = {}
-            else:
-                # A default stated as a value keeps its kind -- None included.
-                out[f["key"]] = v
-        elif v == "null":
-            out[f["key"]] = None
-        elif v == "" and tp in ("ref", "text", "path", "select"):
-            out[f["key"]] = ""
-        else:
-            out[f["key"]] = _display_to_json(str(v), tp) if not isinstance(v, (int, float, bool)) else v
-    return out
+# _build_default_section lives in section_form.py.
+
 
 
 # Maps each widget in availableWidgets that needs a section to the section key.
@@ -957,6 +932,25 @@ def _diagnostic_message_to_html(diag) -> str:
     return msg
 
 
+def _beta_timing_editor_issues(data: dict) -> list[tuple[str, str]]:
+    """Warn without migrating old hardware setups or seeding fallback values."""
+    scan = data.get("scan") or {}
+    if scan.get("scanDesigner") != "BetaScanDesigner":
+        return []
+    params = scan.get("scanDesignerParams") or {}
+    if not isinstance(params, dict):
+        return []
+    from imswitch.imcontrol.model.beta_scan_timing import missing_beta_timing_keys
+    missing = missing_beta_timing_keys(params)
+    if not missing:
+        return []
+    return [("warning",
+             "Beta scan stage timing is not configured ("
+             + ", ".join(missing)
+             + "); the 2 ms stage defaults will be used. "
+             "<a href='fixsection:scan'>Configure…</a>")]
+
+
 def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
     """Collect cross-reference diagnostics as ``(severity, html_message)`` pairs.
 
@@ -980,11 +974,12 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
             build_default_registry(discover=True),
             context=context,
         )
-        return [
+        issues = [
             (diag.severity, _diagnostic_message_to_html(diag))
             for diag in report.diagnostics
-            if diag.code.startswith(("xref.", "widget.", "legacy."))
+            if diag.code.startswith(("xref.", "widget.", "legacy.", "value."))
         ]
+        return issues + _beta_timing_editor_issues(data)
     except Exception:
         issues = []
         widgets = data.get("availableWidgets") or []
@@ -995,7 +990,7 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
                     f"Widget '{widget}' is enabled but no '{section_key}' section is configured. "
                     f"<a href='fixsection:{section_key}'>Configure…</a>",
                 ))
-        return issues
+        return issues + _beta_timing_editor_issues(data)
 
 
 # =============================================================================
@@ -2206,335 +2201,8 @@ class ComparisonSummary(QWidget):
             self.sig_config_requested.emit(path)
 
 
-_MISSING = object()
+# The field-row widget and its value helpers live in section_form.py.
 
-#: A number as a setup file writes one: an optional sign, digits with an
-#: optional fraction, an optional exponent. Nothing else -- no digit
-#: separators (``int("1_000")`` is 1000), no ``nan``/``inf``, no hex -- so
-#: what is read back is what the operator plainly typed and what JSON holds.
-_INTEGER_TEXT = re.compile(r"[-+]?\d+")
-_NUMBER_TEXT = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
-
-
-def _parse_number(text: str):
-    """What an edited numeric field means: an int, else a float, else the text.
-
-    Empty is null -- clearing a box is how a nullable number is unset -- and
-    text that is not a plain finite number is kept exactly as typed rather
-    than lost or reinterpreted; Apply says so, and validation says what is
-    wrong with it.
-    """
-    stripped = text.strip()
-    if not stripped or stripped.lower() == "null":
-        return None
-    if _INTEGER_TEXT.fullmatch(stripped):
-        return int(stripped)
-    if _NUMBER_TEXT.fullmatch(stripped):
-        number = float(stripped)
-        if math.isfinite(number):
-            return number
-    return stripped
-
-
-def _field_default(field_def: dict):
-    """The value a field starts from when the file has no such key.
-
-    Templates write a ``json`` field's default as JSON *text* (``"{}"``), and
-    the widget must never guess whether a string is text-that-is-JSON or a
-    string value -- that guess is how a saved ``"5"`` became ``5``. So the
-    decoding happens here, once, on the template side of the boundary.
-    """
-    default = field_def.get("default", "")
-    if field_def.get("type") == "json" and isinstance(default, str):
-        if not default.strip():
-            return {}
-        try:
-            return json.loads(default)
-        except (ValueError, TypeError):
-            return {}
-    return default
-
-
-_OPTION_ESCAPES = {"\\": "\\\\", "\r": "\\r", "\n": "\\n", "\t": "\\t"}
-
-
-def _option_label(option) -> str:
-    """How a select option reads in its combo box.
-
-    A line ending is an option like any other, but a carriage return shown
-    as itself is an invisible item. Control characters are written as their
-    escapes, and so is a backslash: the two characters ``\\r`` an older
-    editor saved must read differently from the carriage return it meant.
-    """
-    text = str(option)
-    if not any(ch in _OPTION_ESCAPES or ord(ch) < 32 for ch in text):
-        return text
-    return "".join(
-        _OPTION_ESCAPES.get(ch, f"\\x{ord(ch):02x}" if ord(ch) < 32 else ch)
-        for ch in text
-    )
-
-
-def _field_option_label(field_def: dict, option) -> str:
-    """Return an optional schema-supplied display label for a select value."""
-    labels = field_def.get("option_labels") or {}
-    return str(labels.get(str(option), _option_label(option)))
-
-
-def _parse_freeform_value(text: str):
-    """Parse the value typed for a freeform field: JSON, then a Python
-    literal, else the text itself as a string. Empty text is ``None``."""
-    stripped = text.strip()
-    if not stripped:
-        return None
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        try:
-            return ast.literal_eval(stripped)
-        except Exception:
-            return stripped
-
-
-# =============================================================================
-# FieldWidget – single editable field row
-# =============================================================================
-class FieldWidget(QWidget):
-    sig_edited = pyqtSignal()   # the operator changed the value (never on construction)
-
-    def __init__(self, field_def: dict, current_value, parent=None, device_pool: dict | None = None):
-        super().__init__(parent)
-        self._def = field_def
-        # device_pool: {category_name: [device_name, ...]} — used to populate
-        # ref-type combo boxes that reference devices in the live config.
-        self._device_pool = device_pool or {}
-        # The value as the file had it. Until the operator interacts with the
-        # widget, get_value() returns exactly this object: a widget can alter a
-        # value it merely displays -- a spin box clamps and rounds, a check box
-        # turns None into False, a text box turns the string "null" into null
-        # -- and none of that is an edit anyone made.
-        self._original = current_value
-        self._touched = False
-        self._init_widget(current_value)
-        self._watch_for_edits()
-
-    def _init_widget(self, value):
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        tp = self._def["type"]
-        if tp == "bool":
-            self._w = QCheckBox()
-            self._w.setChecked(bool(value) if value is not None else False)
-        elif tp == "bool_auto":
-            # Tri-state boolean: "Automatic" means the key stays ABSENT from
-            # the saved config so the consumer's fallback applies (e.g.
-            # smoothScan's device-name heuristic). Apply omits the key for
-            # Automatic instead of writing a default.
-            self._w = QComboBox()
-            self._w.addItem("Automatic (not set)", None)
-            self._w.addItem("On", True)
-            self._w.addItem("Off", False)
-            if value is None or value == "null":
-                self._w.setCurrentIndex(0)
-            else:
-                self._w.setCurrentIndex(1 if bool(value) else 2)
-        elif tp in ("int", "float"):
-            # A plain line edit: no spin box, and no keystroke validator.
-            # A spin box is a C++ int that clamps and rounds; a validator
-            # drops every keystroke it refuses, so "8000.5" typed into an
-            # integer-kind box became 80005 and was saved. The kind is the
-            # editor's preference for how to read the text back, not a
-            # constraint -- the schema deliberately emits none -- so what is
-            # typed stays as typed, and Apply reads it as a number when it is
-            # one and warns when it is not.
-            self._w = QLineEdit("" if value is None else str(value))
-        elif tp == "float_pair":
-            # Two related numeric values stored as one two-element JSON list.
-            # This is intentionally a small generic widget rather than a scan-
-            # specific editor (e.g. manual FOV is naturally X × Y).
-            values = value if isinstance(value, (list, tuple)) else ()
-            if len(values) == 0 and value not in (None, ""):
-                values = (value, value)
-            left = values[0] if len(values) > 0 else None
-            right = values[1] if len(values) > 1 else left
-            self._pair_edits = (
-                QLineEdit("" if left is None else str(left)),
-                QLineEdit("" if right is None else str(right)),
-            )
-            pair = QWidget()
-            pair_lay = QHBoxLayout(pair)
-            pair_lay.setContentsMargins(0, 0, 0, 0)
-            pair_lay.setSpacing(5)
-            pair_lay.addWidget(self._pair_edits[0])
-            pair_lay.addWidget(QLabel("×"))
-            pair_lay.addWidget(self._pair_edits[1])
-            self._w = pair
-        elif tp == "select":
-            self._w = QComboBox()
-            options = self._def.get("opts", [])
-            if _coercion_module is not None:
-                options = _coercion_module.options_like(options, value)
-            for option in options:
-                self._w.addItem(_field_option_label(self._def, option), option)
-            # Configs can outlive their template/plugin version.  Keeping the
-            # saved value selectable prevents an open-and-save cycle from
-            # silently changing it to the first currently known option.
-            idx = self._w.findData(value) if value is not None else -1
-            if idx < 0 and value is not None:
-                # A ``"9600"`` saved by an older editor should still land on
-                # the 9600 entry rather than gaining a second, identical one.
-                idx = self._w.findText(_option_label(value))
-            if idx < 0 and value is not None:
-                self._w.addItem(_option_label(value), value)
-                idx = self._w.findData(value)
-            if idx >= 0:
-                self._w.setCurrentIndex(idx)
-        elif tp == "multiselect":
-            self._w = QListWidget()
-            self._w.setMinimumHeight(92)
-            self._w.setMaximumHeight(150)
-            selected = set(value if isinstance(value, list) else [])
-            options = list(self._def.get("opts", []) or [])
-            # Keep choices from newer templates/plugins visible and checked.
-            for selected_value in selected:
-                if selected_value not in {str(option) for option in options}:
-                    options.append(selected_value)
-            for opt in options:
-                item = QListWidgetItem(str(opt))
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if str(opt) in selected else Qt.Unchecked)
-                self._w.addItem(item)
-        elif tp == "ref":
-            # Cross-reference to a device in the live config. opts is the list
-            # of categories ("detectors", "positioners", ...) to draw names from.
-            self._w = QComboBox()
-            self._w.setEditable(True)  # allow names that don't exist yet
-            self._w.addItem("")
-            seen: set = set()
-            for cat in self._def.get("opts", []) or []:
-                for name in self._device_pool.get(cat, []):
-                    if name not in seen:
-                        self._w.addItem(name)
-                        seen.add(name)
-            current = "" if value is None else str(value)
-            if current and self._w.findText(current) < 0:
-                self._w.addItem(current)  # preserve dangling reference
-            idx = self._w.findText(current)
-            if idx >= 0:
-                self._w.setCurrentIndex(idx)
-        elif tp == "json":
-            # Free-form JSON value rendered as a single-line edit, parsed on
-            # read. Used for dicts like scanDesignerParams, and for any
-            # property no schema can type -- so it must round-trip *every*
-            # value. A string shows quoted and None shows as null: showing them
-            # bare made "5" come back as 5 and null come back as {}.
-            self._w = QLineEdit(json.dumps(value))
-        elif tp == "path":
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            self._w = QLineEdit(str(value) if value is not None else "")
-            btn = QPushButton("…")
-            btn.setFixedWidth(28)
-            btn.clicked.connect(self._pick_path)
-            rl.addWidget(self._w)
-            rl.addWidget(btn)
-            lay.addWidget(row)
-            if self._def.get("tip"):
-                self._w.setToolTip(self._def["tip"])
-            return
-        else:  # text
-            if isinstance(value, list):
-                display = ", ".join(str(v) for v in value)
-            elif value is None:
-                display = "null"
-            else:
-                display = str(value)
-            self._w = QLineEdit(display)
-        lay.addWidget(self._w)
-        if self._def.get("tip"):
-            self._w.setToolTip(self._def["tip"])
-            for edit in getattr(self, "_pair_edits", ()):
-                edit.setToolTip(self._def["tip"])
-
-    def _watch_for_edits(self):
-        """Mark the field touched on user interaction, never on construction.
-
-        Signals that also fire programmatically (``valueChanged``,
-        ``itemChanged``) are connected only after the initial value is in
-        place, so construction cannot trip them; ``textEdited``, ``clicked``
-        and ``activated`` are user-only by contract.
-        """
-        def touch(*_args):
-            self._touched = True
-            self.sig_edited.emit()
-
-        if self._def.get("type") == "float_pair":
-            for edit in self._pair_edits:
-                edit.textEdited.connect(touch)
-            return
-
-        w = self._w
-        if isinstance(w, QCheckBox):
-            w.clicked.connect(touch)
-        elif isinstance(w, QComboBox):
-            w.activated.connect(touch)
-            if w.isEditable():
-                w.lineEdit().textEdited.connect(touch)
-        elif isinstance(w, QListWidget):
-            w.itemChanged.connect(touch)
-        elif isinstance(w, QLineEdit):
-            w.textEdited.connect(touch)
-
-    def is_touched(self) -> bool:
-        """Whether the operator interacted with this field since it was built."""
-        return self._touched
-
-    def _pick_path(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select file")
-        if path:
-            self._w.setText(path)
-            self._touched = True
-            self.sig_edited.emit()
-
-    def get_value(self):
-        if not self._touched:
-            return self._original
-        tp = self._def["type"]
-        if tp == "bool":
-            return self._w.isChecked()
-        if tp == "bool_auto":
-            return self._w.currentData()  # None (Automatic) / True / False
-        if tp in ("int", "float"):
-            return _parse_number(self._w.text())
-        if tp == "float_pair":
-            return [_parse_number(edit.text()) for edit in self._pair_edits]
-        if tp == "select":
-            return self._w.currentData()
-        if tp == "multiselect":
-            return [
-                self._w.item(i).text()
-                for i in range(self._w.count())
-                if self._w.item(i).checkState() == Qt.Checked
-            ]
-        if tp == "ref":
-            txt = self._w.currentText().strip()
-            return txt if txt else ""
-        if tp == "json":
-            txt = self._w.text().strip()
-            if not txt or txt.lower() == "null":
-                return None
-            try:
-                return json.loads(txt)
-            except json.JSONDecodeError:
-                return txt  # caller validates; preserve raw on error
-        # text / path
-        txt = self._w.text().strip()
-        if tp == "path" or _coercion_module is None:
-            if txt.lower() == "null":
-                return None
-            return txt
-        return _coercion_module.text_to_json(txt, self._original, tp)
 
 
 # =============================================================================
@@ -3904,341 +3572,14 @@ class SectionPickerDialog(QDialog):
 # =============================================================================
 # SectionEditorDialog – schema-driven editor for singleton sections
 # =============================================================================
-class SectionEditorDialog(QDialog):
-    """Modal form editor for one top-level system section (focusLock, scan, …).
+class SectionEditorDialog(_section_form.SectionEditorDialog):
+    """The section form (see :mod:`.section_form`), offering refs from every
+    device category the editor knows."""
 
-    Reuses :class:`FieldWidget` so its inputs match the device editor.
-    Ref-type fields are populated from the live config data dict so that
-    e.g. ``focusLock.camera`` is a dropdown of existing detector names.
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("device_categories", DEVICE_CATS)
+        super().__init__(*args, **kwargs)
 
-    With ``allow_custom_fields`` the dialog also lists the keys of
-    ``current`` that the schema does not define, in a "Custom" tab, and
-    offers "Add property" to add more; Apply writes them back with the
-    schema fields instead of dropping them.
-
-    Section schemas may also expose structured child dictionaries through
-    ``nested``.  Nested fields follow the same important editing contract as
-    device ``managerProperties``: untouched absent containers stay absent and
-    unknown/unexposed keys are preserved when an exposed child is edited.
-    """
-
-    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,
-                 title_prefix="Edit section", allow_custom_fields=False):
-        super().__init__(parent)
-        self._key = key
-        self._schema = schema
-        self._data = data  # reference, used to populate ref combos
-        self._current = copy.deepcopy(current) if isinstance(current, dict) else {}
-        self._result: dict = {}
-        self._allow_custom = allow_custom_fields
-        self._custom_widgets: dict = {}  # key → QLineEdit
-
-        legacy = schema.get("legacy")
-        title = f"{title_prefix}: {schema.get('display', key)}"
-        if legacy:
-            title += " (legacy)"
-        self.setWindowTitle(title)
-        self.resize(560, 520)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        # ── Header summary ──
-        summary = schema.get("summary", "")
-        if summary:
-            hint = QLabel(f"<span style='color:#666;font-size:9pt;'>{summary}</span>")
-            hint.setTextFormat(Qt.RichText)
-            hint.setWordWrap(True)
-            lay.addWidget(hint)
-        requires = schema.get("requires_widget")
-        if requires:
-            req = QLabel(
-                f"<span style='color:#3A7FC1;font-size:8pt;'>Pairs with widget: "
-                f"<b>{requires}</b></span>"
-            )
-            req.setTextFormat(Qt.RichText)
-            lay.addWidget(req)
-        if legacy and schema.get("legacy_note"):
-            warn = QLabel(
-                f"<span style='color:#C04000;font-size:8pt;'>⚠ legacy — "
-                f"{schema['legacy_note']}</span>"
-            )
-            warn.setTextFormat(Qt.RichText)
-            warn.setWordWrap(True)
-            lay.addWidget(warn)
-
-        # ── Build device pool for ref fields ──
-        pool: dict = {}
-        for cat in DEVICE_CATS:
-            pool[cat] = sorted(list((self._data.get(cat) or {}).keys()))
-
-        # ── Tabs grouped by `grp` ──
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        lay.addWidget(tabs, 1)
-
-        # Keys are ("field", key) for direct children and
-        # ("nested:<container>", key) for structured child dictionaries.
-        self._field_widgets: dict = {}
-        self._tab_sections: dict = {}   # tab index -> {"field" | "nested:<container>"}
-        self._shown_when = schema.get("nested_shown_when", {})
-        groups: dict[str, list] = {}
-        for f in schema.get("fields", []):
-            groups.setdefault(f.get("grp", "Basic"), []).append(("field", f))
-        for nest_key, nest_fields in schema.get("nested", {}).items():
-            for f in nest_fields:
-                groups.setdefault(f.get("grp", "Basic"), []).append((f"nested:{nest_key}", f))
-        ordered = sorted(groups.keys(), key=lambda g: (0 if g == "Basic" else 2 if g == "Advanced" else 1))
-
-        for grp in ordered:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            inner = QWidget()
-            form = QFormLayout(inner)
-            form.setContentsMargins(8, 8, 8, 8)
-            form.setSpacing(6)
-            form.setLabelAlignment(Qt.AlignRight)
-            for section, f in groups[grp]:
-                if section == "field":
-                    cur = self._current.get(f["key"], _MISSING)
-                else:
-                    nest_key = section.split(":", 1)[1]
-                    container = self._current.get(nest_key)
-                    cur = container.get(f["key"], _MISSING) if isinstance(container, dict) else _MISSING
-                if cur is _MISSING:
-                    cur = _field_default(f)
-                    # Normalize the template's null sentinel.
-                    if cur == "null":
-                        cur = None
-                fw = FieldWidget(f, cur, device_pool=pool)
-                label = f["label"]
-                if f.get("req"):
-                    label = f"<b>{label}</b> *"
-                lbl = QLabel(label)
-                lbl.setTextFormat(Qt.RichText)
-                lbl.setToolTip(f.get("tip", ""))
-                form.addRow(lbl, fw)
-                self._field_widgets[(section, f["key"])] = fw
-            scroll.setWidget(inner)
-            index = tabs.addTab(scroll, grp)
-            self._tab_sections[index] = {section for section, _f in groups[grp]}
-
-        # A nested container that only matters for one choice (the scan
-        # cloak's options) shows its tab only while that choice is made.
-        self._tab_widget = tabs
-        for alternatives in self._shown_when.values():
-            for condition in alternatives:
-                for key in condition:
-                    fw = self._field_widgets.get(("field", key))
-                    if fw is not None:
-                        fw.sig_edited.connect(self._update_conditional_tabs)
-        self._update_conditional_tabs()
-
-        # ── Custom tab: keys the schema does not define ──
-        if self._allow_custom:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            inner = QWidget()
-            self._custom_form = QFormLayout(inner)
-            self._custom_form.setContentsMargins(8, 8, 8, 8)
-            self._custom_form.setSpacing(4)
-            self._custom_empty_lbl = QLabel(
-                "<span style='color:#888;font-size:8pt;'>No custom properties. "
-                "Use ⊕ Add property to add one.</span>"
-            )
-            self._custom_empty_lbl.setTextFormat(Qt.RichText)
-            self._custom_form.addRow(self._custom_empty_lbl)
-            known = self._schema_keys()
-            for k, v in (current or {}).items():
-                if k not in known:
-                    self._add_custom_row(k, v)
-            scroll.setWidget(inner)
-            self._custom_tab = scroll
-            tabs.addTab(scroll, "Custom")
-            self._tabs = tabs
-
-            add_row = QHBoxLayout()
-            add_prop_btn = QPushButton("⊕ Add property")
-            add_prop_btn.setFixedHeight(22)
-            add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
-            add_prop_btn.setToolTip("Add an arbitrary key to these settings")
-            add_prop_btn.clicked.connect(self._prompt_custom_field)
-            add_row.addWidget(add_prop_btn)
-            add_row.addStretch()
-            lay.addLayout(add_row)
-
-        # ── Validation label ──
-        self._err_lbl = QLabel()
-        self._err_lbl.setStyleSheet("color:#C04000; font-size:8pt;")
-        self._err_lbl.setWordWrap(True)
-        lay.addWidget(self._err_lbl)
-
-        # ── Buttons ──
-        btns = QHBoxLayout()
-        btns.addStretch()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        ok_btn = QPushButton("Apply")
-        ok_btn.setDefault(True)
-        ok_btn.setStyleSheet(
-            "QPushButton { background:#3A7FC1; color:white; padding:4px 16px; }"
-            "QPushButton:hover { background:#2A6FAF; }"
-        )
-        ok_btn.clicked.connect(self._try_apply)
-        btns.addWidget(cancel_btn)
-        btns.addWidget(ok_btn)
-        lay.addLayout(btns)
-
-    def _nested_shown(self, nest_key) -> bool:
-        """Whether a nested container applies to the values the form shows now.
-
-        ``nested_shown_when`` lists alternatives, each a {field: value} dict
-        that must match entirely; a container it does not name always shows.
-        """
-        alternatives = self._shown_when.get(nest_key)
-        if not alternatives:
-            return True
-        for condition in alternatives:
-            if all(self._form_value(key) == value for key, value in condition.items()):
-                return True
-        return False
-
-    def _form_value(self, key):
-        fw = self._field_widgets.get(("field", key))
-        return fw.get_value() if fw is not None else self._current.get(key)
-
-    def _update_conditional_tabs(self):
-        """Hide a tab whose every field belongs to a container that does not apply.
-
-        Hiding is display only: an untouched container is applied exactly as
-        the file had it, so switching the choice back and forth loses nothing.
-        """
-        for index, sections in self._tab_sections.items():
-            shown = any(
-                section == "field" or self._nested_shown(section.split(":", 1)[1])
-                for section in sections
-            )
-            self._tab_widget.setTabVisible(index, shown)
-
-    def _try_apply(self):
-        # Start from the file's section, not a blank dict.  This is what makes
-        # a curated section form safe for plugin/future keys it does not know.
-        out: dict = copy.deepcopy(self._current)
-        missing: list = []
-
-        # Preserve historical section-editor behaviour for direct fields:
-        # applying the form materializes their displayed defaults.
-        for f in self._schema.get("fields", []):
-            fw = self._field_widgets.get(("field", f["key"]))
-            if fw is None:
-                continue
-            val = fw.get_value()
-            if f.get("req") and (val is None or val == "" or val == []):
-                missing.append(f["label"])
-            out[f["key"]] = val
-
-        # Nested containers are deliberately different: they are optional
-        # structured configuration. Merely opening/applying a section must not
-        # create simplePointScan/simpleMoNaLISA (or seed their defaults). Only
-        # operator edits materialize absent children; existing unknown keys are
-        # retained by modifying a copy of the original container in place.
-        for nest_key, nest_fields in self._schema.get("nested", {}).items():
-            original_container = self._current.get(nest_key)
-            container = copy.deepcopy(original_container) if isinstance(original_container, dict) else None
-            touched_any = False
-            for f in nest_fields:
-                fw = self._field_widgets.get((f"nested:{nest_key}", f["key"]))
-                if fw is None:
-                    continue
-                if not fw.is_touched():
-                    continue
-                touched_any = True
-                val = fw.get_value()
-                if f.get("req") and (val is None or val == "" or val == []):
-                    missing.append(f["label"])
-                if container is None:
-                    container = {}
-                container[f["key"]] = val
-            if touched_any:
-                out[nest_key] = container
-
-        if missing:
-            self._err_lbl.setText(
-                "Missing required: " + ", ".join(missing)
-            )
-            return
-        for k, le in self._custom_widgets.items():
-            original = le.property("originalValue")
-            if _coercion_module is not None:
-                out[k] = _coercion_module.raw_text_to_json(le.text(), original)
-            else:
-                out[k] = _parse_freeform_value(le.text())
-        self._result = out
-        self.accept()
-
-    def _schema_keys(self) -> set:
-        """The keys the form itself edits: its fields and its nested
-        containers. ``_field_widgets`` is keyed by ``(section, key)``, so a
-        name is looked up here; a custom property may not take one."""
-        return ({f["key"] for f in self._schema.get("fields", [])}
-                | set(self._schema.get("nested", {})))
-
-    def add_custom_field(self, key: str, value) -> str:
-        """Add a custom key; returns an error message, or "" on success."""
-        if not self._allow_custom:
-            return "These settings take no custom properties."
-        key = key.strip()
-        if not key:
-            return "Key name is empty."
-        if key in self._schema_keys() or key in self._custom_widgets:
-            return f"'{key}' already exists in these settings."
-        self._add_custom_row(key, value)
-        self._tabs.setCurrentWidget(self._custom_tab)
-        return ""
-
-    def _prompt_custom_field(self):
-        key, ok = QInputDialog.getText(self, "Add Property", "Key name:")
-        if not ok or not key.strip():
-            return
-        val_str, ok2 = QInputDialog.getText(
-            self, "Add Property",
-            'Value  (JSON: 42, true, "text", null, [1,2], {...}):',
-            text="null",
-        )
-        if not ok2:
-            return
-        self._err_lbl.setText(self.add_custom_field(key, _parse_freeform_value(val_str)))
-
-    def _add_custom_row(self, key: str, value):
-        le = QLineEdit(json.dumps(value) if not isinstance(value, str) else value)
-        # Bare text cannot say whether "5" was a string or a number; the
-        # read-back asks the original rather than guessing.
-        le.setProperty("originalValue", value)
-        row = QWidget()
-        row_lay = QHBoxLayout(row)
-        row_lay.setContentsMargins(0, 0, 0, 0)
-        row_lay.setSpacing(2)
-        row_lay.addWidget(le, 1)
-        del_btn = QPushButton("×")
-        del_btn.setFixedSize(20, 20)
-        del_btn.setToolTip(f"Remove '{key}'")
-        del_btn.clicked.connect(lambda _, k=key, r=row: self._remove_custom_row(k, r))
-        row_lay.addWidget(del_btn)
-        self._custom_form.addRow(QLabel(key), row)
-        self._custom_widgets[key] = le
-        self._custom_empty_lbl.setVisible(False)
-
-    def _remove_custom_row(self, key: str, row: QWidget):
-        self._custom_widgets.pop(key, None)
-        self._custom_form.removeRow(row)
-        self._custom_empty_lbl.setVisible(not self._custom_widgets)
-
-    @property
-    def result_data(self) -> dict:
-        return self._result
 
 
 class WidgetPickerDialog(QDialog):
@@ -4562,7 +3903,10 @@ class LeftPanel(QWidget):
 
         open_btn = QPushButton("Folder…")
         open_btn.setFixedHeight(22)
-        open_btn.setToolTip("Choose the folder containing ImSwitch setup JSON files")
+        open_btn.setToolTip(
+            "Browse another folder of setup JSON files. ImSwitch keeps taking its "
+            "setups from its setup folder (Preferences > Setup folder…)."
+        )
         open_btn.clicked.connect(self._open_folder)
         config_hdr.addWidget(open_btn)
 
@@ -4699,9 +4043,19 @@ class LeftPanel(QWidget):
             return ""
         return str(items[0].data(0, Qt.UserRole) or "")
 
+    def _file_items(self):
+        """Every config item of the list, at any depth (folder items, which
+        carry no path, are skipped)."""
+        pending = [self._file_list.topLevelItem(index)
+                   for index in range(self._file_list.topLevelItemCount())]
+        while pending:
+            item = pending.pop(0)
+            if item.data(0, Qt.UserRole):
+                yield item
+            pending[0:0] = [item.child(index) for index in range(item.childCount())]
+
     def select_config_path(self, path: str) -> bool:
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             item_path = str(item.data(0, Qt.UserRole) or "")
             if self._same_path(item_path, path):
                 self._file_list.setCurrentItem(item)
@@ -4731,6 +4085,8 @@ class LeftPanel(QWidget):
 
     def _file_context_menu(self, pos) -> None:
         item = self._file_list.itemAt(pos)
+        if item is not None and not item.data(0, Qt.UserRole):
+            item = None  # a subfolder: offer what empty space offers
         if item is None:
             menu = QMenu(self)
             new_action = menu.addAction("New Config")
@@ -4764,7 +4120,7 @@ class LeftPanel(QWidget):
 
     def _open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Open Config Folder",
-                                             str(_default_setup_dir()))
+                                             str(self._config_dir or _default_setup_dir()))
         if d:
             self._config_dir = d
             count = self._refresh_file_list(d)
@@ -4790,8 +4146,7 @@ class LeftPanel(QWidget):
         self._current_config_path = str(current_path or "")
         self._active_config_path = str(active_path or "")
         self._current_modified = bool(modified)
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             path = str(item.data(0, Qt.UserRole) or "")
             self._decorate_file_item(item, Path(path))
         self._update_config_action_state()
@@ -4812,25 +4167,65 @@ class LeftPanel(QWidget):
         item.setFont(0, font)
 
     def _apply_file_filter(self, text: str = "") -> None:
+        """Hide the configs whose path below the listed folder (subfolder
+        names included, so "mock" finds the mock setups) does not contain the
+        text, and the subfolders left with nothing to show."""
         needle = str(text or "").strip().casefold()
-        for index in range(self._file_list.topLevelItemCount()):
-            item = self._file_list.topLevelItem(index)
+        for item in self._file_items():
             path = str(item.data(0, Qt.UserRole) or "")
-            filename = Path(path).name.casefold()
-            item.setHidden(bool(needle) and needle not in filename)
+            shown = str(item.data(0, Qt.UserRole + 1) or Path(path).name).casefold()
+            item.setHidden(bool(needle) and needle not in shown)
+
+        def hide_empty(item) -> bool:
+            if item.data(0, Qt.UserRole):
+                return not item.isHidden()
+            visible = [hide_empty(item.child(i)) for i in range(item.childCount())]
+            item.setHidden(not any(visible))
+            return any(visible)
+
+        for index in range(self._file_list.topLevelItemCount()):
+            hide_empty(self._file_list.topLevelItem(index))
         self._update_config_action_state()
 
+    def _folder_item(self, folders: dict, relative: PurePosixPath):
+        """The tree item of a subfolder (``relative`` to the listed folder),
+        made with its parents on first use; None for the folder itself."""
+        if str(relative) in ("", "."):
+            return None
+        key = relative.as_posix()
+        if key not in folders:
+            parent = self._folder_item(folders, relative.parent)
+            item = QTreeWidgetItem([relative.name])
+            item.setFlags(Qt.ItemIsEnabled)
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+            item.setToolTip(0, key)
+            if parent is None:
+                self._file_list.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            folders[key] = item
+        return folders[key]
+
     def _refresh_file_list(self, folder: str) -> int:
+        """List the configs of ``folder`` and its subfolders as a tree: those
+        at the top first, then one branch per subfolder."""
         selected_before = self.selected_config_path()
         self._file_list.clear()
         count = 0
         preferred_item = None
         current_item = None
-        for p in sorted(Path(folder).glob("*.json")):
+        folders: dict = {}
+        for name in _setupfolder.listSetupFiles(folder):
+            p = Path(folder) / name
             item = QTreeWidgetItem()
             item.setData(0, Qt.UserRole, str(p))
+            item.setData(0, Qt.UserRole + 1, name)
             self._decorate_file_item(item, p)
-            self._file_list.addTopLevelItem(item)
+            parent = self._folder_item(folders, PurePosixPath(name).parent)
+            if parent is None:
+                self._file_list.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
             if selected_before and self._same_path(str(p), selected_before):
                 preferred_item = item
             if self._current_config_path and self._same_path(
@@ -4838,6 +4233,7 @@ class LeftPanel(QWidget):
             ):
                 current_item = item
             count += 1
+        self._file_list.expandAll()
         if preferred_item is not None:
             self._file_list.setCurrentItem(preferred_item)
         elif current_item is not None:
@@ -4853,6 +4249,19 @@ class LeftPanel(QWidget):
     def set_folder(self, folder: str):
         self._config_dir = folder
         self._refresh_file_list(folder)
+
+    def folder_for(self, path: str) -> str:
+        """The folder the list shows once ``path`` is open: the listed one
+        when ``path`` is in it or in one of its subfolders, else the file's
+        own folder."""
+        if self._config_dir and _is_within(path, self._config_dir):
+            return str(self._config_dir)
+        return str(Path(path).parent)
+
+    def show_folder_of(self, path: str) -> None:
+        """Re-list so that ``path`` is shown, keeping the listed folder when
+        ``path`` is anywhere below it."""
+        self.set_folder(self.folder_for(path))
 
     def reload_folder(self):
         if not self._config_dir:
@@ -5235,6 +4644,7 @@ class MainWindow(QMainWindow):
 
         self._adopt_dark_theme()
         self._build_toolbar()
+        self._build_menu()
         self._build_ui()
         self._build_status_bar()
 
@@ -5297,6 +4707,17 @@ class MainWindow(QMainWindow):
 
         self.addAction(self._make_shortcut("Ctrl+S", self._save_active_pane))
         self.addAction(self._make_shortcut("Ctrl+N", self._new_file))
+
+    def _build_menu(self):
+        """Preferences: settings of this computer that ImSwitch reads from
+        ``imcontrol_options.json`` -- the same ones as in ImSwitch's own
+        Preferences menu."""
+        preferences = self.menuBar().addMenu("&Preferences")
+        preferences.setToolTipsVisible(True)
+        self._setup_folder_action = QAction("Setup folder…", self)
+        self._setup_folder_action.triggered.connect(self._open_setup_folder_dialog)
+        preferences.addAction(self._setup_folder_action)
+        self._setup_folder_dialog = None
 
     def _make_shortcut(self, key, slot):
         a = QAction(self)
@@ -5651,7 +5072,8 @@ class MainWindow(QMainWindow):
         if not folder:
             return []
         paths = []
-        for path in sorted(Path(folder).glob("*.json")):
+        for name in _setupfolder.listSetupFiles(folder):
+            path = Path(folder) / name
             if self._path and LeftPanel._same_path(str(path), self._path):
                 continue
             paths.append(str(path))
@@ -5848,7 +5270,7 @@ class MainWindow(QMainWindow):
     def _open_file(self):
         if not self._confirm_discard():
             return
-        start_dir = str(Path(self._path).parent if self._path else _default_setup_dir())
+        start_dir = str(Path(self._path).parent if self._path else self._setup_dir())
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Config", start_dir, "JSON files (*.json)"
         )
@@ -5865,13 +5287,9 @@ class MainWindow(QMainWindow):
     def _load_file(self, path: str):
         compare_conflict = False
         if self._compare_mode and self._compare_path:
-            compare_conflict = LeftPanel._same_path(path, self._compare_path)
-            try:
-                compare_conflict = compare_conflict or (
-                    Path(path).parent.resolve() != Path(self._compare_path).parent.resolve()
-                )
-            except Exception:
-                pass
+            compare_conflict = LeftPanel._same_path(path, self._compare_path) or (
+                not _is_within(self._compare_path, self._left.folder_for(path))
+            )
         if (
             compare_conflict and self._compare_modified
             and not self._confirm_compare_changes("opening this file as the main config")
@@ -5885,7 +5303,7 @@ class MainWindow(QMainWindow):
                 with open(path, encoding="utf-8") as fh:
                     self._data = json.load(fh)
             self._path = path
-            self._left.set_folder(str(Path(path).parent))
+            self._left.show_folder_of(path)
             self._set_modified(False)
             self._left.select_config_path(path)
             self._refresh_canvas()
@@ -5907,8 +5325,7 @@ class MainWindow(QMainWindow):
     def _on_folder_reloaded(self, folder: str, count: int):
         if self._compare_mode:
             compare_outside_folder = (
-                self._compare_path
-                and Path(self._compare_path).parent.resolve() != Path(folder).resolve()
+                self._compare_path and not _is_within(self._compare_path, folder)
             )
             if (
                 compare_outside_folder and self._compare_modified
@@ -6005,7 +5422,7 @@ class MainWindow(QMainWindow):
         try:
             shutil.copy2(source, target)
             self._note_saved(str(target))
-            self._left.set_folder(str(source.parent))
+            self._left.show_folder_of(str(target))
             self._left.select_config_path(str(target))
             self._status.setText(f"Duplicated {source.name} as {target.name}")
         except Exception as exc:
@@ -6032,7 +5449,7 @@ class MainWindow(QMainWindow):
             source.rename(target)
             if was_active:
                 try:
-                    self._write_active_setup_name(target.name)
+                    self._write_active_setup_name(self._setup_name_for(str(target)))
                 except Exception:
                     target.rename(source)
                     raise
@@ -6043,7 +5460,7 @@ class MainWindow(QMainWindow):
             if old_resolved in self._saved_files:
                 self._saved_files.discard(old_resolved)
                 self._saved_files.add(self._resolved_path(target))
-            self._left.set_folder(str(target.parent))
+            self._left.show_folder_of(str(target))
             self._left.select_config_path(str(target))
             if self._compare_mode:
                 self._refresh_compare_choices(auto_load=False)
@@ -6099,13 +5516,13 @@ class MainWindow(QMainWindow):
             if is_current:
                 self._path = ""
                 self._set_modified(False)
-                active_after = self._active_setup_path(str(source.parent))
+                active_after = self._active_setup_path(self._left.config_dir)
                 if active_after:
                     self._load_file(active_after)
                 else:
                     self._new_file()
             else:
-                self._left.set_folder(str(source.parent))
+                self._left.show_folder_of(str(source))
                 if self._compare_mode:
                     self._refresh_compare_choices(auto_load=True)
                 self._update_active_banner()
@@ -6126,7 +5543,7 @@ class MainWindow(QMainWindow):
         self._write_file(self._path)
 
     def _save_as(self):
-        start_path = self._path or str(_default_setup_dir() / "new_setup.json")
+        start_path = self._path or str(self._setup_dir() / "new_setup.json")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Config As", start_path, "JSON files (*.json)"
         )
@@ -6173,7 +5590,7 @@ class MainWindow(QMainWindow):
             # non-UI tests/embedders that intentionally do not construct LeftPanel.
             left = state.get("_left")
             if left is not None:
-                left.set_folder(str(Path(path).parent))
+                left.show_folder_of(path)
             self._set_modified(False)
             if left is not None:
                 left.select_config_path(path)
@@ -6583,6 +6000,16 @@ class MainWindow(QMainWindow):
                 break
         self._update_active_banner()
 
+    def _setup_dir(self) -> Path:
+        """The folder ImSwitch takes its setups from (Preferences > Setup
+        folder…), as the options file found says."""
+        return _configured_setup_dir(self._options_path)
+
+    def _setup_name_for(self, path: str) -> str:
+        """How the options file names the setup at ``path``: relative to the
+        setup folder ('mock/x.json'), or absolute when outside it."""
+        return _setupfolder.setupNameFor(path, self._setup_dir())
+
     def _active_setup_name(self) -> str:
         """The setup file name ``imcontrol_options.json`` marks as active."""
         if not self._options_path:
@@ -6603,17 +6030,23 @@ class MainWindow(QMainWindow):
         name = self._active_setup_name()
         if not name:
             return ""
-        roots = []
         if start_folder:
-            roots.append(Path(start_folder))
-        roots.append(_default_setup_dir())
-        for root in roots:
             try:
-                candidate = Path(root) / name
+                candidate = Path(start_folder) / name
                 if candidate.is_file():
                     return str(candidate)
             except Exception:
-                continue
+                pass
+        # In the setup folder, the name is relative to it (subfolders
+        # included); a bare name ImSwitch has not yet followed into the
+        # subfolder it was sorted into is found there too.
+        try:
+            setup_dir = self._setup_dir()
+            found = _setupfolder.findSetupFile(setup_dir, name)
+            if found is not None:
+                return _setupfolder.setupFilePath(str(setup_dir), found)
+        except Exception:
+            pass
         return ""
 
     def _open_active_config(self, start_folder: str = "") -> None:
@@ -6680,6 +6113,15 @@ class MainWindow(QMainWindow):
             else "Open or save a config file first" if not self._path
             else f"Set {Path(self._path).name} as the active ImSwitch config"
         )
+
+        action = self.__dict__.get("_setup_folder_action")
+        if action is not None:
+            action.setEnabled(bool(self._options_path))
+            action.setToolTip(
+                f"Where ImSwitch takes its setups from: {self._setup_dir()}"
+                if self._options_path else
+                "No imcontrol_options.json was found: start ImSwitch once first"
+            )
 
         # Reset is useful only while the primary editing config has unsaved
         # changes. Keep the normal identity bar uncluttered otherwise.
@@ -6757,12 +6199,16 @@ class MainWindow(QMainWindow):
 
     def _write_active_setup_name(self, name: str) -> None:
         """Persist the active setup name without exposing a half-written options file."""
+        self._write_options({"setupFileName": name})
+
+    def _write_options(self, changes: dict) -> None:
+        """Update keys of the options file without exposing a half-written one."""
         if not self._options_path:
             raise RuntimeError("No imcontrol_options.json was found")
         options_path = Path(self._options_path)
         with open(options_path, encoding="utf-8") as fh:
             opts = json.load(fh)
-        opts["setupFileName"] = name
+        opts.update(changes)
         temp_path = options_path.with_name(options_path.name + ".tmp")
         try:
             with open(temp_path, "w", encoding="utf-8") as fh:
@@ -6782,9 +6228,10 @@ class MainWindow(QMainWindow):
             self._set_as_active_config()
             return
         try:
-            self._write_active_setup_name(Path(path).name)
+            name = self._setup_name_for(path)
+            self._write_active_setup_name(name)
             self._update_active_banner()
-            self._status.setText(f"Active config set to: {Path(path).name}")
+            self._status.setText(f"Active config set to: {name}")
         except Exception as exc:
             QMessageBox.critical(
                 self, "Error", f"Could not update options file:\n{exc}"
@@ -6808,13 +6255,66 @@ class MainWindow(QMainWindow):
                     return
 
         try:
-            self._write_active_setup_name(Path(self._path).name)
+            name = self._setup_name_for(self._path)
+            self._write_active_setup_name(name)
             self._update_active_banner()
-            self._status.setText(
-                f"Active config set to: {Path(self._path).name}"
-            )
+            self._status.setText(f"Active config set to: {name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not update options file:\n{e}")
+
+    # ── Preferences > Setup folder… ───────────────────────────────────────
+    def _open_setup_folder_dialog(self) -> None:
+        """Show the setup-folder editor, seeded from the options file."""
+        if not self._options_path:
+            return
+        if self._setup_folder_dialog is None:
+            from imswitch.imcontrol.view.SetupFolderDialog import SetupFolderDialog
+
+            self._setup_folder_dialog = SetupFolderDialog(
+                self,
+                appliesWhen="ImSwitch uses them from its next start.",
+            )
+            self._setup_folder_dialog.sigSaveRequested.connect(self._save_setup_folder)
+        self._setup_folder_dialog.setValues(str(self._setup_dir()), self._active_setup_name())
+        self._setup_folder_dialog.show()
+        self._setup_folder_dialog.raise_()
+        self._setup_folder_dialog.activateWindow()
+
+    def _save_setup_folder(self, values: dict) -> None:
+        """Write the setup folder and the setup chosen from it to the options
+        file, and list that folder. A running ImSwitch is not switched: it
+        offers a restart when this window closes (active_config_changed)."""
+        from imswitch.imcommon.model import dirtools
+
+        dialog = self._setup_folder_dialog
+        try:
+            folder = dirtools.checkedFolderPath(values.get("setupFolder"))
+        except ValueError as exc:
+            dialog.setStatus(str(exc))
+            return
+        name = str(values.get("setupFileName") or "")
+        if name and not Path(_setupfolder.setupFilePath(folder, name)).is_file():
+            name = ""
+        try:
+            os.makedirs(folder, exist_ok=True)
+            self._write_options({
+                "setupFolder": _setupfolder.setupFolderSetting(folder),
+                **({"setupFileName": name} if name else {}),
+            })
+        except Exception as exc:
+            dialog.setStatus(f"Could not save the setup folder: {exc}")
+            return
+        dialog.setStatus("")
+        dialog.accept()
+        self._left.set_folder(folder)
+        self._update_active_banner()
+        if name:
+            self._status.setText(f"Setup folder set to {folder}; active config: {name}")
+        else:
+            self._status.setText(
+                f"Setup folder set to {folder}. It holds no setup yet: save one there "
+                f"and use Set as Active before ImSwitch starts again."
+            )
 
     # ── What this session changed ─────────────────────────────────────────
     def _note_saved(self, path: str) -> None:
@@ -7175,7 +6675,7 @@ def main():
     if len(sys.argv) > 1:
         folder = sys.argv[1]
     else:
-        _default = _default_setup_dir()
+        _default = _configured_setup_dir()
         folder = str(_default) if _default.is_dir() else ""
     win = MainWindow(start_folder=folder)
     win.show()
