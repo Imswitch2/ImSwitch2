@@ -1,5 +1,9 @@
 """Focus-lock safety guard: an oversized correction must not reach the piezo.
 
+Since the hold/relock work the trip *holds* the lock (Z frozen, setpoint kept,
+state ``holding``) instead of dropping it for good; the safety property --
+the oversized step is never applied -- is unchanged.
+
 ``updatePI`` drops the lock when the computed step exceeds the safety
 threshold, but it used to ``return move`` afterwards -- and ``update`` applies
 whatever it returns. The guard therefore unlocked *and then issued the very
@@ -147,13 +151,13 @@ def _makeController(*, currentValue, kp, ki=0.0):
 # updatePI in isolation
 # --------------------------------------------------------------------------
 
-def test_oversized_step_reports_no_motion_and_drops_the_lock():
+def test_oversized_step_reports_no_motion_and_holds_the_lock():
     ctrl = _makeController(currentValue=100.0, kp=1.0)
 
     move = FocusLockController.updatePI(ctrl)
 
     assert move == 0.0, 'the tripping step must not be handed back to the caller'
-    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == 'holding'
     assert ctrl._logger.warnings, 'the safety trip must be logged'
 
 
@@ -173,7 +177,7 @@ def test_threshold_is_on_magnitude_not_sign():
     move = FocusLockController.updatePI(ctrl)
 
     assert move == 0.0
-    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == 'holding'
 
 
 # --------------------------------------------------------------------------
@@ -187,7 +191,7 @@ def test_safety_trip_moves_the_piezo_nowhere():
     FocusLockController.update(ctrl)
 
     assert ctrl.moves == []
-    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == 'holding'
 
 
 def test_normal_correction_still_reaches_the_piezo():
