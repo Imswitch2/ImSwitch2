@@ -535,7 +535,7 @@ Acceptance criteria:
 
 ### Phase 4: Snouty Setup Migration — In-Repo Parts Implemented
 
-In-repo (done): `imswitch/_data/user_defaults/imcontrol_setups/example_snouty_smart_modes.json`
+In-repo (done): `imswitch/_data/user_defaults/imcontrol_setups/mock/lightsheet/example_snouty_smart_modes.json`
 is a no-hardware fixture (mock `ThorlabsMFF_mock` flip-mirror beam path, AVManager
 mock fast detector, the KDC rotation stage as a `KDC101PositionerManager`
 positioner, and the `Positioner`/`SetupModes`/`FlipMirror` widgets — no

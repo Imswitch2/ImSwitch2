@@ -26,7 +26,7 @@ from imswitch.imcontrol.view.widgets.basewidgets import WidgetFactory
 pytestmark = pytest.mark.nohardware
 
 SETUP = (Path(__file__).resolve().parents[3] / '_data' / 'user_defaults' / 'imcontrol_setups'
-         / 'galvo_flim_mock_scan_setup.json')
+         / 'mock' / 'time_tagger' / 'galvo_flim_mock_scan_setup.json')
 SAMPLE_RATE = 100_000
 DWELL, FLYBACK, NX, NY = 10, 50, 8, 4
 

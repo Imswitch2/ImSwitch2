@@ -248,6 +248,13 @@ class ScanWidgetAdvanced(SuperScanWidget):
     # UI layout
     # -----------------------------
 
+    def setStageTimingWarning(self, message: str = '', tooltip: str = ''):
+        """Visible next to dwell controls without interrupting a scan."""
+        message = str(message or '')
+        self.stageTimingWarningLabel.setText(('⚠ ' + message) if message else '')
+        self.stageTimingWarningLabel.setToolTip(str(tooltip or ''))
+        self.stageTimingWarningLabel.setVisible(bool(message))
+
     def initControls(self, positionerNames, TTLDeviceNames,TTLTimeunit):
         currentRow = 0
         self._ttl_device_names = list(TTLDeviceNames)
@@ -391,6 +398,14 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.timingNoteLabel.setWordWrap(True)
         self.timingNoteLabel.setVisible(False)
         self.grid.addWidget(self.timingNoteLabel, currentRow, 0, 1, 9)
+        currentRow += 1
+
+        # Compact, non-modal stage timing warning beside the dwell controls.
+        self.stageTimingWarningLabel = QtWidgets.QLabel()
+        self.stageTimingWarningLabel.setWordWrap(True)
+        self.stageTimingWarningLabel.setStyleSheet('color: #d98c10;')
+        self.stageTimingWarningLabel.hide()
+        self.grid.addWidget(self.stageTimingWarningLabel, currentRow, 0, 1, 8)
         currentRow += 1
 
         # Spacer

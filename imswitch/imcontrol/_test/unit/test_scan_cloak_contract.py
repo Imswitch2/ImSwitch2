@@ -46,8 +46,8 @@ SCAN_TEMPLATE = 'imswitch/imcontrol/view/configeditor/builtin_templates/sections
 
 #: A shipped mock setup per cloak.
 MOCK_SETUPS = {
-    'SimplePointScan': SETUPS + 'galvo_apd_simple_mock_scan_setup.json',
-    'SimpleMoNaLISA': SETUPS + 'simple_monalisa_mock_scan_setup.json',
+    'SimplePointScan': SETUPS + 'mock/point_scanning/galvo_apd_simple_mock_scan_setup.json',
+    'SimpleMoNaLISA': SETUPS + 'mock/monalisa/simple_monalisa_mock_scan_setup.json',
 }
 
 

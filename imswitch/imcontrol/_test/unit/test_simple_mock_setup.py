@@ -19,7 +19,7 @@ from imswitch.imcontrol.model.scan_frame import frame_geometry_of
 from .test_simple_point_scan_controller import Rig
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-DEFAULT = SETUPS + 'simple_mock_setup.json'
+DEFAULT = SETUPS + 'mock/point_scanning/simple_mock_setup.json'
 
 
 @pytest.fixture(scope='module')

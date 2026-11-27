@@ -24,7 +24,7 @@ from imswitch.imcontrol.model.scan_program.engine import setup_channels
 from imswitch.imcontrol.view import ViewSetupInfo
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-STEP_BOARDS = SETUPS + 'expert_step_boards_mock_setup.json'
+STEP_BOARDS = SETUPS + 'mock/step_boards/expert_step_boards_mock_setup.json'
 
 
 class _FakeNidaq:
@@ -65,7 +65,7 @@ def test_a_program_runs_where_its_devices_are(boards):
 
 
 def test_devices_on_engines_that_do_not_run_together_are_refused_by_name():
-    setup = json.load(open(SETUPS + 'expert_mock_scan_setup.json'))
+    setup = json.load(open(SETUPS + 'mock/point_scanning/expert_mock_scan_setup.json'))
     setup['teensyPulse'] = {'port': None, 'useMockOnFailure': True}
     setup['scanEngines'] = {'teensy': {'managerName': 'PulseGeneratorScanEngine',
                                        'managerProperties': {}}}

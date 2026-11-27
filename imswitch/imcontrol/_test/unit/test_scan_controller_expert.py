@@ -590,7 +590,7 @@ def test_the_panel_runs_one_program_on_a_leader_and_its_follower(qtbot):
 
 
 STEP_BOARDS_SETUP = ('imswitch/_data/user_defaults/imcontrol_setups/'
-                     'expert_step_boards_mock_setup.json')
+                     'mock/step_boards/expert_step_boards_mock_setup.json')
 
 
 def test_the_shipped_step_board_setup_scans_and_sets_by_hand(qtbot):

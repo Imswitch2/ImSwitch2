@@ -28,6 +28,7 @@ class _Resolver:
 
     _active_setup_name = editor.MainWindow._active_setup_name
     _active_setup_path = editor.MainWindow._active_setup_path
+    _setup_dir = editor.MainWindow._setup_dir
 
 
 def _options(tmp_path, setup_name, *, valid_json=True):

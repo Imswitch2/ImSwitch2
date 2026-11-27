@@ -49,7 +49,7 @@ from imswitch.imcontrol.model.scan_program.serialize import program_from_dict, p
 from imswitch.imcontrol.view.widgets.ScanWidgetExpert import MS, stored
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-EXPERT_MOCK = SETUPS + 'expert_mock_scan_setup.json'
+EXPERT_MOCK = SETUPS + 'mock/point_scanning/expert_mock_scan_setup.json'
 RATE = 100_000
 STAGE = Motion(transition='jump', move_s=1e-3, settle_s=1e-3, return_s=2e-3,
                origin='absolute', restore='first')
@@ -230,7 +230,7 @@ def test_a_restore_it_cannot_know_is_refused_at_compile_not_in_the_board():
 
 def test_the_expert_report_says_why_instead_of_raising(qtbot):
     from .test_scan_controller_expert import ExpertRig
-    raw = json.load(open(SETUPS + 'expert_step_boards_mock_setup.json'))
+    raw = json.load(open(SETUPS + 'mock/step_boards/expert_step_boards_mock_setup.json'))
     rig = ExpertRig(setup=raw)
     try:
         program = _ms_resolft(pulses=[['405 (ON)', 1e-3, 1e-3]], exposure_pulse=1)

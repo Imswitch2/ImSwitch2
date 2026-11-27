@@ -12,7 +12,7 @@ end) is RESOLVED: the e2e test now runs the controller signal-construction +
 shared-attribute + RecordingManager chain to a stored file, OME-TIFF carries
 the provenance as a MapAnnotation, provenance skips collapsed axes, the
 config editor got a tri-state smoothScan that preserves absence, and the
-rig's `~/ImSwitchConfig/imcontrol_setups/example_sted.json` now has
+rig's `~/ImSwitchConfig/imcontrol_setups/real/sted/example_sted.json` now has
 `smoothScan: false` on ND-PiezoZ. Review round 3 (2026-08-24, three
 findings) is RESOLVED: `_make_full_scan` now enforces `checkSignalComp` so
 the Advanced path refuses out-of-range voltages before arming, the TIFF
@@ -450,7 +450,7 @@ remains the interim answer on the rig until D2 passes.
    `test_configeditor_schema_defaults.py`, including a regression against
    the shipped template file.
 
-**Rig config for D3:** `/Users/lenny/ImSwitchConfig/imcontrol_setups/example_sted.json`
+**Rig config for D3:** `/Users/lenny/ImSwitchConfig/imcontrol_setups/real/sted/example_sted.json`
 (the config the rig actually loads) now sets `"smoothScan": false` on
 `ND-PiezoZ`, matching the tracked example — the earlier demonstrator ran the
 smooth piezo path because the untracked rig config lacked the key.

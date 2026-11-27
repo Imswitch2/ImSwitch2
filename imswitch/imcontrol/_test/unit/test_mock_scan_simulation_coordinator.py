@@ -44,7 +44,9 @@ def _wait_for(predicate, timeout=1.0):
 
 
 def _setup_from_user_default(name):
-    with open(f'imswitch/_data/user_defaults/imcontrol_setups/{name}') as fh:
+    from imswitch.imcontrol.model.setupfolder import shippedSetupPath
+
+    with open(shippedSetupPath(name)) as fh:
         return SetupInfo.from_json(fh.read(), infer_missing=True)
 
 

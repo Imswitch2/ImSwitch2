@@ -37,7 +37,7 @@ from imswitch.imcontrol.model.scan_program.engine import (
 )
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-EXPERT_MOCK = SETUPS + 'expert_mock_scan_setup.json'
+EXPERT_MOCK = SETUPS + 'mock/point_scanning/expert_mock_scan_setup.json'
 
 
 # --- where a run leaves the positioners ---------------------------------------------

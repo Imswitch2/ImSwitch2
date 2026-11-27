@@ -91,7 +91,8 @@ def test_config_filter_matches_filenames_and_survives_reload(qapp, tmp_path, mon
         path = Path(str(item.data(0, editor.Qt.UserRole)))
         (hidden if item.isHidden() else visible).append(path.name)
 
-    assert visible == ["MONALISA_gamma.json", "monalisa_alpha.json"]
+    # Case-insensitive order, as ImSwitch's own setup list sorts them.
+    assert visible == ["monalisa_alpha.json", "MONALISA_gamma.json"]
     assert hidden == ["widefield_beta.json"]
 
     panel.reload_folder()
