@@ -98,6 +98,8 @@ class TilingRunSettings:
     tilt_sample_ny: Optional[int] = None
     tilt_plane: object = None
     precheck_tilt: bool = False
+    #: Free-running: pause the focus lock for each XY move and relock per tile.
+    pause_focus_lock: bool = False
 
     @property
     def n_tiles(self) -> int:
@@ -122,6 +124,9 @@ class TilingRunResult:
     tiles_acquired: int = 0
     stale_tiles: int = 0
     illumination_gated: bool = False
+    #: Per tile, with "pause focus lock during moves": index, grid position,
+    #: status ('locked' / 'held' / 'relock-failed' / 'not-locked') and reason.
+    focus_lock_tiles: tuple = ()
 
 
 class _FreeRunningTileSource:
@@ -906,6 +911,7 @@ class TilingController(ImConWidgetController):
             tilt_sample_ny=sample_ny,
             tilt_plane=tilt_plane,
             precheck_tilt=precheck_tilt,
+            pause_focus_lock=bool(getattr(widget, 'getPauseFocusLock', lambda: False)()),
         )
 
     def _resetRunState(self, settings: TilingRunSettings) -> None:
@@ -951,6 +957,8 @@ class TilingController(ImConWidgetController):
                 tilt_plane=settings.tilt_plane,
                 precheck_tilt=settings.precheck_tilt,
             )
+        if settings.pause_focus_lock:
+            kwargs['pause_focus_lock'] = True
         kwargs.update(overrides)
         return kwargs
 
@@ -1045,6 +1053,74 @@ class TilingController(ImConWidgetController):
     def stopTiling(self) -> None:
         """ Asks the running tiling run to stop. """
         self._stopRequested = True
+        self._cancelFocusResume()
+
+    def _cancelFocusResume(self) -> None:
+        """A Stop must not wait out a focus relock in flight."""
+        if not self.__dict__.get('_focusResumeActive', False):
+            return
+        focus = getattr(self.__dict__.get('_commChannel'), '_focusLock', None)
+        cancel = getattr(focus, 'cancelFocusLockResume', None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                self._logger.error('Tiling: could not cancel the focus relock', exc_info=True)
+
+    def _focusPauser(self, enabled, mode):
+        """The focus lock to pause per tile, or None (option off, no lock,
+        triggered mode -- where the scan interlock already suspends it)."""
+        if not enabled:
+            return None
+        if mode == MODE_TRIGGERED:
+            self._logger.info('Tiling: "pause focus lock during moves" applies to '
+                              'free-running tiling; the scan interlock handles triggered mode.')
+            return None
+        focus = getattr(self._commChannel, '_focusLock', None)
+        if focus is None or not callable(getattr(focus, 'pauseFocusLock', None)):
+            return None
+        if focus.focusLockState() == 'unlocked':
+            self._logger.info('Tiling: the focus lock is not engaged; nothing to pause.')
+            return None
+        return focus
+
+    def _pauseFocusForMove(self, focus) -> None:
+        try:
+            state = focus.pauseFocusLock()
+        except Exception as error:
+            self._logger.error(f'Tiling: could not pause the focus lock: {error}')
+            return
+        if state not in ('paused', 'lost'):
+            self._logger.warning(f'Tiling: focus lock not paused for the move ({state}).')
+
+    def _resumeFocusForTile(self, focus, tileIndex, gx, gy) -> dict:
+        """Relock before the tile; never raises. Returns the tile's record."""
+        status, reason = 'not-locked', ''
+        self._focusResumeActive = True
+        try:
+            if self._stopRequested:
+                result = 'cancelled'
+            else:
+                timeout = float(getattr(focus, 'relockTimeoutS', lambda: 10.0)())
+                result = focus.resumeFocusLock(0.0, timeout)
+            reason = (focus.getFocusLockResumeReason()
+                      if callable(getattr(focus, 'getFocusLockResumeReason', None)) else '')
+            status = {'locked': 'locked', 'failed': 'relock-failed',
+                      'cancelled': 'relock-cancelled'}.get(result, 'not-locked')
+        except Exception as error:
+            status, reason = 'relock-failed', f'error: {error}'
+        finally:
+            self._focusResumeActive = False
+        if status == 'locked':
+            state = focus.focusLockState()
+            if state == 'holding':
+                status = 'held'
+        if status == 'relock-failed':
+            self._logger.warning(
+                f'Tiling: tile {tileIndex} taken at the last good Z; focus relock failed'
+                f' ({reason}). The next tile tries again.')
+        return {'tile_index': tileIndex, 'gx': gx, 'gy': gy, 'status': status,
+                'reason': reason}
 
     def closeEvent(self) -> bool:
         """Request cancellation and wait briefly for owned workers.
@@ -1056,6 +1132,7 @@ class TilingController(ImConWidgetController):
         with self._getActivityLock():
             self._closed = True
             self._stopRequested = True
+        self._cancelFocusResume()
         thread = getattr(self, '_scanThread', None)
         if thread is not None and thread is not threading.current_thread():
             thread.join(_CLOSE_JOIN_TIMEOUT_S)
@@ -1302,6 +1379,7 @@ class TilingController(ImConWidgetController):
         detector_name=None,
         save_folder=None,
         illumination_gate=None,
+        pause_focus_lock: bool = False,
     ) -> None:
         # The grid's total, which is what progress, the payload session and the
         # last-tile test all count. Derived rather than passed so it cannot
@@ -1345,6 +1423,8 @@ class TilingController(ImConWidgetController):
         dispatcher = None
         tilesAcquired = 0
         runMessage = ''
+        focusPauser = None
+        focusTiles = []
         # The caller's illumination gate, in free-running mode only: in
         # triggered mode the scan arms its own lasers for every tile.
         gate = illumination_gate if mode != MODE_TRIGGERED else None
@@ -1521,6 +1601,7 @@ class TilingController(ImConWidgetController):
                     n_tiles=n_tiles,
                 )
 
+            focusPauser = self._focusPauser(pause_focus_lock, mode)
             gx, gy = 0, 0
             forward_tilt_positions = []
             lastEmit = 0.0
@@ -1532,6 +1613,8 @@ class TilingController(ImConWidgetController):
 
                 # Move to next tile (skip move for the very first position)
                 if i > 0:
+                    if focusPauser is not None:
+                        self._pauseFocusForMove(focusPauser)
                     positioner.move(dx * step_um, x_axis)
                     applied_um[x_axis] += dx * step_um
                     positioner.move(dy * step_um, y_axis)
@@ -1563,6 +1646,17 @@ class TilingController(ImConWidgetController):
 
                 gx += dx
                 gy += dy
+
+                if focusPauser is not None:
+                    if i > 0:
+                        focusTiles.append(self._resumeFocusForTile(focusPauser, i + 1, gx, gy))
+                    else:
+                        state = focusPauser.focusLockState()
+                        focusTiles.append({'tile_index': 1, 'gx': gx, 'gy': gy,
+                                           'status': {'locked': 'locked', 'holding': 'held'}
+                                           .get(state, 'not-locked'), 'reason': state})
+                    if self._stopRequested:
+                        break
 
                 # The same identity a snapshot tile carries, so a payload
                 # recorded for this tile says which tile it is and where the
@@ -1809,6 +1903,8 @@ class TilingController(ImConWidgetController):
                 # or processor can drive it back to a tile without guessing.
                 dataset.extra['xy_positioner'] = tilingInfo.xyPositioner
                 dataset.extra['xy_axes'] = [x_axis, y_axis]
+                if focusPauser is not None:
+                    dataset.extra['focus_lock_tiles'] = list(focusTiles)
                 written = dataset.write(saveFolder)
                 self._logger.info(
                     f'Tiling: saved {len(dataset.tiles)} tiles'
@@ -1847,6 +1943,9 @@ class TilingController(ImConWidgetController):
             # tracked frame sits relative to its controller's absolute frame,
             # and it stays correct when the scan stopped part-way through.
             origin_restored = origin_xy is not None
+            if (focusPauser is not None and positioner is not None
+                    and any(applied_um.get(a, 0.0) for a in (x_axis, y_axis))):
+                self._pauseFocusForMove(focusPauser)
             if positioner is not None and applied_um:
                 for axis in (x_axis, y_axis):
                     offset = applied_um.get(axis, 0.0)
@@ -1966,12 +2065,36 @@ class TilingController(ImConWidgetController):
                 self.sigTiltCompensationError.emit(
                     compensationFailure or 'XY/Z origin restoration incomplete'
                 )
+            focusNote = ''
+            if focusPauser is not None:
+                try:
+                    if focusPauser.focusLockState() == 'paused':
+                        if (scan_completed and origin_restored
+                                and not self._stopRequested):
+                            back = self._resumeFocusForTile(focusPauser, 0, 0, 0)
+                            if back['status'] != 'locked':
+                                focusNote = ('Focus lock did not relock at the origin '
+                                             f"({back['reason'] or back['status']}).")
+                        else:
+                            focusNote = ('Focus lock left paused (Z held); press Re-lock '
+                                         'in the Focus Lock panel.')
+                except Exception as error:
+                    focusNote = f'Focus lock state unknown after the run: {error}'
+                failedTiles = [t['tile_index'] for t in focusTiles
+                               if t['status'] != 'locked']
+                if failedTiles:
+                    focusNote = (f'Focus not locked for tile(s) {failedTiles} (taken at '
+                                 'the last good Z). ' + focusNote).strip()
+                if focusNote:
+                    self._logger.warning('Tiling: ' + focusNote)
             stopped = bool(self._stopRequested)
             completed = bool(scan_completed and origin_restored and z_restored)
             if scan_completed and not (origin_restored and z_restored) and not runMessage:
                 runMessage = 'The XY/Z stage could not be returned to the origin.'
             elif stopped and not runMessage:
                 runMessage = 'Stopped.'
+            if focusNote:
+                runMessage = (runMessage + ' ' + focusNote).strip()
             self._lastRunResult = TilingRunResult(
                 completed=completed,
                 stopped=stopped,
@@ -1980,6 +2103,7 @@ class TilingController(ImConWidgetController):
                 tiles_acquired=tilesAcquired,
                 stale_tiles=staleFrames,
                 illumination_gated=gate is not None,
+                focus_lock_tiles=tuple(focusTiles),
             )
             with self._getActivityLock():
                 self._scanAcqHandle = None

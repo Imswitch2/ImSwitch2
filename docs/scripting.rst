@@ -282,6 +282,24 @@ back, for a time lapse that must not image before it is::
         if not api.imcontrol.waitForFocusLock(timeout=10):
             raise RuntimeError('the focus did not come back')
 
+The lock can also be ``'holding'`` (frames not trustworthy: Z frozen,
+setpoint kept), ``'lost'`` (held too long or a relock failed; setpoint kept),
+``'paused'`` or ``'relocking'``; ``getFocusLockStatus()`` says why (the
+failed trust tests, the confidence, the limits).  A script that moves the
+sample itself pauses the lock around the move and relocks before imaging --
+``resumeFocusLock(settleS, timeoutS)`` blocks (call it from the script, never
+from the GUI thread) and returns ``'locked'``, ``'failed'``, ``'unlocked'``
+or ``'cancelled'`` (``cancelFocusLockResume()``)::
+
+    api.imcontrol.pauseFocusLock()
+    api.imcontrol.setPositioner('XY', 'X', x)        # the XY move
+    if api.imcontrol.resumeFocusLock(0.2, 10) != 'locked':
+        print('focus not relocked here:', api.imcontrol.getFocusLockStatus()['lostReason'])
+
+``setFocusLockHoldSettings`` and ``setFocusLockRelockLimits`` change the
+hold and relock settings; ``reengagePreviousFocusLock()`` relocks to the
+lock saved for this setup (see :ref:`focuslock-hold-relock`).
+
 :doc:`api/api.imcontrol` lists every function a script can call, with
 its signature and the widget that provides it.
 =======

@@ -525,6 +525,29 @@ Tiling troubleshooting
        structure.
 
 
+Focus lock during stage moves
+-----------------------------
+
+**Pause focus lock during moves** (Acquisition group, off by default) is for
+free-running tiling with an engaged focus lock.  Before each XY move the lock
+is paused (Z held, frames ignored); after the move and the settle time it is
+relocked to the kept setpoint in bounded steps (:ref:`focuslock-hold-relock`)
+before the tile is taken.  Each tile's status -- ``locked``, ``held``,
+``relock-failed`` or ``relock-cancelled`` -- goes into ``tiles.json`` under
+``focus_lock_tiles`` and into the run result.  A failed relock leaves Z at the
+last good position, the tile is taken there and marked, and the next tile
+tries again; the run message names the tiles that were not locked.  The return
+to the origin is paused the same way and relocked at the end; after a Stop the
+lock is left paused (Z held) and **Re-lock** in the Focus Lock panel brings it
+back.  **Stop** cancels a relock in flight.  Triggered tiling ignores the
+option: its scans already suspend and reacquire the lock.
+
+With tilt **Record**, a point is sampled after the relock, so it records the Z
+the lock holds only when the relock succeeded (otherwise the sample is marked
+by the lock state).  **Apply** on the focus lock's own actuator still requires
+the lock to be unlocked, so the option has nothing to pause there; Apply on a
+different actuator and the pause option work together.
+
 .. seealso::
 
    :doc:`setupinfo-reference` for the ``tiling`` configuration section, and

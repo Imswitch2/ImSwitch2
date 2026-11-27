@@ -726,6 +726,77 @@ How a scan decides whether it conflicts with the lock is described in
    :align: center
    :width: 600px
 
+.. _focuslock-hold-relock:
+
+Hold, lost and relock
+~~~~~~~~~~~~~~~~~~~~~
+
+Every focus-camera frame is checked before it may correct Z.  At **Lock** the
+lock stores a reference of the spot (its row profile, intensity and width);
+each frame is then tested independently, and the panel's **Hold and relock**
+box shows the live *Confidence* (normalised correlation with the reference,
+1 = identical) and the name of any test that failed:
+
+.. list-table::
+   :widths: 18 82
+   :header-rows: 1
+
+   * - Test
+     - Fails when
+   * - ``signal``
+     - the spot peak is less than *k* × the background noise above background
+   * - ``intensity``
+     - the integrated spot signal leaves a band around the reference's
+   * - ``correlation``
+     - the normalised correlation with the reference falls below a threshold
+   * - ``width``
+     - the spot width leaves a band around the reference's
+   * - ``second-peak``
+     - a second maximum outside the spot window is too strong (not in *Two foci*)
+   * - ``saturation``
+     - too many spot pixels are at the camera's maximum
+   * - ``clipped``
+     - the spot touches the edge of the focus-camera frame
+   * - ``jump``
+     - the spot moved further than the last correction can explain
+       (calibration × last applied move, plus the normal jitter)
+   * - ``agreement``
+     - the centroid disagrees with the correlation position or with the
+       profile maximum (an asymmetric, e.g. partly occluded, spot)
+   * - ``stale``
+     - the same frame came back more than three times in a row
+   * - ``safety``
+     - the PI step would exceed 3 µm (the old safety unlock)
+
+For the first 3 s after **Lock** the thresholds are fixed defaults; from then
+on they come from the spread seen in those seconds (never looser than fixed
+floors), so a clean rig gets tighter checks and a noisy one is not held for
+its normal noise.  The centroid stays the control signal: in simulation the
+correlation position was about 30 % noisier.
+
+A frame that fails puts the lock in **Holding Z**: no correction, no
+integration, the setpoint is kept.  It resumes by itself after *Good frames*
+consecutive frames that pass slightly stricter thresholds (hysteresis), with a
+fresh PI so nothing winds up.  Holding longer than *Hold* seconds gives
+**Lost — setpoint kept**: nothing moves, and the reason is shown and logged.
+A real defocus step that is fast enough is indistinguishable from a bad frame
+(it also moves or changes the spot): the lock then holds, and resumes after
+the good-frame count if the spot is steady at its new place, or goes lost,
+from where **Re-lock** brings it back.
+
+**Re-lock** (enabled when holding, lost or paused) steps Z back toward the
+kept setpoint using the correlation offset and the calibration (**Calib**
+must have been run for this actuator): each step at most *Step* µm, the total
+at most *Max ΔZ* µm from the last good Z, never further away on low
+confidence, and the loop takes over once the error is under *Tolerance*.  If
+that fails within *Timeout* (or the budget is used up) Z goes back to the last
+good position and the lock stays lost; an error while moving leaves Z where it
+is.  *Z search* (off by default) adds a bounded search around the last good Z
+when the spot is not on the camera.  **Re-engage previous lock** loads the
+setpoint, reference and calibration saved for this setup and focus actuator
+(``focus_lock_state.json`` in the user config folder) and relocks from the
+current Z the same bounded way; nothing is ever engaged at startup.
+
 
 Autofocus widget
 ----------------

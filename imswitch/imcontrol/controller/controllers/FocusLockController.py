@@ -1847,6 +1847,10 @@ class FocusLockController(ImConWidgetController):
             engine.abortRelock(reason)
             self._enterLost(f'relock {reason}')
 
+    def relockTimeoutS(self) -> float:
+        """The relock timeout setting (for orchestrators sizing their wait)."""
+        return float(self._lockEngine().limits.timeoutS)
+
     def getFocusLockResumeReason(self) -> str:
         return self._resumeSyncState().get('reason', '')
 

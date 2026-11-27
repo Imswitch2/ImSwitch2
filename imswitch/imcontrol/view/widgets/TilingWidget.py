@@ -404,6 +404,16 @@ class TilingWidget(Widget):
             'Every tile carries its stage position in OME metadata.'
         )
         grid.addWidget(self.saveTilesCheck, 1, 2, 1, 2)
+        self.focusPauseCheck = QtWidgets.QCheckBox('Pause focus lock during moves')
+        self.focusPauseCheck.setChecked(False)
+        self.focusPauseCheck.setToolTip(
+            'Free-running tiling: pause the focus lock (Z held) for each XY move,\n'
+            'then relock to the kept setpoint in bounded steps before the tile is\n'
+            'taken. A tile whose relock fails is taken at the last good Z and\n'
+            'marked in tiles.json; the next tile tries again. Off: the lock runs\n'
+            'through the moves as before.'
+        )
+        grid.addWidget(self.focusPauseCheck, 2, 2, 1, 2)
         grid.setColumnStretch(4, 1)
         return self._group('Acquisition', grid)
 
@@ -936,6 +946,7 @@ class TilingWidget(Widget):
             not running and self.tiltModeCombo.currentData() == 'apply'
         )
         self.buildOverviewCheck.setEnabled(not running)
+        self.focusPauseCheck.setEnabled(not running)
 
     def _matchTileCounts(self, value: int) -> None:
         """Hold the counts equal while the lock is on, without recursing."""
@@ -992,6 +1003,9 @@ class TilingWidget(Widget):
 
     def getRegisterTiles(self) -> bool:
         return self.registerTilesCheck.isChecked()
+
+    def getPauseFocusLock(self) -> bool:
+        return self.focusPauseCheck.isChecked()
 
     def getSaveTiles(self) -> bool:
         return self.saveTilesCheck.isChecked()
