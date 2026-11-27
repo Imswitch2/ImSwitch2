@@ -151,7 +151,10 @@ def test_identity_is_always_there_and_maps_any_detector_one_to_one(tmp_path, mon
     from imswitch.imcommon.model.smartpipeline import Points, apply_transform
     from imswitch.imcommon.model.smartpipeline.document import consumer_frames
     from imswitch.imcommon.model.smartpipeline.transforms import OneToOne
-    from imswitch.imcontrol.controller.controllers import SmartPipelineController as module
+    from importlib import import_module
+
+    # import_module: the controllers package's lazy export gives the class under this name
+    module = import_module("imswitch.imcontrol.controller.controllers.SmartPipelineController")
 
     monkeypatch.setattr(module, "_calibrationsFolderPath", str(tmp_path))
     transforms = module.SmartPipelineController._transforms()
