@@ -105,7 +105,6 @@ class SmartPipelineWidget(Widget):
         self.logView.setMaximumBlockCount(_MAX_LOG_LINES)
         self.logView.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
         self.logView.setMinimumHeight(120)
-        self.logView.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.saveLogButton = guitools.BetterPushButton('Save log…')
         self.clearLogButton = guitools.BetterPushButton('Clear')
 

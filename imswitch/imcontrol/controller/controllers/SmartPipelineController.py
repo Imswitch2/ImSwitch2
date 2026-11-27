@@ -445,6 +445,7 @@ class SmartPipelineController(ImConWidgetController):
         else:
             self._parameterValues[name] = value
         self._rememberParameters()
+        self._widget.setParameterValue(name, value)       # an edit from a script shows too
         self._widget.markParameter(name, value, parameter.file_value)
         self._widget.setResetParametersEnabled(bool(self._parameterValues))
         if value != current:
