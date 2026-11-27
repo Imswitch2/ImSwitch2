@@ -1301,9 +1301,9 @@ def reconstruct_scan(
             of every frame in the order visited, for the gain of the frames
             (:func:`.frame_gain.fit_frame_gain`); ``scan_index`` itself
             otherwise.
-        step_aspect: With ``scan_index`` and no ``step``, the recorded x
-            step over the y step, along the stage axes
-            (:func:`complete_step`).
+        step_aspect: With no ``step``, the specified x step over the y
+            step, along the scan axes (:func:`complete_step`). Used for
+            both layout and manual contiguous-raster scans.
     """
     params = params or PipelineParams()
     frames = np.asarray(frames)
@@ -1342,7 +1342,8 @@ def reconstruct_scan(
             mean_frame, first_step, first_index, params,
             lattice=lattice, localization=localization, modulation_frame=modulation_frame,
             pixel_mask=pixel_mask,
-            step_aspect=_oriented_aspect(step_aspect, orientation or "+x+y") if recorded else None,
+            step_aspect=(_oriented_aspect(step_aspect, orientation or "+x+y")
+                         if recorded else step_aspect),
         )
     operator = geometry.operator
     valid = operator.valid

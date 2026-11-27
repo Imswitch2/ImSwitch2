@@ -34,6 +34,7 @@ from .params import (
 )
 from .scan_frame import ORIENTATIONS
 from .scanning_settings import ScanningAdvancedDialog
+from .scan_overrides import scan_step_overrides
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
 from .footprint_suggestion import suggest_local_footprint_size
@@ -182,9 +183,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._scan_result_summary: dict[str, object] = {}
         self._scanned_lateral_axes = {"x", "y"}
         self._scan_overrides = {
+            "scan_steps_x": int(values["scan_steps_x"]),
+            "scan_steps_y": int(values["scan_steps_y"]),
             "scan_steps_fast": int(values["scan_steps_fast"]),
             "scan_steps_slow": int(values["scan_steps_slow"]),
             "scan_step_nm": float(values["scan_step_nm"]),
+            "scan_steps_z": int(values["scan_steps_z"]),
+            "scan_step_x_nm": float(values["scan_step_x_nm"]),
+            "scan_step_y_nm": float(values["scan_step_y_nm"]),
+            "scan_step_z_nm": float(values["scan_step_z_nm"]),
         }
         self._advanced_values = {
             "device": str(values["device"]),
@@ -919,7 +926,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.fwhmUnitCombo.setEnabled(True)
 
         reassignment = str(self._combo_data(self.reassignmentCombo))
-        can_be_asymmetric = len(self._scanned_lateral_axes) > 1
+        can_be_asymmetric = len(self._effective_lateral_axes()) > 1
         asymmetric = (
             bool(self.asymmetricCheck.isChecked())
             and reassignment != "off"
@@ -999,10 +1006,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             summary = f"{orientation} · {source}" if orientation else f"{source} · Pending"
         axes = "".join(
             axis.upper() for axis in "xyz"
-            if int((self._recorded_scan_axes.get(axis) or {}).get("count") or 0) > 1
+            if int(self._scan_overrides.get(f"scan_steps_{axis}", 0)
+                   or (self._recorded_scan_axes.get(axis) or {}).get("count") or 0) > 1
         )
         if axes:
             summary += f" · {axes}"
+        if any(float(value or 0) > 0 for value in self._scan_overrides.values()):
+            summary += " · Manual scan override"
         self.scanningHeader.setSummary(summary)
         detail = " ".join(part for part in (
             self._recorded_scan_summary,
@@ -1024,7 +1034,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
         reassignment = str(self._combo_data(self.reassignmentCombo))
         if reassignment == "fixed":
-            if self.asymmetricCheck.isChecked() and len(self._scanned_lateral_axes) > 1:
+            if self.asymmetricCheck.isChecked() and len(self._effective_lateral_axes()) > 1:
                 reassignment = (
                     f"Manual · X {self.shiftXSpin.value():g}"
                     f" / Y {self.shiftYSpin.value():g}"
@@ -1054,14 +1064,34 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._scrollContent.setMinimumHeight(self._contentLayout.minimumSize().height())
 
     # -------------------------------------------------------------- dialogs
+    def _effective_lateral_axes(self) -> set[str]:
+        axes = set(self._scanned_lateral_axes)
+        for axis in "xy":
+            count = int(self._scan_overrides.get(f"scan_steps_{axis}", 0) or 0)
+            if count > 1:
+                axes.add(axis)
+            elif count == 1:
+                axes.discard(axis)
+        return axes
+
     def _open_scanning_advanced(self):
+        from ..monalisa_lattice.scan import recorded_fast_axis
+
         dialog = ScanningAdvancedDialog(
             self._scan_overrides,
             recorded_summary=self._recorded_scan_summary,
+            recorded_axes=self._recorded_scan_axes,
+            fast_axis=recorded_fast_axis(getattr(self._current_data_obj, "acquisition_layout", None)),
             parent=self,
         )
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            self._scan_overrides = dialog.values()
+            values = dialog.values()
+            if values != self._scan_overrides:
+                self._scan_overrides = values
+                # Previous coverage/output pitch belongs to the old geometry.
+                self._scan_result_summary = {}
+                self._update_scan_summary()
+            self._update_ui()
 
     def _open_advanced_reconstruction(self):
         before = dict(self._advanced_values)
@@ -1352,7 +1382,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         return None if value is None else float(value)
 
     def _update_scan_summary(self) -> None:
-        axes = self._recorded_scan_axes
+        axes = {axis: dict(info) for axis, info in self._recorded_scan_axes.items()}
+        for axis, pitch in zip("xyz", scan_step_overrides(self._scan_overrides)):
+            count = int(self._scan_overrides.get(f"scan_steps_{axis}", 0) or 0)
+            if count or pitch:
+                info = axes.setdefault(axis, {})
+                if count:
+                    info["count"] = count
+                if pitch:
+                    info["step_nm"] = pitch
+                info["manual"] = True
         if not axes:
             self.scanSummaryLabel.setText("Scan metadata: —")
             self.scanSummaryLabel.setToolTip(self._recorded_scan_summary)
@@ -1385,26 +1424,27 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             if not info or int(info.get("count") or 0) <= 1:
                 continue
             count = int(info["count"])
-            recorded = info.get("step_nm")
-            recorded = None if recorded is None else float(recorded)
+            requested = info.get("step_nm")
+            requested = None if requested is None else float(requested)
             effective = self._effective_scan_step_nm(axis, orientation)
-            if recorded is not None and effective is not None and recorded > 0:
-                delta = 100.0 * (effective - recorded) / recorded
+            if requested is not None and effective is not None and requested > 0:
+                delta = 100.0 * (effective - requested) / requested
                 if abs(delta) >= 0.05:
                     step = (
-                        f"{self._format_nm(recorded)} → {self._format_nm(effective)} nm"
+                        f"{self._format_nm(requested)} → {self._format_nm(effective)} nm"
                     )
                     deltas.append((axis.upper(), delta))
                 else:
-                    step = f"{self._format_nm(recorded)} nm"
-            elif recorded is not None:
-                step = f"{self._format_nm(recorded)} nm"
+                    step = f"{self._format_nm(requested)} nm"
+            elif requested is not None:
+                step = f"{self._format_nm(requested)} nm"
             elif effective is not None:
                 step = f"{self._format_nm(effective)} nm"
             else:
                 step = "step —"
             lines.append(
                 f"<b>{axis.upper()} scan</b>&nbsp;&nbsp;{count} pos.&nbsp;&nbsp;{step}"
+                + (" (manual)" if info.get("manual") else "")
             )
 
         self.scanSummaryLabel.setText("<br>".join(lines) if lines else "Scan metadata: —")
@@ -1666,7 +1706,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "localization_mode", "auto_localization", "locked_localization",
             "manual_offset_x_px", "manual_offset_y_px", "manual_period_x_px",
             "manual_period_y_px", "stagger_axis", "stagger", "localization_settings",
-            "scan_steps_fast", "scan_steps_slow", "scan_step_nm",
+            "scan_steps_x", "scan_steps_y", "scan_steps_fast", "scan_steps_slow", "scan_steps_z",
+            "scan_step_nm", "scan_step_x_nm", "scan_step_y_nm", "scan_step_z_nm",
         )
         return json.dumps({key: params.get(key) for key in keys}, sort_keys=True, default=str)
 
@@ -1730,8 +1771,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "locked_localization", "manual_offset_x_px", "manual_offset_y_px",
             "manual_period_x_px", "manual_period_y_px", "stagger_axis", "stagger",
             "localization_settings", "orientation_mode", "orientation",
-            "locked_orientation", "_resolved_auto_orientation", "scan_steps_fast",
-            "scan_steps_slow", "scan_step_nm",
+            "locked_orientation", "_resolved_auto_orientation", "scan_steps_x", "scan_steps_y", "scan_steps_fast",
+            "scan_steps_slow", "scan_steps_z", "scan_step_nm",
+            "scan_step_x_nm", "scan_step_y_nm", "scan_step_z_nm",
         )
         return json.dumps({key: params.get(key) for key in keys}, sort_keys=True, default=str)
 
@@ -2230,7 +2272,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "reassignment": str(self._combo_data(self.reassignmentCombo)),
             "shift_factor": float(self.shiftFactorSpin.value()),
             "reassignment_asymmetric": bool(
-                self.asymmetricCheck.isChecked() and len(self._scanned_lateral_axes) > 1
+                self.asymmetricCheck.isChecked() and len(self._effective_lateral_axes()) > 1
             ),
             "shift_factor_x": float(self.shiftXSpin.value()),
             "shift_factor_y": float(self.shiftYSpin.value()),
@@ -2318,13 +2360,14 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             for axis in "xyz":
                 loop = loops.get(f"scan_{axis}")
                 if loop is None:
+                    axes[axis] = {"count": 1, "step_nm": None}
                     continue
                 step_nm = MonalisaParamsWidget._step_to_nm(loop.step, loop.unit)
                 axes[axis] = {"count": int(loop.count), "step_nm": step_nm}
                 step = "" if step_nm is None else f", step {step_nm:g} nm"
                 parts.append(f"{axis.upper()} {int(loop.count)}{step}")
             if parts:
-                return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}, axes
+                return "Recording metadata: " + ", ".join(parts), lateral or {"x", "y"}, axes
 
         lateral = set()
         axes = {}
@@ -2340,10 +2383,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if not isinstance(step_sizes, (list, tuple)):
             step_sizes = ()
         step_unit = attrs.get("ScanStage:axis_step_size_unit", "um")
-        for index, (axis, count) in enumerate((("x", nx), ("y", ny))):
-            if count <= 1:
+        try:
+            nz = int(float(attrs.get("ScanTTL:Nz", 0)))
+        except (TypeError, ValueError):
+            nz = 0
+        for index, (axis, count) in enumerate((("x", nx), ("y", ny), ("z", nz))):
+            if count <= 0:
                 continue
-            lateral.add(axis)
+            if count == 1:
+                axes[axis] = {"count": 1, "step_nm": None}
+                continue
+            if axis in "xy":
+                lateral.add(axis)
             step = step_sizes[index] if index < len(step_sizes) else None
             axes[axis] = {
                 "count": count,
@@ -2351,15 +2402,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             }
         if axes:
             parts = []
-            for axis in "xy":
+            for axis in "xyz":
                 info = axes.get(axis)
                 if not info:
                     continue
                 step = info.get("step_nm")
                 suffix = "" if step is None else f", step {float(step):g} nm"
                 parts.append(f"{axis.upper()} {int(info['count'])}{suffix}")
-            return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}, axes
-        return "Recorded metadata: used by default", {"x", "y"}, {}
+            return "Recording metadata: " + ", ".join(parts), lateral or {"x", "y"}, axes
+        return "Recording metadata: unavailable", {"x", "y"}, {}
 
     def load_from_attrs(self, attrs: dict, data_obj=None) -> None:
         attrs = dict(attrs or {})

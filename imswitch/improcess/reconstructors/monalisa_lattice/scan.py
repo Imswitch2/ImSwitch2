@@ -18,7 +18,7 @@ Two readings, in order of preference:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -69,6 +69,55 @@ def _step_nm(attrs) -> float | None:
     if step.size == 0 or not np.isfinite(step[0]) or step[0] <= 0:
         return None
     return float(step[0] * 1000.0)     # the attribute is in micrometres
+
+
+def recorded_axis_step_nm(attrs, axis: str) -> float | None:
+    """Read the individual stage-axis pitch (the old reader used X only)."""
+    index = "xyz".index(axis)
+    try:
+        values = np.asarray(attrs["ScanStage:axis_step_size"], dtype=float).ravel()
+        value = float(values[index])
+        unit = attrs.get("ScanStage:axis_step_size_unit", "um")
+        if isinstance(unit, bytes):
+            unit = unit.decode("utf-8")
+        factor = _UNITS_TO_NM.get(str(unit).lower() if unit is not None else None)
+        if factor is None or not np.isfinite(value) or value <= 0:
+            return None
+        return value * factor
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def override_layout_z(scan: "LayoutScan", num_planes: int) -> "LayoutScan":
+    """Regroup whole contiguous raster stacks into manually declared Z planes.
+
+    A different Z count cannot reinterpret interleaved event loops safely.
+    Refuse those recordings rather than silently assigning frames to the
+    wrong plane. The user-specified count assumes Z is inside time.
+    """
+    if num_planes <= 0 or num_planes == scan.num_planes:
+        return scan
+    if scan.num_conditions != 1:
+        raise ValueError("Manual Z-plane count is not supported for condition-interleaved scans")
+    if scan.num_stacks % num_planes:
+        raise ValueError(
+            f"The {scan.num_stacks} recorded raster stacks cannot form "
+            f"{num_planes} Z planes per timepoint"
+        )
+    for index in range(scan.num_stacks):
+        positions = scan.frames_of(index)
+        expected = np.arange(index * scan.frames_per_stack,
+                             (index + 1) * scan.frames_per_stack)
+        if not np.array_equal(positions, expected):
+            raise ValueError(
+                "Cannot override Z count: acquisition layout interleaves "
+                "raster stacks. The frame-to-plane order would be ambiguous."
+            )
+    return replace(
+        scan, num_planes=num_planes, num_time=scan.num_stacks // num_planes,
+        stack=np.repeat(np.arange(scan.num_stacks), scan.frames_per_stack),
+        source="acquisition layout, Z count from the panel",
+    )
 
 
 def _line_steps(attrs) -> int:
@@ -376,6 +425,104 @@ def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
         ),
         plane_step_nm=_loop_step_nm(z_loop) if num_planes > 1 else None,
         fast_axis=fast_axis,
+    )
+
+
+def recorded_fast_axis(resolved) -> str:
+    """Fast physical axis for displaying historical fast/slow overrides."""
+    layout = getattr(resolved, "layout", None)
+    if layout is not None and getattr(resolved, "is_usable", False):
+        for loop in reversed(layout.event_loops):
+            if loop.kind in ("scan_x", "scan_y") and loop.count > 1:
+                return loop.kind[-1]
+    return "x"  # Legacy recordings conventionally step stage X first.
+
+
+def has_stage_count_override(params: dict) -> bool:
+    return any(int(params.get(f"scan_steps_{axis}", 0) or 0) > 0 for axis in "xy")
+
+
+def stage_count_scan(resolved, attrs, num_frames: int, params: dict) -> LayoutScan:
+    """Resolve explicit stage-axis counts without conflating order and orientation.
+
+    Reinterpret a complete recorded event layout with updated loop counts,
+    preserving its loop order, traversal and directions. Do not guess how to
+    insert an absent scanned axis or reinterpret partial event selections.
+    Without usable layout metadata, use the legacy X-fast contiguous raster
+    convention, but return stage coordinates so camera orientation remains
+    independent of acquisition order.
+    """
+    from math import prod
+
+    counts = {axis: int(params.get(f"scan_steps_{axis}", 0) or 0) for axis in "xyz"}
+    layout = getattr(resolved, "layout", None)
+    if layout is not None and getattr(resolved, "is_usable", False):
+        loops = {loop.kind: loop for loop in layout.event_loops}
+        lateral_changed = False
+        for axis in "xy":
+            loop = loops.get(f"scan_{axis}")
+            recorded = loop.count if loop is not None else 1
+            lateral_changed |= counts[axis] > 0 and counts[axis] != recorded
+        if not lateral_changed:
+            scan = layout_scan(resolved, num_frames)
+            if scan is not None:
+                return override_layout_z(scan, counts["z"])
+        else:
+            if layout.recorded_event_spans is not None:
+                raise ValueError("Cannot change X/Y counts for a partial event layout")
+            for axis, count in counts.items():
+                if count > 1 and f"scan_{axis}" not in loops:
+                    raise ValueError(f"Cannot add a scanned {axis.upper()} axis: its acquisition order is not recorded")
+            updated = tuple(
+                replace(loop, count=counts[loop.kind[-1]])
+                if loop.kind in ("scan_x", "scan_y", "scan_z") and counts[loop.kind[-1]] > 0
+                else loop for loop in layout.event_loops
+            )
+            # Retain all non-spatial loops. A count correction that does not
+            # fit the stored events is rejected, not silently treated as time.
+            if prod(loop.count for loop in updated) != num_frames:
+                raise ValueError("Manual XYZ positions do not match the recorded frame count and other acquisition loops")
+            corrected = replace(resolved, layout=replace(layout, event_loops=updated))
+            scan = layout_scan(corrected, num_frames)
+            if scan is None:
+                raise ValueError("Cannot apply XYZ counts to this acquisition layout")
+            return replace(scan, source="acquisition layout, positions from the panel")
+
+    attrs = attrs or {}
+    inferred = _counts_from_attributes(attrs, num_frames)
+    for index, axis in enumerate("xy"):
+        if counts[axis] <= 0:
+            try:
+                counts[axis] = int(np.asarray(attrs[f"ScanTTL:N{axis}"]).ravel()[0])
+            except (KeyError, TypeError, ValueError, IndexError):
+                counts[axis] = inferred[index] if inferred else 0
+    if min(counts["x"], counts["y"]) <= 0:
+        raise ValueError("Set both X and Y positions when recording counts are unavailable")
+    nx, ny = counts["x"], counts["y"]
+    raster = recorded_scan(attrs, num_frames, nx, ny)
+    if max(nx, ny) < 2:
+        raise ValueError("At least one lateral axis must be scanned")
+    nz = counts["z"]
+    if nz <= 0:
+        try:
+            nz = int(np.asarray(attrs.get("ScanTTL:Nz", 1)).ravel()[0])
+        except (TypeError, ValueError, IndexError):
+            nz = 1
+    nz = max(1, nz)
+    if raster.num_stacks % nz:
+        raise ValueError(f"The {raster.num_stacks} raster stacks cannot form {nz} Z planes per timepoint")
+    k = np.arange(raster.frames_per_stack)
+    index = np.tile(np.column_stack((k % nx, k // nx)), (raster.num_stacks, 1))
+    return LayoutScan(
+        index=index, logical=index.copy(),
+        stack=np.repeat(np.arange(raster.num_stacks), raster.frames_per_stack),
+        num_time=raster.num_stacks // nz, num_planes=nz, num_conditions=1,
+        condition_labels=(), counts=(nx, ny),
+        step_nm=tuple(recorded_axis_step_nm(attrs, axis) if count > 1 else None
+                      for axis, count in zip("xy", (nx, ny))),
+        plane_step_nm=recorded_axis_step_nm(attrs, "z") if nz > 1 else None,
+        fast_axis="x" if nx > 1 else "y",
+        source="manual stage positions, contiguous X-fast raster assumed",
     )
 
 

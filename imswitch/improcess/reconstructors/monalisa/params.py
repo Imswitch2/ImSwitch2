@@ -138,9 +138,15 @@ DEFAULT_PARAMS = {
     "full_options": deepcopy(FULL_OPTION_DEFAULTS),
     # Kept as expert overrides for recordings whose layout/attrs do not state
     # their scan geometry. Zero means "use the recording".
-    "scan_steps_fast": 0,
+    "scan_steps_x": 0,
+    "scan_steps_y": 0,
+    "scan_steps_fast": 0,  # Legacy chronological counts; retained for replay.
     "scan_steps_slow": 0,
-    "scan_step_nm": 0.0,
+    "scan_steps_z": 0,
+    "scan_step_nm": 0.0,  # Historical shared X/Y setting; retain for saved jobs.
+    "scan_step_x_nm": 0.0,
+    "scan_step_y_nm": 0.0,
+    "scan_step_z_nm": 0.0,
 }
 
 def default_params() -> dict:

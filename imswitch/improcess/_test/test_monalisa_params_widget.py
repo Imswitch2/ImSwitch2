@@ -21,6 +21,117 @@ def qapp():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+def test_scanning_advanced_xyz_defaults_and_independent_pitch(qapp):
+    from imswitch.improcess.reconstructors.monalisa.scanning_settings import ScanningAdvancedDialog
+
+    dialog = ScanningAdvancedDialog({})
+    assert not dialog.overrideCheck.isChecked()
+    assert dialog.linkXY.isChecked()
+    dialog.overrideCheck.setChecked(True)
+    dialog.xPositions.setValue(22)
+    dialog.yPositions.setValue(11)
+    dialog.zPlanes.setValue(25)
+    dialog.xStepNm.setValue(35.0)
+    dialog.zStepNm.setValue(150.0)
+    values = dialog.values()
+    assert (values["scan_steps_x"], values["scan_steps_y"],
+            values["scan_steps_z"]) == (22, 11, 25)
+    assert values["scan_steps_fast"] == values["scan_steps_slow"] == 0
+    assert dialog.yStepNm.value() == 35.0
+    assert (values["scan_step_x_nm"], values["scan_step_y_nm"],
+            values["scan_step_z_nm"]) == (35.0, 35.0, 150.0)
+
+    dialog.linkXY.setChecked(False)
+    dialog.yStepNm.setValue(70.0)
+    assert dialog.values()["scan_step_y_nm"] == 70.0
+    dialog.overrideCheck.setChecked(False)
+    assert all(value == 0 for value in dialog.values().values())
+
+    # Historical saved records had one shared lateral pitch.
+    legacy = ScanningAdvancedDialog({"scan_step_nm": 42.0})
+    assert legacy.overrideCheck.isChecked()
+    assert legacy.linkXY.isChecked()
+    assert legacy.xStepNm.value() == 42.0
+    assert legacy.values()["scan_step_y_nm"] == 42.0
+    assert legacy.values()["scan_step_nm"] == 0.0
+
+    legacy_counts = ScanningAdvancedDialog(
+        {"scan_steps_fast": 11, "scan_steps_slow": 22}, fast_axis="y"
+    )
+    assert legacy_counts.xPositions.value() == 22
+    assert legacy_counts.yPositions.value() == 11
+    assert legacy_counts.values()["scan_steps_x"] == 22
+    assert legacy_counts.values()["scan_steps_y"] == 11
+
+
+
+def test_scan_override_prefills_metadata_and_keeps_inherited_fields(qapp):
+    from imswitch.improcess.reconstructors.monalisa.scanning_settings import ScanningAdvancedDialog
+
+    axes = {"x": {"count": 8, "step_nm": 62.0},
+            "y": {"count": 12, "step_nm": 62.0},
+            "z": {"count": 8, "step_nm": 150.0}}
+    dialog = ScanningAdvancedDialog({}, recorded_axes=axes)
+    assert not dialog.overrideCheck.isChecked()
+    assert not dialog.xPositions.isEnabled()
+    assert (dialog.xPositions.value(), dialog.yPositions.value(), dialog.zPlanes.value()) == (8, 12, 8)
+    assert (dialog.xStepNm.value(), dialog.yStepNm.value(), dialog.zStepNm.value()) == (62, 62, 150)
+    dialog.overrideCheck.setChecked(True)
+    assert dialog.xPositions.isEnabled()
+    assert all(value == 0 for value in dialog.values().values())
+    dialog.zStepNm.setValue(175)
+    values = dialog.values()
+    assert values["scan_step_z_nm"] == 175
+    assert all(value == 0 for key, value in values.items() if key != "scan_step_z_nm")
+
+    reopened = ScanningAdvancedDialog(values, recorded_axes=axes)
+    assert reopened.overrideCheck.isChecked()
+    assert reopened.zStepNm.value() == 175
+    assert reopened.xStepNm.value() == 62
+    assert reopened.values() == values
+    reopened.overrideCheck.setChecked(False)
+    assert reopened.zStepNm.value() == 150
+    assert all(value == 0 for value in reopened.values().values())
+    reopened.overrideCheck.setChecked(True)
+    assert reopened.zStepNm.value() == 150
+    assert all(value == 0 for value in reopened.values().values())
+
+
+def test_scan_override_preserves_asymmetric_metadata_and_explicit_values(qapp):
+    from imswitch.improcess.reconstructors.monalisa.scanning_settings import ScanningAdvancedDialog
+
+    axes = {"x": {"count": 8, "step_nm": 62},
+            "y": {"count": 12, "step_nm": 35},
+            "z": {"count": 1, "step_nm": None}}
+    dialog = ScanningAdvancedDialog({"scan_steps_x": 8}, recorded_axes=axes)
+    assert dialog.overrideCheck.isChecked()
+    assert not dialog.linkXY.isChecked()
+    assert dialog.yStepNm.value() == 35
+    assert dialog.zPlanes.value() == 1
+    assert dialog.zStepNm.value() == 0
+    assert dialog.values()["scan_steps_x"] == 8
+    assert dialog.values()["scan_step_y_nm"] == 0
+    dialog.linkXY.setChecked(True)
+    assert dialog.yStepNm.value() == 62
+    assert dialog.values()["scan_step_y_nm"] == 62
+    dialog.overrideCheck.setChecked(False)
+    assert dialog.yStepNm.value() == 35
+    assert not dialog.linkXY.isChecked()
+    assert all(value == 0 for value in dialog.values().values())
+
+
+def test_scan_summary_shows_manual_inputs_without_a_reconstruction(qapp):
+    widget = MonalisaParamsWidget()
+    widget._recorded_scan_axes = {"x": {"count": 8, "step_nm": 62},
+                                  "y": {"count": 12, "step_nm": 62},
+                                  "z": {"count": 8, "step_nm": 150}}
+    widget._scan_overrides.update(scan_steps_x=10, scan_step_z_nm=175)
+    widget._update_scan_summary()
+    assert "10 pos." in widget.scanSummaryLabel.text()
+    assert "175.0 nm (manual)" in widget.scanSummaryLabel.text()
+    assert "Manual scan override" in widget.scanningHeader._summary
+
+
 def test_compact_widget_defaults_match_the_backend_contract(qapp):
     from imswitch.improcess.model.plugin_contract import widget_problems
     from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor

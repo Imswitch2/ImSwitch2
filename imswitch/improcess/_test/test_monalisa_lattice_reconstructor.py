@@ -32,7 +32,9 @@ from imswitch.improcess.reconstructors.monalisa_lattice.result import (  # noqa:
 )
 from imswitch.improcess.reconstructors.monalisa_lattice.scan import (  # noqa: E402
     layout_scan,
+    override_layout_z,
     recorded_scan,
+    stage_count_scan,
 )
 from imswitch.imcommon.model.acquisition_layout import (  # noqa: E402
     ACQUISITION_LAYOUT_SCHEMA,
@@ -112,6 +114,37 @@ def _interior(image, margin=20):
 
 
 PLAIN = dict(frame_gain=False, cell_offsets=False, reassignment="off")
+
+
+def test_stage_count_override_keeps_y_fast_and_direction():
+    from imswitch.improcess.reconstructors.monalisa.scan_frame import orient_recorded_index
+
+    resolved = _resolved([_loop("scan_z", 2, 0.15), _loop("scan_x", 3, 0.04),
+                          _loop("scan_y", 4, 0.08, direction=-1)])
+    # Override only X; leave Y, Z and recorded traversal intact.
+    scan = stage_count_scan(resolved, {}, 24, {"scan_steps_x": 3})
+    assert scan.counts == (3, 4)
+    assert scan.in_plane_shape == (4, 3)
+    assert scan.num_planes == 2
+    np.testing.assert_array_equal(scan.index[:5], [[0, 3], [0, 2], [0, 1], [0, 0], [1, 3]])
+    np.testing.assert_array_equal(orient_recorded_index(scan.index[:2], "-y+x"),
+                                  [[3, 0], [2, 0]])
+    corrected = stage_count_scan(resolved, {}, 24, {"scan_steps_x": 4, "scan_steps_y": 3})
+    assert corrected.counts == (4, 3)
+    assert corrected.in_plane_shape == (3, 4)
+    np.testing.assert_array_equal(corrected.index[:4], [[0, 2], [0, 1], [0, 0], [1, 2]])
+    assert corrected.num_planes == 2
+    with pytest.raises(ValueError, match="recorded frame count"):
+        stage_count_scan(resolved, {}, 24, {"scan_steps_x": 5})
+
+
+def test_stage_count_override_without_layout_has_stage_coordinates():
+    scan = stage_count_scan(None, {}, 24, {"scan_steps_x": 3, "scan_steps_y": 4, "scan_steps_z": 2})
+    assert scan.in_plane_shape == (3, 4)
+    assert scan.num_planes == 2
+    assert scan.num_time == 1
+    np.testing.assert_array_equal(scan.index[:4], [[0, 0], [1, 0], [2, 0], [0, 1]])
+    np.testing.assert_array_equal(scan.frames_of(1), np.arange(12, 24))
 
 
 class TestRecordedScan:
@@ -507,6 +540,17 @@ class TestLayoutScan:
             "(acquisition layout)"
         )
 
+    def test_manual_z_count_repartitions_only_contiguous_stacks(self):
+        loops = [_loop("time", 4), _loop("scan_y", 3, 0.035),
+                 _loop("scan_x", 2, 0.035)]
+        scan = layout_scan(_resolved(loops), 24)
+        overridden = override_layout_z(scan, 2)
+        assert overridden.stack_shape == (2, 1, 2)
+        assert overridden.frames_per_stack == 6
+        np.testing.assert_array_equal(overridden.frames_of(3), np.arange(18, 24))
+        with pytest.raises(ValueError, match="cannot form"):
+            override_layout_z(scan, 3)
+
     def test_timepoints_and_planes_make_stacks(self):
         loops = [
             _loop("time", 2), _loop("scan_z", 3, 0.1),
@@ -798,15 +842,72 @@ class TestRecordedScans:
         assert np.abs(result.data[1]).max() < 1e-6
         assert "frame gain (% rms)" in result.diagnostics
 
-    def test_steps_typed_in_describe_a_raster_instead(self):
+    def test_matching_manual_counts_keep_the_acquisition_layout(self):
         scan = make_scan(steps=(22, 22))
         loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
         result = MonalisaLatticeReconstructor().process(
             _recorded(scan.frames, loops),
             _params(scan_steps_fast=22, scan_steps_slow=22, **PLAIN),
         )
-        assert "(parameters)" in result.diagnostics["scan"]
-        assert "frames placed by" not in result.diagnostics
+        assert "acquisition layout" in result.diagnostics["scan"]
+        assert "frames placed by" in result.diagnostics
+
+    def test_independent_xy_step_overrides_outweigh_layout_metadata(self):
+        scan = make_scan(steps=(22, 11), step=np.diag([0.5, 1.0]))
+        loops = [_loop("scan_y", 11, 0.08), _loop("scan_x", 22, 0.04)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, loops),
+            _params(scan_step_x_nm=35.0, scan_step_y_nm=70.0,
+                    orientation="+x+y", **PLAIN),
+        )
+        assert result.axis_scales == pytest.approx([70.0, 35.0])
+        assert "step from the panel" in result.diagnostics["scan"]
+
+    def test_yz_scan_z_step_override_preserves_plane_count(self):
+        line = make_scan(steps=(1, 22), background=0.0)
+        frames = _planes(line, (1.0, 1.0, 1.0))
+        loops = [_loop("scan_z", 3, 0.1), _loop("scan_y", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops),
+            _params(scan_step_y_nm=40.0, scan_step_z_nm=150.0,
+                    orientation="+x+y", **PLAIN),
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 3
+        assert result.axis_scales[0] == pytest.approx(150.0)
+        assert result.axis_scales[1] == pytest.approx(40.0)
+
+    def test_manual_xy_counts_do_not_drop_recorded_z(self):
+        line = make_scan(steps=(1, 22), background=0.0)
+        loops = [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(_planes(line, (1.0, 1.0)), loops),
+            _params(scan_steps_x=1, scan_steps_y=22,
+                    orientation="+x+y", **PLAIN),
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 2
+
+    def test_independent_xy_steps_without_layout_use_the_step_ratio(self):
+        scan = make_scan(steps=(22, 11), step=np.diag([0.5, 1.0]))
+        result = MonalisaLatticeReconstructor().process(
+            _recording(scan.frames),
+            _params(scan_steps_fast=22, scan_steps_slow=11,
+                    scan_step_x_nm=35.0, scan_step_y_nm=70.0,
+                    orientation="+x+y", **PLAIN),
+        )
+        assert result.axis_scales == pytest.approx([70.0, 35.0], rel=0.01)
+
+    def test_manual_xyz_without_layout_reconstructs_z_volume(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        result = MonalisaLatticeReconstructor().process(
+            _recording(_planes(scan, (1.0, 1.0, 1.0)), _attrs()),
+            _params(scan_steps_x=11, scan_steps_y=11,
+                    scan_steps_z=3, scan_step_z_nm=120.0, **PLAIN),
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 3
+        assert result.axis_scales[0] == pytest.approx(120.0)
 
     def test_a_pixel_size_needs_a_recorded_step(self):
         line = make_scan(steps=(1, 22))

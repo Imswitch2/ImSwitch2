@@ -177,9 +177,16 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('sharpen_sigma_px', 'float', defaults['sharpen_sigma_px'], label='Blur', suffix='px', min=0.1, max=100.0, decimals=2, group='Sharpening'),
             ParamField('sharpen_regularization', 'float', defaults['sharpen_regularization'], label='Regularization', min=0.001, max=100.0, decimals=3, group='Sharpening'),
             ParamField('pinhole_stack', 'bool', defaults['pinhole_stack'], label='Pinhole stack', group='ISM'),
-            ParamField('scan_steps_fast', 'int', defaults['scan_steps_fast'], label='Steps, fast axis', min=0, group='Scanning', advanced=True),
-            ParamField('scan_steps_slow', 'int', defaults['scan_steps_slow'], label='Steps, slow axis', min=0, group='Scanning', advanced=True),
-            ParamField('scan_step_nm', 'float', defaults['scan_step_nm'], label='Step', suffix='nm', min=0.0, group='Scanning', advanced=True),
+            *(ParamField('scan_steps_' + axis, 'int', defaults['scan_steps_' + axis],
+                         label=axis.upper() + ' positions', min=0, group='Scanning', advanced=True)
+              for axis in 'xy'),
+            ParamField('scan_steps_fast', 'int', defaults['scan_steps_fast'], label='Legacy fast-axis positions', min=0, group='Scanning', advanced=True),
+            ParamField('scan_steps_slow', 'int', defaults['scan_steps_slow'], label='Legacy slow-axis positions', min=0, group='Scanning', advanced=True),
+            ParamField('scan_steps_z', 'int', defaults['scan_steps_z'], label='Z planes', min=0, group='Scanning', advanced=True),
+            ParamField('scan_step_nm', 'float', defaults['scan_step_nm'], label='Legacy shared XY step', suffix='nm', min=0.0, group='Scanning', advanced=True),
+            ParamField('scan_step_x_nm', 'float', defaults['scan_step_x_nm'], label='X step', suffix='nm', min=0.0, group='Scanning', advanced=True),
+            ParamField('scan_step_y_nm', 'float', defaults['scan_step_y_nm'], label='Y step', suffix='nm', min=0.0, group='Scanning', advanced=True),
+            ParamField('scan_step_z_nm', 'float', defaults['scan_step_z_nm'], label='Z step', suffix='nm', min=0.0, group='Scanning', advanced=True),
         )
 
     def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
@@ -345,18 +352,31 @@ class MonalisaReconstructor(StreamingReconstructor):
         the legacy scan metadata.
         """
         from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
-            layout_scan, recorded_scan,
+            has_stage_count_override, layout_scan, recorded_scan, stage_count_scan,
         )
 
         num_frames = int(np.asarray(frames).shape[0])
         groups = None
-        try:
-            scan = layout_scan(getattr(data_obj, "acquisition_layout", None), num_frames)
-        except ValueError:
-            # A declared incompatible layout should keep its normal explicit
-            # failure during reconstruction; localization itself can still be
-            # attempted from the frames rather than mixing arbitrary stacks.
-            scan = None
+        if has_stage_count_override(params):
+            scan = stage_count_scan(
+                getattr(data_obj, "acquisition_layout", None),
+                dict(getattr(data_obj, "attrs", None) or {}), num_frames, params,
+            )
+        else:
+            try:
+                scan = layout_scan(getattr(data_obj, "acquisition_layout", None), num_frames)
+            except ValueError:
+                # A declared incompatible layout should keep its normal explicit
+                # failure during reconstruction; localization itself can still be
+                # attempted from the frames rather than mixing arbitrary stacks.
+                scan = None
+            if scan is not None:
+                fast = int(params.get("scan_steps_fast", 0) or 0)
+                slow = int(params.get("scan_steps_slow", 0) or 0)
+                if (fast > 0 or slow > 0) and (fast, slow) != scan.in_plane_shape:
+                    # The reconstruction will use the manual raster instead of
+                    # this layout; calibration must group the same frames.
+                    scan = None
         if scan is not None:
             groups = [scan.frames_of(stack) for stack in range(scan.num_stacks)]
         else:
@@ -531,9 +551,14 @@ class MonalisaReconstructor(StreamingReconstructor):
             "estimator": str(params.get("estimator", ESTIMATOR_JOINT)),
             **footprint_from_params(params).to_dict(),
             "local_sampling": str(params.get("local_sampling", "camera_pixels")),
+            "scan_steps_x": int(params.get("scan_steps_x", 0) or 0),
+            "scan_steps_y": int(params.get("scan_steps_y", 0) or 0),
             "scan_steps_fast": int(params.get("scan_steps_fast", 0) or 0),
             "scan_steps_slow": int(params.get("scan_steps_slow", 0) or 0),
             "scan_step_nm": float(params.get("scan_step_nm", 0.0) or 0.0),
+            "scan_steps_z": int(params.get("scan_steps_z", 0) or 0),
+            **{key: float(params.get(key, 0.0) or 0.0) for key in (
+                "scan_step_x_nm", "scan_step_y_nm", "scan_step_z_nm")},
             "placement_mode": str(params.get("placement_mode", PLACEMENT_AUTO)),
             "commensurate_tolerance": float(params.get("commensurate_tolerance", 0.05)),
             "variance_weighting": bool(params.get("variance_weighting", False)),
@@ -765,9 +790,14 @@ class MonalisaReconstructor(StreamingReconstructor):
             "performance_batch_extraction": str(merged["performance_batch_extraction"]),
             "performance_placement_reuse": str(merged["performance_placement_reuse"]),
             "show_reconstruction_timings": bool(merged["show_reconstruction_timings"]),
+            "scan_steps_x": int(merged.get("scan_steps_x", 0)),
+            "scan_steps_y": int(merged.get("scan_steps_y", 0)),
             "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
             "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
             "scan_step_nm": float(merged.get("scan_step_nm", 0.0)),
+            "scan_steps_z": int(merged.get("scan_steps_z", 0)),
+            **{key: float(merged.get(key, 0.0)) for key in (
+                "scan_step_x_nm", "scan_step_y_nm", "scan_step_z_nm")},
             "pixel_size_nm": float(merged.get("pixel_size_nm", 0.0)),
             "orientation": AUTO if orientation is None else orientation,
             "reuse_localization": False,

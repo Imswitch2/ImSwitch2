@@ -27,6 +27,7 @@ from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
 
 from ..monalisa.calibration import PatternLocalization
+from ..monalisa.scan_overrides import scan_step_overrides
 from ..monalisa.calibration_frames import modulation_score
 from ..monalisa.localization_settings import LocalizationSettings
 from ..monalisa.pipeline import (
@@ -47,7 +48,10 @@ from ..monalisa.scan_frame import (
 )
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
-from .scan import LayoutScan, layout_scan, recorded_scan
+from .scan import (
+    LayoutScan, has_stage_count_override, layout_scan, override_layout_z,
+    recorded_axis_step_nm, recorded_scan, stage_count_scan,
+)
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -284,12 +288,21 @@ class MonalisaLatticeReconstructor(Reconstructor):
     @classmethod
     def param_spec(cls) -> tuple:
         return (
-            ParamField('scan_steps_fast', 'int', 0, label='Steps, fast axis',
+            *(ParamField('scan_steps_' + axis, 'int', 0, label=axis.upper() + ' positions',
+                         min=0, max=10000, group='Scan', help='0: taken from the recording')
+              for axis in 'xy'),
+            ParamField('scan_steps_fast', 'int', 0, label='Legacy fast-axis positions',
                        min=0, max=10000, group='Scan', help='0: taken from the recording'),
-            ParamField('scan_steps_slow', 'int', 0, label='Steps, slow axis',
+            ParamField('scan_steps_slow', 'int', 0, label='Legacy slow-axis positions',
                        min=0, max=10000, group='Scan', help='0: taken from the recording'),
-            ParamField('scan_step_nm', 'float', 0.0, label='Step', suffix='nm',
+            ParamField('scan_steps_z', 'int', 0, label='Z planes',
                        min=0, max=10000, group='Scan', help='0: taken from the recording'),
+            ParamField('scan_step_nm', 'float', 0.0, label='Legacy shared XY step', suffix='nm',
+                       min=0, max=10000, group='Scan', help='0: taken from the recording'),
+            *(ParamField('scan_step_' + axis + '_nm', 'float', 0.0,
+                         label=axis.upper() + ' step', suffix='nm', min=0, max=10000,
+                         group='Scan', help='0: taken from the recording')
+              for axis in 'xyz'),
             ParamField('pixel_size_nm', 'float', 0.0, label='Camera pixel', suffix='nm',
                        min=0, max=10000, group='Scan',
                        help='0: the scan is taken to cover the cell of the lattice once'),
@@ -465,33 +478,76 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 stage_times[name] = round(now - stage_t0, 6)
                 stage_t0 = now
 
-        # Steps typed into the panel describe the recording as a raster of
-        # their own; otherwise the recording's layout places every frame.
+        if has_stage_count_override(params):
+            scan = stage_count_scan(getattr(data_obj, "acquisition_layout", None),
+                                    attrs, frames.shape[0], params)
+            return self._process_recorded(
+                data_obj, frames, scan, params, started, report, check_cancelled
+            )
+
+        # Preserve the acquisition layout (including XYZ/T frame ordering)
+        # when manually specified lateral counts agree with it. Only a genuine
+        # count disagreement requires the historical contiguous-raster fallback.
+        fast_count = int(params.get("scan_steps_fast", 0) or 0)
+        slow_count = int(params.get("scan_steps_slow", 0) or 0)
+        z_count = int(params.get("scan_steps_z", 0) or 0)
         recorded = None
-        if int(params["scan_steps_fast"]) <= 0 and int(params["scan_steps_slow"]) <= 0:
+        try:
             recorded = layout_scan(
                 getattr(data_obj, "acquisition_layout", None), frames.shape[0]
             )
-        if recorded is not None:
+        except ValueError:
+            if fast_count <= 0 and slow_count <= 0:
+                raise
+        same_lateral = (
+            fast_count <= 0 and slow_count <= 0
+            or recorded is not None and (fast_count, slow_count) == recorded.in_plane_shape
+        )
+        if recorded is not None and same_lateral:
+            recorded = override_layout_z(recorded, z_count)
             return self._process_recorded(
                 data_obj, frames, recorded, params, started, report, check_cancelled
             )
 
         scan = recorded_scan(
-            attrs, frames.shape[0],
-            int(params["scan_steps_fast"]), int(params["scan_steps_slow"]),
-            float(params["scan_step_nm"]),
+            attrs, frames.shape[0], fast_count, slow_count,
+            float(params.get("scan_step_nm", 0.0)),
         )
+        # An explicit lateral-count override may still describe a Z stack.
+        # The fallback assumes contiguous rasters, Z inside time, and cannot
+        # infer interleaved conditions from metadata it is overriding.
+        if z_count <= 0 and recorded is not None:
+            z_count = recorded.num_planes
+        if z_count > 1 and scan.num_stacks % z_count:
+            raise ValueError(
+                f"The {scan.num_stacks} raster stacks cannot form "
+                f"{z_count} Z planes per timepoint"
+            )
         self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
         pixel_nm = float(params["pixel_size_nm"])
+        typed_x, typed_y, typed_z = scan_step_overrides(params)
+        explicit_xy = any(float(params.get(f"scan_step_{axis}_nm", 0.0) or 0.0) > 0
+                          for axis in "xy")
+        axis_steps = (
+            (typed_x or recorded_axis_step_nm(attrs, "x"),
+             typed_y or recorded_axis_step_nm(attrs, "y"))
+            if explicit_xy else (scan.step_nm, scan.step_nm)
+        )
         step = None
+        aspect = None
         if pixel_nm > 0:
-            if scan.step_nm is None:
+            if not any(value is not None and value > 0 for value in axis_steps):
                 raise ValueError(
                     "A camera pixel size is set but the size of a scan step is "
                     "not known: set the step, or leave the pixel size at 0"
                 )
-            step = np.diag([scan.step_nm / pixel_nm] * 2)
+            step = np.full((2, 2), np.nan)
+            for axis, value in enumerate(axis_steps):
+                if value is not None and value > 0:
+                    step[:, axis] = 0.0
+                    step[axis, axis] = value / pixel_nm
+        elif explicit_xy and all(value is not None and value > 0 for value in axis_steps):
+            aspect = float(axis_steps[0] / axis_steps[1])
         orientation = None if params["orientation"] == AUTO else str(params["orientation"])
         settings = pipeline_params(params)
         supplied_localization = params.get("_pattern_localization")
@@ -532,7 +588,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             geometry = prepare_geometry(
                 frames[0], step, first_index, settings,
                 localization=supplied_localization,
-                modulation_frame=None,
+                modulation_frame=None, step_aspect=aspect,
             )
 
         record_stage("calibration")
@@ -582,6 +638,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 localization=supplied_localization if geometry is None else None,
                 extracted=extracted,
                 prepared_placement=shared_placement,
+                step_aspect=aspect,
             )
             if number == 0:
                 geometry = result.geometry
@@ -606,12 +663,23 @@ class MonalisaLatticeReconstructor(Reconstructor):
         first = results[int(order[0])]
         step_px = np.asarray(geometry.step, dtype=float)
         pitch_px = float(np.sqrt(abs(np.linalg.det(step_px))))
-        camera_pixel_nm = pixel_nm if pixel_nm > 0 else (
-            scan.step_nm / pitch_px if scan.step_nm else None
-        )
-        output_pixel_nm = scan.step_nm if scan.step_nm else (
-            pixel_nm * pitch_px if pixel_nm > 0 else None
-        )
+        if explicit_xy:
+            pitch_axes = tuple(float(np.linalg.norm(step_px[:, axis])) for axis in (0, 1))
+            camera_pixel_nm = pixel_nm if pixel_nm > 0 else next(
+                (value / pitch_axes[axis] for axis, value in enumerate(axis_steps)
+                 if value and pitch_axes[axis] > 0), None,
+            )
+            output_pixel_nm = (
+                (pitch_axes[1] * camera_pixel_nm, pitch_axes[0] * camera_pixel_nm)
+                if camera_pixel_nm else None
+            )
+        else:
+            camera_pixel_nm = pixel_nm if pixel_nm > 0 else (
+                scan.step_nm / pitch_px if scan.step_nm else None
+            )
+            output_pixel_nm = scan.step_nm if scan.step_nm else (
+                pixel_nm * pitch_px if pixel_nm > 0 else None
+            )
         diagnostics = self._diagnostics(
             scan, first, camera_pixel_nm, output_pixel_nm,
             time.perf_counter() - started,
@@ -659,19 +727,43 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 pinholes = pinholes[0]
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
+        num_planes = z_count if z_count > 1 else 1
+        num_time = scan.num_stacks // num_planes
+        plane_pitch = (typed_z or
+                       (recorded.plane_step_nm if recorded is not None else None) or
+                       recorded_axis_step_nm(attrs, "z")) if num_planes > 1 else None
+        if num_planes > 1:
+            diagnostics["Z planes"] = f"{num_planes} per timepoint (manual raster)"
+            if plane_pitch is not None:
+                diagnostics["Z plane step (nm)"] = float(plane_pitch)
+
+        def shaped(pick):
+            data = planes(pick)
+            if data is None or num_planes == 1:
+                return data
+            shape = ((num_time,) if num_time > 1 else ()) + (num_planes,)
+            return data.reshape((*shape, *data.shape[1:]))
+
+        if num_planes > 1 and pinholes is not None:
+            leading = ((num_time,) if num_time > 1 else ()) + (num_planes,)
+            pinholes = pinholes.reshape((*leading, *pinholes.shape[1:]))
         return MonalisaLatticeResult(
             name=f"{data_obj.name}_lattice",
-            image=planes(lambda result: result.amplitude.image),
+            image=shaped(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
             params=params,
             diagnostics=diagnostics,
-            sharpened=planes(lambda result: result.sharpened),
-            background=planes(
+            sharpened=shaped(lambda result: result.sharpened),
+            background=shaped(
                 lambda result: None if result.background is None
                 else result.background.image
             ),
             pinholes=pinholes,
             pinhole_offsets=offsets,
+            axis_labels=((["T"] if num_time > 1 else []) + ["Z", "Y", "X"])
+                        if num_planes > 1 else None,
+            plane_step_nm=plane_pitch,
+            scanned_axes=("z",) if num_planes > 1 else (),
         )
 
     def _process_recorded(
@@ -695,16 +787,19 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 stage_times[name] = round(now - stage_t0, 6)
                 stage_t0 = now
 
-        typed_step = float(params["scan_step_nm"])
-        if typed_step > 0:
-            # What the panel says outranks what the recording says, as on
-            # the attribute path: one step for every scanned axis.
+        typed_x, typed_y, typed_z = scan_step_overrides(params)
+        if any(value > 0 for value in (typed_x, typed_y, typed_z)):
             scan = replace(
                 scan,
                 step_nm=tuple(
-                    typed_step if count > 1 else None for count in scan.counts
+                    (override or recorded) if count > 1 else None
+                    for override, recorded, count in zip(
+                        (typed_x, typed_y), scan.step_nm, scan.counts
+                    )
                 ),
-                source="acquisition layout, step from the panel",
+                plane_step_nm=(typed_z or scan.plane_step_nm)
+                              if scan.num_planes > 1 else None,
+                source=f"{scan.source}, step from the panel",
             )
         self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
         pixel_nm = float(params["pixel_size_nm"])

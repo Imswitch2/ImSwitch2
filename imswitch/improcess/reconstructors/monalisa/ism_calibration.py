@@ -17,6 +17,7 @@ from .pipeline import complete_step
 from .placement import OutputRaster, lock_step_to_lattice
 from .reassignment import DEFAULT_OFFSETS, ShiftFactor, measure_shift_factor
 from .scan_frame import orient_recorded_index, orient_step_columns, raster_scan_index
+from .scan_overrides import scan_step_overrides
 
 
 @dataclass(frozen=True)
@@ -31,23 +32,38 @@ class ISMShiftEstimate:
 def _scan_geometry(frames, attrs, resolved_layout, params, orientation):
     """Use the same scan-source precedence as the lattice reconstructor."""
     from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
-        layout_scan, recorded_scan,
+        has_stage_count_override, layout_scan, override_layout_z,
+        recorded_axis_step_nm, recorded_scan, stage_count_scan,
     )
 
     num_frames = frames.shape[0]
-    steps_fast = int(params.get("scan_steps_fast", 0))
-    steps_slow = int(params.get("scan_steps_slow", 0))
-    typed_nm = float(params.get("scan_step_nm", 0.0))
+    steps_fast = int(params.get("scan_steps_fast", 0) or 0)
+    steps_slow = int(params.get("scan_steps_slow", 0) or 0)
+    steps_z = int(params.get("scan_steps_z", 0) or 0)
+    typed_x, typed_y, _typed_z = scan_step_overrides(params)
     pixel_nm = float(params.get("pixel_size_nm", 0.0))
 
-    layout = (
-        layout_scan(resolved_layout, num_frames)
-        if steps_fast <= 0 and steps_slow <= 0 else None
-    )
-    if layout is not None:
+    if has_stage_count_override(params):
+        layout = stage_count_scan(resolved_layout, attrs, num_frames, params)
+        lateral_matches = True
+    else:
+        try:
+            layout = layout_scan(resolved_layout, num_frames)
+        except ValueError:
+            if steps_fast <= 0 and steps_slow <= 0:
+                raise
+            layout = None
+        lateral_matches = (
+            steps_fast <= 0 and steps_slow <= 0
+            or layout is not None and (steps_fast, steps_slow) == layout.in_plane_shape
+        )
+    if layout is not None and lateral_matches:
+        layout = override_layout_z(layout, steps_z)
         step_nm = tuple(
-            typed_nm if typed_nm > 0 and n > 1 else recorded
-            for n, recorded in zip(layout.counts, layout.step_nm)
+            (typed or recorded) if count > 1 else None
+            for typed, recorded, count in zip(
+                (typed_x, typed_y), layout.step_nm, layout.counts
+            )
         )
         step = None
         aspect = None
@@ -63,13 +79,30 @@ def _scan_geometry(frames, attrs, resolved_layout, params, orientation):
             aspect = float(step_nm[0] / step_nm[1])
         return layout, step, aspect
 
-    raster = recorded_scan(attrs, num_frames, steps_fast, steps_slow, typed_nm)
+    raster = recorded_scan(
+        attrs, num_frames, steps_fast, steps_slow,
+        float(params.get("scan_step_nm", 0.0) or 0.0),
+    )
+    explicit_xy = any(float(params.get(f"scan_step_{axis}_nm", 0.0) or 0.0) > 0
+                      for axis in "xy")
+    axis_steps = (
+        (typed_x or recorded_axis_step_nm(attrs, "x"),
+         typed_y or recorded_axis_step_nm(attrs, "y"))
+        if explicit_xy else (raster.step_nm, raster.step_nm)
+    )
     step = None
+    aspect = None
     if pixel_nm > 0:
-        if raster.step_nm is None:
+        if not any(value is not None and value > 0 for value in axis_steps):
             raise ValueError("Camera pixel size is known, but scan step is missing")
-        step = np.diag([raster.step_nm / pixel_nm] * 2)
-    return raster, step, None
+        step = np.full((2, 2), np.nan)
+        for axis, value in enumerate(axis_steps):
+            if value is not None and value > 0:
+                step[:, axis] = 0.0
+                step[axis, axis] = value / pixel_nm
+    elif explicit_xy and all(value is not None and value > 0 for value in axis_steps):
+        aspect = float(axis_steps[0] / axis_steps[1])
+    return raster, step, aspect
 
 
 def _sampled_stack(frames, scan, localization):

@@ -12,9 +12,15 @@ from .scan import describe_recording
 AUTO = "from the frames"
 
 DEFAULT_PARAMS = {
-    "scan_steps_fast": 0,
+    "scan_steps_x": 0,
+    "scan_steps_y": 0,
+    "scan_steps_fast": 0,  # Legacy chronological counts; retained for replay.
     "scan_steps_slow": 0,
+    "scan_steps_z": 0,
     "scan_step_nm": 0.0,
+    "scan_step_x_nm": 0.0,
+    "scan_step_y_nm": 0.0,
+    "scan_step_z_nm": 0.0,
     "pixel_size_nm": 0.0,
     "orientation": AUTO,
     "reuse_localization": False,
@@ -51,12 +57,16 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
             {"name": "Recording", "type": "str", "value": "no recording", "readonly": True},
             {"name": "Output pixel", "type": "str", "value": "", "readonly": True},
             {"name": "Scan", "type": "group", "children": [
-                {"name": "Steps, fast axis", "type": "int", "limits": (0, 10000),
-                 "value": DEFAULT_PARAMS["scan_steps_fast"], "tip": tip_zero},
-                {"name": "Steps, slow axis", "type": "int", "limits": (0, 10000),
-                 "value": DEFAULT_PARAMS["scan_steps_slow"], "tip": tip_zero},
+                *({"name": axis.upper() + " positions", "type": "int", "limits": (0, 10000),
+                   "value": DEFAULT_PARAMS["scan_steps_" + axis], "tip": tip_zero}
+                  for axis in "xy"),
+                {"name": "Z planes", "type": "int", "limits": (0, 10000),
+                 "value": DEFAULT_PARAMS["scan_steps_z"], "tip": tip_zero},
                 {"name": "Step", "type": "float", "suffix": "nm", "limits": (0, 10000),
                  "value": DEFAULT_PARAMS["scan_step_nm"], "tip": tip_zero},
+                *({"name": axis.upper() + " step", "type": "float", "suffix": "nm",
+                   "limits": (0, 10000), "value": DEFAULT_PARAMS["scan_step_" + axis + "_nm"],
+                   "tip": tip_zero} for axis in "xyz"),
                 {"name": "Camera pixel", "type": "float", "suffix": "nm",
                  "limits": (0, 10000), "value": DEFAULT_PARAMS["pixel_size_nm"],
                  "tip": "0: the scan is taken to cover the cell of the lattice once"},
@@ -137,9 +147,14 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
         corrections = self.p.param("Corrections")
         outputs = self.p.param("Outputs")
         return {
-            "scan_steps_fast": int(scan.param("Steps, fast axis").value()),
-            "scan_steps_slow": int(scan.param("Steps, slow axis").value()),
+            **{f"scan_steps_{axis}": int(scan.param(axis.upper() + " positions").value())
+               for axis in "xy"},
+            "scan_steps_fast": 0,
+            "scan_steps_slow": 0,
+            "scan_steps_z": int(scan.param("Z planes").value()),
             "scan_step_nm": float(scan.param("Step").value()),
+            **{f"scan_step_{axis}_nm": float(scan.param(axis.upper() + " step").value())
+               for axis in "xyz"},
             "pixel_size_nm": float(scan.param("Camera pixel").value()),
             "orientation": str(scan.param("Orientation").value()),
             "reuse_localization": bool(estimator.param("Reuse last localization").value()),

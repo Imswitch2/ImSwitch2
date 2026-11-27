@@ -1063,9 +1063,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
         "spot_fwhm",
         "spot_fwhm_unit",
         "pixel_size_nm",
+        "scan_steps_x",
+        "scan_steps_y",
         "scan_steps_fast",
         "scan_steps_slow",
+        "scan_steps_z",
         "scan_step_nm",
+        "scan_step_x_nm",
+        "scan_step_y_nm",
+        "scan_step_z_nm",
     )
 
     @classmethod
