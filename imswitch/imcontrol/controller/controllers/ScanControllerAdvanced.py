@@ -8,6 +8,7 @@ from typing import Dict, Any
 import numpy as np
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model.beta_scan_timing import beta_scan_timing_ui_warning
 from imswitch.imcontrol.model import (
     LaserScanPowerControl,
     LaserScanState,
@@ -144,6 +145,9 @@ class ScanControllerAdvanced(SuperScanController):
             self._widget.sigStageParChanged.connect(self.updatePixels)
         if hasattr(self._widget, "sigPlotScanClicked"):
             self._widget.sigPlotScanClicked.connect(self.plotScanCurves)
+        if hasattr(self._widget, "sigSeqTimeParChanged"):
+            self._widget.sigSeqTimeParChanged.connect(self._refreshBetaTimingWarning)
+        self._refreshBetaTimingWarning()
 
         # Try initial plot
         try:
@@ -171,6 +175,23 @@ class ScanControllerAdvanced(SuperScanController):
     # ---------------------------------------------------------------------
     # Internal helpers: designer instances (no ScanManager in this branch)
     # ---------------------------------------------------------------------
+
+    def _refreshBetaTimingWarning(self):
+        show = getattr(self._widget, 'setStageTimingWarning', None)
+        if not callable(show):
+            return
+        scan = getattr(self._setupInfo, 'scan', None)
+        if scan is None or scan.scanDesigner != 'BetaScanDesigner':
+            show()
+            return
+        try:
+            dwell = self._widget.getSeqTimePar()
+        except (ValueError, TypeError):
+            dwell = None
+        message, details = beta_scan_timing_ui_warning(
+            scan.scanDesignerParams, dwell
+        )
+        show(message, details)
 
     def _get_scan_designer(self):
         if not getattr(self._setupInfo, "scan", None):

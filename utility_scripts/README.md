@@ -53,7 +53,7 @@ python scopeaid_seed_from_config.py <input_json> -o <output_dir>
 **Example:**
 ```bash
 python utility_scripts/scopeaid_seed_from_config.py \
-    imswitch/_data/user_defaults/imcontrol_setups/example_sted.json \
+    imswitch/_data/user_defaults/imcontrol_setups/real/sted/example_sted.json \
     -o ~/microscope_kb/sted_system
 ```
 

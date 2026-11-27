@@ -25,7 +25,8 @@ def restartSoftware(module='imswitch'):
     shutdown run first and restarts from ``launchApp``.
 
     The command line is carried over, so a session started with ``--debug`` or
-    ``--scale`` comes back the same way.
+    ``--scale`` comes back the same way -- unless the pending restart request
+    named other arguments (see :func:`requestRestart`).
 
     ``argv[0]`` is the interpreter path *unquoted* on POSIX. It used to be
     wrapped in literal double quotes -- a Windows habit, where ``execv`` joins
@@ -37,12 +38,13 @@ def restartSoftware(module='imswitch'):
     around every argument that needs them.
     """
     executable = _interpreter()
+    arguments = sys.argv[1:] if _restartArguments is None else _restartArguments
     if getattr(sys, 'frozen', False):
         # A frozen build has no interpreter to hand a -m to; sys.executable is
         # the bundled application itself.
-        argv = [executable] + sys.argv[1:]
+        argv = [executable] + arguments
     else:
-        argv = [executable, '-m', module] + sys.argv[1:]
+        argv = [executable, '-m', module] + arguments
     os.execv(executable, [_quotedForPlatform(arg) for arg in argv])
 
 
@@ -68,9 +70,10 @@ def _quotedForPlatform(arg):
 
 
 _restartRequest = None
+_restartArguments = None
 
 
-def requestRestart(module='imswitch'):
+def requestRestart(module='imswitch', arguments=None):
     """ Ask for ImSwitch to be restarted once it has finished shutting down.
 
     Closing the main window still runs the ordinary shutdown -- widget states
@@ -78,12 +81,16 @@ def requestRestart(module='imswitch'):
     ``launchApp`` then re-execs instead of exiting. This is the difference
     between a restart that leaves a laser as it was found and one that does
     not, which is why it exists alongside :func:`restartSoftware`.
+
+    ``arguments`` replace this process's command-line arguments for the
+    restarted one; by default they are carried over unchanged.
     """
-    global _restartRequest
+    global _restartRequest, _restartArguments
     _restartRequest = module
+    _restartArguments = None if arguments is None else list(arguments)
 
 
-def restartAfterShutdown(closeApplication, module='imswitch'):
+def restartAfterShutdown(closeApplication, module='imswitch', arguments=None):
     """ Ask for a restart, then close the application so it can happen.
 
     The single way anything in ImSwitch should restart itself. ``closeApplication``
@@ -92,15 +99,16 @@ def restartAfterShutdown(closeApplication, module='imswitch'):
     nothing is going to restart and the request is withdrawn rather than left
     armed for whenever the window is next closed.
     """
-    requestRestart(module)
+    requestRestart(module, arguments)
     if closeApplication() is False:
         cancelRestart()
 
 
 def cancelRestart():
     """ Withdraw a pending restart request. """
-    global _restartRequest
+    global _restartRequest, _restartArguments
     _restartRequest = None
+    _restartArguments = None
 
 
 def restartRequested():

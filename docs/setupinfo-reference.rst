@@ -345,8 +345,10 @@ Key fields:
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
-  ``move_time`` / ``settle_time`` (the fast-axis ramp and rest inside each
-  pixel dwell, 2 ms each by default); a dwell not longer than
+  ``move_time`` / ``settle_time`` (seconds, the fast-axis ramp and rest
+  inside each pixel dwell). They are properties of the stage, so declare
+  them: without them the designer uses 2 ms each -- the MoNaLISA stage's
+  values -- and logs a warning. A dwell not longer than
   ``move_time + settle_time`` is refused. The scan panels also read
   ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
@@ -456,7 +458,9 @@ hands its designers a fixed set of parameters.  The shipped setups use:
    "scan": {
        "scanWidgetType": "Base",
        "scanDesigner": "BetaScanDesigner",
-       "scanDesignerParams": {"return_time": 0.01},
+       "scanDesignerParams": {"return_time": 0.01,
+                              "move_time": 0.002,
+                              "settle_time": 0.002},
        "TTLCycleDesigner": "BetaTTLCycleDesigner",
        "TTLCycleDesignerParams": {},
        "sampleRate": 100000,

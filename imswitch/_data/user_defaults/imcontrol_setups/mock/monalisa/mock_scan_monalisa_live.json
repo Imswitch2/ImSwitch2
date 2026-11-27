@@ -1,26 +1,19 @@
 {
-    "__comment__": "Hardware-free Hamamatsu scan setup. Uses a MockHamamatsu camera in external frame-trigger mode plus MockPositionerManager stages and simulated NI-DAQ timing. No physical AO/DO channels or nidaqmx hardware are required: analogChannel values are null, and the camera's digitalLine is a simulated line that only lets the Scan widget gate it (a scan recording needs a camera TTL per position to know how many frames to expect). The scan simulator generates virtual frame triggers for the mock camera.",
+    "__comment__": "Hardware-free MoNaLISA setup for exercising the live-reconstruction loop end to end (record -> watch folder -> live reconstruct). It merges mock_scan_setup.json (mock AVManager camera + MockPositionerManager stages + simulated NIDAQ, so it boots with no hardware and can run a MoNaLISA Scan-once / Scan-lapse recording) with a 'processing' block that enables the MoNaLISA reconstructor in ImProcess. Also set modules.json 'enabled' to ['imcontrol', 'improcess']. Recorded frames are mock content, so reconstructions are structurally valid but not meaningful images - the point is the wiring. Record in ZARR format with 'single lapse file' OFF so a Scan-lapse produces one <name>_rec_scanN.zarr per timepoint.",
     "detectors": {
         "Camera": {
             "analogChannel": null,
-            "digitalLine": "Dev1/port0/line0",
-            "managerName": "HamamatsuManager",
+            "digitalLine": null,
+            "managerName": "AVManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
                 "cameraPixelSizeUm": 0.15,
-                "hamamatsu": {
-                    "exposure_time": 0.01,
-                    "trigger_source": 2,
-                    "subarray_hpos": 0,
-                    "subarray_vpos": 0,
-                    "subarray_hsize": 512,
-                    "subarray_vsize": 512,
-                    "image_width": 512,
-                    "image_height": 512
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
                 }
             },
-            "forAcquisition": true,
-            "forFocusLock": false
+            "forAcquisition": true
         }
     },
     "lasers": {},
@@ -30,7 +23,9 @@
             "digitalLine": null,
             "managerName": "MockPositionerManager",
             "managerProperties": {},
-            "axes": ["X"],
+            "axes": [
+                "X"
+            ],
             "forScanning": true,
             "forPositioning": true,
             "resetOnClose": false
@@ -40,7 +35,9 @@
             "digitalLine": null,
             "managerName": "MockPositionerManager",
             "managerProperties": {},
-            "axes": ["Y"],
+            "axes": [
+                "Y"
+            ],
             "forScanning": true,
             "forPositioning": true,
             "resetOnClose": false
@@ -50,22 +47,25 @@
             "digitalLine": null,
             "managerName": "MockPositionerManager",
             "managerProperties": {},
-            "axes": ["Z"],
+            "axes": [
+                "Z"
+            ],
             "forScanning": true,
             "forPositioning": true,
             "resetOnClose": false
         }
     },
     "scan": {
-        "scanWidgetType": "Base",
+        "scanWidgetType": "MoNaLISA",
         "scanDesigner": "BetaScanDesigner",
         "scanDesignerParams": {
-            "return_time": 0.01
+            "return_time": 0.01,
+            "move_time": 0.002,
+            "settle_time": 0.002
         },
         "TTLCycleDesigner": "BetaTTLCycleDesigner",
         "TTLCycleDesignerParams": {},
         "sampleRate": 100000,
-        "maxScanTimeMin": 1,
         "lineClockLine": null,
         "frameStartClockLine": null,
         "frameEndClockLine": null
@@ -75,22 +75,27 @@
         "startTrigger": false,
         "simulation": true
     },
+    "processing": {
+        "reconstructors": [
+            "monalisa",
+            "view-only"
+        ],
+        "processors": [
+            "resize",
+            "drift-correct",
+            "convert-type"
+        ],
+        "fileWatcherPanel": true,
+        "reconstructionPanel": true
+    },
     "availableWidgets": [
         "Settings",
         "View",
         "Recording",
         "Image",
         "Positioner",
-        "Scan"
-    ],
-    "widgetLayout": {
-        "right": [],
-        "left": [
-            ["Settings"],
-            ["View"],
-            ["Positioner"],
-            ["Recording"],
-            ["Scan"]
-        ]
-    }
+        "Scan",
+        "BeadRec",
+        "FFT"
+    ]
 }

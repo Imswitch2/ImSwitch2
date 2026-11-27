@@ -185,6 +185,7 @@ def test_improcess_setup_presets_use_known_processor_ids():
         / "_data"
         / "user_defaults"
         / "imcontrol_setups"
+        / "processing"
     )
     setup_files = [
         setup_dir / "fiji_processor.json",
@@ -207,6 +208,7 @@ def test_improcess_setup_presets_use_known_reconstructor_ids():
         / "_data"
         / "user_defaults"
         / "imcontrol_setups"
+        / "processing"
     )
     setup_files = [
         setup_dir / "fiji_processor.json",
@@ -229,6 +231,7 @@ def test_snouty_setup_enables_multicolor_workflow():
         / "_data"
         / "user_defaults"
         / "imcontrol_setups"
+        / "processing"
         / "snouty_processor.json"
     )
     processing = json.loads(setup_file.read_text(encoding="utf-8"))["processing"]
@@ -244,6 +247,7 @@ def test_fiji_setup_is_ultimate_minimal_processor():
         / "_data"
         / "user_defaults"
         / "imcontrol_setups"
+        / "processing"
         / "fiji_processor.json"
     )
     processing = json.loads(setup_file.read_text(encoding="utf-8"))["processing"]

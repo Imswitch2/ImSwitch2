@@ -84,7 +84,9 @@ def test_a_failed_write_is_not_recorded(tmp_path, monkeypatch):
     assert session.saved_files() == frozenset()
 
 
-def test_switching_the_active_config_is_recorded(tmp_path):
+def test_switching_the_active_config_is_recorded(tmp_path, monkeypatch):
+    # The setup folder holds new.json, so the options name it relative to it.
+    monkeypatch.setattr(editor, "_default_setup_dir", lambda: tmp_path)
     options = tmp_path / "imcontrol_options.json"
     options.write_text(json.dumps({"setupFileName": "old.json"}), encoding="utf-8")
     setup = tmp_path / "new.json"
