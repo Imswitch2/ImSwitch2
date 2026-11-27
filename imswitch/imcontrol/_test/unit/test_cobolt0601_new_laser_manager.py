@@ -1399,11 +1399,9 @@ def test_shipped_example_setup_declares_simulation():
     machines that cannot have COM17/COM4, so it must declare simulation
     rather than rely on a silent mock fallback."""
     import json
-    import os
-    from imswitch.imcommon.model.dirtools import DataFileDirs
+    from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 
-    path = os.path.join(DataFileDirs.UserDefaults, 'imcontrol_setups',
-                        'example_kiralux_teensy.json')
+    path = shippedSetupPath('example_kiralux_teensy.json')
     with open(path) as handle:
         setup = json.load(handle)
 

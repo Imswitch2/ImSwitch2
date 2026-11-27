@@ -111,7 +111,9 @@ def _selftest():
         from imswitch.imcommon.model.dirtools import DataFileDirs
 
         setups = os.path.join(DataFileDirs.UserDefaults, 'imcontrol_setups')
-        count = len(os.listdir(setups))
+        # Sorted into subfolders (mock/, real/, processing/): count the files.
+        count = sum(name.endswith('.json')
+                    for _root, _dirs, names in os.walk(setups) for name in names)
         if count == 0:
             raise RuntimeError(f'no default setups under {setups}')
         return f'{count} default setups'

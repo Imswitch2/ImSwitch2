@@ -43,7 +43,7 @@ Open your hardware setup JSON (under
 ``~/ImSwitchConfig/imcontrol_setups/<your_setup>.json`` once installed,
 or ``imswitch/_data/user_defaults/imcontrol_setups/`` in the source
 tree) and add a top-level ``teensyPulse`` entry.  The shipped
-``imswitch/_data/user_defaults/imcontrol_setups/example_kiralux_teensy.json``
+``imswitch/_data/user_defaults/imcontrol_setups/real/widefieldstarss/example_kiralux_teensy.json``
 already has one and makes a good starting point::
 
     {

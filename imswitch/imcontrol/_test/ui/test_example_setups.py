@@ -1,9 +1,7 @@
-import os
-
 import pytest
 from qtpy import QtTest
 
-from imswitch.imcommon.model.dirtools import DataFileDirs
+from imswitch.imcontrol.model import setupfolder
 from imswitch.imcontrol.view import ViewSetupInfo
 from . import getApp, prepareUI
 from .. import optionsBasic
@@ -13,12 +11,9 @@ mainView = None
 
 
 setups = {}
-exampleSetupsDir = os.path.join(DataFileDirs.UserDefaults, 'imcontrol_setups')
-for fileName in os.listdir(exampleSetupsDir):
-    if not fileName.endswith('.json'):
-        continue
-
-    filePath = os.path.join(exampleSetupsDir, fileName)
+exampleSetupsDir = setupfolder.shippedSetupFolder()
+for fileName in setupfolder.listSetupFiles(exampleSetupsDir):  # subfolders included
+    filePath = setupfolder.setupFilePath(exampleSetupsDir, fileName)
     with open(filePath) as file:
         setups[fileName] = ViewSetupInfo.from_json(file.read())
 

@@ -34,6 +34,7 @@ from imswitch.imcontrol.model.simple_monalisa_scan import (
     select_mode,
     select_profile,
 )
+from imswitch.imcontrol.model.beta_scan_timing import beta_scan_timing_ui_warning
 from imswitch.imcontrol.model.signaldesigners.BetaScanDesigner import (
     DEFAULT_MOVE_TIME_S,
     DEFAULT_SETTLE_TIME_S,
@@ -2430,6 +2431,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             else:
                 refusal = 'Select/reapply a profile to return to a Simple acquisition.'
             self._view.setEstimate(0.0, refusal=refusal)
+            self._view.setStageTimingWarning()
             self._notifyRecordingFilenameSuffixChanged()
             return
         refusal = self._setupRefusal()
@@ -2453,6 +2455,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 f'{plan.dwell_s(limits) * 1e3:g} ms/pixel · stage returns included.'
             )
         self._view.setEstimate(plan.estimate_s(limits), note=note, refusal=refusal)
+        if self._setupInfo.scan.scanDesigner == 'BetaScanDesigner':
+            timing_message, timing_details = beta_scan_timing_ui_warning(
+                self._setupInfo.scan.scanDesignerParams, plan.dwell_s(limits)
+            )
+            self._view.setStageTimingWarning(timing_message, timing_details)
+        else:
+            self._view.setStageTimingWarning()
         self._notifyRecordingFilenameSuffixChanged()
 
 
