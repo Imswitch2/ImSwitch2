@@ -6,7 +6,7 @@ import numpy as np
 from time import perf_counter
 import scipy.ndimage as ndi
 from skimage.feature import peak_local_max
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.framework import Signal, Thread, Timer
 from imswitch.imcommon.model import APIExport, initLogger
@@ -144,6 +144,10 @@ class FocusLockController(ImConWidgetController):
         )
         self._widget.focusCalibButton.clicked.connect(self.focusCalibrationStart)
         self._widget.calibCurveButton.clicked.connect(self.showCalibrationCurve)
+        self._widget.changeFocusActuatorAction.triggered.connect(
+            self._chooseFocusActuator
+        )
+        self._updateActuatorButtonTooltip()
 
         self._widget.twoFociBox.stateChanged.connect(self.twoFociVarChange)
 
@@ -157,6 +161,8 @@ class FocusLockController(ImConWidgetController):
         self._commChannel.registerFocusLock(self)
 
         self.setPointSignal = 0
+        # Immutable pair published by the GUI update loop for tiling diagnostics.
+        self._lastTiltFocusMeasurement = None
         self._lastPIUpdate = None
         self.locked = False
         self.aboutToLock = False
@@ -1751,6 +1757,7 @@ class FocusLockController(ImConWidgetController):
         if self.__dict__.get('_shutdownComplete', False):
             return
         self._widget.calibrationDisplay.setText(f'1 px --> {cal_nm} nm')
+        self._widget.calibCurveButton.setEnabled(True)
 
     def _onFocusCalibrationThreadFinished(self):
         self._focusCalibrationActive = False
@@ -1799,6 +1806,7 @@ class FocusLockController(ImConWidgetController):
 
         img, setPointSignal, timestamp = result
         self.setPointSignal = setPointSignal
+        self._lastTiltFocusMeasurement = (float(setPointSignal), perf_counter())
         self._widget.center.setValue(self.setPointSignal)
         # move
         if self._focusCalibrationActive:
@@ -1970,6 +1978,89 @@ class FocusLockController(ImConWidgetController):
         except Exception:
             pass
 
+    def _focusZCandidates(self):
+        """Visible and hidden positioners with a usable Z positioning axis."""
+        names = []
+        for name, info in self._setupInfo.positioners.items():
+            if not getattr(info, 'forPositioning', False) or 'Z' not in (getattr(info, 'axes', ()) or ()):
+                continue
+            try:
+                manager = self._master.positionersManager[name]
+            except (KeyError, AttributeError):
+                continue
+            if 'Z' not in (getattr(manager, 'axes', ()) or ()):
+                continue
+            if not callable(getattr(manager, 'move', None)) or not callable(
+                getattr(manager, 'get_abs', None)
+            ):
+                continue
+            names.append(name)
+        return names
+
+    def _updateActuatorButtonTooltip(self):
+        button = getattr(self._widget, 'focusActuatorButton', None)
+        if button is not None:
+            button.setToolTip(
+                f'Current focus Z actuator: {self.positioner} (session only). '
+                f'Startup default: {self._setupInfo.focusLock.positioner}'
+            )
+
+    def _chooseFocusActuator(self):
+        candidates = self._focusZCandidates()
+        if not candidates:
+            QtWidgets.QMessageBox.warning(self._widget, 'Focus Z actuator',
+                                          'No Z-capable positioning devices available.')
+            return
+        selected, ok = QtWidgets.QInputDialog.getItem(
+            self._widget, 'Change focus Z actuator',
+            'Focus Z actuator (session only; unlock first):',
+            candidates, candidates.index(self.positioner) if self.positioner in candidates else 0,
+            False,
+        )
+        if ok and selected and selected != self.positioner:
+            try:
+                self.setFocusZActuator(selected)
+            except (ValueError, RuntimeError, KeyError) as error:
+                QtWidgets.QMessageBox.warning(self._widget, 'Cannot switch focus Z actuator',
+                                              str(error))
+
+    def setFocusZActuator(self, name: str):
+        """Change only the runtime actuator, without moving either device.
+
+        The camera worker remains running. No lock or calibration sweep may own
+        the old axis, and a tile worker must not change its underlying actuator.
+        """
+        if name not in self._focusZCandidates():
+            raise ValueError(f'No suitable focus Z actuator named {name!r}')
+        if name == self.positioner:
+            return
+        if (self.focusLockState() != STATE_UNLOCKED
+                or self.__dict__.get('_scanSuspendDepth', 0)
+                or self.__dict__.get('_focusCalibrationActive', False)
+                or bool(getattr(self.__focusCalibThread, 'isRunning', lambda: False)())
+                or getattr(self._commChannel, '_tilingActive', False)):
+            raise RuntimeError('Unlock focus and finish calibration, scanning and tiling before switching')
+        manager = self._master.positionersManager[name]
+        if getattr(manager, 'isAvailable', True) is False:
+            raise RuntimeError(f'Focus Z actuator {name!r} is unavailable')
+        if getattr(manager, 'requiresReference', False) and not getattr(manager, 'isReferenced', False):
+            raise RuntimeError(f'Focus Z actuator {name!r} needs referencing first')
+        # Resolve before changing state. Keep the setup file's configured axis
+        # untouched: that setting belongs to the original startup positioner.
+        self.positioner = name
+        self.positionerAxis = 'Z'
+        self._clearPendingCorrection()
+        self._lastPIUpdate = None
+        self._preScanSetPoint = None
+        self._reacquireFailed = False
+        self._endReacquire(notify=False)
+        self._lastTiltFocusMeasurement = None
+        self._widget.calibrationDisplay.setText('No calibration for this actuator')
+        self._widget.calibCurveButton.setEnabled(False)
+        self._updateActuatorButtonTooltip()
+        self._publishFocusLockState()
+        self._logger.info('Focus lock Z actuator changed to %s for this session', name)
+
     def _resolvePositionerAxis(self):
         """Resolve which axis to use for focus-lock movements."""
         positionerAxis = getattr(self._setupInfo.focusLock, 'positionerAxis', None)
@@ -1985,6 +2076,48 @@ class FocusLockController(ImConWidgetController):
     def getPositionerAbs(self):
         """Get absolute position from the configured positioner axis."""
         return self._master.positionersManager[self.positioner].get_abs(self.positionerAxis)
+
+    def getTiltCalibrationSnapshot(self):
+        """Read-only, non-polling snapshot for experimental XY/Z tilt logging.
+
+        Called by the tiling *worker*, so read only scalar/immutable state and
+        the positioner's cached get_abs() value. No widgets or serial requests.
+        Samples may be slightly asynchronous to the DAC command; this is a
+        deliberately lightweight calibration experiment, not a synchronizer.
+        """
+        state = self.focusLockState()
+        reading = self.__dict__.get('_lastTiltFocusMeasurement')
+        signal, age = (None, None) if reading is None else (
+            reading[0], max(0.0, perf_counter() - reading[1])
+        )
+        pi = getattr(self, 'pi', None)
+        setpoint = float(pi.setPoint) if state == STATE_LOCKED and pi is not None else None
+        positioner = self._master.positionersManager[self.positioner]
+        z = float(positioner.get_abs(self.positionerAxis))
+        dac_voltage = None
+        dac_clamped = False
+        # SerialDacZManager exposes its voltage calibration but no readback;
+        # detect when its cached position could disagree with the applied DAC.
+        if all(hasattr(positioner, name) for name in (
+            '_offset_voltage', '_volts_per_um', '_min_voltage', '_max_voltage',
+        )):
+            dac_voltage = (float(positioner._offset_voltage)
+                           + z * float(positioner._volts_per_um))
+            dac_clamped = not (positioner._min_voltage <= dac_voltage
+                               <= positioner._max_voltage)
+        return {
+            'focus_z_um': z,
+            'focus_signal_px': signal,
+            'focus_setpoint_px': setpoint,
+            'focus_error_px': (signal - setpoint if signal is not None
+                               and setpoint is not None else None),
+            'measurement_age_s': age,
+            'max_measurement_age_s': max(1.0, 5.0 / float(self.updateFreq)),
+            'lock_state': state,
+            'positioner_available': bool(getattr(positioner, 'isAvailable', True)),
+            'dac_voltage_v': dac_voltage,
+            'dac_voltage_clamped': dac_clamped,
+        }
 
     def movePositioner(self, value):
         """Move the configured positioner axis."""

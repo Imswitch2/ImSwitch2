@@ -349,3 +349,18 @@ def test_default_reference_voltage_must_be_inside_configured_range():
             default_reference_voltage=-1.0,
         )
 
+
+
+@pytest.mark.nohardware
+def test_set_position_reports_explicit_daq_rejection():
+    mgr, _ = _make_manager(return_false=True)
+    initial = mgr.get_abs('Z')
+    assert mgr.setPosition(4.0, 'Z') is False
+    assert mgr.get_abs('Z') == initial
+
+
+@pytest.mark.nohardware
+def test_set_position_reports_accepted_daq_command():
+    mgr, _ = _make_manager()
+    assert mgr.setPosition(4.0, 'Z') is True
+    assert mgr.get_abs('Z') == 4.0

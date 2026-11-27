@@ -1,8 +1,9 @@
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.view.guitools.imagetools import bestLevels
 from imswitch.imcontrol.model.workflows.spiral import SERPENTINE, SPIRAL
@@ -33,6 +34,130 @@ CLICK_ADD_TARGET = 'add-target'
 _TARGET_FILE_FILTER = 'Target list (*.json);;All files (*)'
 
 
+class TiltCalibrationDetailsDialog(QtWidgets.QDialog):
+    """Resizable inspection of a saved calibration and its existing PNG fit."""
+
+    def __init__(self, fit_path, data, name, rename_callback, parent=None):
+        super().__init__(parent)
+        self._rename_callback = rename_callback
+        self.setWindowTitle('Stage tilt calibration')
+        self.resize(900, 650)
+        self.setMinimumSize(620, 460)
+        fit_path = Path(fit_path)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        header = QtWidgets.QHBoxLayout()
+        self.nameLabel = QtWidgets.QLabel(name)
+        title_font = self.nameLabel.font()
+        title_font.setBold(True)
+        self.nameLabel.setFont(title_font)
+        self.nameLabel.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        header.addWidget(self.nameLabel, 1)
+        rename_button = QtWidgets.QPushButton('Rename…')
+        rename_button.clicked.connect(self._rename)
+        header.addWidget(rename_button)
+        layout.addLayout(header)
+
+        fit = data.get('fit') or {}
+        rms = fit.get('rms_residual_um')
+        z_range = fit.get('measured_z_range_um')
+        points = data.get('n_valid_tiles', fit.get('n_fit_points', '?'))
+        total = data.get('n_recorded_tiles', data.get('n_requested_tiles', '?'))
+        summary = QtWidgets.QLabel(
+            f'Fit RMS: {float(rms)*1000:.1f} nm' if rms is not None else 'Fit RMS: —'
+        )
+        if z_range is not None:
+            summary.setText(summary.text() + f'     Z range: {float(z_range):.3f} µm')
+        summary.setText(summary.text() + f'     Valid readings: {points}/{total}')
+        drift = data.get('origin_drift') or {}
+        if drift.get('available'):
+            summary.setText(summary.text() +
+                            f"     Origin drift: {float(drift['delta_z_um'])*1000:+.1f} nm")
+        elif 'origin_drift' in data:
+            summary.setText(summary.text() + '     Origin drift: unavailable')
+        bidir = data.get('bidirectional_diagnostics') or {}
+        if bidir:
+            difference = bidir.get('rms_reverse_minus_forward_um')
+            if difference is not None:
+                summary.setText(summary.text() +
+                                f'     Pass difference RMS: {float(difference)*1000:.1f} nm')
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+
+        plot_path = fit_path.with_name('tilt_fit.png')
+        self.plot = QtWidgets.QLabel()
+        self.plot.setAlignment(QtCore.Qt.AlignCenter)
+        self.plot.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored
+        )
+        self._originalPixmap = QtGui.QPixmap(str(plot_path))
+        if self._originalPixmap.isNull():
+            self.plot.setText('No saved fit visualization is available.')
+        self.plotArea = QtWidgets.QScrollArea()
+        self.plotArea.setWidgetResizable(True)
+        self.plotArea.setWidget(self.plot)
+        layout.addWidget(self.plotArea, 1)
+
+        bounds = fit.get('valid_xy_bounds_um', {})
+        form = QtWidgets.QFormLayout()
+        values = (
+            ('Z actuator:', data.get('focus_positioner', '—')),
+            ('XY positioner:', data.get('xy_positioner', '—')),
+            ('X / Y slope:',
+             f"{float(fit.get('slope_x_um_per_um', 0))*1000:+.3f} / "
+             f"{float(fit.get('slope_y_um_per_um', 0))*1000:+.3f} nm/µm"),
+            ('Calibrated XY area:',
+             f"X {bounds.get('x', '—')}, Y {bounds.get('y', '—')} µm"),
+            ('Sampling grid:', data.get('sampling_grid_xy') or '—'),
+            ('Area span (µm):', data.get('area_span_um') or '—'),
+            ('Drift interval (s):',
+             round(float((data.get('origin_drift') or {}).get('duration_s')), 1)
+             if (data.get('origin_drift') or {}).get('duration_s') is not None else '—'),
+            ('Recording passes:', 2 if data.get('bidirectional') else 1),
+            ('Recorded:', data.get('created_utc', '—')),
+        )
+        for label, value in values:
+            item = QtWidgets.QLabel(str(value))
+            item.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            form.addRow(label, item)
+        path_label = QtWidgets.QLabel(str(fit_path))
+        path_label.setToolTip(str(fit_path))
+        path_label.setWordWrap(True)
+        path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        form.addRow('File:', path_label)
+        layout.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._resizePlot()
+
+    def _rename(self):
+        new_name, accepted = QtWidgets.QInputDialog.getText(
+            self, 'Rename tilt calibration', 'Calibration name:',
+            QtWidgets.QLineEdit.Normal, self.nameLabel.text(),
+        )
+        if not accepted:
+            return
+        try:
+            displayed = self._rename_callback(new_name)
+        except (OSError, ValueError, TypeError) as error:
+            QtWidgets.QMessageBox.warning(self, 'Cannot rename calibration', str(error))
+            return
+        self.nameLabel.setText(displayed)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resizePlot()
+
+    def _resizePlot(self):
+        if hasattr(self, 'plotArea') and not self._originalPixmap.isNull():
+            width = max(1, self.plotArea.viewport().width() - 4)
+            self.plot.setPixmap(self._originalPixmap.scaled(
+                width, max(1, self.plotArea.viewport().height()),
+                QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation,
+            ))
+
+
 class TilingWidget(Widget):
     """Widget for controlling spiral tiling scans."""
 
@@ -50,6 +175,11 @@ class TilingWidget(Widget):
     sigTargetEnabledChanged = QtCore.Signal(int, bool)
     sigSaveTargets = QtCore.Signal(str)  # path
     sigLoadTargets = QtCore.Signal(str)  # path
+    sigLoadTiltCalibration = QtCore.Signal()
+    sigShowTiltCalibration = QtCore.Signal()
+    sigOpenTiltCalibrationFolder = QtCore.Signal()
+    sigSetDefaultTiltCalibration = QtCore.Signal()
+    sigTiltRecordModeSelected = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,6 +195,7 @@ class TilingWidget(Widget):
 
         layout.addWidget(self._buildScanGroup())
         layout.addWidget(self._buildAcquisitionGroup())
+        layout.addWidget(self._buildTiltGroup())
         layout.addWidget(self._buildAlignmentGroup())
         layout.addWidget(self._buildDisplayGroup())
         layout.addLayout(self._buildRunRow())
@@ -83,9 +214,30 @@ class TilingWidget(Widget):
         self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
+        self.buildOverviewCheck.stateChanged.connect(self.sigParamsChanged)
+        self.buildOverviewCheck.toggled.connect(self._updateOverviewAvailability)
         self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.tiltModeCombo.currentIndexChanged.connect(self._updateTiltMode)
+        self.tiltCalibrationOnlyCheck.toggled.connect(self._updateTiltSamplingEnabled)
+        self.tiltCalibrationOnlyCheck.toggled.connect(self.sigParamsChanged)
+        self.tiltBidirectionalCheck.toggled.connect(self.sigParamsChanged)
+        self.tiltSampleXSpin.valueChanged.connect(self.sigParamsChanged)
+        self.tiltSampleYSpin.valueChanged.connect(self.sigParamsChanged)
+        self.tiltModeCombo.currentIndexChanged.connect(self.sigParamsChanged)
+        self.tiltCalibrationButton.clicked.connect(
+            lambda *_: self.sigLoadTiltCalibration.emit()
+        )
+        self.tiltSeeAction.triggered.connect(
+            lambda *_: self.sigShowTiltCalibration.emit()
+        )
+        self.tiltOpenFolderAction.triggered.connect(
+            lambda *_: self.sigOpenTiltCalibrationFolder.emit()
+        )
+        self.tiltDefaultAction.triggered.connect(
+            lambda *_: self.sigSetDefaultTiltCalibration.emit()
+        )
         self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
         self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
         self.detectorCombo.currentIndexChanged.connect(self.sigParamsChanged)
@@ -107,6 +259,10 @@ class TilingWidget(Widget):
             self._onTargetSelectionChanged
         )
         self.targetsTable.itemChanged.connect(self._onTargetItemChanged)
+        self._updateOverviewAvailability(self.buildOverviewCheck.isChecked())
+        self._updateTiltMode()
+        self._updateTiltSamplingEnabled()
+        self._updateTiltCalibrationLabel()
 
     # ------------------------------------------------------------------
     # Layout blocks
@@ -243,12 +399,231 @@ class TilingWidget(Widget):
         self.saveTilesCheck = QtWidgets.QCheckBox('Save tiles')
         self.saveTilesCheck.setToolTip(
             'Save each tile as an OME image as it is acquired, plus the\n'
-            'stitched mosaic and a TileConfiguration.txt for Fiji/BigStitcher.\n'
+            'TileConfiguration.txt for Fiji/BigStitcher and a tiles.json manifest.\n'
+            'A stitched mosaic is saved only when Build mosaic preview is enabled.\n'
             'Every tile carries its stage position in OME metadata.'
         )
         grid.addWidget(self.saveTilesCheck, 1, 2, 1, 2)
         grid.setColumnStretch(4, 1)
         return self._group('Acquisition', grid)
+
+    def _buildTiltGroup(self) -> QtWidgets.QGroupBox:
+        """Two-row stage tilt controls; the Z identity is read-only here."""
+        grid = QtWidgets.QGridLayout()
+        grid.addWidget(QtWidgets.QLabel('Mode:'), 0, 0)
+        self.tiltModeCombo = QtWidgets.QComboBox()
+        self.tiltModeCombo.addItem('Off', 'off')
+        self.tiltModeCombo.addItem('Record', 'record')
+        self.tiltModeCombo.addItem('Apply', 'apply')
+        self.tiltModeCombo.setToolTip(
+            'Off: regular tiling. Record: measure the stage tilt using the current\n'
+            'Focus Lock Z actuator. Apply: compensate with the actuator stored\n'
+            'in the selected calibration.'
+        )
+        grid.addWidget(self.tiltModeCombo, 0, 1)
+        self.precheckTiltCheck = QtWidgets.QCheckBox('Pre-check')
+        self.precheckTiltCheck.setToolTip(
+            'Optional full-route check of calibrated XY limits, Z output limits\n'
+            'and actuator reference before moving. Basic validation always applies.'
+        )
+        grid.addWidget(self.precheckTiltCheck, 0, 3, QtCore.Qt.AlignRight)
+
+        self.tiltRecordRow = QtWidgets.QWidget()
+        record_row = QtWidgets.QHBoxLayout(self.tiltRecordRow)
+        record_row.setContentsMargins(0, 0, 0, 0)
+        record_row.setSpacing(6)
+        record_row.addWidget(QtWidgets.QLabel('Name:'))
+        self.tiltNameEdit = QtWidgets.QLineEdit()
+        self.tiltNameEdit.setMaxLength(160)
+        self.tiltNameEdit.setPlaceholderText('Optional calibration name')
+        self.tiltNameEdit.setToolTip('Name for the new calibration (editable later).')
+        record_row.addWidget(self.tiltNameEdit, 1)
+        record_row.addWidget(QtWidgets.QLabel('Z actuator:'))
+        self.tiltRecordZLabel = QtWidgets.QLabel('—')
+        self.tiltRecordZLabel.setToolTip('Currently selected Focus Lock Z actuator')
+        record_row.addWidget(self.tiltRecordZLabel)
+        self.tiltRecordActionsButton = QtWidgets.QToolButton()
+        self.tiltRecordActionsButton.setText('…')
+        self.tiltRecordActionsButton.setToolTip('Actions for the last recorded calibration')
+        self.tiltRecordActionsButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        record_row.addWidget(self.tiltRecordActionsButton)
+        grid.addWidget(self.tiltRecordRow, 1, 0, 1, 4)
+
+        self.tiltOptionsRow = QtWidgets.QWidget()
+        options_row = QtWidgets.QHBoxLayout(self.tiltOptionsRow)
+        options_row.setContentsMargins(0, 0, 0, 0)
+        options_row.setSpacing(8)
+        self.tiltCalibrationOnlyCheck = QtWidgets.QCheckBox('Calibration only')
+        self.tiltCalibrationOnlyCheck.setChecked(True)
+        self.tiltCalibrationOnlyCheck.setToolTip(
+            'Visit calibration points without arming the tile camera, saving\n'
+            'images, registering tiles or constructing a mosaic.'
+        )
+        options_row.addWidget(self.tiltCalibrationOnlyCheck)
+        self.tiltBidirectionalCheck = QtWidgets.QCheckBox('Bidirectional')
+        self.tiltBidirectionalCheck.setToolTip(
+            'Retrace the same positions in reverse order, starting from the\n'
+            'last forward position. Pair and average Z readings for the plane fit.'
+        )
+        options_row.addWidget(self.tiltBidirectionalCheck)
+        options_row.addWidget(QtWidgets.QLabel('Samples:'))
+        self.tiltSampleXSpin = QtWidgets.QSpinBox()
+        self.tiltSampleYSpin = QtWidgets.QSpinBox()
+        for spin in (self.tiltSampleXSpin, self.tiltSampleYSpin):
+            spin.setRange(2, 1000)
+            spin.setValue(5)
+            spin.setMaximumWidth(64)
+            spin.setToolTip(
+                'Sampling positions over the full XY area defined by Scan.\n'
+                'For example, a 21×21 area sampled at 5×5 still covers the\n'
+                'same edge-to-edge span, but needs only 25 readings per pass.'
+            )
+        options_row.addWidget(self.tiltSampleXSpin)
+        options_row.addWidget(QtWidgets.QLabel('×'))
+        options_row.addWidget(self.tiltSampleYSpin)
+        options_row.addStretch(1)
+        grid.addWidget(self.tiltOptionsRow, 2, 0, 1, 4)
+
+        self.tiltApplyRow = QtWidgets.QWidget()
+        apply_row = QtWidgets.QHBoxLayout(self.tiltApplyRow)
+        apply_row.setContentsMargins(0, 0, 0, 0)
+        apply_row.setSpacing(6)
+        apply_row.addWidget(QtWidgets.QLabel('Calibration:'))
+        self.tiltCalibrationButton = QtWidgets.QPushButton('Choose calibration…')
+        self.tiltCalibrationButton.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self.tiltCalibrationButton.setToolTip('Click to select a tilt_fit.json file')
+        self.tiltCalibrationButton.setMaximumWidth(280)
+        apply_row.addWidget(self.tiltCalibrationButton, 1)
+        apply_row.addWidget(QtWidgets.QLabel('Z actuator:'))
+        self.tiltApplyZLabel = QtWidgets.QLabel('—')
+        apply_row.addWidget(self.tiltApplyZLabel)
+        self.tiltActionsButton = QtWidgets.QToolButton()
+        self.tiltActionsButton.setText('…')
+        self.tiltActionsButton.setToolTip('Calibration actions')
+        self.tiltActionsButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.tiltActionsMenu = QtWidgets.QMenu(self.tiltActionsButton)
+        self.tiltSeeAction = self.tiltActionsMenu.addAction('See calibration')
+        self.tiltOpenFolderAction = self.tiltActionsMenu.addAction('Open calibration folder')
+        self.tiltActionsMenu.addSeparator()
+        self.tiltDefaultAction = self.tiltActionsMenu.addAction('Set as default')
+        self.tiltActionsButton.setMenu(self.tiltActionsMenu)
+        # Both buttons use the same actions; the controller chooses the
+        # correct file based on the current Stage tilt mode.
+        self.tiltRecordActionsButton.setMenu(self.tiltActionsMenu)
+        apply_row.addWidget(self.tiltActionsButton)
+        grid.addWidget(self.tiltApplyRow, 1, 0, 1, 4)
+
+        self._tiltCalibrationPath = ''
+        self._tiltCalibrationName = ''
+        self._tiltDefaultPath = ''
+        self._tiltLastRecordedPath = ''
+        grid.setColumnStretch(2, 1)
+        return self._group('Stage tilt', grid)
+
+    def _updateTiltMode(self, *_):
+        mode = self.tiltModeCombo.currentData()
+        self.tiltRecordRow.setVisible(mode == 'record')
+        self.tiltOptionsRow.setVisible(mode == 'record')
+        self.tiltApplyRow.setVisible(mode == 'apply')
+        self.precheckTiltCheck.setVisible(mode == 'apply')
+        self.precheckTiltCheck.setEnabled(
+            mode == 'apply' and self.startButton.isEnabled()
+        )
+        self._updateTiltSamplingEnabled()
+        self._updateTiltActionMenu()
+        if mode == 'record':
+            self.sigTiltRecordModeSelected.emit()
+
+    def _updateTiltSamplingEnabled(self, *_):
+        enabled = (self.tiltCalibrationOnlyCheck.isChecked()
+                   and self.tiltModeCombo.currentData() == 'record'
+                   and self.startButton.isEnabled())
+        for spin in (self.tiltSampleXSpin, self.tiltSampleYSpin):
+            spin.setEnabled(enabled)
+
+    def getTiltCalibrationOnly(self) -> bool:
+        return self.tiltCalibrationOnlyCheck.isChecked()
+
+    def getTiltBidirectional(self) -> bool:
+        return self.tiltBidirectionalCheck.isChecked()
+
+    def getTiltSamplingCounts(self):
+        return self.tiltSampleXSpin.value(), self.tiltSampleYSpin.value()
+
+    def setTiltRecordZActuator(self, actuator: str):
+        self.tiltRecordZLabel.setText(actuator or 'Unavailable')
+
+    def getTiltRecordName(self) -> str:
+        return self.tiltNameEdit.text().strip()
+
+    def setDefaultTiltCalibration(self, path):
+        self._tiltDefaultPath = str(Path(path).resolve()) if path else ''
+        self._updateTiltCalibrationLabel()
+
+    def getLastRecordedTiltCalibrationPath(self) -> str:
+        return self._tiltLastRecordedPath
+
+    def setLastRecordedTiltCalibration(self, path):
+        """Expose the latest recording in Record mode without switching modes."""
+        self._tiltLastRecordedPath = str(Path(path).resolve()) if path else ''
+        if self._tiltLastRecordedPath:
+            self.tiltRecordActionsButton.setToolTip(
+                f'Last recording: {self._tiltLastRecordedPath}'
+            )
+        self._updateTiltActionMenu()
+
+    def getTiltActionCalibrationPath(self) -> str:
+        mode = self.tiltModeCombo.currentData()
+        if mode == 'record':
+            return self._tiltLastRecordedPath
+        if mode == 'apply':
+            return self._tiltCalibrationPath
+        return ''
+
+    def _updateTiltActionMenu(self):
+        """The shared actions target the file shown by the current mode."""
+        active_path = self.getTiltActionCalibrationPath()
+        idle = self.startButton.isEnabled()
+        self.tiltRecordActionsButton.setVisible(bool(self._tiltLastRecordedPath))
+        self.tiltRecordActionsButton.setEnabled(
+            idle and bool(self._tiltLastRecordedPath)
+        )
+        self.tiltActionsButton.setEnabled(idle and bool(self._tiltCalibrationPath))
+        self.tiltSeeAction.setEnabled(idle and bool(active_path))
+        self.tiltOpenFolderAction.setEnabled(idle and bool(active_path))
+        self.tiltDefaultAction.setEnabled(
+            idle and bool(active_path) and active_path != self._tiltDefaultPath
+        )
+
+    def setTiltCalibrationDisplayName(self, path, name: str):
+        """Refresh the visible label after a rename; leave the fit unchanged."""
+        if self._tiltCalibrationPath == str(Path(path).resolve()):
+            self._tiltCalibrationName = name
+            self._updateTiltCalibrationLabel()
+
+    def _updateTiltCalibrationLabel(self):
+        if not self._tiltCalibrationPath:
+            self.tiltCalibrationButton.setText('Choose calibration…')
+        else:
+            default = self._tiltCalibrationPath == self._tiltDefaultPath
+            name = self._tiltCalibrationName or Path(self._tiltCalibrationPath).parent.name
+            label = ('★ ' if default else '') + name
+            self.tiltCalibrationButton.setText(
+                self.tiltCalibrationButton.fontMetrics().elidedText(
+                    label, QtCore.Qt.ElideRight, 260
+                )
+            )
+            self.tiltCalibrationButton.setToolTip(
+                f'{name}\n{self._tiltCalibrationPath}\nClick to choose a different calibration.'
+            )
+        self._updateTiltActionMenu()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.tiltModeCombo.currentData() == 'record':
+            self.sigTiltRecordModeSelected.emit()
 
     def _buildAlignmentGroup(self) -> QtWidgets.QGroupBox:
         """Where each tile is laid down, and which way the mosaic grows."""
@@ -290,6 +665,15 @@ class TilingWidget(Widget):
     def _buildDisplayGroup(self) -> QtWidgets.QGroupBox:
         """How the placed tiles are drawn into one image."""
         row = QtWidgets.QHBoxLayout()
+        self.buildOverviewCheck = QtWidgets.QCheckBox('Build mosaic preview')
+        self.buildOverviewCheck.setChecked(True)
+        self.buildOverviewCheck.setToolTip(
+            'Uncheck for large tiling runs: acquire and save individual tiles and\n'
+            'their position/sidecar metadata without constructing an in-memory\n'
+            'mosaic or displaying it. Image registration and viewer-based cell\n'
+            'detection are unavailable, and no stitched mosaic file is saved.'
+        )
+        row.addWidget(self.buildOverviewCheck)
         self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
         self.blendOverlapsCheck.setChecked(True)
         self.blendOverlapsCheck.setToolTip(
@@ -464,6 +848,22 @@ class TilingWidget(Widget):
         if col >= 0 and row >= 0:
             self.sigClickOnOverview.emit(row, col)
 
+    def _updateOverviewAvailability(self, enabled: bool) -> None:
+        """Avoid showing a stale overview when a run skips mosaic assembly."""
+        self.overviewView.setVisible(enabled)
+        self.blendOverlapsCheck.setEnabled(enabled)
+        self.intensityCorrectionCheck.setEnabled(enabled)
+        self.registerTilesCheck.setEnabled(enabled)
+        # Saving and stage targets remain available without a mosaic, but
+        # clicking an invisible/old overview must not navigate or add targets.
+        self.clickModeCombo.setEnabled(enabled)
+        if not enabled:
+            self.setClickMode(CLICK_NONE)
+            self._overviewImage = None
+            self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
+            self._targetMarkers.clear()
+            self._redrawTargetMarkers()
+
     def updateOverview(self, image: np.ndarray) -> None:
         """Display a new stitched overview (float32 H×W array, 0 to 1).
 
@@ -525,6 +925,17 @@ class TilingWidget(Widget):
     def setRunning(self, running: bool) -> None:
         self.startButton.setEnabled(not running)
         self.stopButton.setEnabled(running)
+        self.tiltModeCombo.setEnabled(not running)
+        self.tiltCalibrationButton.setEnabled(not running)
+        self._updateTiltActionMenu()
+        self.tiltNameEdit.setEnabled(not running)
+        self.tiltCalibrationOnlyCheck.setEnabled(not running)
+        self.tiltBidirectionalCheck.setEnabled(not running)
+        self._updateTiltSamplingEnabled()
+        self.precheckTiltCheck.setEnabled(
+            not running and self.tiltModeCombo.currentData() == 'apply'
+        )
+        self.buildOverviewCheck.setEnabled(not running)
 
     def _matchTileCounts(self, value: int) -> None:
         """Hold the counts equal while the lock is on, without recursing."""
@@ -567,6 +978,9 @@ class TilingWidget(Widget):
     def getTileStepUm(self) -> float:
         return self.tileStepSpinbox.value()
 
+    def getBuildOverview(self) -> bool:
+        return self.buildOverviewCheck.isChecked()
+
     def getBlendOverlaps(self) -> bool:
         return self.blendOverlapsCheck.isChecked()
 
@@ -581,6 +995,28 @@ class TilingWidget(Widget):
 
     def getSaveTiles(self) -> bool:
         return self.saveTilesCheck.isChecked()
+
+    def getRecordTiltCalibration(self) -> bool:
+        return self.tiltModeCombo.currentData() == 'record'
+
+    def getApplyTiltCalibration(self) -> bool:
+        return self.tiltModeCombo.currentData() == 'apply'
+
+    def getPrecheckTiltCompensation(self) -> bool:
+        return self.precheckTiltCheck.isChecked()
+
+    def getTiltCalibrationPath(self) -> str:
+        return self._tiltCalibrationPath
+
+    def setLoadedTiltCalibration(self, path, plane, display_name: str = '') -> None:
+        self._tiltCalibrationPath = str(Path(path).resolve())
+        self._tiltCalibrationName = display_name
+        self.tiltApplyZLabel.setText(plane.focus_positioner)
+        self.tiltApplyZLabel.setToolTip(
+            f'Z actuator saved in {self._tiltCalibrationPath}; '
+            'independent of the current Focus Lock actuator.'
+        )
+        self._updateTiltCalibrationLabel()
 
     def _onModeChanged(self) -> None:
         self.sigParamsChanged.emit()

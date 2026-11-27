@@ -3,9 +3,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+import json
 
 import numpy as np
-from qtpy import QtCore
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.algorithms.tile_mosaic import TileLink, solve_links
@@ -20,6 +21,21 @@ from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import SPIRAL, tile_moves
 from imswitch.imcontrol.model.workflows.target import TargetList
+from imswitch.imcontrol.model.workflows.tilt_sampling import calibration_visits
+from imswitch.imcontrol.model.workflows.stage_tilt_calibration import (
+    StageTiltRecorder, new_tilt_calibration_folder, tilt_calibrations_root,
+)
+from imswitch.imcontrol.model.workflows.tilt_calibration_labels import (
+    calibration_display_name, save_calibration_name,
+)
+from imswitch.imcontrol.model.workflows.tilt_preferences import (
+    selected_calibration, remember_calibration,
+)
+from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model.workflows.stage_tilt_compensation import (
+    TiltCompensationRecorder, load_tilt_plane, validate_z_target,
+    require_reference_signal,
+)
 from imswitch.imcontrol.model.workflows.tile_dataset import (
     TileDataset,
     TileRecord,
@@ -36,6 +52,7 @@ from imswitch.imcontrol.view.widgets.TilingWidget import (
     CLICK_NAVIGATE,
     MODE_FREE_RUNNING,
     MODE_TRIGGERED,
+    TiltCalibrationDetailsDialog,
 )
 from ..basecontrollers import ImConWidgetController
 from .._fresh_frame import grab_fresh_frame
@@ -72,6 +89,15 @@ class TilingRunSettings:
     mode: str
     scan_source_key: Optional[str]
     detector_name: Optional[str]
+    build_overview: bool = True
+    record_tilt: bool = False
+    tilt_record_name: str = ''
+    tilt_calibration_only: bool = False
+    tilt_bidirectional: bool = False
+    tilt_sample_nx: Optional[int] = None
+    tilt_sample_ny: Optional[int] = None
+    tilt_plane: object = None
+    precheck_tilt: bool = False
 
     @property
     def n_tiles(self) -> int:
@@ -502,6 +528,8 @@ class TilingController(ImConWidgetController):
     sigTargetsChanged = QtCore.Signal(object)     # list of target dicts
     sigTargetMarkers = QtCore.Signal(object)      # {target id: (row, col)}
     sigRegistrationSummary = QtCore.Signal(str)
+    sigTiltCompensationError = QtCore.Signal(str)
+    sigTiltCalibrationCreated = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -524,6 +552,14 @@ class TilingController(ImConWidgetController):
         self._lastSaveFolder = None
         #: How the last run ended (TilingRunResult), for runTilingForWorkflow.
         self._lastRunResult = None
+        try:
+            self._setupNameForTilt = (
+                getattr(configfiletools.loadOptions()[0], 'setupFileName', '') or ''
+            )
+        except (OSError, ValueError) as error:
+            # Optional calibration persistence must never prevent tiling startup.
+            self._logger.warning('Cannot read tiling tilt setup identity: %s', error)
+            self._setupNameForTilt = ''
         # Every pairwise measurement taken during a run, kept for the
         # whole-run solve that advanced alignment ends with.
         self._alignmentLinks = []
@@ -574,10 +610,162 @@ class TilingController(ImConWidgetController):
         self.sigTargetMarkers.connect(self._widget.setTargetMarkers)
         self.sigRegistrationSummary.connect(self._widget.setRegistrationSummary)
         self._widget.sigModeChanged.connect(self._onModeChanged)
+        self._widget.sigLoadTiltCalibration.connect(self._loadTiltCalibrationFile)
+        self._widget.sigShowTiltCalibration.connect(self._showTiltCalibration)
+        self._widget.sigOpenTiltCalibrationFolder.connect(self._openTiltCalibrationFolder)
+        self._widget.sigSetDefaultTiltCalibration.connect(self._setDefaultTiltCalibration)
+        self._widget.sigTiltRecordModeSelected.connect(self._updateTiltRecordActuator)
+        self.sigTiltCompensationError.connect(self._showTiltCompensationError)
+        self.sigTiltCalibrationCreated.connect(self._onTiltCalibrationCreated)
+        self._restoreSelectedTiltCalibration()
+        self._updateTiltRecordActuator()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @QtCore.Slot(str)
+    def _showTiltCompensationError(self, message: str) -> None:
+        QtWidgets.QMessageBox.warning(
+            self._widget, 'Tilt compensation stopped', message
+        )
+
+    def _validateSelectedTiltPlane(self, path):
+        """The calibration file names the Z actuator; the setup must provide it."""
+        plane = load_tilt_plane(
+            path, xy_positioner=self._setupInfo.tiling.xyPositioner,
+        )
+        info = self._setupInfo.positioners.get(plane.focus_positioner)
+        if info is None or 'Z' not in info.axes or not info.forPositioning:
+            raise ValueError(
+                f'Calibration Z actuator {plane.focus_positioner!r} is not a '
+                'configured Z-capable positioning device'
+            )
+        positioner = self._master.positionersManager[plane.focus_positioner]
+        if not callable(getattr(positioner, 'move', None)) or not callable(
+            getattr(positioner, 'get_abs', None)
+        ):
+            raise ValueError('Compensation Z actuator lacks movement or position reporting')
+        return plane
+
+    def _selectTiltCalibration(self, path, plane=None):
+        plane = plane or self._validateSelectedTiltPlane(path)
+        self._widget.setLoadedTiltCalibration(
+            plane.path, plane, calibration_display_name(plane.path)
+        )
+        return plane
+
+    def _restoreSelectedTiltCalibration(self):
+        try:
+            path = selected_calibration(self._setupNameForTilt)
+            self._widget.setDefaultTiltCalibration(path)
+            if path:
+                self._selectTiltCalibration(path)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._logger.warning('Could not reload default tilt calibration: %s', error)
+
+    def _updateTiltRecordActuator(self):
+        """Read the live Focus Lock choice; never query hardware for a label."""
+        focus = getattr(self._commChannel, '_focusLock', None)
+        actuator = getattr(focus, 'positioner', '') if focus is not None else ''
+        self._widget.setTiltRecordZActuator(actuator)
+
+    @QtCore.Slot(str)
+    def _onTiltCalibrationCreated(self, path: str):
+        """Expose the last recording in Record mode; also select it for Apply."""
+        # Viewing a finished report must not require selecting an Apply plane.
+        self._widget.setLastRecordedTiltCalibration(path)
+        try:
+            self._selectTiltCalibration(path)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._logger.warning('Could not select newly recorded tilt calibration: %s', error)
+
+    def _tiltActionPath(self):
+        """Resolve the menu's context: last recording or Apply selection."""
+        return self._widget.getTiltActionCalibrationPath()
+
+    def _loadTiltCalibrationFile(self) -> None:
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self._widget, 'Load stage tilt calibration',
+            str(tilt_calibrations_root()),
+            'Tilt calibration (tilt_fit.json);;JSON files (*.json)'
+        )
+        if not filename:
+            return
+        try:
+            self._selectTiltCalibration(filename)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Invalid tilt calibration', str(error)
+            )
+
+    def _setDefaultTiltCalibration(self):
+        path = self._tiltActionPath()
+        if not path:
+            return
+        if not self._setupNameForTilt:
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Default tilt calibration',
+                'Cannot identify the current hardware setup.'
+            )
+            return
+        try:
+            plane = self._validateSelectedTiltPlane(path)
+            remember_calibration(self._setupNameForTilt, plane.path)
+            self._widget.setDefaultTiltCalibration(plane.path)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Cannot set default calibration', str(error)
+            )
+
+    def _renameTiltCalibration(self, path, name: str) -> str:
+        save_calibration_name(path, name)
+        displayed = calibration_display_name(path)
+        # Renaming never needs to revalidate or reselect the scientific fit.
+        self._widget.setTiltCalibrationDisplayName(path, displayed)
+        if self._widget.getLastRecordedTiltCalibrationPath() == str(Path(path).resolve()):
+            self._widget.setLastRecordedTiltCalibration(path)
+        return displayed
+
+    def _showTiltCalibration(self):
+        path = self._tiltActionPath()
+        if not path:
+            return
+        try:
+            fit_path = Path(path).expanduser().resolve()
+            doc = json.loads(fit_path.read_text(encoding='utf-8'))
+            if not isinstance(doc, dict):
+                raise ValueError('Expected a calibration JSON object')
+            # Inspection is deliberately independent of selecting a usable
+            # Apply plane, so a recorded fit can be viewed in Record mode.
+            dialog = TiltCalibrationDetailsDialog(
+                fit_path, doc, calibration_display_name(fit_path),
+                lambda name: self._renameTiltCalibration(fit_path, name),
+                self._widget,
+            )
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Cannot open calibration', str(error)
+            )
+            return
+        dialog.exec_()
+
+    def _openTiltCalibrationFolder(self):
+        path = self._tiltActionPath()
+        if not path:
+            return
+        folder = Path(path).parent
+        if not folder.is_dir():
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Calibration folder',
+                'The selected calibration folder no longer exists.'
+            )
+            return
+        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder))):
+            QtWidgets.QMessageBox.warning(
+                self._widget, 'Calibration folder',
+                f'Could not open {folder}'
+            )
 
     @APIExport(runOnUIThread=True)
     def startTiling(self) -> None:
@@ -599,20 +787,41 @@ class TilingController(ImConWidgetController):
             self._resetRunState(settings)
 
             self._widget.setRunning(True)
-            self._widget.setProgress(0, settings.n_tiles)
+            progress_tiles = (
+                (settings.tilt_sample_nx or settings.n_tiles_x)
+                * (settings.tilt_sample_ny or settings.n_tiles_y)
+                if settings.tilt_calibration_only else settings.n_tiles
+            )
+            self._widget.setProgress(
+                0, progress_tiles * (2 if settings.tilt_bidirectional else 1)
+            )
             self._widget.setRegistrationSummary('')
             # The markers belong to the overview being replaced; the targets
             # themselves stay and are drawn again on the new one.
             self._refreshTargets()
 
+            if settings.tilt_calibration_only:
+                worker = self._runTiltCalibrationOnly
+                args = (tilingInfo, settings.n_tiles_x, settings.n_tiles_y,
+                        settings.pattern, settings.step_um)
+                kwargs = dict(
+                    sample_nx=settings.tilt_sample_nx or settings.n_tiles_x,
+                    sample_ny=settings.tilt_sample_ny or settings.n_tiles_y,
+                    bidirectional=settings.tilt_bidirectional,
+                    settle_s=settings.settle_s,
+                    tilt_record_name=settings.tilt_record_name,
+                )
+            else:
+                worker = self._runScan
+                args = self._runScanArgs(tilingInfo, settings)
+                kwargs = self._runScanKwargs(settings)
             self._scanThread = threading.Thread(
-                target=self._runScan,
-                args=self._runScanArgs(tilingInfo, settings),
-                kwargs=self._runScanKwargs(settings),
-                daemon=True,
+                target=worker, args=args, kwargs=kwargs, daemon=True,
             )
+            self._commChannel._tilingActive = True
             self._scanThread.start()
         except Exception as e:
+            self._commChannel._tilingActive = False
             with self._getActivityLock():
                 self._scanning = False
                 self._scanThread = None
@@ -623,23 +832,80 @@ class TilingController(ImConWidgetController):
             self._logger.error(
                 f'Tiling worker could not start: {e}', exc_info=True
             )
+            if bool(getattr(self._widget, 'getApplyTiltCalibration', lambda: False)()):
+                self._showTiltCompensationError(str(e))
 
     def snapshotRunSettings(self) -> TilingRunSettings:
-        """ The Tiling widget's run settings, read once. GUI thread only. """
+        """Take one GUI-thread snapshot, including tilt and preview choices.
+
+        The same immutable settings object can be used for every timepoint of
+        a workflow: no worker ever reads changing Qt controls.
+        """
+        widget = self._widget
+        nx, ny = widget.getNTilesX(), widget.getNTilesY()
+        mode = widget.getMode()
+        record_tilt = bool(getattr(widget, 'getRecordTiltCalibration', lambda: False)())
+        tilt_only = record_tilt and bool(getattr(
+            widget, 'getTiltCalibrationOnly', lambda: False)())
+        bidirectional = record_tilt and bool(getattr(
+            widget, 'getTiltBidirectional', lambda: False)())
+        samples = (getattr(widget, 'getTiltSamplingCounts', lambda: (nx, ny))()
+                   if record_tilt else (nx, ny))
+        sample_nx, sample_ny = map(int, samples)
+        step = widget.getTileStepUm()
+        pattern = widget.getPattern()
+        overview_choice = getattr(widget, 'getBuildOverview', lambda: True)()
+        # Legacy test/widget adapters can return None for unimplemented options.
+        build_overview = True if overview_choice is None else bool(overview_choice)
+        if tilt_only:
+            calibration_visits(nx, ny, step, sample_nx, sample_ny, pattern)
+        apply_tilt = bool(getattr(widget, 'getApplyTiltCalibration', lambda: False)())
+        precheck_tilt = bool(getattr(widget, 'getPrecheckTiltCompensation',
+                                     lambda: False)())
+        tilt_plane = None
+        if record_tilt and apply_tilt:
+            raise RuntimeError('Cannot record and apply tilt compensation simultaneously')
+        if (record_tilt or apply_tilt) and mode != MODE_FREE_RUNNING:
+            raise RuntimeError('Tilt calibration and compensation need free-running tiling')
+        focus = getattr(self._commChannel, '_focusLock', None)
+        if record_tilt:
+            self._updateTiltRecordActuator()
+            if focus is None or focus.focusLockState() != 'locked':
+                raise RuntimeError('Start focus lock before recording a stage tilt calibration')
+        if apply_tilt:
+            path = getattr(widget, 'getTiltCalibrationPath', lambda: '')()
+            if not path:
+                raise RuntimeError('Load a tilt calibration before enabling compensation')
+            tilt_plane = self._validateSelectedTiltPlane(path)
+            if (focus is not None and focus.positioner == tilt_plane.focus_positioner
+                    and focus.focusLockState() != 'unlocked'):
+                raise RuntimeError(
+                    'Unlock focus feedback when it uses the compensation Z actuator'
+                )
         return TilingRunSettings(
-            n_tiles_x=self._widget.getNTilesX(),
-            n_tiles_y=self._widget.getNTilesY(),
-            pattern=self._widget.getPattern(),
-            step_um=self._widget.getTileStepUm(),
-            blend_overlaps=self._widget.getBlendOverlaps(),
-            intensity_correction=self._widget.getIntensityCorrection(),
-            settle_s=max(0.0, self._widget.getSettleTimeMs() / 1000.0),
-            register_tiles=self._widget.getRegisterTiles(),
-            orientation=self._widget.getTileOrientation(),
-            save_tiles=self._widget.getSaveTiles(),
-            mode=self._widget.getMode(),
-            scan_source_key=self._widget.getScanSource(),
-            detector_name=self._widget.getDetector(),
+            n_tiles_x=nx,
+            n_tiles_y=ny,
+            pattern=pattern,
+            step_um=step,
+            blend_overlaps=widget.getBlendOverlaps(),
+            intensity_correction=widget.getIntensityCorrection(),
+            settle_s=max(0.0, widget.getSettleTimeMs() / 1000.0),
+            register_tiles=widget.getRegisterTiles(),
+            orientation=widget.getTileOrientation(),
+            save_tiles=widget.getSaveTiles(),
+            mode=mode,
+            scan_source_key=widget.getScanSource(),
+            detector_name=widget.getDetector(),
+            build_overview=build_overview,
+            record_tilt=record_tilt,
+            tilt_record_name=(getattr(widget, 'getTiltRecordName', lambda: '')()
+                              if record_tilt else ''),
+            tilt_calibration_only=tilt_only,
+            tilt_bidirectional=bidirectional,
+            tilt_sample_nx=sample_nx,
+            tilt_sample_ny=sample_ny,
+            tilt_plane=tilt_plane,
+            precheck_tilt=precheck_tilt,
         )
 
     def _resetRunState(self, settings: TilingRunSettings) -> None:
@@ -670,6 +936,21 @@ class TilingController(ImConWidgetController):
             scan_source_key=settings.scan_source_key,
             detector_name=settings.detector_name,
         )
+        # Preserve the existing workflow argument contract when the new options
+        # have their defaults; this also avoids surprising external adapters.
+        if not settings.build_overview:
+            kwargs['build_overview'] = False
+        if settings.record_tilt:
+            kwargs.update(
+                record_tilt=True,
+                tilt_record_name=settings.tilt_record_name,
+                tilt_bidirectional=settings.tilt_bidirectional,
+            )
+        if settings.tilt_plane is not None:
+            kwargs.update(
+                tilt_plane=settings.tilt_plane,
+                precheck_tilt=settings.precheck_tilt,
+            )
         kwargs.update(overrides)
         return kwargs
 
@@ -701,6 +982,10 @@ class TilingController(ImConWidgetController):
             raise RuntimeError(
                 'runTilingForWorkflow blocks until the run ends; call it from '
                 'a worker thread, not the GUI thread.'
+            )
+        if settings.tilt_calibration_only:
+            return TilingRunResult(
+                False, False, 'Calibration-only tilt recording is not a tile-acquisition workflow.'
             )
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -841,6 +1126,158 @@ class TilingController(ImConWidgetController):
     # Scan loop (runs in background thread)
     # ------------------------------------------------------------------
 
+    def _tiltSnapshot(self):
+        try:
+            return self._commChannel.getTiltCalibrationSnapshot()
+        except Exception as error:
+            self._logger.warning('Tiling: focus snapshot unavailable: %s', error)
+            return {'lock_state': 'snapshot_error', 'snapshot_error': str(error)}
+
+    def _recordTiltPoint(self, recorder, *, tile_index, gx, gy,
+                         x_um, y_um, pass_index=1):
+        recorder.record(
+            tile_index=tile_index, gx=gx, gy=gy,
+            x_um=x_um, y_um=y_um,
+            focus=self._tiltSnapshot(), pass_index=pass_index,
+        )
+
+    def _finishTiltRecorder(self, recorder, *, completed):
+        """Shared finalization of calibration-only and imaging+calibration."""
+        try:
+            result = recorder.finish(completed=completed)
+            if result['fit'] is not None:
+                fit = result['fit']
+                if result['completed'] and not getattr(self, '_closed', False):
+                    self.sigTiltCalibrationCreated.emit(str(recorder.folder / 'tilt_fit.json'))
+                self._logger.info(
+                    'Tiling: tilt calibration %s: dZ/dX=%g, dZ/dY=%g, '
+                    'RMS=%g µm, %d fit positions',
+                    recorder.folder, fit['slope_x_um_per_um'],
+                    fit['slope_y_um_per_um'], fit['rms_residual_um'],
+                    fit['n_fit_points'],
+                )
+                drift = result['origin_drift']
+                if drift['available']:
+                    self._logger.info('Tiling: origin Z drift %+g µm', drift['delta_z_um'])
+            else:
+                self._logger.warning(
+                    'Tiling: calibration measurements saved to %s, '
+                    'but insufficient valid XY/Z points for a plane', recorder.folder,
+                )
+        except Exception as error:
+            self._logger.error('Tiling: could not finalize tilt report: %s',
+                               error, exc_info=True)
+
+    def _runTiltCalibrationOnly(self, tilingInfo, n_tiles_x, n_tiles_y,
+                                pattern, step_um, *, sample_nx, sample_ny,
+                                bidirectional, settle_s, tilt_record_name):
+        """Measure a sparse full-area grid without acquiring tile-camera frames."""
+        positioner = None
+        axes = ()
+        applied_um = [0.0, 0.0]
+        origin_xy = None
+        recorder = None
+        completed = False
+        restored = False
+        try:
+            positioner = self._master.positionersManager[tilingInfo.xyPositioner]
+            axes = tuple(self._setupInfo.positioners[tilingInfo.xyPositioner].axes[:2])
+            if len(axes) != 2:
+                raise RuntimeError('Tilt calibration requires two XY stage axes')
+            focus = getattr(self._commChannel, '_focusLock', None)
+            if focus is None or focus.focusLockState() != 'locked':
+                raise RuntimeError('Focus lock must remain engaged for tilt calibration')
+            z_actuator = focus.positioner
+            visits = calibration_visits(n_tiles_x, n_tiles_y, step_um,
+                                        sample_nx, sample_ny, pattern)
+            recorder = StageTiltRecorder(
+                new_tilt_calibration_folder(tilt_record_name), step_um=step_um,
+                settle_s=settle_s, focus_positioner=z_actuator,
+                xy_positioner=tilingInfo.xyPositioner, n_tiles=len(visits),
+                setup_file_name=getattr(self, '_setupNameForTilt', ''),
+                bidirectional=bidirectional, calibration_only=True,
+                sampling_grid_xy=(sample_nx, sample_ny),
+                area_span_um=((n_tiles_x - 1) * step_um,
+                              (n_tiles_y - 1) * step_um),
+            )
+            if tilt_record_name:
+                save_calibration_name(recorder.folder / 'tilt_fit.json', tilt_record_name)
+            self._syncPositionerFromHardware(positioner)
+            start = positioner.position
+            origin_xy = (float(start[axes[0]]), float(start[axes[1]]))
+            self._originXY = origin_xy
+            time.sleep(settle_s)
+            if self._stopRequested:
+                return
+            recorder.record_origin(
+                focus=self._tiltSnapshot(), x_um=origin_xy[0], y_um=origin_xy[1]
+            )
+            order = [(1, point) for point in visits]
+            if bidirectional:
+                order += [(2, point) for point in reversed(visits)]
+            for index, (pass_index, (gx, gy, x_offset, y_offset)) in enumerate(order):
+                if self._stopRequested:
+                    break
+                for axis_index, target in enumerate((x_offset, y_offset)):
+                    delta = target - applied_um[axis_index]
+                    if abs(delta) > 1e-10:
+                        positioner.move(delta, axes[axis_index])
+                        applied_um[axis_index] += delta
+                # First point also gets the normal settle interval; reverse
+                # starts at the last forward point with no intervening return.
+                time.sleep(settle_s)
+                if self._stopRequested:
+                    break
+                self._recordTiltPoint(
+                    recorder, tile_index=index + 1, gx=gx, gy=gy,
+                    x_um=origin_xy[0] + x_offset,
+                    y_um=origin_xy[1] + y_offset, pass_index=pass_index,
+                )
+                if not getattr(self, '_closed', False):
+                    self.sigProgressUpdated.emit(index + 1, len(order))
+            else:
+                completed = not self._stopRequested
+        except Exception as error:
+            self._logger.error('Tiling: calibration-only run failed: %s',
+                               error, exc_info=True)
+        finally:
+            restored = origin_xy is not None
+            if positioner is not None and len(axes) == 2:
+                for index, axis in enumerate(axes):
+                    if abs(applied_um[index]) <= 1e-10:
+                        continue
+                    try:
+                        positioner.move(-applied_um[index], axis)
+                        applied_um[index] = 0.0
+                    except Exception as error:
+                        restored = False
+                        self._logger.error('Tiling: failed to return %s: %s',
+                                           axis, error, exc_info=True)
+            if recorder is not None:
+                if restored and origin_xy is not None:
+                    # Diagnostic only. The stage was commanded home, not
+                    # independently verified to have physically arrived.
+                    try:
+                        time.sleep(settle_s)
+                        recorder.record_origin(
+                            focus=self._tiltSnapshot(), x_um=origin_xy[0],
+                            y_um=origin_xy[1], final=True,
+                        )
+                    except Exception as error:
+                        # The return diagnostics must not prevent saving the
+                        # measurements or releasing ownership of this worker.
+                        self._logger.warning(
+                            'Tiling: final origin Z unavailable: %s', error
+                        )
+                self._finishTiltRecorder(recorder, completed=completed and restored)
+            with self._getActivityLock():
+                self._scanAcqHandle = None
+                self._scanning = False
+                self._scanThread = None
+            self._commChannel._tilingActive = False
+            if not getattr(self, '_closed', False):
+                self.sigRunningChanged.emit(False)
+
     def _runScan(
         self,
         tilingInfo,
@@ -854,6 +1291,12 @@ class TilingController(ImConWidgetController):
         register_tiles: bool = False,
         orientation: Tuple[bool, bool, bool] = (False, False, False),
         save_tiles: bool = False,
+        build_overview: bool = True,
+        record_tilt: bool = False,
+        tilt_record_name: str = '',
+        tilt_bidirectional: bool = False,
+        tilt_plane=None,
+        precheck_tilt: bool = False,
         mode: str = MODE_FREE_RUNNING,
         scan_source_key=None,
         detector_name=None,
@@ -864,6 +1307,8 @@ class TilingController(ImConWidgetController):
         # last-tile test all count. Derived rather than passed so it cannot
         # disagree with the pattern actually being walked.
         n_tiles = n_tiles_x * n_tiles_y
+        # No overview means no image registration or in-memory mosaic.
+        register_tiles = bool(register_tiles and build_overview)
         acqHandle = None
         positioner = None
         detector = None
@@ -886,6 +1331,16 @@ class TilingController(ImConWidgetController):
         maxShiftPx = 0.0
         dataset = TileDataset()
         saveFolder = None
+        tiltRecorder = None
+        tiltRecordingFailed = False
+        compensationRecorder = None
+        focusForCompensation = None
+        focusZPositioner = None
+        compensationSharesFocusZ = False
+        originZ = None
+        lastCompensatedZ = None
+        zCommandAttempted = False
+        compensationFailure = ''
         tileSource = None
         dispatcher = None
         tilesAcquired = 0
@@ -942,7 +1397,7 @@ class TilingController(ImConWidgetController):
             # means the session -- not tiling -- dispatches the scans. Only
             # triggered mode: free-running has no scan for a session to run,
             # and its payload is the snapshot it already saves.
-            if save_tiles:
+            if save_tiles or tilt_plane is not None:
                 # Allocated before the first acquisition, not on the first
                 # tile: a recording session started before the folder existed
                 # would write its payloads somewhere else, and every locator
@@ -953,6 +1408,36 @@ class TilingController(ImConWidgetController):
                 )
                 saveFolder.mkdir(parents=True, exist_ok=True)
                 self._logger.info(f'Tiling: saving to {saveFolder}')
+
+            if record_tilt:
+                focus = getattr(self._commChannel, '_focusLock', None)
+                if focus is None or focus.focusLockState() != 'locked':
+                    raise RuntimeError(
+                        'Focus lock must remain engaged throughout tilt recording'
+                    )
+                focus_z_name = getattr(focus, 'positioner', '')
+                if not focus_z_name:
+                    raise RuntimeError('Focus actuator unavailable for tilt recording')
+                calibrationFolder = new_tilt_calibration_folder(tilt_record_name)
+                tiltRecorder = StageTiltRecorder(
+                    calibrationFolder, step_um=step_um, settle_s=settle_s,
+                    focus_positioner=focus_z_name,
+                    xy_positioner=tilingInfo.xyPositioner, n_tiles=n_tiles,
+                    setup_file_name=getattr(self, '_setupNameForTilt', ''),
+                    bidirectional=tilt_bidirectional,
+                    sampling_grid_xy=(n_tiles_x, n_tiles_y),
+                    area_span_um=((n_tiles_x - 1) * step_um,
+                                  (n_tiles_y - 1) * step_um),
+                )
+                if tilt_record_name:
+                    try:
+                        save_calibration_name(
+                            calibrationFolder / 'tilt_fit.json', tilt_record_name
+                        )
+                    except (OSError, ValueError, TypeError) as error:
+                        self._logger.warning(
+                            'Could not save tilt calibration display name: %s', error
+                        )
 
             if save_tiles and mode == MODE_TRIGGERED:
                 dispatcher = self._startPayloadSession(
@@ -977,8 +1462,67 @@ class TilingController(ImConWidgetController):
             start_pos = positioner.position
             origin_xy = (start_pos[x_axis], start_pos[y_axis])
             self._originXY = origin_xy
+            if tiltRecorder is not None:
+                tiltRecorder.record_origin(
+                    focus=self._tiltSnapshot(), x_um=origin_xy[0], y_um=origin_xy[1]
+                )
+
+            if tilt_plane is not None:
+                focusForCompensation = getattr(self._commChannel, '_focusLock', None)
+                compensationSharesFocusZ = bool(
+                    focusForCompensation is not None
+                    and focusForCompensation.positioner == tilt_plane.focus_positioner
+                )
+                if (compensationSharesFocusZ
+                        and focusForCompensation.focusLockState() != 'unlocked'):
+                    raise RuntimeError('Focus feedback and compensation use the same Z actuator')
+                focusZPositioner = self._master.positionersManager[
+                    tilt_plane.focus_positioner
+                ]
+                originZ = float(focusZPositioner.get_abs('Z'))
+                lastCompensatedZ = originZ
+                # Basic finite-value and availability checks remain unconditional.
+                validate_z_target(focusZPositioner, originZ)
+                if precheck_tilt:
+                    tilt_plane.check_grid(
+                        origin_xy=origin_xy,
+                        moves=tile_moves(n_tiles_x, n_tiles_y, pattern),
+                        step_um=step_um,
+                    )
+                    validate_z_target(focusZPositioner, originZ, strict_limits=True)
+                    gx_check = gy_check = 0
+                    for dx_check, dy_check in tile_moves(n_tiles_x, n_tiles_y, pattern):
+                        gx_check += dx_check
+                        gy_check += dy_check
+                        validate_z_target(
+                            focusZPositioner,
+                            originZ + tilt_plane.delta_z(
+                                gx_check * step_um, gy_check * step_um
+                            ),
+                            strict_limits=True,
+                        )
+                # The focus camera is optional for feed-forward. When present,
+                # retain the first usable estimate for offline validation.
+                reference_signal = None
+                if (focusForCompensation is not None
+                        and focusForCompensation.focusCameraAcquisitionActive()):
+                    try:
+                        firstFocus = self._commChannel.getTiltCalibrationSnapshot()
+                        reference_signal = require_reference_signal(
+                            firstFocus, allow_locked=not compensationSharesFocusZ
+                        )
+                    except (RuntimeError, ValueError, TypeError) as error:
+                        self._logger.warning(
+                            'Tiling: tilt validation lacks first focus reference: %s', error
+                        )
+                compensationRecorder = TiltCompensationRecorder(
+                    saveFolder, plane=tilt_plane, origin_xy=origin_xy,
+                    origin_z_um=originZ, origin_signal_px=reference_signal,
+                    n_tiles=n_tiles,
+                )
 
             gx, gy = 0, 0
+            forward_tilt_positions = []
             lastEmit = 0.0
             for i, (dx, dy) in enumerate(
                 tile_moves(n_tiles_x, n_tiles_y, pattern)
@@ -992,6 +1536,27 @@ class TilingController(ImConWidgetController):
                     applied_um[x_axis] += dx * step_um
                     positioner.move(dy * step_um, y_axis)
                     applied_um[y_axis] += dy * step_um
+                    if tilt_plane is not None:
+                        if (compensationSharesFocusZ and
+                                focusForCompensation.focusLockState() != 'unlocked'):
+                            raise RuntimeError('Focus feedback engaged on compensation Z during tiling')
+                        # Use an absolute target relative to the run's Z origin.
+                        # get_abs() may be physical readback (e.g. Leica objective)
+                        # and need not reach a command before this loop continues.
+                        # Recomputing from the XY offset also avoids accumulating
+                        # round-off and uncompleted relative Z movements.
+                        target_z = originZ + tilt_plane.delta_z(
+                            (gx + dx) * step_um, (gy + dy) * step_um
+                        )
+                        validate_z_target(focusZPositioner, target_z)
+                        if abs(target_z - lastCompensatedZ) > 1e-9:
+                            zCommandAttempted = True
+                            result = focusZPositioner.setPosition(target_z, 'Z')
+                            if result is False:
+                                raise RuntimeError(
+                                    f'Compensation Z rejected target {target_z:g} µm'
+                                )
+                            lastCompensatedZ = target_z
                     time.sleep(settle_s)
                     if self._stopRequested:
                         break
@@ -1006,24 +1571,48 @@ class TilingController(ImConWidgetController):
                     gx, gy,
                     (origin_xy[0] + gx * step_um, origin_xy[1] + gy * step_um),
                 )
-                # Everything this tile needs is captured in one go -- the
-                # alignment frame and, when saving, every other detector's --
-                # so that a caller's illumination is on only for that: not
-                # while the mosaic is stitched, aligned or written below.
+                # Observe after the *existing* settle interval, immediately
+                # before acquisition. Never wait extra or control the focus Z.
+                if tiltRecorder is not None and not tiltRecordingFailed:
+                    try:
+                        self._recordTiltPoint(
+                            tiltRecorder, tile_index=i + 1, gx=gx, gy=gy,
+                            x_um=origin_xy[0] + gx * step_um,
+                            y_um=origin_xy[1] + gy * step_um, pass_index=1,
+                        )
+                        forward_tilt_positions.append((gx, gy))
+                    except Exception as error:
+                        tiltRecordingFailed = True
+                        self._logger.error('Tiling: could not record tilt sample: %s',
+                                           error, exc_info=True)
+                if compensationRecorder is not None:
+                    if (compensationSharesFocusZ and
+                            focusForCompensation.focusLockState() != 'unlocked'):
+                        raise RuntimeError('Focus feedback engaged on compensation Z during tiling')
+                    try:
+                        snapshot = self._commChannel.getTiltCalibrationSnapshot()
+                    except (RuntimeError, AttributeError, ValueError):
+                        snapshot = {'lock_state': 'unavailable'}
+                    compensationRecorder.record(
+                        tile_index=i + 1, gx=gx, gy=gy,
+                        x_um=origin_xy[0] + gx * step_um,
+                        y_um=origin_xy[1] + gy * step_um,
+                        commanded_z_um=lastCompensatedZ,
+                        focus=snapshot,
+                    )
+                # Keep the illumination gate limited to acquiring actual frames.
+                # Tilt snapshots above use the focus camera, not tile illumination.
                 images = None
                 gateFailure = None
                 lit = False
                 try:
                     if gate is not None:
-                        # Marked first: a gate that raises part-way may already
-                        # have switched something on, and still gets its off.
+                        # A partially failed before_tile may already have lit
+                        # hardware, so after_tile must still be invoked.
                         lit = True
                         gate.before_tile(i)
                     frame, wasFresh = tileSource.acquire()
                     if frame is not None and save_tiles:
-                        # Every detector's image for this position, captured
-                        # before anything is written and before the stage may
-                        # move again.
                         images = self._captureSaveSet(
                             saveSet, camera, frame, tileSource
                         )
@@ -1057,57 +1646,55 @@ class TilingController(ImConWidgetController):
                 if not wasFresh:
                     staleFrames += 1
 
-                # A 3D tile is stitched as a projection for the live preview;
-                # `frame` keeps every plane for saving.
-                displayFrame = self._displayPlane(frame)
+                # Keep the original frame for recording. A 2-D projection is
+                # only needed for the mosaic or an alignment-sidecar image.
+                displayFrame = (
+                    self._displayPlane(frame)
+                    if build_overview or save_tiles else None
+                )
 
-                # Lazy stitcher init after first frame (we need tile_size_px)
-                if self._stitcher is None:
-                    pixel_size_um = self._detectorPixelSizeUm(detector)
-                    self._stitcher = StitchedImage(
-                        tile_size_px=None,
-                        tile_step_um=step_um,
-                        px_per_um=None,
-                        tile_shape_px=displayFrame.shape[:2],
-                        pixel_size_um=pixel_size_um,
-                        blend_overlaps=blend_overlaps,
-                        intensity_correction=intensity_correction,
-                    )
-                    maxShiftPx = max_shift_for_step(
-                        self._stitcher.step_y_px,
-                        self._stitcher.step_x_px,
-                        getattr(tilingInfo, 'registrationMaxShiftFraction', 0.5),
-                    )
-                    if register_tiles and (
-                        self._stitcher.step_x_px >= displayFrame.shape[1]
-                        or self._stitcher.step_y_px >= displayFrame.shape[0]
-                    ):
-                        register_tiles = False
-                        self._logger.warning(
-                            'Tiling: tile alignment needs the tiles to overlap, '
-                            f'but the {step_um:g} µm step is at least a full '
-                            'field of view. Reduce the step, then re-enable it.'
+                if build_overview:
+                    # The live canvas is optional: large saved-only runs must
+                    # not allocate one mosaic-sized array per working buffer.
+                    if self._stitcher is None:
+                        pixel_size_um = self._detectorPixelSizeUm(detector)
+                        self._stitcher = StitchedImage(
+                            tile_size_px=None,
+                            tile_step_um=step_um,
+                            px_per_um=None,
+                            tile_shape_px=displayFrame.shape[:2],
+                            pixel_size_um=pixel_size_um,
+                            blend_overlaps=blend_overlaps,
+                            intensity_correction=intensity_correction,
                         )
+                        maxShiftPx = max_shift_for_step(
+                            self._stitcher.step_y_px,
+                            self._stitcher.step_x_px,
+                            getattr(tilingInfo, 'registrationMaxShiftFraction', 0.5),
+                        )
+                        if register_tiles and (
+                            self._stitcher.step_x_px >= displayFrame.shape[1]
+                            or self._stitcher.step_y_px >= displayFrame.shape[0]
+                        ):
+                            register_tiles = False
+                            self._logger.warning(
+                                'Tiling: tile alignment needs the tiles to overlap, '
+                                f'but the {step_um:g} µm step is at least a full '
+                                'field of view. Reduce the step, then re-enable it.'
+                            )
 
-                # Assemble in image space, which need not share the stage's
-                # axis directions — that depends on the camera mounting.
-                ix, iy = self._gridToImage(gx, gy, orientation)
-
-                offset_px = (0.0, 0.0)
-                if register_tiles:
-                    offset_px = self._registerTile(
-                        displayFrame, ix, iy, registration, maxShiftPx
-                    )
-
-                self._stitcher.add_tile(displayFrame, ix, iy, offset_px)
-                self._gridPositions.append((gx, gy))
+                    ix, iy = self._gridToImage(gx, gy, orientation)
+                    offset_px = (0.0, 0.0)
+                    if register_tiles:
+                        offset_px = self._registerTile(
+                            displayFrame, ix, iy, registration, maxShiftPx
+                        )
+                    self._stitcher.add_tile(displayFrame, ix, iy, offset_px)
+                    self._gridPositions.append((gx, gy))
 
                 if save_tiles:
                     if not dataset.tiles and dataset.tile_shape_px == (0, 0):
-                        dataset.pixel_size_um = self._stitcher and (
-                            1.0 / self._stitcher.px_per_um_y,
-                            1.0 / self._stitcher.px_per_um_x,
-                        )
+                        dataset.pixel_size_um = self._detectorPixelSizeUm(detector)
                         dataset.step_um = step_um
                         dataset.tile_shape_px = tuple(displayFrame.shape[:2])
                         dataset.tile_depth = (
@@ -1140,15 +1727,61 @@ class TilingController(ImConWidgetController):
                     or (now - lastEmit) >= _OVERVIEW_EMIT_INTERVAL_S
                 )
                 if not getattr(self, '_closed', False):
-                    if shouldEmit:
+                    if build_overview and shouldEmit:
                         lastEmit = now
                         self.sigOverviewUpdated.emit(self._stitcher.get_overview())
-                    self.sigProgressUpdated.emit(i + 1, n_tiles)
+                    self.sigProgressUpdated.emit(
+                        i + 1, n_tiles * (2 if tilt_bidirectional else 1)
+                    )
 
-            scan_completed = (
-                not self._stopRequested and not frameFailure
-                and not runMessage
-            )
+            reverse_completed = True
+            if (tiltRecorder is not None and tilt_bidirectional
+                    and not self._stopRequested and not frameFailure
+                    and not tiltRecordingFailed):
+                if len(forward_tilt_positions) != n_tiles:
+                    reverse_completed = False
+                else:
+                    for index, (next_gx, next_gy) in enumerate(
+                            reversed(forward_tilt_positions)):
+                        if self._stopRequested:
+                            reverse_completed = False
+                            break
+                        dx_back = next_gx - gx
+                        dy_back = next_gy - gy
+                        for axis, diff in ((x_axis, dx_back), (y_axis, dy_back)):
+                            if diff:
+                                positioner.move(diff * step_um, axis)
+                                applied_um[axis] += diff * step_um
+                        gx, gy = next_gx, next_gy
+                        # The first reverse reading is taken at the last
+                        # forward position, with no return-to-start jump.
+                        time.sleep(settle_s)
+                        if self._stopRequested:
+                            reverse_completed = False
+                            break
+                        try:
+                            self._recordTiltPoint(
+                                tiltRecorder, tile_index=n_tiles + index + 1,
+                                gx=gx, gy=gy,
+                                x_um=origin_xy[0] + gx * step_um,
+                                y_um=origin_xy[1] + gy * step_um, pass_index=2,
+                            )
+                        except Exception as error:
+                            tiltRecordingFailed = True
+                            reverse_completed = False
+                            self._logger.error('Tiling: reverse tilt sample failed: %s',
+                                               error, exc_info=True)
+                            break
+                        if not getattr(self, '_closed', False):
+                            self.sigProgressUpdated.emit(
+                                n_tiles + index + 1, 2 * n_tiles
+                            )
+            elif tiltRecorder is not None and tilt_bidirectional:
+                reverse_completed = False
+
+            scan_completed = (not self._stopRequested and not frameFailure
+                              and reverse_completed and not tiltRecordingFailed
+                              and not runMessage)
 
             if register_tiles and self._stitcher is not None:
                 # Before anything is written: the solved layout is the one that
@@ -1169,7 +1802,8 @@ class TilingController(ImConWidgetController):
                 # The mosaic and the sidecars are written even for a stopped or
                 # partial run: whatever tiles reached disk should still be a
                 # usable dataset rather than orphaned files.
-                self._saveMosaic(camera, saveFolder, self._canvasOriginStage())
+                if build_overview:
+                    self._saveMosaic(camera, saveFolder, self._canvasOriginStage())
                 dataset.extra['completed'] = bool(scan_completed)
                 # Which stage the stage_um coordinates belong to, so a script
                 # or processor can drive it back to a tile without guessing.
@@ -1177,7 +1811,8 @@ class TilingController(ImConWidgetController):
                 dataset.extra['xy_axes'] = [x_axis, y_axis]
                 written = dataset.write(saveFolder)
                 self._logger.info(
-                    f'Tiling: saved {len(dataset.tiles)} tiles, the mosaic and '
+                    f'Tiling: saved {len(dataset.tiles)} tiles'
+                    f'{", the mosaic" if build_overview else " (no mosaic)"} and '
                     f'{len(written)} sidecar file(s) to {saveFolder}'
                 )
                 self._lastSaveFolder = str(saveFolder)
@@ -1200,6 +1835,7 @@ class TilingController(ImConWidgetController):
 
         except Exception as e:
             runMessage = f'Tiling failed: {e}'
+            compensationFailure = str(e)
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
             # Once the origin is known, every exit path owns returning the
@@ -1227,6 +1863,64 @@ class TilingController(ImConWidgetController):
                             exc_info=True,
                         )
 
+            if tiltRecorder is not None and origin_restored and origin_xy is not None:
+                try:
+                    time.sleep(settle_s)
+                    tiltRecorder.record_origin(
+                        focus=self._tiltSnapshot(), x_um=origin_xy[0],
+                        y_um=origin_xy[1], final=True,
+                    )
+                except Exception as error:
+                    self._logger.warning('Tiling: final origin Z unavailable: %s', error)
+
+            z_restored = True
+            if focusZPositioner is not None and originZ is not None:
+                # Undo only the compensation we commanded, and only after a
+                # successful XY return. Never fight another user of the same Z.
+                try:
+                    focus_is_safe = (not compensationSharesFocusZ or
+                        focusForCompensation.focusLockState() == 'unlocked')
+                    if not zCommandAttempted:
+                        # Do not override an actuator we never commanded.
+                        pass
+                    elif origin_restored and focus_is_safe:
+                        validate_z_target(focusZPositioner, originZ)
+                        result = focusZPositioner.setPosition(originZ, 'Z')
+                        if result is False:
+                            raise RuntimeError('Compensation Z rejected return-to-origin command')
+                        # A successful command is not proof of physical arrival.
+                        self._logger.info('Tiling: requested compensation Z return to origin')
+                    else:
+                        z_restored = False
+                        self._logger.warning(
+                            'Tiling: skipped compensation Z restoration (XY not '
+                            'at origin or shared focus Z engaged)'
+                        )
+                except Exception as error:
+                    z_restored = False
+                    self._logger.error(
+                        f'Tiling: failed to restore compensation Z: {error}', exc_info=True
+                    )
+
+            if compensationRecorder is not None:
+                try:
+                    outcome = compensationRecorder.finish(
+                        completed=scan_completed and origin_restored and z_restored,
+                        failure=(compensationFailure or
+                                 ('XY/Z origin restoration incomplete'
+                                  if not (origin_restored and z_restored) else '')),
+                    )
+                    self._lastSaveFolder = str(saveFolder)
+                    self._logger.info(
+                        'Tiling: tilt validation saved to %s (%d/%d valid focus samples)',
+                        saveFolder, outcome['n_valid_focus_samples'],
+                        outcome['n_recorded_tiles'],
+                    )
+                except Exception as error:
+                    self._logger.error(
+                        f'Tiling: failed to save tilt validation: {error}', exc_info=True
+                    )
+
             if dispatcher is not None:
                 try:
                     self._endPayloadSession(dispatcher)
@@ -1245,6 +1939,12 @@ class TilingController(ImConWidgetController):
                         exc_info=True,
                     )
 
+            if tiltRecorder is not None:
+                self._finishTiltRecorder(
+                    tiltRecorder,
+                    completed=scan_completed and not tiltRecordingFailed and origin_restored,
+                )
+
             if not getattr(self, '_closed', False):
                 if scan_completed and not origin_restored:
                     self._logger.warning(
@@ -1262,10 +1962,15 @@ class TilingController(ImConWidgetController):
                         f'Failed to release tiling detector lease: {e}',
                         exc_info=True,
                     )
+            if (tilt_plane is not None and not getattr(self, '_closed', False)
+                    and (compensationFailure or not origin_restored or not z_restored)):
+                self.sigTiltCompensationError.emit(
+                    compensationFailure or 'XY/Z origin restoration incomplete'
+                )
             stopped = bool(self._stopRequested)
-            completed = bool(scan_completed and origin_restored)
-            if scan_completed and not origin_restored and not runMessage:
-                runMessage = 'The stage could not be returned to the origin.'
+            completed = bool(scan_completed and origin_restored and z_restored)
+            if scan_completed and not (origin_restored and z_restored) and not runMessage:
+                runMessage = 'The XY/Z stage could not be returned to the origin.'
             elif stopped and not runMessage:
                 runMessage = 'Stopped.'
             self._lastRunResult = TilingRunResult(
@@ -1281,6 +1986,8 @@ class TilingController(ImConWidgetController):
                 self._scanAcqHandle = None
                 self._scanning = False
                 self._scanThread = None
+            if hasattr(self, '_commChannel') and self._commChannel is not None:
+                self._commChannel._tilingActive = False
             # Cross-thread emit — Qt's AutoConnection becomes QueuedConnection
             # because the sender (this background thread) lives in a different
             # thread than the receiver (widget on the GUI thread).  Previously
@@ -1438,12 +2145,18 @@ class TilingController(ImConWidgetController):
                     f'{e}', exc_info=True
                 )
 
-        placement = self._stitcher.placement(
-            *self._gridToImage(gx, gy, self._orientation)
-        ) or (0, 0)
-        nominal = self._stitcher.nominal_placement(
-            *self._gridToImage(gx, gy, self._orientation)
-        )
+        ix, iy = self._gridToImage(gx, gy, self._orientation)
+        if self._stitcher is None:
+            # A saved-only run still needs nominal pixel coordinates for
+            # TileConfiguration.txt and offline stitching. Match the normal
+            # stitcher's round-to-pixel policy, without allocating a canvas.
+            step_y_px = max(1, int(round(dataset.step_um / dataset.pixel_size_um[0])))
+            step_x_px = max(1, int(round(dataset.step_um / dataset.pixel_size_um[1])))
+            nominal = (iy * step_y_px, ix * step_x_px)
+            placement = nominal
+        else:
+            nominal = self._stitcher.nominal_placement(ix, iy)
+            placement = self._stitcher.placement(ix, iy) or nominal
         dataset.add(TileRecord(
             # The alignment detector's file stays the record's own filename, so
             # a reader that knows nothing of save sets still finds the tile the
