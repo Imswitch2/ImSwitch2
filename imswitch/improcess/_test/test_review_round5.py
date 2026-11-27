@@ -176,7 +176,10 @@ def test_channel_merge_and_stack_combine_declare_their_dialog_parameters(registr
     from imswitch.improcess.processors.combine import StackCombineProcessor
 
     assert ChannelMergeProcessor.param_keys() == {"name", "axis_label"}
-    assert StackCombineProcessor.param_keys() == {"mode", "join_axis", "name", "axis_label"}
+    assert StackCombineProcessor.param_keys() == {
+        "mode", "join_axis", "name", "axis_label", "append_axis",
+        "pad", "pad_anchor", "pad_value", "pad_max_ratio",
+    }
     raw = _h5(tmp_path / "scan.h5")
     wf = Workflow("m", [
         Source("raw", path=str(raw)),
