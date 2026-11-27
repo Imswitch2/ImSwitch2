@@ -177,3 +177,17 @@ def test_pairs_into_world_coordinates_and_saved_under_an_id(widget, tmp_path):
     widget.askOverwrite = lambda *args: "keep"
     assert widget.saveToStore() is not None and "cam_to_scan_old" in saved
     assert "kept as" in widget.matrixView.toPlainText()
+
+
+def test_changing_the_model_or_the_limit_refits_the_clicked_pairs(widget):
+    targets = TRUTH.map_points(SPOTS)
+    for k in range(4):
+        widget.addManualPoint("moving", SPOTS[k])
+        widget.addManualPoint("reference", targets[k])
+    assert widget.transform.provenance["estimator"] == "similarity"
+    widget.setSelectedModel("affine")
+    assert widget.transform is not None and widget.transform.provenance["estimator"] == "affine"
+    widget.residualLimitSpin.setValue(0.001)         # px: every real fit is above it
+    assert widget.transform is None and widget.verdictLabel.text().startswith("Refused")
+    widget.residualLimitSpin.setValue(0)
+    assert widget.transform is not None

@@ -796,7 +796,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.runAllButton.clicked.connect(self.calibrate)
         self.fitTransformButton.clicked.connect(self.fitTransform)
         self.pickPointsButton.clicked.connect(self.openPointPicker)
-        self.residualLimitSpin.valueChanged.connect(lambda *_: self._invalidateTransform(emit=True))
+        self.residualLimitSpin.valueChanged.connect(self._residualLimitChanged)
         self.loadTransformButton.clicked.connect(self.loadTransform)
         self.saveTransformButton.clicked.connect(self.saveTransform)
         self.clearButton.clicked.connect(self.clear)
@@ -972,6 +972,14 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             self._manualPairsChanged()
         self._emitStateChanged()
 
+    def _residualLimitChanged(self, *_args: Any) -> None:
+        """A new limit re-judges an existing fit (refits it) instead of dropping it."""
+        had_fit = self._fit_result is not None
+        self._invalidateTransform(emit=True)
+        if had_fit and self._correspondence_result is not None and self._job is None:
+            self.fitTransform()
+        self._emitStateChanged()
+
     def selectedModel(self) -> str:
         return str(self.modelCombo.currentData())
 
@@ -991,6 +999,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.modelHintLabel.setText(spec.description)
         self.transformParametersButton.setEnabled(True)
         self._invalidateTransform(emit=True)
+        if self.selectedCorrespondence() == MANUAL:
+            # Clicked pairs are refitted with the new model at once.
+            self._manualPairsChanged()
         self._emitStateChanged()
 
     # -- host-integration seams ------------------------------------------
@@ -1352,6 +1363,8 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         it) as Moving (``source``) or Reference (``target``)."""
         role = self._normalizeRole(role)
         image = _as_calibration_image(source.image, f"{self._roleLabel(role).lower()} image")
+        previous = self.image(role)
+        same_image = previous is not None and previous.shape == image.shape and np.array_equal(previous, image)
         source.image = image
         context = _context_for_image(source.context, image, source.path)
         source.context = context
@@ -1366,8 +1379,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._applyWorldPixelSizes()
         self._suggestId()
         self._refreshPairWarnings()
-        if self._pair_editor.pairs:
-            # Clicks belong to the images they were made on.
+        if self._pair_editor.pairs and not same_image:
+            # Clicks belong to the images they were made on (a file re-read with
+            # another option, e.g. the scan's fast axis, keeps them).
             self._pair_editor.clear()
         self._clearLocalizationRole(role)
         if role == "target" and source.has_world:
