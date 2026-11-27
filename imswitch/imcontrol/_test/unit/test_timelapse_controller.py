@@ -151,9 +151,11 @@ class _Tiling:
         self.stopped = 0
         self.grid = (3, 2)
         self.step_um = 25.0
+        self.tilt_plane = None
 
     def snapshotRunSettings(self):
         return TilingRunSettings(
+            tilt_plane=self.tilt_plane,
             n_tiles_x=self.grid[0], n_tiles_y=self.grid[1], pattern='spiral',
             step_um=self.step_um, blend_overlaps=False,
             intensity_correction=False, settle_s=0.0, register_tiles=False,
@@ -711,3 +713,24 @@ def test_a_tiling_timelapse_records_the_settings_it_used(make):
     manifest = json.loads((root / 'timelapse.json').read_text())
     assert manifest['tiling_settings']['n_tiles_x'] == 4
     assert manifest['tiling_settings']['step_um'] == 12.5
+
+
+def test_a_tiling_timelapse_with_tilt_compensation_still_writes_its_manifest(make):
+    from pathlib import Path
+    from imswitch.imcontrol.model.workflows.stage_tilt_compensation import TiltPlane
+    tiling = _Tiling(_Events())
+    tiling.tilt_plane = TiltPlane(
+        Path('/cal/tilt_fit.json'), 'abc123', 'XY', 'Z', 0.01, -0.02,
+        (0.0, 10.0), (0.0, 10.0), 0.05)
+    h = make(tiling=tiling)
+    h.widget.setKind(KIND_TILING)
+    assert 'tilt compensation' in h.widget.saveSummaryLabel.text()
+    h.widget.setTimepoints(1)
+    h.ctrl.startTimelapse()
+    h.qtbot.waitUntil(lambda: h.ctrl._run is None, timeout=10000)
+    root = tiling.runs[0][0].parent
+    plane = json.loads((root / 'timelapse.json').read_text())['tiling_settings']['tilt_plane']
+    assert plane == {
+        'calibration_path': str(Path('/cal/tilt_fit.json')), 'sha256': 'abc123',
+        'slope_x_um_per_um': 0.01, 'slope_y_um_per_um': -0.02,
+        'focus_positioner': 'Z', 'rms_residual_um': 0.05}

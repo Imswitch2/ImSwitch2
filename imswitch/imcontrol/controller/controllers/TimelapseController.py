@@ -86,7 +86,27 @@ def _describeTiling(settings) -> str:
         text += f', detector {settings.detector_name}'
     if triggered and settings.scan_source_key:
         text += f', scan source {settings.scan_source_key}'
+    if getattr(settings, 'tilt_plane', None) is not None:
+        text += ', with stage tilt compensation'
     return text
+
+
+def _manifestTilingSettings(settings):
+    """The tiling settings as plain JSON data (a tilt plane holds Paths)."""
+    if not dataclasses.is_dataclass(settings):
+        return None
+    data = dataclasses.asdict(settings)
+    plane = getattr(settings, 'tilt_plane', None)
+    if plane is not None:
+        data['tilt_plane'] = {
+            'calibration_path': str(getattr(plane, 'path', '')),
+            'sha256': getattr(plane, 'sha256', None),
+            'slope_x_um_per_um': getattr(plane, 'slope_x', None),
+            'slope_y_um_per_um': getattr(plane, 'slope_y', None),
+            'focus_positioner': getattr(plane, 'focus_positioner', None),
+            'rms_residual_um': getattr(plane, 'rms_residual_um', None),
+        }
+    return data
 
 
 class _Stopped(Exception):
@@ -1003,10 +1023,7 @@ class TimelapseController(ImConWidgetController):
             'lasers': plan.lasers_dict(),
             'illumination_settle_ms': plan.illumination_settle_ms,
             'started_utc': run.runStartUtc.isoformat(),
-            'tiling_settings': (
-                dataclasses.asdict(run.tilingSettings)
-                if dataclasses.is_dataclass(run.tilingSettings) else None
-            ),
+            'tiling_settings': _manifestTilingSettings(run.tilingSettings),
             'points': list(run.points),
         }
         try:
