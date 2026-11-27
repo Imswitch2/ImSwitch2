@@ -137,6 +137,27 @@ def test_pause_resume_across_a_simulated_xy_move(rig):
     assert abs(rig.spotRow() - rig.row0) <= rig.ctrl._lockEngine().limits.tolerancePx + 0.3
 
 
+def test_pause_and_resume_touch_widgets_only_on_the_controller_thread(rig):
+    rig.lock()
+    threads = []
+    button = rig.ctrl._widget.lockButton
+    original = button.setChecked
+
+    def setChecked(value):
+        threads.append(threading.current_thread())
+        original(value)
+
+    button.setChecked = setChecked
+    rig.ctrl._widget.setLockState = lambda state: threads.append(threading.current_thread())
+    thread, box = _in_thread(FocusLockController.pauseFocusLock, rig.ctrl)
+    _drive(rig, thread, n=5)
+    rig.zFocus += 0.3
+    thread, box = _in_thread(FocusLockController.resumeFocusLock, rig.ctrl, 0.0, 10.0)
+    _drive(rig, thread)
+    assert box['value'] == 'locked'
+    assert threads and all(t is rig.main for t in threads)
+
+
 def test_relock_hits_the_clamps_fails_and_returns_to_last_good_z(rig):
     engine = rig.lock()
     FocusLockController.pauseFocusLock(rig.ctrl)        # GUI thread: inline
