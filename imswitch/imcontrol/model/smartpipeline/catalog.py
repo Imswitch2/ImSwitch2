@@ -1,5 +1,13 @@
-"""The v1 action catalogue: the three actions a pipeline may name, with the
-parameters the mock and the live backend both honour.
+"""The action catalogue: the actions a pipeline may name, with the
+parameters the mock and the live backend both honour, by category (Scan,
+Motion, Light, Devices, Recording, Other: how the designer sorts them).
+
+Always there: ``run-scan``, ``move-to``, ``snap``, ``wait``, ``log``. Only
+when the setup has the device (:func:`catalog` with a :class:`SetupDevices`):
+``flip-mirror`` (a flip mirror, filter wheel or light-path switch to a
+position), ``laser`` (a laser on or off, optionally at a power) and
+``setup-mode`` (apply a saved setup mode, as etSNOUTY switches to its event
+configuration on a trigger).
 
 The specs are static (what the document checks against); the mock backend
 performs them in memory and the live backend through hand-written adapters
@@ -18,16 +26,20 @@ action has not ended.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
+from typing import Mapping
+
+from imswitch.imcommon.model.param_spec import ParamField
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec
 
 MOVE_TO = ActionSpec(
     "move-to", label="Move to", accepts=("points",),
     params={"positioner": "", "axes": ["Y", "X"], "frame": "", "relative": False, "deadline_s": 10.0},
-    frame_param="frame", hardware=True,
+    frame_param="frame", hardware=True, category="Motion",
     description="Move positioner axes to the first point (one axis per coordinate column, see 'axes').",
 )
 SNAP = ActionSpec(
-    "snap", label="Snap", accepts=("event",), params={"detector": ""}, hardware=True,
+    "snap", label="Snap", accepts=("event",), params={"detector": ""}, hardware=True, category="Recording",
     description="Take one image with a detector when the input event fired.",
 )
 LOG = ActionSpec(
@@ -42,7 +54,7 @@ RUN_SCAN = ActionSpec(
             "overview_pixel_um": 0.25, "box": "auto", "margin_um": 0.0, "margin_frac": 0.0, "min_size_um": 0.0,
             "max_size_um": 0.0, "min_overlap": 0.5, "range_um": {}, "range_inset_um": 0.0, "restore": True,
             "save": True},
-    frame_param="frame", hardware=True,
+    frame_param="frame", hardware=True, category="Scan",
     description="Run a point scan: 'overview' of field_um around the centre at overview_pixel_um (the Advanced "
                 "panel; the simple page plans its own), or 'acquisition' of "
                 "length_um at pixel_um centred on the input points (their columns mapped to the scan axes by "
@@ -63,12 +75,80 @@ WAIT = ActionSpec(
     description="Do nothing for 'seconds' (the chain goes on afterwards; the pipeline is busy meanwhile).",
 )
 
+FLIP_MIRROR = ActionSpec(
+    "flip-mirror", label="Flip mirror", accepts=("any",), params={"mirror": "", "position": 1},
+    hardware=True, category="Devices",
+    description="Move a flip mirror (or a filter wheel, turret, light-path switch) to a position, 0..N-1, "
+                "with its linked followers, through the Flip Mirrors panel; fails when it does not move "
+                "(disconnected, a follower, an unknown position).",
+    fields=(ParamField("position", "int", 1, label="Position", min=0, help="0..N-1; 0 and 1 for a two-state mirror"),),
+)
+LASER = ActionSpec(
+    "laser", label="Laser", accepts=("any",), params={"laser": "", "enabled": True, "set_power": False,
+                                                      "power": 0.0},
+    hardware=True, category="Light",
+    description="Switch a laser's emission on or off (as its row in the Laser panel does), and with set_power "
+                "also set its live power to 'power' (in the laser's units) first; fails when the laser refuses.",
+)
+SETUP_MODE = ActionSpec(
+    "setup-mode", label="Apply setup mode", accepts=("any",), params={"mode": ""}, hardware=True,
+    category="Devices",
+    description="Apply a saved setup mode (beam path, lasers, devices) as the Setup Modes panel does: the "
+                "configuration etSNOUTY switches to on an event; fails when a component does not apply.",
+)
+
 ACTION_SPECS = (MOVE_TO, SNAP, LOG, RUN_SCAN, WAIT)
+#: The actions that need a device of the setup; :func:`catalog` adds each when it is there.
+DEVICE_ACTION_SPECS = (FLIP_MIRROR, LASER, SETUP_MODE)
 
 
-def catalog() -> ActionCatalog:
-    """A fresh catalogue of the v1 actions."""
-    return ActionCatalog(ACTION_SPECS)
+@dataclass(frozen=True)
+class SetupDevices:
+    """What the running setup has, for the device actions: ``flip_mirrors``
+    maps a mirror to its position names (index = position), ``lasers`` a
+    laser to whether it is binary (on/off only), ``setup_modes`` the saved
+    setup modes, or ``None`` when setup modes are not available at all."""
+
+    flip_mirrors: Mapping[str, tuple] = field(default_factory=dict)
+    lasers: Mapping[str, bool] = field(default_factory=dict)
+    setup_modes: tuple | None = None
+
+
+def _choice(key: str, names, label: str, help: str = "") -> ParamField:
+    names = tuple(str(n) for n in names)
+    return ParamField(key, "select", names[0], label=label, help=help, options=names)
+
+
+def catalog(devices: SetupDevices | None = None) -> ActionCatalog:
+    """A fresh catalogue: the actions every setup has, and -- with
+    ``devices`` -- the device actions whose devices the setup has, their
+    device parameter a choice of the setup's names."""
+    specs = list(ACTION_SPECS)
+    if devices is not None:
+        mirrors = dict(devices.flip_mirrors or {})
+        if mirrors:
+            most = max((len(p) for p in mirrors.values()), default=2) or 2
+            names = "; ".join(f"{m}: " + ", ".join(f"{i}={n}" for i, n in enumerate(p)) for m, p in mirrors.items())
+            specs.append(replace(
+                FLIP_MIRROR, params={**FLIP_MIRROR.params, "mirror": next(iter(mirrors))},
+                fields=(_choice("mirror", mirrors, "Mirror"),
+                        ParamField("position", "int", 1, label="Position", min=0, max=most - 1,
+                                   help=f"0..N-1 ({names})"))))
+        lasers = dict(devices.lasers or {})
+        if lasers:
+            specs.append(replace(LASER, params={**LASER.params, "laser": next(iter(lasers))},
+                                 fields=(_choice("laser", lasers, "Laser"),
+                                         ParamField("enabled", "bool", True, label="Emission on"),
+                                         ParamField("set_power", "bool", False, label="Set power",
+                                                    help="Also set the live power (not for an on/off laser)"),
+                                         ParamField("power", "float", 0.0, label="Power", min=0.0,
+                                                    help="In the laser's units, when 'Set power' is on"))))
+        if devices.setup_modes is not None:
+            modes = tuple(devices.setup_modes)
+            fields = (_choice("mode", modes, "Setup mode"),) if modes else (
+                ParamField("mode", "text", "", label="Setup mode", help="The name of a saved setup mode"),)
+            specs.append(replace(SETUP_MODE, params={"mode": modes[0] if modes else ""}, fields=fields))
+    return ActionCatalog(specs)
 
 
 def axis_targets(params: dict) -> list[tuple[str, str]]:
@@ -101,7 +181,8 @@ def axis_targets(params: dict) -> list[tuple[str, str]]:
     return targets
 
 
-__all__ = ["ACTION_SPECS", "LOG", "MOVE_TO", "RUN_SCAN", "SNAP", "WAIT", "axis_targets", "catalog"]
+__all__ = ["ACTION_SPECS", "DEVICE_ACTION_SPECS", "FLIP_MIRROR", "LASER", "LOG", "MOVE_TO", "RUN_SCAN", "SETUP_MODE",
+           "SNAP", "SetupDevices", "WAIT", "axis_targets", "catalog"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

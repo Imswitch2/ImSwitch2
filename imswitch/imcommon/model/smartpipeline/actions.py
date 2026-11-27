@@ -17,6 +17,9 @@ from typing import Any, Mapping
 #: What an action's input port may carry.
 ACTION_INPUT_KINDS = ("points", "value", "event", "any")
 
+#: The groups the designer sorts actions into, in this order.
+ACTION_CATEGORIES = ("Scan", "Motion", "Light", "Devices", "Recording", "Other")
+
 
 @dataclass(frozen=True)
 class ActionSpec:
@@ -34,8 +37,17 @@ class ActionSpec:
     #: Touches hardware: logged and refused unless the run mode allows it.
     hardware: bool = True
     description: str = ""
+    #: The designer's group (one of :data:`ACTION_CATEGORIES`).
+    category: str = "Other"
+    #: Declared fields of some parameters (a choice of the setup's devices,
+    #: bounds, a unit), as :class:`~imswitch.imcommon.model.param_spec.ParamField`;
+    #: the other parameters get a field derived from their default.
+    fields: tuple = ()
 
     def __post_init__(self):
+        if self.category not in ACTION_CATEGORIES:
+            raise ValueError(f"action {self.id!r}: category {self.category!r} is not one of {ACTION_CATEGORIES}")
+        object.__setattr__(self, "fields", tuple(self.fields or ()))
         for kind in self.accepts:
             if kind not in ACTION_INPUT_KINDS:
                 raise ValueError(f"action {self.id!r}: input kind {kind!r} is not one of {ACTION_INPUT_KINDS}")
@@ -76,6 +88,16 @@ class ActionCatalog:
     def specs(self) -> tuple[ActionSpec, ...]:
         return tuple(self._by_id.values())
 
+    def by_category(self) -> list[tuple[str, tuple[ActionSpec, ...]]]:
+        """``[(category, specs)]`` in :data:`ACTION_CATEGORIES` order (empty
+        groups left out), each group in catalogue order."""
+        groups = []
+        for category in ACTION_CATEGORIES:
+            specs = tuple(spec for spec in self._by_id.values() if spec.category == category)
+            if specs:
+                groups.append((category, specs))
+        return groups
+
     def __contains__(self, action_id) -> bool:
         return str(action_id) in self._by_id
 
@@ -83,7 +105,7 @@ class ActionCatalog:
         return len(self._by_id)
 
 
-__all__ = ["ACTION_INPUT_KINDS", "ActionCatalog", "ActionSpec"]
+__all__ = ["ACTION_CATEGORIES", "ACTION_INPUT_KINDS", "ActionCatalog", "ActionSpec"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

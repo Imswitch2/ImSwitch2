@@ -63,6 +63,8 @@ class ParamField:
     group: str = ""
     nullable: bool = False
     advanced: bool = False
+    #: What a form shows for each of ``options`` (same order); the option itself when empty.
+    option_labels: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.key, str) or not self.key:
@@ -72,6 +74,9 @@ class ParamField:
                 f"{self.key!r}: unknown field type {self.type!r}; expected one of {FIELD_TYPES}"
             )
         object.__setattr__(self, "options", tuple(self.options or ()))
+        object.__setattr__(self, "option_labels", tuple(str(t) for t in (self.option_labels or ())))
+        if self.option_labels and len(self.option_labels) != len(self.options):
+            raise ValueError(f"{self.key!r}: {len(self.option_labels)} option labels for {len(self.options)} options")
         for name in ("min", "max", "step"):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, numbers.Real)):
@@ -143,6 +148,8 @@ class ParamField:
                 payload[name] = value
         if self.options:
             payload["options"] = list(self.options)
+        if self.option_labels:
+            payload["option_labels"] = list(self.option_labels)
         for name in ("min", "max", "step", "decimals"):
             value = getattr(self, name)
             if value is not None:
@@ -161,6 +168,8 @@ class ParamField:
         data = dict(payload)
         if "options" in data:
             data["options"] = tuple(data["options"])
+        if "option_labels" in data:
+            data["option_labels"] = tuple(data["option_labels"])
         return cls(**data)
 
 

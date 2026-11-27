@@ -228,7 +228,10 @@ def test_design_opens_the_editor_on_the_pipeline_with_the_setup_s_choices(panel,
         assert [d.kind for d in catalog.steps] == ['live', 'transform', 'gate', 'action', 'sink']
         assert catalog.step('live').attribute('detector').options == ('Camera',)
         assert catalog.step('transform').attribute('transform').options == ('cam2stage', 'identity')
-        assert catalog.step('action').attribute('action').options == ('move-to', 'snap', 'log', 'run-scan', 'wait')
+        # sorted by category: Scan, Motion, (no flip mirror, laser or setup modes here), Recording, Other
+        action = catalog.step('action').attribute('action')
+        assert action.options == ('run-scan', 'move-to', 'snap', 'log', 'wait')
+        assert action.option_labels[0] == 'Scan › Run scan (run-scan)'
         assert ('live', '') in editor.palette.all_choices()
         assert editor.catalog.processor('threshold') is not None
         recipes = catalog.recipes()

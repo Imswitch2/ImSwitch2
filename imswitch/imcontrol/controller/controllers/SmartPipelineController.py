@@ -253,9 +253,49 @@ class SmartPipelineController(ImConWidgetController):
         return registry
 
     def _catalog(self):
+        """ The actions this setup offers: the device actions only for the
+        devices it has. """
         from imswitch.imcontrol.model.smartpipeline.catalog import catalog
 
-        return catalog()
+        return catalog(self._setupDevices())
+
+    def _setupModeNames(self):
+        service = self._smartModeService
+        controller = getattr(service, 'setupModeController', None) if service is not None else None
+        if controller is None:
+            return None
+        return [str(name) for name in (controller.listSetupModes() or [])]
+
+    def _setupDevices(self):
+        """ What the device actions may name: the flip mirrors (with their
+        position names), the lasers (binary or not), the setup modes. A
+        manager this setup does not have contributes nothing. """
+        from imswitch.imcontrol.model.smartpipeline.catalog import SetupDevices
+
+        mirrors, lasers = {}, {}
+        manager = getattr(self._master, 'flipMirrorsManager', None)
+        try:
+            for name in (manager.getAllDeviceNames() if manager is not None and manager.hasDevices() else []):
+                getNames = getattr(manager[name], 'get_state_names', None)
+                try:
+                    named = dict(getNames()) if getNames is not None else {0: '0', 1: '1'}
+                except Exception:
+                    named = {0: '0', 1: '1'}
+                mirrors[str(name)] = tuple(str(named[k]) for k in sorted(named, key=int))
+        except Exception:
+            self.__logger.debug('Smart pipeline: the flip mirrors could not be listed', exc_info=True)
+        manager = getattr(self._master, 'lasersManager', None)
+        try:
+            for name in (manager.getAllDeviceNames() if manager is not None else []):
+                lasers[str(name)] = bool(getattr(manager[name], 'isBinary', False))
+        except Exception:
+            self.__logger.debug('Smart pipeline: the lasers could not be listed', exc_info=True)
+        try:
+            modes = self._setupModeNames()
+        except Exception:
+            modes = None
+        return SetupDevices(flip_mirrors=mirrors, lasers=lasers,
+                            setup_modes=tuple(modes) if modes is not None else None)
 
     # ------------------------------------------------------------------ #
     # The designer                                                        #
@@ -497,7 +537,9 @@ class SmartPipelineController(ImConWidgetController):
                 return
             self._saveWarnings = saveProblems
         actions = live_backend(self._master.positionersManager, snap=self._snap, marshal=self._marshal,
-                               logger=self.__logger, scan=scan)
+                               logger=self.__logger, scan=scan, devices=self._setupDevices(),
+                               controllers=self._commChannel.controllerRegistry, apply_mode=self._applyMode,
+                               setup_modes=lambda: self._marshal(self._setupModeNames) or [])
         try:
             transforms = self._transforms()
             steps = self._stepRunner(document)

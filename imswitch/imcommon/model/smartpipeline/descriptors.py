@@ -103,7 +103,12 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
     """
     detectors = tuple(str(d) for d in detectors)
     transform_ids = tuple(str(t) for t in transforms)
-    action_ids = tuple(actions.ids()) if actions is not None else ()
+    # The actions grouped by category (Scan, Motion, Light, Devices, Recording,
+    # Other), each shown as "Category › Label (id)": one list, sorted.
+    grouped = [(category, spec) for category, specs in (actions.by_category() if actions is not None else ())
+               for spec in specs]
+    action_ids = tuple(spec.id for _category, spec in grouped)
+    action_labels = tuple(f"{category} › {spec.label or spec.id} ({spec.id})" for category, spec in grouped)
 
     def make_live(step_id, refs):
         return Live(step_id, detector=detectors[0] if detectors else "")
@@ -124,8 +129,13 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
         spec = actions.get(getattr(step, "action", "")) if actions is not None else None
         return action_fields_of(spec, getattr(step, "params", {}) or {})
 
-    action_help = "; ".join(f"{spec.id}: {spec.description}" for spec in (actions.specs() if actions else ())
-                            if spec.description)
+    action_help = "\n".join(f"{category} › {spec.id}: {spec.description}" for category, spec in grouped
+                             if spec.description)
+    if action_ids:
+        action_field = ParamField("action", "select", action_ids[0], label="Action", help=action_help,
+                                  options=action_ids, option_labels=action_labels)
+    else:
+        action_field = ParamField("action", "text", "", label="Action", help=action_help)
     return (
         StepDescriptor(
             "live", "Live detector", PIPELINE_CATEGORY,
@@ -159,7 +169,7 @@ def pipeline_descriptors(*, detectors=(), transforms=(), actions: ActionCatalog 
             "Hardware, from the action catalogue. The actions run one after the other, each after the one "
             "before it completed; 'done' is the outcome.",
             attributes=(
-                _select_or_text("action", "", action_ids, label="Action", help=action_help),
+                action_field,
                 ParamField("timeout_s", "float", None, label="Timeout", suffix="s", min=0.0, nullable=True,
                            help="The action fails after this long without completing"),
                 ParamField("on_arm", "bool", False, label="Run on arm",

@@ -422,6 +422,11 @@ class Engine:
         if self._source_step is None:
             return problems or ["no source step"]
         effects = MODE_EFFECTS[self.mode]
+        device_problems = getattr(self.actions, "problems_for", None)
+        if effects["actions"] != "skip" and callable(device_problems):
+            # A device an action names that the setup does not have (a flip
+            # mirror, a laser, a setup mode): found at arm, not at the trigger.
+            problems.extend(device_problems(self.workflow))
         hardware = [step for step in self._chain if self._hardware(step)]
         if effects["roles"] and hardware and not self.settings.arms_live:
             problems.append(

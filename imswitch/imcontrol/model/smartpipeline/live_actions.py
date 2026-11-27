@@ -29,7 +29,19 @@ import numpy as np
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
 from imswitch.imcontrol.model.smartpipeline.boxes import BOX_COLUMNS, SOURCE_BOX_COLUMNS, box_of_row, plan_box_scan
-from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, RUN_SCAN, SNAP, WAIT, axis_targets, catalog
+from imswitch.imcontrol.model.smartpipeline.catalog import (
+    FLIP_MIRROR,
+    LASER,
+    LOG,
+    MOVE_TO,
+    RUN_SCAN,
+    SETUP_MODE,
+    SNAP,
+    WAIT,
+    SetupDevices,
+    axis_targets,
+    catalog,
+)
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest, SimpleCompletion
 
 
@@ -688,6 +700,208 @@ class RunScanAdapter:
             return False
 
 
+def _registry_of(controllers) -> dict:
+    registry = controllers() if callable(controllers) else controllers
+    return registry or {}
+
+
+class FlipMirrorAdapter:
+    """``flip-mirror``: the Flip Mirrors panel's ``move_flip`` (its followers
+    move too, its row shows the new state), on the GUI thread.
+
+    Reserves nothing: flip mirrors have no admission key in
+    :mod:`imswitch.imcontrol.model.resources` (their manager is not guarded),
+    so a reservation would protect nothing; like ``run-scan`` the action goes
+    through the panel. ``mirrors`` is ``{name: position names}`` of the setup."""
+
+    spec = FLIP_MIRROR
+
+    def __init__(self, controllers, mirrors: dict, marshal=None):
+        self._controllers = controllers
+        self._mirrors = {str(k): tuple(v) for k, v in dict(mirrors or {}).items()}
+        self._marshal = marshal if marshal is not None else (lambda fn: fn())
+
+    def resources(self, params: dict) -> set[str]:
+        return set()
+
+    def problems(self, params: dict) -> list[str]:
+        mirror = str(params.get("mirror") or "")
+        positions = self._mirrors.get(mirror)
+        if positions is None:
+            return [f"flip-mirror: no flip mirror {mirror!r} in this setup (have: "
+                    f"{', '.join(self._mirrors) or 'none'})"]
+        try:
+            position = int(params.get("position"))
+        except (TypeError, ValueError):
+            return [f"flip-mirror: position {params.get('position')!r} is not a whole number"]
+        if not 0 <= position < max(1, len(positions)):
+            return [f"flip-mirror: {mirror!r} has positions 0..{len(positions) - 1}, not {position}"]
+        return []
+
+    def _describe(self, params: dict) -> tuple[str, int, str]:
+        mirror, position = str(params.get("mirror") or ""), int(params.get("position") or 0)
+        names = self._mirrors.get(mirror) or ()
+        name = str(names[position]) if 0 <= position < len(names) else str(position)
+        return mirror, position, name
+
+    def plan(self, request: ActionRequest) -> dict:
+        problems = self.problems(request.params)
+        if problems:
+            return {"message": f"would NOT flip: {problems[0]}"}
+        mirror, position, name = self._describe(request.params)
+        return {"message": f"would set flip mirror {mirror!r} to position {position} ({name})"}
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        problems = self.problems(request.params)
+        if problems:
+            completion.fail(problems[0])
+            return completion
+        mirror, position, name = self._describe(request.params)
+        controller = _registry_of(self._controllers).get("FlipMirror")
+        if controller is None or not hasattr(controller, "move_flip"):
+            completion.fail("flip-mirror: no Flip Mirrors panel in this setup")
+            return completion
+        try:
+            moved = self._marshal(lambda: controller.move_flip(mirror, position))
+        except Exception as exc:  # noqa: BLE001 - the panel refused; reported, the run decides
+            completion.fail(f"flip-mirror {mirror!r}: {type(exc).__name__}: {exc}")
+            return completion
+        if moved is not True:
+            completion.fail(f"flip-mirror {mirror!r}: did not move to {position} ({name}); the Flip Mirrors "
+                            "panel says why (disconnected, a linked follower, a device error)")
+            return completion
+        completion.complete({"mirror": mirror, "position": position, "name": name})
+        return completion
+
+
+class LaserAdapter:
+    """``laser``: the Laser panel's ``setLaserValue`` / ``setLaserActive``
+    (its row and the recorded metadata follow), on the GUI thread, then a
+    read-back of the emission state.
+
+    Reserves nothing: a reservation of the laser would refuse the panel's own
+    commands, which carry no reservation token; the panel's own rules (read
+    only while a scan uses the lasers) apply and refuse the action instead.
+    ``lasers`` is ``{name: binary}`` of the setup."""
+
+    spec = LASER
+
+    def __init__(self, controllers, lasers: dict, marshal=None):
+        self._controllers = controllers
+        self._lasers = {str(k): bool(v) for k, v in dict(lasers or {}).items()}
+        self._marshal = marshal if marshal is not None else (lambda fn: fn())
+
+    def resources(self, params: dict) -> set[str]:
+        return set()
+
+    def problems(self, params: dict) -> list[str]:
+        laser = str(params.get("laser") or "")
+        if laser not in self._lasers:
+            return [f"laser: no laser {laser!r} in this setup (have: {', '.join(self._lasers) or 'none'})"]
+        if params.get("set_power") and self._lasers[laser]:
+            return [f"laser: {laser!r} is an on/off laser; it has no power to set"]
+        if params.get("set_power"):
+            try:
+                if float(params.get("power")) < 0:
+                    return [f"laser: power {params.get('power')!r} is negative"]
+            except (TypeError, ValueError):
+                return [f"laser: power {params.get('power')!r} is not a number"]
+        return []
+
+    def plan(self, request: ActionRequest) -> dict:
+        problems = self.problems(request.params)
+        if problems:
+            return {"message": f"would NOT switch: {problems[0]}"}
+        params = request.params
+        power = f" at {float(params['power']):g}" if params.get("set_power") else ""
+        return {"message": f"would switch laser {params['laser']!r} {'on' if params.get('enabled') else 'off'}{power}"}
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        params = request.params
+        problems = self.problems(params)
+        if problems:
+            completion.fail(problems[0])
+            return completion
+        laser, enabled = str(params["laser"]), bool(params.get("enabled", True))
+        controller = _registry_of(self._controllers).get("Laser")
+        if controller is None:
+            completion.fail("laser: no Laser panel in this setup")
+            return completion
+
+        def apply():
+            if params.get("set_power") and controller.setLaserValue(laser, float(params["power"])) is False:
+                return f"{laser!r} refused the power {float(params['power']):g}"
+            controller.setLaserActive(laser, enabled)
+            if bool(controller.getLaserActive(laser)) != enabled:
+                return f"{laser!r} did not switch {'on' if enabled else 'off'}"
+            return None
+
+        try:
+            problem = self._marshal(apply)
+        except Exception as exc:  # noqa: BLE001 - the panel refused (read only during a scan, not connected)
+            problem = f"{type(exc).__name__}: {exc}"
+        if problem:
+            completion.fail(f"laser: {problem}")
+            return completion
+        completion.complete({"laser": laser, "enabled": enabled,
+                             **({"power": float(params["power"])} if params.get("set_power") else {})})
+        return completion
+
+
+class SetupModeAdapter:
+    """``setup-mode``: apply a saved setup mode the way the run applies its
+    roles (``apply_mode(name)`` returns ``None`` or the problem); ``modes()``
+    lists the saved ones. Reserves nothing itself (roles do not either): a
+    component the pipeline holds refuses and the action fails."""
+
+    spec = SETUP_MODE
+
+    def __init__(self, apply_mode, modes):
+        self._apply = apply_mode
+        self._modes = modes
+
+    def resources(self, params: dict) -> set[str]:
+        return set()
+
+    def _known(self) -> list[str]:
+        try:
+            return [str(m) for m in (self._modes() if callable(self._modes) else self._modes) or ()]
+        except Exception:  # noqa: BLE001 - unreadable: say so at the start
+            return []
+
+    def problems(self, params: dict) -> list[str]:
+        mode = str(params.get("mode") or "")
+        known = self._known()
+        if mode not in known:
+            return [f"setup-mode: no setup mode {mode!r} (have: {', '.join(known) or 'none'})"]
+        return []
+
+    def plan(self, request: ActionRequest) -> dict:
+        problems = self.problems(request.params)
+        if problems:
+            return {"message": f"would NOT apply: {problems[0]}"}
+        return {"message": f"would apply setup mode {request.params['mode']!r}"}
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        problems = self.problems(request.params)
+        if problems:
+            completion.fail(problems[0])
+            return completion
+        mode = str(request.params["mode"])
+        try:
+            problem = self._apply(mode)
+        except Exception as exc:  # noqa: BLE001
+            problem = f"{type(exc).__name__}: {exc}"
+        if problem:
+            completion.fail(f"setup-mode {mode!r}: {problem}")
+            return completion
+        completion.complete({"mode": mode})
+        return completion
+
+
 #: How long a trigger waits for a busy scan panel to let go before it is skipped, s.
 BUSY_WAIT_S = 1.0
 
@@ -782,6 +996,16 @@ class LiveActionBackend:
         except Exception as exc:  # noqa: BLE001 - a check that fails is itself the problem
             return [f"{action_id}: {type(exc).__name__}: {exc}"]
 
+    def problems_for(self, workflow) -> list[str]:
+        """Why the pipeline's action steps cannot run on this setup (a device
+        they name is absent), one line per problem; checked at arm."""
+        from imswitch.imcommon.model.smartpipeline import action_chain
+
+        found = []
+        for step in action_chain(workflow):
+            found.extend(f"{step.id}: {problem}" for problem in self.step_problems(step.action, step.params))
+        return found
+
     def quarantined(self) -> set[str]:
         found: set[str] = set()
         for adapter in self._adapters.values():
@@ -803,9 +1027,14 @@ class LiveActionBackend:
         return adapter.start(request, self.token)
 
 
-def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, logger=None, scan=None) -> LiveActionBackend:
-    """The v1 backend: move-to, snap, log and -- with ``scan`` (a dict of
-    ``controllers``, ``workflow``, ``capture``) -- run-scan."""
+def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, logger=None, scan=None,
+                 devices: SetupDevices | None = None, controllers=None, apply_mode=None,
+                 setup_modes=None) -> LiveActionBackend:
+    """The backend: move-to, snap, log, wait, -- with ``scan`` (a dict of
+    ``controllers``, ``workflow``, ``capture``) -- run-scan, and the device
+    actions of :func:`~.catalog.catalog` for what ``devices`` has (through
+    the panels in ``controllers``; ``apply_mode``/``setup_modes`` apply and
+    list the setup modes)."""
     adapters = [
         MoveToAdapter(positionersManager, executor=executor, logger=logger),
         SnapAdapter(snap, marshal),
@@ -816,11 +1045,23 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
         adapters.append(RunScanAdapter(scan.get("controllers"), scan.get("workflow"), marshal=marshal,
                                        capture=scan.get("capture"), logger=logger,
                                        recorder=scan.get("recorder")))
-    return LiveActionBackend(adapters, catalog=catalog())
+    if devices is not None:
+        if devices.flip_mirrors:
+            adapters.append(FlipMirrorAdapter(controllers, devices.flip_mirrors, marshal))
+        if devices.lasers:
+            adapters.append(LaserAdapter(controllers, devices.lasers, marshal))
+        if devices.setup_modes is not None and apply_mode is not None:
+            adapters.append(SetupModeAdapter(apply_mode, setup_modes if setup_modes is not None
+                                             else tuple(devices.setup_modes)))
+    full = catalog(devices)
+    have = {adapter.spec.id for adapter in adapters}
+    return LiveActionBackend(adapters, catalog=ActionCatalog(spec for spec in full.specs()
+                                                             if spec.id in have or spec.id == RUN_SCAN.id))
 
 
-__all__ = ["BUSY_WAIT_S", "ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "RunScanAdapter",
-           "SnapAdapter", "WaitAdapter", "live_backend", "scan_panel_busy"]
+__all__ = ["BUSY_WAIT_S", "ActionAdapter", "FlipMirrorAdapter", "LaserAdapter", "LiveActionBackend", "LogAdapter",
+           "MoveToAdapter", "RunScanAdapter", "SetupModeAdapter", "SnapAdapter", "WaitAdapter", "live_backend",
+           "scan_panel_busy"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

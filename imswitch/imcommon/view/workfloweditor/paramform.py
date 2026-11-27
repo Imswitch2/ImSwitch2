@@ -211,7 +211,8 @@ class ParamForm(QtWidgets.QWidget):
                 limits.insert(0, None)
             if value is not None and not any(_same(value, option) for option in limits):
                 limits.append(value)  # a value from the file that the plugin no longer lists
-            opts["limits"] = {_option_label(option): option for option in limits}
+            labels = dict(zip(field.options, field.option_labels)) if field.option_labels else {}
+            opts["limits"] = {labels.get(option) or _option_label(option): option for option in limits}
         elif kind == "checklist":
             opts["limits"] = list(field.options)
         return Parameter.create(**opts)
