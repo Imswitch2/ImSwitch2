@@ -77,6 +77,7 @@ Unreleased
 
 **New Features**
 
+- **Swap / Relabel Axes** (``axis-swap``, *Dimensions and channels*). A small ImProcess processor for data whose axes are in the wrong order or carry the wrong name: *Order* swaps two axes (``Z,T``, ``X,Y``) or puts all of them in a new order (``Z,X,Y``), by label or index, and each axis takes its label and scale with it; with *Keep labels in place* the labels stay and the data changes meaning (X becomes Y). *Labels* renames axes without touching the array, all of them (``X,Y,T``) or as pairs (``Z=T``), so a stack read as ``Z`` that is a time series becomes ``T``.
 - **Smart pipeline: exposed parameters.**  A pipeline can expose step
   parameters -- of processing steps, gates and actions -- as workflow
   controls (schema 2); the designer exposes, renames, labels and un-exposes

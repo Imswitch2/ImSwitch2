@@ -8,6 +8,7 @@ in the global registry alongside reconstructors.
 import inspect
 
 from .base import Processor
+from .axis_swap import AxisSwapProcessor
 from .background import SubtractBackgroundProcessor
 from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
@@ -50,6 +51,7 @@ from .tile_spots import TileSpotsProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
+    'axis-swap': AxisSwapProcessor,
     'channel-merge': ChannelMergeProcessor,
     'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
@@ -279,6 +281,7 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 
 
 __all__ = [
+    "AxisSwapProcessor",
     "Processor",
     "ChannelMergeProcessor",
     "ChannelSplitProcessor",
