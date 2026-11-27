@@ -21,6 +21,8 @@ from imswitch.imcommon.model import dirtools, initLogger
 OPTIONS_FILENAME = 'improcess_options.json'
 
 _FIELDS = ('dataFolder', 'saveFolder')
+_QUICK_LOAD_SOURCE_KEY = 'quickLoadSource'
+_QUICK_LOAD_HISTORY_KEY = 'quickLoadKeepHistory'
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,54 @@ def save_folder_preferences(preferences: FolderPreferences, path=None) -> None:
         content = {}
     for field in _FIELDS:
         content[field] = str(getattr(preferences, field) or '')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as file:
+        json.dump(content, file, indent=4, sort_keys=True)
+
+
+def load_quick_load_source(path=None) -> str:
+    """Return the persisted Quick Load picker family (``files`` or ``zarr``)."""
+    path = path or options_file_path()
+    try:
+        content = _read(path)
+    except Exception:
+        return 'files'
+    value = str(content.get(_QUICK_LOAD_SOURCE_KEY, 'files') or 'files').lower()
+    return value if value in {'files', 'zarr'} else 'files'
+
+
+def save_quick_load_source(value: str, path=None) -> None:
+    """Persist only the Quick Load picker family, preserving other options."""
+    path = path or options_file_path()
+    try:
+        content = _read(path)
+    except Exception:
+        content = {}
+    value = str(value or 'files').lower()
+    content[_QUICK_LOAD_SOURCE_KEY] = value if value in {'files', 'zarr'} else 'files'
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as file:
+        json.dump(content, file, indent=4, sort_keys=True)
+
+
+def load_quick_load_keep_history(path=None) -> bool:
+    """Return whether Quick Load keeps earlier load groups in its catalog."""
+    path = path or options_file_path()
+    try:
+        content = _read(path)
+    except Exception:
+        return False
+    return bool(content.get(_QUICK_LOAD_HISTORY_KEY, False))
+
+
+def save_quick_load_keep_history(enabled: bool, path=None) -> None:
+    """Persist the lightweight Quick Load history preference."""
+    path = path or options_file_path()
+    try:
+        content = _read(path)
+    except Exception:
+        content = {}
+    content[_QUICK_LOAD_HISTORY_KEY] = bool(enabled)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as file:
         json.dump(content, file, indent=4, sort_keys=True)

@@ -13,7 +13,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import DetectionPreview, StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import Contract, Incompatible, RawInfo, DetectionPreview, StreamInit, StreamingReconstructor
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
     placement_from_layout,
@@ -28,7 +28,8 @@ from .params import (
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL, ORIENTATION_SETUP, ORIENTATION_RECORDED,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
-    PRESET_FAST, PRESET_FULL, PRESET_DLL, PRESET_LEGACY, PRESETS, effective_mode_params,
+    PRESET_FAST, PRESET_FULL, PRESET_DLL, PRESET_LEGACY, PRESET_CUSTOM,
+    PRESETS, effective_mode_params,
     SPOT_AUTO, SPOT_MANUAL, ESTIMATORS, FOOTPRINT_SHAPES, FOOTPRINT_MODES,
     ESTIMATOR_JOINT, ESTIMATOR_DLL, default_params as unified_default_params,
 )
@@ -38,7 +39,7 @@ from .orientation import auto_detect_scan_orientation
 from .scan_frame import ORIENTATIONS
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
-from .result import MonalisaProcessingResult
+from .canonical_result import MonalisaResult
 from .signal_extractor import SignalExtractor
 from .session_registry import MonalisaSessionRegistry, detector_identity
 
@@ -79,6 +80,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     description = "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices"
     execution_policy = "worker"
     supports_streaming = True
+    supports_progressive_finite = True
     supports_consolidation = True
     # The fixed unified Gaussian parameter contract replaces the former
     # internal Fast/Legacy method selector. Old v1 dictionaries remain
@@ -315,6 +317,27 @@ class MonalisaReconstructor(StreamingReconstructor):
         raise ValueError(f"Unknown localization mode {mode!r}")
 
     @staticmethod
+    def finite_timepoint_reuse_overrides(first_result, params: dict) -> dict:
+        """Reuse only this *logical acquisition's* first Auto localization.
+
+        The finite worker calls this inside a single timelapse job. It never
+        shares calibration between queue entries, independent Multi Data
+        items, reconstructor instances, or Session changes. The first result's
+        resolved values (not a widget/cache snapshot) are authoritative.
+        """
+        if str((params or {}).get("localization_mode", LOCALIZATION_AUTO)) != LOCALIZATION_AUTO:
+            return {}
+        metadata = getattr(first_result, "metadata", None) or {}
+        calibration = metadata.get("monalisa_calibration") or {}
+        resolved = calibration.get("resolved_localization")
+        if not isinstance(resolved, dict) or not resolved:
+            # Historical results may not expose a resolved calibration. Do
+            # not turn a valid finite reconstruction into a failed job; let
+            # subsequent timepoints localize themselves in that case.
+            return {}
+        return {"auto_localization": copy.deepcopy(resolved)}
+
+    @staticmethod
     def _spot_sigma_for_params(params: dict) -> float | None:
         if str(params.get("spot_width_mode", SPOT_MANUAL)) != SPOT_MANUAL:
             return None
@@ -544,6 +567,39 @@ class MonalisaReconstructor(StreamingReconstructor):
             "sharpen": bool(params.get("sharpen", False)),
         }
 
+    def can_update_reconstruction(self, result, params: dict) -> tuple[bool, str]:
+        """Return whether Fast placement-only update is valid for ``result``."""
+        if result is None:
+            return False, "Select a Fast MoNaLISA reconstruction to update."
+        merged = unified_default_params()
+        merged.update(effective_mode_params(dict(params or {})))
+        if str(merged.get("preset", "Fast")) != "Fast":
+            return False, "Update reconstruction is available only in Fast mode."
+        unsupported = (
+            str(merged.get("reassignment", "off")) != "off"
+            or bool(merged.get("variance_weighting", False))
+            or bool(merged.get("pinhole_stack", False))
+            or bool(merged.get("sharpen", False))
+            or bool(merged.get("intensity_correction", False))
+            or bool(merged.get("cell_offsets", False))
+        )
+        if unsupported:
+            return False, (
+                "Placement-only update requires ISM, sharpening, variance "
+                "weighting and intensity/cell-offset corrections to be disabled."
+            )
+        expected = getattr(result, "_monalisa_fast_update_signature", None)
+        if expected is None or not hasattr(result, "_fast_placement_cache"):
+            return False, "The selected result has no retained Fast extraction."
+        current = self._fast_update_signature(merged)
+        if current != expected:
+            return (
+                False,
+                "Localization, spot model, scan or extraction settings changed; "
+                "run a full reconstruction first.",
+            )
+        return True, "Re-place the selected Fast reconstruction using the current scan orientation."
+
     def update_reconstruction(self, result, params: dict):
         """Fast placement-only refresh, primarily for visual orientation checks."""
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
@@ -552,27 +608,9 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         merged = unified_default_params()
         merged.update(effective_mode_params(dict(params or {})))
-        if (str(merged.get("reassignment", "off")) != "off"
-                or bool(merged.get("sharpen", False))
-                or bool(merged.get("pinhole_stack", False))
-                or bool(merged.get("variance_weighting", False))
-                or bool(merged.get("intensity_correction", False))
-                or bool(merged.get("cell_offsets", False))):
-            raise ValueError(
-                "Update reconstruction requires amplitude-only extraction "
-                "without corrections, ISM, pinhole stacks or sharpening."
-            )
-        expected = getattr(result, "_monalisa_fast_update_signature", None)
-        if expected is None or not hasattr(result, "_fast_placement_cache"):
-            raise ValueError(
-                "This result has no retained Fast extraction. Run Fast reconstruction first."
-            )
-        current = self._fast_update_signature(merged)
-        if current != expected:
-            raise ValueError(
-                "Localization, spot model, scan or extraction settings changed. "
-                "Run a full reconstruction before using Update reconstruction."
-            )
+        available, reason = self.can_update_reconstruction(result, merged)
+        if not available:
+            raise ValueError(reason)
 
         orientation = self._orientation_literal(merged)
         if orientation is None:
@@ -586,7 +624,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         updated.name = result.name
         updated.params = dict(merged)
-        updated._monalisa_fast_update_signature = copy.deepcopy(expected)
+        updated._monalisa_fast_update_signature = copy.deepcopy(
+            result._monalisa_fast_update_signature
+        )
 
         snapshot = dict(
             ((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
@@ -628,7 +668,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         except ValueError as exc:
             raise ValueError(
                 "Legacy DLL supports only an axis-aligned rectangular localization. "
-                "Use the Gaussian MoNaLISA reconstructor for rotated or staggered patterns."
+                "Use Fast/Robust/Custom for rotated or staggered patterns."
             ) from exc
         return (float(offset_y), float(offset_x), float(period_y), float(period_x))
 
@@ -711,20 +751,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         result.metadata = metadata
         return result
 
-    def _process_unified_gaussian(self, data_obj, params: dict, context=None):
-        """Run the experimental/general lattice orchestration as the one Gaussian plugin.
+    def unified_lattice_params(self, params: dict) -> dict:
+        """Translate unified settings once for finite *and* live Fast geometry.
 
-        ``MonalisaLatticeReconstructor`` is retained as a compatibility wrapper
-        during Patch 2; the mathematical pipeline it calls already lives under
-        ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
-        settings have a migration path.
+        The extraction/placement math remains in the MoNaLISA lattice pipeline.
         """
         from imswitch.improcess.reconstructors.monalisa_lattice.params_widget import AUTO
         from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
             MonalisaLatticeReconstructor,
         )
-
-        started_worker = time.perf_counter()
         original = dict(params or {})
         merged = unified_default_params()
         merged.update(effective_mode_params(original))
@@ -746,16 +781,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             # localization, scan geometry and compatible corrections remain.
             merged["estimator"] = ESTIMATOR_DLL
         spot_sigma_px = self._spot_sigma_for_params(merged)
-
         placement = str(merged.get("placement_mode", PLACEMENT_AUTO)).lower()
-        if placement == "interpolate":
-            placement = "interpolate"
-        elif placement == "direct":
-            placement = "direct"
-        else:
+        if placement not in ("direct", "interpolate"):
             placement = "auto"
-
-        lattice_params = {
+        return {
             **MonalisaLatticeReconstructor.default_params(),
             # The lattice pipeline itself checks whether optional stages are
             # compatible with batched amplitude-only extraction. Full without
@@ -814,9 +843,43 @@ class MonalisaReconstructor(StreamingReconstructor):
                 None if localization is None else localization.to_dict()
             ),
         }
-        result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
-        result.name = f"{data_obj.name}_monalisa"
 
+    def _process_unified_gaussian(self, data_obj, params: dict, context=None):
+        """Run the experimental/general lattice orchestration as the one Gaussian plugin.
+
+        ``MonalisaLatticeReconstructor`` is retained as a compatibility wrapper
+        during Patch 2; the mathematical pipeline it calls already lives under
+        ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
+        settings have a migration path.
+        """
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor,
+        )
+
+        started_worker = time.perf_counter()
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        lattice_params = self.unified_lattice_params(merged)
+        result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
+        return self._stamp_unified_gaussian_result(
+            result, data_obj, merged, started_worker=started_worker,
+        )
+
+    def _stamp_unified_gaussian_result(
+        self, result, data_obj, params: dict, *, started_worker: float | None = None,
+    ):
+        """Shared finite/streaming scientific calibration and provenance.
+
+        Both paths use this method *after* creating the canonical MoNaLISA
+        scientific output. In particular a streamed timepoint must not lose
+        the resolved orientation, localization, spot width or requested modes.
+        """
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        localization = self._resolved_localization(merged)
+        orientation = self._orientation_literal(merged)
+        spot_sigma_px = self._spot_sigma_for_params(merged)
+        result.name = f"{data_obj.name}_monalisa"
         diagnostics = dict(getattr(result, "diagnostics", {}) or {})
         resolved_localization = PatternLocalization.from_dict(
             diagnostics.get("resolved_localization")
@@ -917,7 +980,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         metadata = dict(getattr(result, "metadata", {}) or {})
         metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
         result.metadata = metadata
-        if bool(merged["show_reconstruction_timings"]):
+        if bool(merged["show_reconstruction_timings"]) and started_worker is not None:
             elapsed = time.perf_counter() - started_worker
             result.diagnostics["timing_worker_s"] = elapsed
             self._logger.info(
@@ -963,7 +1026,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     def process(
         self, data_obj: 'DataObj', params: dict, context=None
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """
         Reconstruct MoNaLISA SIM data.
         
@@ -1117,7 +1180,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         # coefficients.  from_coeffs() reassembles the 6D image, derives the
         # output pixel pitch and auto display levels.
         coeffs_5d = coeffs[np.newaxis, ...]
-        result = MonalisaProcessingResult.from_coeffs(
+        result = MonalisaResult.from_coeffs(
             name=data_obj.name,
             coeffs=coeffs_5d,
             scan_params=scan_params,
@@ -1166,8 +1229,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         return placement
 
     def consolidate(
-        self, results: list[MonalisaProcessingResult]
-    ) -> MonalisaProcessingResult:
+        self, results: list[MonalisaResult]
+    ) -> MonalisaResult:
         """Merge per-file reconstruction results along the leading Dataset axis.
 
         Equivalent to the legacy consolidated workflow: per-dataset slices are
@@ -1189,13 +1252,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         # the lattice result container.  Consolidate it with the same general
         # geometry-aware rules instead of forcing it through the old fixed-6D
         # Fast-Gauss result contract.
-        try:
-            from imswitch.improcess.reconstructors.monalisa_lattice.result import (
-                MonalisaLatticeResult,
-            )
-        except Exception:
-            MonalisaLatticeResult = ()
-        if isinstance(first, MonalisaLatticeResult):
+        from .canonical_result import is_flexible_monalisa_result
+        if is_flexible_monalisa_result(first):
             from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
                 MonalisaLatticeReconstructor,
             )
@@ -1242,7 +1300,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 float(np.percentile(finite, 99.9)),
             )
 
-        return MonalisaProcessingResult(
+        return MonalisaResult(
             name=first.name,
             data=data,
             scan_params=copy.deepcopy(first.scan_params),
@@ -1252,12 +1310,80 @@ class MonalisaReconstructor(StreamingReconstructor):
             axis_label_map=dict(first.axis_label_map),
         )
 
-    def make_session(self) -> MonalisaLiveSession:
+    @classmethod
+    def streaming_capability(cls, params: dict) -> tuple[bool, str]:
+        """True only when a streaming session runs the selected Fast method.
+
+        Source-specific layout, timepoint cardinality and committed-frame
+        checks occur separately in contract() and the generic queue reader.
         """
-        Create a fresh streaming session for live reconstruction.
-        
-        Returns:
-            MonalisaLiveSession instance.
+        preset = str((params or {}).get("preset", PRESET_FAST))
+        if preset == PRESET_FULL:
+            return False, "MoNaLISA Robust requires completed data (no streaming implementation)."
+        if preset == PRESET_LEGACY:
+            return False, "MoNaLISA Legacy DLL has no streaming implementation."
+        if preset == PRESET_CUSTOM:
+            return False, "MoNaLISA Custom settings have no verified streaming implementation."
+        if preset != PRESET_FAST:
+            return False, f"Unknown MoNaLISA mode {preset!r} is not streamable."
+        if "reconstruction_method" in (params or {}):
+            return False, "Legacy MoNaLISA parameter dictionaries require finite processing."
+        from .params import default_params as fast_defaults
+        merged = fast_defaults()
+        merged.update(dict(params or {}))
+        corrections = (
+            ("reassignment", str(merged["reassignment"]) != "off"),
+            ("variance_weighting", bool(merged["variance_weighting"])),
+            ("sharpen", bool(merged["sharpen"])),
+            ("pinhole_stack", bool(merged["pinhole_stack"])),
+        )
+        unsupported = [name for name, enabled in corrections if enabled]
+        if unsupported:
+            return False, ("Live Fast does not yet support: "
+                           + ", ".join(unsupported) + ". Use finite reconstruction.")
+        if str(merged.get("background", "constant")) not in ("constant", "none"):
+            return False, "Live Fast requires fixed background extraction, not Auto background estimation."
+        from .params import SPOT_MANUAL
+        if str(merged.get("spot_width_mode")) != SPOT_MANUAL:
+            return False, "Live Fast needs a fixed spot width; use finite reconstruction for Auto spot width."
+        if int(merged.get("scan_steps_fast", 0)) or int(merged.get("scan_steps_slow", 0)):
+            return False, "Live Fast requires recorded scan geometry; scan-step overrides need finite reconstruction."
+        return True, (
+            "Unified MoNaLISA Fast: explicit calibration starts at the first frame; "
+            "Auto calibration waits for T0; intensity and cell-offset corrections "
+            "are applied at completed-timepoint finalization."
+        )
+
+    @classmethod
+    def supports_streaming_params(cls, params: dict) -> bool:
+        return cls.streaming_capability(params)[0]
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Stream only scan timepoints the unified Fast pipeline can place."""
+        from .unified_fast_session import timepoint_stream_contract
+
+        supported, reason = cls.streaming_capability(params)
+        if not supported:
+            raise Incompatible(reason)
+        init_frames, chunk_frames = timepoint_stream_contract(info, params)
+        return Contract(init_frames=init_frames, chunk_frames=chunk_frames,
+                        params=dict(params or {}))
+
+    def make_session(self):
+        """Run the actual unified Gaussian Fast implementation in the stream.
+
+        The historical rectangular-only session is never silently selected
+        by a new unified Fast job.
+        """
+        from .unified_fast_session import UnifiedFastStreamingSession
+        return UnifiedFastStreamingSession(self)
+
+    def make_legacy_live_session(self):
+        """Explicit compatibility factory for the older direct-live controller.
+
+        That controller has not yet migrated to the generalized executor.
+        It must not quietly substitute this algorithm for a unified preset.
         """
         return MonalisaLiveSession()
 
@@ -1269,7 +1395,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         scan_params: dict,
         data_attrs: dict | None = None,
         resolved=None,
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """
         Run the fast-Gauss MoNaLISA path on a complete offline stack.
 
@@ -1310,7 +1436,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 geometry = metadata_geometry
                 frames_per_stack = geometry['frames_per_stack']
 
-        session = self.make_session()
+        session = MonalisaLiveSession()
         try:
             first_stack = data[:frames_per_stack]
             session_params = self._fast_gauss_session_params(params)
@@ -1324,6 +1450,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 stack_info = StackInfo(
                     frame_shape=tuple(int(v) for v in data.shape[-2:]),
                     dtype=np.dtype(data.dtype),
+                    planned_timepoints=int(geometry['num_timepoints']),
                     acquisition_layout=resolved,
                 )
             init_obj = StreamInit(
@@ -1360,7 +1487,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         if getattr(session, 'scan_params', None):
             result_scan_params['directions'] = list(session.scan_params['directions'])
             result_scan_params['unidirectional'] = session.scan_params['unidirectional']
-        result = MonalisaProcessingResult(
+        result = MonalisaResult(
             name=name,
             data=live_result.data,
             scan_params=result_scan_params,
@@ -1373,7 +1500,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     def _fast_gauss_by_placement(
         self, name, data, params, placement, resolved, reasons
-    ) -> MonalisaProcessingResult:
+    ) -> MonalisaResult:
         """Fast-Gauss extraction with every frame placed by the recorded layout.
 
         The live session scatters contiguous X/Y stacks through a precomputed
@@ -1397,7 +1524,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             f'positions, {placement.slices} Z plane(s), {placement.n_time} '
             f'timepoint(s), {placement.n_conditions} condition(s).'
         )
-        session = self.make_session()
+        session = MonalisaLiveSession()
         session_params = self._fast_gauss_session_params(params)
         working = data
         if params.get('bleaching_correction', False):
@@ -1496,7 +1623,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             display_levels = (
                 float(np.percentile(finite, 1)), float(np.percentile(finite, 99.9))
             )
-        result = MonalisaProcessingResult(
+        result = MonalisaResult(
             name=name,
             data=data6,
             scan_params=scan_params,
@@ -1755,7 +1882,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             if axis_startpos.size < 2 or axis_length.size < 2 or axis_step_size.size < 2:
                 return None
 
-            session = self.make_session()
+            session = MonalisaLiveSession()
             ttl_steps = session._scan_steps_from_ttl(attrs)
             candidates = []
             if ttl_steps is not None:

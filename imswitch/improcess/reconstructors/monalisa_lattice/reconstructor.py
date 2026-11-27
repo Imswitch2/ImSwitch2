@@ -46,7 +46,7 @@ from ..monalisa.scan_frame import (
     ORIENTATIONS, orient_recorded_index, orient_step_columns, raster_scan_index,
 )
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
-from .result import MonalisaLatticeResult
+from imswitch.improcess.reconstructors.monalisa.canonical_result import MonalisaResult
 from .scan import LayoutScan, layout_scan, recorded_scan
 
 if TYPE_CHECKING:
@@ -252,6 +252,47 @@ def pipeline_params(params: dict) -> PipelineParams:
     )
 
 
+def recorded_geometry_inputs(scan: LayoutScan, params: dict):
+    """Recorded layout, camera-space step, optional metric aspect and pixel size.
+
+    Shared by finite reconstruction and the incremental Fast session so scan
+    overrides and unknown pixel-size inference follow exactly the same path.
+    """
+    typed_step = float(params["scan_step_nm"])
+    if typed_step > 0:
+        # What the panel says outranks what the recording says, as on
+        # the attribute path: one step for every scanned axis.
+        scan = replace(
+            scan,
+            step_nm=tuple(
+                typed_step if count > 1 else None for count in scan.counts
+            ),
+            source="acquisition layout, step from the panel",
+        )
+    pixel_nm = float(params["pixel_size_nm"])
+    step = None
+    step_aspect = None
+    if pixel_nm > 0:
+        if not any(scan.step_nm):
+            raise ValueError(
+                "A camera pixel size is set but the recording does not "
+                "say the size of its scan steps: set the step, or leave "
+                "the pixel size at 0"
+            )
+        # An axis the recording does not step, or whose step it does not
+        # say, is left to the lattice (a NaN column).
+        step = np.full((2, 2), np.nan)
+        for axis, step_nm in enumerate(scan.step_nm):
+            if step_nm:
+                step[:, axis] = 0.0
+                step[axis, axis] = step_nm / pixel_nm
+    elif all(scan.step_nm):
+        # No pixel size, but the recording says both steps: their ratio
+        # is known even if their size in pixels is not.
+        step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
+    return scan, step, step_aspect, pixel_nm
+
+
 class MonalisaLatticeReconstructor(Reconstructor):
     """MoNaLISA reconstruction for any illumination lattice, read from the data.
 
@@ -272,6 +313,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
     execution_policy = "worker"
     output_kind = "image"
     requires_frame_stacks = True
+    supports_progressive_finite = True
     supports_consolidation = True
 
     def __init__(self):
@@ -436,7 +478,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
     def process(
         self, data_obj: "DataObj", params: dict, context=None
-    ) -> MonalisaLatticeResult:
+    ) -> MonalisaResult:
         started = time.perf_counter()
         params = {**DEFAULT_PARAMS, **dict(params or {})}
 
@@ -600,7 +642,6 @@ class MonalisaLatticeReconstructor(Reconstructor):
             # Cache only a localization whose whole reconstruction succeeded.
             self._remember_geometry(geometry, orientation, frames, data_obj.name)
         record_stage("placement")
-        record_stage("placement")
         report("finalize", 0, 1, "Assembling the result")
 
         first = results[int(order[0])]
@@ -659,7 +700,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 pinholes = pinholes[0]
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
-        return MonalisaLatticeResult(
+        return MonalisaResult(
             name=f"{data_obj.name}_lattice",
             image=planes(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
@@ -676,7 +717,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
     def _process_recorded(
         self, data_obj, frames, scan: LayoutScan, params, started, report, check_cancelled
-    ) -> MonalisaLatticeResult:
+    ) -> MonalisaResult:
         """Reconstruct a recording whose acquisition layout places its frames.
 
         One stack per Z plane and timepoint, all on the raster of one
@@ -694,40 +735,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 now = time.perf_counter()
                 stage_times[name] = round(now - stage_t0, 6)
                 stage_t0 = now
-
-        typed_step = float(params["scan_step_nm"])
-        if typed_step > 0:
-            # What the panel says outranks what the recording says, as on
-            # the attribute path: one step for every scanned axis.
-            scan = replace(
-                scan,
-                step_nm=tuple(
-                    typed_step if count > 1 else None for count in scan.counts
-                ),
-                source="acquisition layout, step from the panel",
-            )
+        scan, step, step_aspect, pixel_nm = recorded_geometry_inputs(scan, params)
         self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
-        pixel_nm = float(params["pixel_size_nm"])
-        step = None
-        step_aspect = None
-        if pixel_nm > 0:
-            if not any(scan.step_nm):
-                raise ValueError(
-                    "A camera pixel size is set but the recording does not "
-                    "say the size of its scan steps: set the step, or leave "
-                    "the pixel size at 0"
-                )
-            # An axis the recording does not step, or whose step it does not
-            # say, is left to the lattice (a NaN column).
-            step = np.full((2, 2), np.nan)
-            for axis, step_nm in enumerate(scan.step_nm):
-                if step_nm:
-                    step[:, axis] = 0.0
-                    step[axis, axis] = step_nm / pixel_nm
-        elif all(scan.step_nm):
-            # No pixel size, but the recording says both steps: their ratio
-            # is known even if their size in pixels is not.
-            step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
         settings = pipeline_params(params)
         supplied_localization = params.get("_pattern_localization")
         if isinstance(supplied_localization, dict):
@@ -918,7 +927,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             pinholes = planes(lambda result: result.pinholes.images)
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
-        final = MonalisaLatticeResult(
+        final = MonalisaResult(
             name=f"{data_obj.name}_lattice",
             image=planes(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
@@ -957,7 +966,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 )
         return final
 
-    def consolidate(self, results: list) -> MonalisaLatticeResult:
+    def consolidate(self, results: list) -> MonalisaResult:
         """The results of several recordings as one, along a ``T`` axis.
 
         A time lapse recorded one file per timepoint is reconstructed one
@@ -992,7 +1001,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics["consolidated"] = f"{len(results)} results: " + ", ".join(
             result.name for result in results
         )
-        return MonalisaLatticeResult(
+        return MonalisaResult(
             name=first.name,
             image=along(lambda result: result.data),
             output_pixel_nm=first.output_pixel_size_nm,
@@ -1026,7 +1035,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         return [first] + [stack for stack in range(scan.num_stacks) if stack != first]
 
     @staticmethod
-    def update_fast_placement(result: MonalisaLatticeResult, orientation: str) -> MonalisaLatticeResult:
+    def update_fast_placement(result: MonalisaResult, orientation: str) -> MonalisaResult:
         """Re-place a retained Fast result for another scan orientation.
 
         No localization, Gaussian solve or raw-frame processing is repeated.
@@ -1074,7 +1083,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             placement_residual_px=float(geometry.commensurate_residual),
             update="placement only (retained Fast extraction)",
         )
-        updated = MonalisaLatticeResult(
+        updated = MonalisaResult(
             name=result.name,
             image=_recorded_planes(cache.scan, rebuilt, lambda item: item.amplitude.image),
             output_pixel_nm=output_pixel_nm,

@@ -99,11 +99,16 @@ def _controller():
     stub = _Stub()
     stub._widget = _Widget()
     stub._pendingLiveResult = None
+    stub._liveOverlayResult = None
+    stub._liveOverlayCompletedCount = 0
+    stub._liveFollowLatest = True
+    stub._liveProgrammaticStep = False
     stub._liveRenderScheduled = False
     stub._liveEstablished = False
     stub._liveLatestTimepoint = None
     stub._liveItem = None
     stub._liveName = None
+    stub._liveQueueJobId = None
     stub._transposeOrder = [0, 1, 2, 3, 4, 5]
     stub.fullUpdates = 0
     stub._logger = MagicMock()
@@ -114,6 +119,9 @@ def _controller():
     stub._resultsChanged = lambda: None
     stub._liveItemIsAlive = ReconstructionViewController._liveItemIsAlive.__get__(stub)
     # Bound under its real name too: liveTimepointUpdated schedules it by name.
+    stub._displayLiveUpdate = (
+        ReconstructionViewController._displayLiveUpdate.__get__(stub)
+    )
     stub._renderPendingLiveResult = (
         ReconstructionViewController._renderPendingLiveResult.__get__(stub)
     )
@@ -149,6 +157,18 @@ def test_live_entry_is_named_exactly_after_the_job():
     _live(c, "timelapse_00")
 
     assert _labels(c) == ["timelapse_00"]
+
+
+def test_queued_runs_with_same_name_keep_distinct_result_entries():
+    """Cancelled partial result must survive the next run of the same lapse."""
+    c = _controller()
+    for run_id in ("job-1", "job-1", "job-2", "job-2"):
+        result = _result("same_lapse")
+        result._improcess_queue_job_id = run_id
+        c._pendingLiveResult = result
+        c._render()
+    assert len(_labels(c)) == 2
+    assert _labels(c) == ["same_lapse", "same_lapse"]
 
 
 def test_repeated_results_for_one_job_reuse_its_entry():
@@ -310,6 +330,21 @@ def test_successive_planes_all_land_even_though_redraws_coalesce():
     for t in range(4):
         assert np.all(result.data[:, :, t] == t + 1), t
     assert c._liveRenderScheduled is True  # one render pending, not four
+
+
+def test_plane_update_before_initial_render_targets_pending_job_not_old_result():
+    """Queued signals can deliver a plane before the 0-ms render timer runs."""
+    c = _established()
+    old_result = c._liveItem.data(1)
+    pending = _LiveResult("timelapse_00")
+    pending._improcess_queue_job_id = "new-job"
+    c._pendingLiveResult = pending
+    c.liveTimepointUpdated(2, _plane(8.0))
+    assert np.all(pending.data[:, :, 2] == 8)
+    assert np.all(old_result.data[:, :, 2] == 0)
+    c._render()
+    assert c._liveItem.data(1) is pending
+    assert len(_labels(c)) == 2
 
 
 def test_timepoint_update_before_any_result_is_ignored():

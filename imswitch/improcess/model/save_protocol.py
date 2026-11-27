@@ -237,14 +237,26 @@ def artifact_record(plan: SavePlan, result) -> dict:
     """The ``artifact`` entry for a file written from ``plan``."""
     graph = graph_of(result)
     node, port = output_of(graph) if graph else ("", "")
-    return {
+    artifact = {
         "node": node,
         "port": port,
         "fmt": plan.fmt,
         "primary": plan.primary.name,
         "files": plan.relative_names(),
         "result_uid": str(getattr(result, "result_uid", "") or ""),
+        # Preserve the exact user-facing reconstruction-object name separately
+        # from the producing plugin label. Session may use a concise provenance
+        # summary (for example ``MoNaLISA - Fast``), while reopening the saved
+        # result should restore the same name it originally had in the
+        # Reconstruction objects list.
+        "result_name": str(getattr(result, "name", "") or ""),
     }
+    # Keep the actual completed T coverage with saved provenance. Requested
+    # scope alone would mislabel a saved result from an interrupted live run.
+    assembly = (getattr(result, "metadata", None) or {}).get("result_assembly")
+    if isinstance(assembly, dict) and assembly.get("relation") == "timepoint":
+        artifact["result_assembly"] = assembly
+    return artifact
 
 
 def document_for(result, plan: SavePlan) -> ProvenanceDocument:

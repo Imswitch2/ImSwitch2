@@ -337,3 +337,32 @@ def test_context_is_passed_only_when_given(tmp_path):
     assert seen["called"]
     with pytest.raises(TypeError):
         run_reconstruction(_Strict(), _file(tmp_path), {}, context=object())
+
+
+# -- recipe identity -----------------------------------------------------------------
+
+def test_reconstruction_recipe_id_is_stable_and_parameter_sensitive(tmp_path):
+    from imswitch.improcess.model.provenance import result_recipe_ids
+
+    reconstructor = _Recon()
+    left = run_reconstruction(reconstructor, _file(tmp_path, "recipe-a"), {"gain": 2}).result
+    same = run_reconstruction(reconstructor, _file(tmp_path, "recipe-b"), {"gain": 2}).result
+    changed = run_reconstruction(reconstructor, _file(tmp_path, "recipe-c"), {"gain": 3}).result
+
+    assert len(result_recipe_ids(left)) == 1
+    assert result_recipe_ids(left) == result_recipe_ids(same)
+    assert result_recipe_ids(left) != result_recipe_ids(changed)
+
+
+def test_consolidation_retains_the_input_reconstruction_recipe_identity(tmp_path):
+    from imswitch.improcess.model.provenance import result_recipe_ids
+
+    reconstructor = _Recon()
+    runs = [
+        run_reconstruction(reconstructor, _file(tmp_path, "recipe-m1"), {"gain": 2}),
+        run_reconstruction(reconstructor, _file(tmp_path, "recipe-m2"), {"gain": 2}),
+    ]
+    merged = run_consolidation(reconstructor, runs)
+
+    assert len(result_recipe_ids(merged)) == 1
+    assert result_recipe_ids(merged) == result_recipe_ids(runs[0].result)

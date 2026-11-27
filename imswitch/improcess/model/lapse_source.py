@@ -68,6 +68,7 @@ from imswitch.imcommon.model.acquisition_metadata import (
     WRITER_STATE_WRITING,
     RecordingLifecycle,
 )
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.dataset_sources import (
     SOURCE_SPECS,
     resolve_dataset_source,
@@ -82,6 +83,7 @@ from imswitch.improcess.model.image_sources import (
     resolve_image,
 )
 from imswitch.improcess.model.virtual_image import virtual_array_from_native
+from .lapse_naming import _index_token, _split_multi_file_name
 
 
 #: ``DataObj.sourceKind`` of a whole lapse, and the id a reconstructor lists in
@@ -100,9 +102,6 @@ NON_TIME_PARTITION_KINDS = frozenset({"tile", "position"})
 #: free one in the file, not the lapse index: recording a second lapse into the
 #: same file carries on from where the first stopped.
 _LAPSE_GROUP = re.compile(r"scan(\d+)")
-
-#: File-name tokens a multi-file lapse inserts before the detector name.
-_MULTI_FILE_TOKENS = ("time", "scan")
 
 TIMEPOINT_COMPLETE = "complete"
 #: Recorded, but short or unfinished -- stopped early, or never finalized.
@@ -345,7 +344,7 @@ def _positioned_kind(attrs: Mapping[str, Any]) -> str | None:
 def _open_container(path: Path):
     source = resolve_dataset_source(path, allowed_specs=SOURCE_SPECS)
     if source.format_id == "hdf5":
-        return h5py.File(str(source.path), "r")
+        return open_raw_hdf5(source.path)
     if source.format_id == "tiff":
         return tiff.TiffFile(str(source.path))
     if source.format_id == "zarr":
@@ -447,33 +446,6 @@ def _single_file_channels(container, groups, root: Path) -> tuple[LapseChannel, 
         LapseChannel(detector, detector, tuple(refs))
         for detector, refs in sorted(detectors.items())
     )
-
-
-def _index_token(index: int, planned: int) -> str:
-    """How ImControl pads the lapse index in a file name: to the planned count."""
-    return str(int(index)).zfill(len(str(int(planned))))
-
-
-def _split_multi_file_name(name: str, index: int, planned: int):
-    """``(prefix, token, suffix)`` around the anchor's own index, or None."""
-    padded = _index_token(index, planned)
-    best = None
-    for token in _MULTI_FILE_TOKENS:
-        marker = f"_{token}{padded}"
-        position = name.rfind(marker)
-        if position < 0:
-            continue
-        rest = name[position + len(marker):]
-        # The index is followed by the detector suffix or the extension, never
-        # by another digit -- ``_time07`` must not match inside ``_time070``.
-        if rest[:1].isdigit():
-            continue
-        if best is None or position > best[0]:
-            best = (position, token, rest)
-    if best is None:
-        return None
-    position, token, rest = best
-    return name[:position], token, rest
 
 
 def _multi_file_prefix(name: str, index: int, planned: int) -> str | None:
@@ -964,6 +936,37 @@ def _lapse_runs(headers: Sequence[LapseItemHeader]) -> list[list[LapseItemHeader
             runs.append([header])
     return runs
 
+
+
+def lapse_run_representatives(
+    index: TimeLapseIndex, headers: LapseHeaders
+) -> tuple[str, ...]:
+    """One representative dataset path for each lapse stored in one file.
+
+    ``read_lapse_headers`` already did the potentially expensive per-group
+    metadata reads.  This helper only groups those headers using the same
+    monotonic-index rule as :func:`plan_time_lapse`, so callers can ask the
+    operator which logical lapse they meant without another header scan.
+
+    Multi-file lapses are unambiguous and therefore yield the anchor dataset
+    (when it has one).
+    """
+    if index.storage != STORAGE_ONE_GROUP_PER_ITEM:
+        dataset = index.anchor.dataset
+        return (str(dataset),) if dataset else ()
+    indexed = [
+        header for header in headers.headers
+        if header.lapse_index is not None
+    ]
+    runs = _lapse_runs(indexed)
+    representatives = []
+    for run in runs:
+        if not run:
+            continue
+        dataset = str(run[0].dataset or run[0].ref.dataset or '')
+        if dataset:
+            representatives.append(dataset)
+    return tuple(representatives)
 
 def lapses_in_file(index: TimeLapseIndex, detector: str | None = None) -> int:
     """How many lapses the file of a single-file lapse holds.
@@ -1485,6 +1488,7 @@ __all__ = [
     "discover_time_lapse",
     "is_time_lapse_item",
     "lapses_in_file",
+    "lapse_run_representatives",
     "open_time_lapse",
     "plan_time_lapse",
     "read_lapse_headers",

@@ -3,6 +3,7 @@
 import time
 
 import numpy as np
+import pytest
 from types import SimpleNamespace
 from qtpy import QtCore, QtWidgets
 
@@ -129,7 +130,7 @@ class _FakeThread:
         self.running = True
         self.request_interruption_called = False
         self.quit_called = False
-        self.wait_called_with = None
+        self.wait_calls = 0
 
     def isRunning(self):
         return self.running
@@ -140,9 +141,11 @@ class _FakeThread:
     def quit(self):
         self.quit_called = True
 
-    def wait(self, timeout_ms):
-        self.wait_called_with = timeout_ms
-        self.running = False
+    def wait(self, timeout_ms=None):
+        # Waiting out the exit of a stopped thread is instant; waiting on a
+        # running one would block the GUI thread.
+        assert not self.running, "waited on a running QThread"
+        self.wait_calls += 1
         return True
 
 
@@ -242,8 +245,8 @@ def test_controller_clean_stop():
     assert controller._running is False
 
 
-def test_controller_stop_quits_thread_event_loops():
-    """Stopping a run must quit Qt event-loop threads, not only interrupt them."""
+def test_controller_stop_quits_threads_without_dropping_live_qthread_refs():
+    """Teardown is non-blocking and owns QThreads until they really finish."""
     comm_channel = CommunicationChannel()
     controller = LiveReconstructionController(comm_channel)
     stream_thread = _FakeThread()
@@ -264,10 +267,24 @@ def test_controller_stop_quits_thread_event_loops():
     assert stream_worker.stopped is True
     assert stream_thread.request_interruption_called is True
     assert stream_thread.quit_called is True
-    assert stream_thread.wait_called_with == 2000
+    assert stream_thread.wait_calls == 0
     assert process_thread.request_interruption_called is True
     assert process_thread.quit_called is True
-    assert process_thread.wait_called_with == 2000
+    assert process_thread.wait_calls == 0
+
+    # The GUI call returns while the QThreads are still stopping. Their strong
+    # references and source/session resources remain owned until finished.
+    assert controller._running is True
+    assert controller._stream_thread is stream_thread
+    assert controller._process_thread is process_thread
+    assert source.closed is False
+
+    stream_thread.running = False
+    process_thread.running = False
+    controller._worker_thread_finished()
+
+    # Once both report stopped, their exit is waited out before release.
+    assert stream_thread.wait_calls == process_thread.wait_calls == 1
     assert source.closed is True
     assert controller._running is False
     assert controller._stream_thread is None
@@ -320,6 +337,7 @@ def test_stack_finished_emits_queue_signal_after_cleanup():
     assert controller._source is None
 
 
+@pytest.mark.timeout(30, method="thread")
 def test_controller_processes_two_streaming_sources_sequentially():
     """Sequential live files should not leave the previous QThreads running."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -345,6 +363,35 @@ def test_controller_processes_two_streaming_sources_sequentially():
         assert controller._running is False
         assert controller._stream_thread is None
         assert controller._process_thread is None
+
+
+def test_live_threads_have_exited_when_the_controller_reports_finished():
+    """``isRunning()`` is already False while a thread still runs its exit
+    code. Destroying its QThread then waits for that code with the GIL held,
+    which can deadlock the GUI thread, so the controller lets go of a thread
+    only once it has really exited."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    controller = LiveReconstructionController(CommunicationChannel())
+    threads = []
+    complete = controller._complete_finish_run
+
+    def capture_then_complete():
+        threads[:] = [thread for thread in
+                      (controller._stream_thread, controller._process_thread)
+                      if thread is not None]
+        complete()
+
+    controller._complete_finish_run = capture_then_complete
+    exited = []
+    controller.sigFinished.connect(
+        lambda: exited.extend(thread.wait(0) for thread in threads))
+
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    assert controller.start(_StreamingRecon(), _TestSource(stack, chunk_size=2), {},
+                            source_arg="synthetic")
+    assert _wait_for_finished(controller)
+    assert exited == [True, True]
 
 
 def test_run_name_names_the_result_so_each_job_gets_its_own_entry():
@@ -607,11 +654,11 @@ def test_graceful_stop_does_not_block_the_calling_thread():
 
 
 def test_immediate_stop_tears_down_without_draining():
-    """graceful=False is still available for when a new run cannot wait."""
+    """graceful=False skips drain but QThread teardown remains asynchronous."""
     controller, recon, _ = _start_slow_run()
 
     controller.stop(graceful=False)
 
-    assert controller._running is False
+    assert _spin_until(lambda: controller._running is False)
     assert controller._stream_thread is None
 

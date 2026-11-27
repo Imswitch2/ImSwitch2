@@ -24,7 +24,9 @@ Layout is decided from evidence, strongest first:
 
 The pure half (:func:`raw_source_type_from_evidence`) reads dictionaries and is
 testable without creating a store. :func:`probe_source_type` is the only
-function here that touches disk.
+function here that touches disk. Ordinary not-ready stores return ``None``;
+a persistent in-process HDF5 access conflict is surfaced explicitly so queue
+orchestration can fail instead of retrying forever.
 """
 
 import os
@@ -33,6 +35,11 @@ from typing import Any
 
 import numpy as np
 
+from imswitch.improcess.model.hdf5_access import (
+    RawHdf5AccessConflict,
+    assert_raw_hdf5_new_reader_available,
+    open_raw_hdf5,
+)
 from imswitch.improcess.model.dataset_sources import (
     HDF5_SPEC,
     ZARR_SPEC,
@@ -197,6 +204,7 @@ def raw_source_type_from_evidence(
 
     num_timepoints = max(
         _coerce_positive_int(_meta_lookup(attrs, "recording:num_timepoints")) or 1,
+        _coerce_positive_int(getattr(stack_info, "planned_timepoints", None)) or 1,
         int(scan_groups),
         int(sibling_span),
     )
@@ -244,10 +252,20 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
 
     Read-only and metadata-only -- no frame is fetched -- and the reader is
     closed before returning, so nothing is held open on the caller's thread.
+    Ordinary incomplete/unreadable stores return ``None``. A normalized
+    :class:`RawHdf5AccessConflict` is deliberately allowed to escape because an
+    incompatible in-process HDF5 handle will not become ready on a later poll.
     """
     format_id = format_id_for_path(seed_path)
     if format_id is None:
         return None
+
+    # Streaming reconstruction creates an independent reader.  A loaded
+    # DataObj may legitimately keep its own HDF5 handle, but starting another
+    # reader for that same physical file is the unsafe state we need to fail
+    # explicitly rather than silently reconstructing bad data.
+    if format_id == FORMAT_HDF5:
+        assert_raw_hdf5_new_reader_available(seed_path)
 
     # Zarr publishes its own readiness: a store is safe to follow once it is
     # write-complete or carries the committed-frames barrier. HDF5 has no
@@ -276,6 +294,8 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
     stack_info = None
     try:
         stack_info = source.open(seed_path)
+    except RawHdf5AccessConflict:
+        raise
     except Exception:
         # A single-file lapse does not open as a single store -- its frames
         # live under scanN groups -- so a failure here is still a classified
@@ -283,8 +303,9 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
         if not scan_groups:
             return None
     finally:
-        # A reader that raised part-way may not have every attribute set, and a
-        # probe must never be the thing that raises.
+        # A reader that raised part-way may not have every attribute set. Close
+        # best-effort even when a normalized persistent access conflict is being
+        # propagated to the queue layer.
         try:
             source.close()
         except Exception:
@@ -327,11 +348,12 @@ def _scan_group_count(path: Any, format_id: str) -> int:
                 return 0
             return sum(1 for key in root.keys() if is_scan_group_name(key))
         elif format_id == FORMAT_HDF5:
-            import h5py
-            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+            with open_raw_hdf5(path) as handle:
                 return sum(1 for key in handle.keys() if is_scan_group_name(key))
         else:
             return 0
+    except RawHdf5AccessConflict:
+        raise
     except Exception:
         return 0
 
@@ -343,11 +365,12 @@ def _root_attrs(path: Any, format_id: str) -> dict[str, Any]:
             import zarr
             return dict(zarr.open(str(path), mode="r").attrs)
         elif format_id == FORMAT_HDF5:
-            import h5py
-            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+            with open_raw_hdf5(path) as handle:
                 return dict(handle.attrs)
         else:
             return {}
+    except RawHdf5AccessConflict:
+        raise
     except Exception:
         return {}
 
@@ -371,8 +394,7 @@ def _scan0_evidence(path: Any, format_id: str) -> "tuple[dict, int | None]":
                 return {}, None
             return _first_array_evidence(root[names[0]])
         elif format_id == FORMAT_HDF5:
-            import h5py
-            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+            with open_raw_hdf5(path) as handle:
                 names = sorted(
                     (k for k in handle.keys() if is_scan_group_name(k)),
                     key=lambda k: int(str(k)[4:]),
@@ -382,23 +404,62 @@ def _scan0_evidence(path: Any, format_id: str) -> "tuple[dict, int | None]":
                 return _first_array_evidence(handle[names[0]])
         else:
             return {}, None
+    except RawHdf5AccessConflict:
+        raise
     except Exception:
         return {}, None
 
 
 def _first_array_evidence(group: Any) -> "tuple[dict, int | None]":
-    """Merge a scan group's own attrs with its first array's."""
+    """Return attrs + frame count from the first detector frame array below ``group``.
+
+    Recorder-created single-file lapses store each timepoint as::
+
+        scanN / <detector> / data
+
+    while older tests/recordings may store the frame array directly below
+    ``scanN``.  The live lapse readers already support both shapes, so the
+    preflight classifier must descend through the detector group as well.
+    Otherwise it sees only ``CAM`` (a group), reports one frame per stack,
+    and a scanning reconstructor such as MoNaLISA is rejected before the real
+    reader ever gets a chance to open the recording.
+
+    Scalar bookkeeping datasets (``frames_committed`` etc.) are deliberately
+    ignored: only an array with at least three dimensions can be the detector
+    frame stream.
+    """
     attrs = dict(getattr(group, "attrs", {}) or {})
-    frames = None
-    for key in list(getattr(group, "keys", lambda: [])()):
+    keys = list(getattr(group, "keys", lambda: [])())
+
+    # Prefer the recorder's canonical payload name before walking auxiliary
+    # groups/datasets. This keeps the probe deterministic even when metadata
+    # happens to be stored before ``data`` in the container.
+    ordered_keys = (["data"] if "data" in keys else []) + [
+        key for key in keys if key != "data"
+    ]
+
+    for key in ordered_keys:
         node = group[key]
         shape = getattr(node, "shape", None)
-        if shape is None:
+        if shape is not None:
+            try:
+                ndim = len(shape)
+            except TypeError:
+                ndim = 0
+            if ndim >= 3:
+                node_attrs = dict(getattr(node, "attrs", {}) or {})
+                return {**attrs, **node_attrs}, int(shape[0])
             continue
-        attrs = {**attrs, **dict(getattr(node, "attrs", {}) or {})}
-        frames = int(shape[0]) if len(shape) >= 3 else None
-        break
-    return attrs, frames
+
+        # Detector payloads are commonly one group deeper (scanN/CAM/data).
+        # Recurse only through group-like objects; the first real frame array
+        # wins, matching the auto-detection semantics of the live readers.
+        if callable(getattr(node, "keys", None)):
+            child_attrs, frames = _first_array_evidence(node)
+            if frames is not None:
+                return {**attrs, **child_attrs}, frames
+
+    return attrs, None
 
 def _sibling_lapse_span(path: Any) -> int:
     """Timepoint slots the ``_scanNN`` files beside ``path`` span, gaps included.

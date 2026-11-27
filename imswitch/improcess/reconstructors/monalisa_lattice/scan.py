@@ -18,7 +18,7 @@ Two readings, in order of preference:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -274,6 +274,51 @@ class LayoutScan:
         if self.num_time > 1:
             parts.append(f"{self.num_time} timepoints")
         return ", ".join(parts) + f" ({self.source})"
+
+
+def validated_timepoint_groups(scan: LayoutScan, frames_per_timepoint: int) -> tuple[np.ndarray, ...]:
+    """Validate the dense per-timepoint grouping supported by Fast streaming.
+
+    Groups may be interleaved. Each returned array contains global frame
+    indices *in storage order*, which is the order each local accumulator sees.
+    This does not change the reader's contiguous-timepoint requirement.
+    """
+    if scan.num_time != 1 or scan.num_stacks < 1:
+        raise ValueError("Live Fast needs a single logical timepoint layout")
+    frames_per_timepoint = int(frames_per_timepoint)
+    if (len(scan.stack) != frames_per_timepoint or
+            scan.num_stacks * scan.frames_per_stack != frames_per_timepoint):
+        raise ValueError("Live Fast layout frame count disagrees with its timepoint")
+    groups = tuple(scan.frames_of(group) for group in range(scan.num_stacks))
+    all_positions = {
+        (x, y) for y in range(scan.counts[1]) for x in range(scan.counts[0])
+    }
+    for group, indices in enumerate(groups):
+        if len(indices) != scan.frames_per_stack:
+            raise ValueError(f"Live Fast group {group} is missing scan frames")
+        positions = {tuple(xy) for xy in scan.index[indices]}
+        if positions != all_positions or len(positions) != len(indices):
+            raise ValueError(f"Live Fast group {group} has incomplete or duplicate scan positions")
+    if not np.array_equal(np.sort(np.concatenate(groups)), np.arange(frames_per_timepoint)):
+        raise ValueError("Live Fast layout does not assign every frame exactly once")
+    return groups
+
+
+def timepoint_group_view(scan: LayoutScan, group: int) -> LayoutScan:
+    """One group's local scan, preserving physical and chronological order.
+
+    Z/condition identity stays with the parent scan for result assembly;
+    ``gain_positions(0)`` then equals the finite scan's ``gain_positions(group)``.
+    """
+    if not 0 <= int(group) < scan.num_stacks:
+        raise IndexError(f"Invalid scan group {group}")
+    indices = scan.frames_of(group)
+    return replace(
+        scan, index=scan.index[indices], logical=scan.logical[indices],
+        stack=np.zeros(len(indices), dtype=int), num_time=1,
+        num_conditions=1, num_planes=1, condition_labels=(),
+        plane_step_nm=None,
+    )
 
 
 def layout_scan(resolved, num_frames: int) -> LayoutScan | None:

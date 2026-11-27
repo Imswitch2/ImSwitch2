@@ -297,3 +297,36 @@ def test_asymmetric_reassignment_is_masked_to_the_scanned_camera_axis():
         step=np.eye(2),
     )
     assert _shift_factor_to_use(geometry, scan_index) == pytest.approx((0.2, 0.0))
+
+
+def test_final_modes_preserve_streaming_admission_boundary():
+    """The unified Session engine follows Fast, never Full or DLL-equivalent."""
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    from imswitch.improcess.reconstructors.monalisa.params import PRESET_DLL
+
+    base = default_params()
+    for mode in (PRESET_FULL, PRESET_DLL):
+        supported, reason = MonalisaReconstructor.streaming_capability(
+            {**base, "preset": mode}
+        )
+        assert supported is False
+        assert reason
+    supported, _ = MonalisaReconstructor.streaming_capability(base)
+    assert supported is True  # Raw layout readiness remains a separate gate.
+
+
+def test_unified_lattice_params_keep_scientific_fit_selection_for_streaming():
+    """Session's geometry adapter must not revert Fast to the old Joint-only fit."""
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    reconstruction = MonalisaReconstructor()
+    base = default_params()
+    base.update(estimator="local", footprint_shape="circle",
+                footprint_mode="fixed", footprint_size_px=7.0,
+                spot_width_mode="Manual/default")
+    converted = reconstruction.unified_lattice_params(base)
+    assert converted["estimator"] == "local"
+    assert converted["footprint_shape"] == "circle"
+    assert converted["footprint_mode"] == "fixed"
+    assert converted["footprint_size_px"] == pytest.approx(7.0)
+    assert converted["frame_gain"] is True
+    assert converted["cell_offsets"] is True

@@ -50,9 +50,10 @@ class CommunicationChannel(SignalInterface):
     repopulates the metadata panel, and ``MultiDataFrameController`` updates
     which row is highlighted.
 
-    Emitters: FileIOController, MultiDataFrameController
-    Listeners: DataFrameController, ImProcessMainViewController,
-        MetadataController, MultiDataFrameController
+    Emitters: DataFrameController, FileIOController, MultiDataFrameController
+    Listeners: DataFrameController, FileIOController, ImProcessMainViewController,
+        MetadataController, MultiDataFrameController, ProcessingSessionController,
+        WorkflowController
     """
 
     sigScanParamsUpdated = Signal(object, bool)
@@ -157,10 +158,11 @@ class CommunicationChannel(SignalInterface):
     exists, this announces which one the user is looking at.
 
     Emitters: ImProcessMainController, ImageToolbarController,
-        ReconstructionViewController, ReconstructorManagerController,
-        ResultProcessorController
+        ProcessingQueueController, ReconstructionViewController,
+        ReconstructorManagerController, ResultProcessorController
     Listeners: GraphController, ImProcessMainController, ImageToolbarController,
-        PythonConsoleController, ResultProcessorController, SmlmRenderController
+        MetadataController, ProcessingSessionController, PythonConsoleController,
+        ReconstructorManagerController, ResultProcessorController, SmlmRenderController
     """
 
     sigResultProduced = Signal(object, str)
@@ -179,10 +181,37 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        NapariEndpointController, PythonConsoleController,
+        NapariEndpointController, ProcessingSessionController, PythonConsoleController,
         ReconstructorManagerController, ResultProcessorController,
         WorkflowController
     Listeners: ImProcessMainController, ReconstructionViewController
+    """
+
+    sigResultFinalized = Signal(object, str)
+    """A derived result reached its final processing state.
+
+    Payload: ``(result, displayName)``. This is deliberately independent of
+    viewer publication: ordinary reconstruction results are normally first
+    announced through :attr:`sigResultProduced`, while a streaming result has
+    already owned and updated one viewer entry through
+    :attr:`sigLiveResultUpdated`. Session persistence listens to this semantic
+    finalization signal so both paths use one result lifecycle without creating
+    duplicate viewer entries.
+
+    Emitters: LiveReconstructionController, MoNaLISAController,
+        ProcessingQueueController, ReconstructorManagerController
+    Listeners: ProcessingSessionController
+    """
+
+    sigResultSaved = Signal(object, object)
+    """A reconstruction result was explicitly written to disk.
+
+    Payload: ``(result, SaveReceipt)``. The Session prototype listens so a
+    manual save into the active Session result directory is reflected in the
+    catalog immediately instead of waiting for a refresh.
+
+    Emitters: FileIOController
+    Listeners: ProcessingSessionController
     """
 
     sigResultReplaced = Signal(object, object, str)
@@ -202,16 +231,18 @@ class CommunicationChannel(SignalInterface):
     sigLiveResultUpdated = Signal(object)
     """Fires when a live reconstruction session has a new partial result.
 
-    Emitted by LiveReconstructionController during streaming reconstruction
-    to update the viewer with intermediate results. The signal carries a
-    ProcessingResult snapshot.
+    Emitted by LiveReconstructionController during streaming reconstruction,
+    and by the finite progressive-publication paths in the queue and
+    reconstructor managers. The signal carries a ProcessingResult snapshot.
 
     Emission is throttled to the configured viewer update interval
     (``liveViewerUpdateIntervalS``), which in the GPU path also governs the
     device-to-host transfer cadence.
 
-    Emitters: LiveReconstructionController
-    Listeners: ImProcessMainController, ReconstructionViewController
+    Emitters: LiveReconstructionController, ProcessingQueueController,
+        ReconstructorManagerController
+    Listeners: ImProcessMainController, ProcessingSessionController,
+        ReconstructionViewController
     """
 
     sigSaveLiveResult = Signal(str, str)
@@ -244,17 +275,31 @@ class CommunicationChannel(SignalInterface):
     ``plane`` keeps all of the result's axes with the timepoint axis at length
     1, so it assigns straight into the matching slice.
 
-    Emitters: LiveReconstructionController
+    Emitters: LiveReconstructionController, ProcessingQueueController
+    Listeners: ReconstructionViewController
+    """
+
+    sigLiveTimepointProvisional = Signal(int, object)
+    """Update an incomplete timepoint in the viewer only, without scientific ownership.
+
+    Emitters: ProcessingQueueController
+    Listeners: ReconstructionViewController
+    """
+
+    sigDiscardLiveProvisional = Signal(str)
+    """Remove a job's viewer-only raster if it stopped before its first complete T.
+
+    Emitters: ProcessingQueueController
     Listeners: ReconstructionViewController
     """
 
     sigLiveTimepointDone = Signal(int)
     """0-based index of a scan stack (timepoint) that just finished streaming.
 
-    Emitted by LiveReconstructionController so the viewer can advance its
-    timepoint slider to the newest reconstructed stack.
+    Emitted by live reconstruction and progressive queue publication so the
+    viewer can advance its timepoint slider to the newest reconstructed stack.
 
-    Emitters: LiveReconstructionController
+    Emitters: LiveReconstructionController, ProcessingQueueController
     Listeners: ReconstructionViewController
     """
 
@@ -268,8 +313,8 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
 
     Emitters: ReconstructionViewController
-    Listeners: ImProcessMainController, PythonConsoleController,
-        ResultProcessorController
+    Listeners: ImProcessMainController, ProcessingSessionController,
+        PythonConsoleController, ResultProcessorController, WorkflowController
     """
 
     sigWorkflowPreview = Signal(object, str)
