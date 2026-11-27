@@ -776,7 +776,7 @@ class TilingController(ImConWidgetController):
         if tilingInfo is None:
             return
         with self._getActivityLock():
-            busy = self._scanning or getattr(self, '_closed', False)
+            busy = self._scanning or self.__dict__.get('_closed', False)
             if not busy:
                 self._scanning = True
                 self._stopRequested = False
@@ -993,7 +993,7 @@ class TilingController(ImConWidgetController):
                 False, False, 'This setup has no tiling section.'
             )
         with self._getActivityLock():
-            closed = getattr(self, '_closed', False)
+            closed = self.__dict__.get('_closed', False)
             busy = self._scanning or closed
             if not busy:
                 self._scanning = True
@@ -1147,7 +1147,7 @@ class TilingController(ImConWidgetController):
             result = recorder.finish(completed=completed)
             if result['fit'] is not None:
                 fit = result['fit']
-                if result['completed'] and not getattr(self, '_closed', False):
+                if result['completed'] and not self.__dict__.get('_closed', False):
                     self.sigTiltCalibrationCreated.emit(str(recorder.folder / 'tilt_fit.json'))
                 self._logger.info(
                     'Tiling: tilt calibration %s: dZ/dX=%g, dZ/dY=%g, '
@@ -1194,7 +1194,7 @@ class TilingController(ImConWidgetController):
                 new_tilt_calibration_folder(tilt_record_name), step_um=step_um,
                 settle_s=settle_s, focus_positioner=z_actuator,
                 xy_positioner=tilingInfo.xyPositioner, n_tiles=len(visits),
-                setup_file_name=getattr(self, '_setupNameForTilt', ''),
+                setup_file_name=self.__dict__.get('_setupNameForTilt', ''),
                 bidirectional=bidirectional, calibration_only=True,
                 sampling_grid_xy=(sample_nx, sample_ny),
                 area_span_um=((n_tiles_x - 1) * step_um,
@@ -1233,7 +1233,7 @@ class TilingController(ImConWidgetController):
                     x_um=origin_xy[0] + x_offset,
                     y_um=origin_xy[1] + y_offset, pass_index=pass_index,
                 )
-                if not getattr(self, '_closed', False):
+                if not self.__dict__.get('_closed', False):
                     self.sigProgressUpdated.emit(index + 1, len(order))
             else:
                 completed = not self._stopRequested
@@ -1275,7 +1275,7 @@ class TilingController(ImConWidgetController):
                 self._scanning = False
                 self._scanThread = None
             self._commChannel._tilingActive = False
-            if not getattr(self, '_closed', False):
+            if not self.__dict__.get('_closed', False):
                 self.sigRunningChanged.emit(False)
 
     def _runScan(
@@ -1423,7 +1423,7 @@ class TilingController(ImConWidgetController):
                     calibrationFolder, step_um=step_um, settle_s=settle_s,
                     focus_positioner=focus_z_name,
                     xy_positioner=tilingInfo.xyPositioner, n_tiles=n_tiles,
-                    setup_file_name=getattr(self, '_setupNameForTilt', ''),
+                    setup_file_name=self.__dict__.get('_setupNameForTilt', ''),
                     bidirectional=tilt_bidirectional,
                     sampling_grid_xy=(n_tiles_x, n_tiles_y),
                     area_span_um=((n_tiles_x - 1) * step_um,
@@ -1726,7 +1726,7 @@ class TilingController(ImConWidgetController):
                     isLastTile
                     or (now - lastEmit) >= _OVERVIEW_EMIT_INTERVAL_S
                 )
-                if not getattr(self, '_closed', False):
+                if not self.__dict__.get('_closed', False):
                     if build_overview and shouldEmit:
                         lastEmit = now
                         self.sigOverviewUpdated.emit(self._stitcher.get_overview())
@@ -1772,7 +1772,7 @@ class TilingController(ImConWidgetController):
                             self._logger.error('Tiling: reverse tilt sample failed: %s',
                                                error, exc_info=True)
                             break
-                        if not getattr(self, '_closed', False):
+                        if not self.__dict__.get('_closed', False):
                             self.sigProgressUpdated.emit(
                                 n_tiles + index + 1, 2 * n_tiles
                             )
@@ -1789,13 +1789,13 @@ class TilingController(ImConWidgetController):
                 # screen, not the one the live pass arrived at tile by tile.
                 self._resolveLayout(registration)
                 self._syncDatasetPlacements(dataset)
-                if not getattr(self, '_closed', False):
+                if not self.__dict__.get('_closed', False):
                     self.sigOverviewUpdated.emit(self._stitcher.get_overview())
 
             # Intensity correction solved each tile on arrival; with the whole
             # run in hand it is solved again, before the mosaic is written.
             if (self._stitcher is not None and self._stitcher.finish()
-                    and not getattr(self, '_closed', False)):
+                    and not self.__dict__.get('_closed', False)):
                 self.sigOverviewUpdated.emit(self._stitcher.get_overview())
 
             if save_tiles and saveFolder is not None:
@@ -1821,7 +1821,7 @@ class TilingController(ImConWidgetController):
                 self._registrationReport = registration
                 summary = registration.summary()
                 self._logger.info(summary)
-                if not getattr(self, '_closed', False):
+                if not self.__dict__.get('_closed', False):
                     self.sigRegistrationSummary.emit(summary)
 
             if staleFrames:
@@ -1910,7 +1910,6 @@ class TilingController(ImConWidgetController):
                                  ('XY/Z origin restoration incomplete'
                                   if not (origin_restored and z_restored) else '')),
                     )
-                    self._lastSaveFolder = str(saveFolder)
                     self._logger.info(
                         'Tiling: tilt validation saved to %s (%d/%d valid focus samples)',
                         saveFolder, outcome['n_valid_focus_samples'],
@@ -1945,7 +1944,7 @@ class TilingController(ImConWidgetController):
                     completed=scan_completed and not tiltRecordingFailed and origin_restored,
                 )
 
-            if not getattr(self, '_closed', False):
+            if not self.__dict__.get('_closed', False):
                 if scan_completed and not origin_restored:
                     self._logger.warning(
                         'Tiling: the stage did not return to the run origin; '
@@ -1962,7 +1961,7 @@ class TilingController(ImConWidgetController):
                         f'Failed to release tiling detector lease: {e}',
                         exc_info=True,
                     )
-            if (tilt_plane is not None and not getattr(self, '_closed', False)
+            if (tilt_plane is not None and not self.__dict__.get('_closed', False)
                     and (compensationFailure or not origin_restored or not z_restored)):
                 self.sigTiltCompensationError.emit(
                     compensationFailure or 'XY/Z origin restoration incomplete'
@@ -1986,7 +1985,7 @@ class TilingController(ImConWidgetController):
                 self._scanAcqHandle = None
                 self._scanning = False
                 self._scanThread = None
-            if hasattr(self, '_commChannel') and self._commChannel is not None:
+            if self.__dict__.get('_commChannel') is not None:
                 self._commChannel._tilingActive = False
             # Cross-thread emit — Qt's AutoConnection becomes QueuedConnection
             # because the sender (this background thread) lives in a different
@@ -1994,7 +1993,7 @@ class TilingController(ImConWidgetController):
             # this used QMetaObject.invokeMethod which silently fails when the
             # target slot isn't registered with the Qt meta-object system
             # (setRunning is a plain Python method, not @Slot-decorated).
-            if not getattr(self, '_closed', False):
+            if not self.__dict__.get('_closed', False):
                 self.sigRunningChanged.emit(False)
 
     @staticmethod
@@ -3008,7 +3007,7 @@ class TilingController(ImConWidgetController):
         return grab_fresh_frame(
             detector, _CHUNK_CONSUMER_KEY,
             timeout_s=_FRESH_FRAME_TIMEOUT_S, poll_s=_FRAME_POLL_S,
-            should_stop=lambda: self._stopRequested or getattr(self, '_closed', False),
+            should_stop=lambda: self._stopRequested or self.__dict__.get('_closed', False),
             logger=self._logger, release=False,
         )
 

@@ -464,7 +464,7 @@ def _runSavingScan(
     ctrl._scanThread = object()
     ctrl._closed = True
     ctrl._registrationReport = None
-    ctrl._orientation = (False, False, False)
+    ctrl._orientation = orientation
     ctrl._lastSaveFolder = None
     ctrl._logger = _Logger()
 

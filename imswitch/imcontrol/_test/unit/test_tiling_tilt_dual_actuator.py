@@ -361,3 +361,11 @@ def test_calibration_only_cancellation_restores_xy_and_saves_partial_data(rig):
     assert data['completed'] is False
     assert 0 < data['n_recorded_tiles'] < 50
     assert data['origin_drift']['available'] is True
+
+
+def test_compensation_run_without_saved_tiles_leaves_last_tiling_folder_unchanged(rig):
+    ctrl, *_ = rig
+    ctrl._lastSaveFolder = '/previous/tiling'
+    _run(rig, precheck=True)
+    assert not ctrl._logger.errors
+    assert ctrl.getLastTilingFolder() == '/previous/tiling'
