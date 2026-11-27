@@ -150,12 +150,46 @@ def test_run_on_selected_results_binds_each_result_and_publishes_only_new_ones(r
     assert sorted(p.name for p in (tmp_path / "out2").iterdir()) == ["a_save.ome.tif", "b_save.ome.tif"]
 
 
+def test_a_workflow_of_processors_only_runs_on_selected_results(registry, tmp_path, monkeypatch):
+    """No reconstruction step: the selected result stands in for the one source."""
+    from imswitch.improcess.controller import WorkflowController as module
+
+    selected = [_stack("a"), _stack("b")]
+    produced = []
+    controller = _controller(selected, produced)
+    workflow = Workflow("processors-only", [
+        Source("raw"),
+        Process("proj", "projection", {"axis": "Z", "mode": "max"}, inputs=["raw"]),
+        Save("save", input="proj", fmt="tiff"),
+    ])
+    path = workflow.save(tmp_path / "p.yaml")
+    captured = {}
+
+    class SyncWorker(module._RunWorker):
+        def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite=False, bindings_list=None):
+            captured["bindings"] = list(bindings_list)
+            super().__init__(workflow, registry, out_dir, parent, overwrite=overwrite, bindings_list=bindings_list)
+
+    monkeypatch.setattr(module, "_RunWorker", SyncWorker)
+    assert controller.runWorkflowOnResults(str(path), out_dir=str(tmp_path / "out"), overwrite=False) is True
+    assert captured["bindings"] == [{"raw": selected[0]}, {"raw": selected[1]}]
+    assert controller.cancelRun(5000) is True
+    worker = SyncWorker(workflow, registry, tmp_path / "out2", bindings_list=captured["bindings"])
+    worker.sigFinished.connect(controller._onFinished)
+    worker.sigFailed.connect(controller._onFailed)
+    worker.run()
+    published = [r for r, n in produced if r != "status"]
+    assert len(published) == 2 and not any(r is s for r in published for s in selected)
+    assert len(list((tmp_path / "out2").iterdir())) == 2
+
+
 def test_run_on_results_needs_exactly_one_reconstruction_step(tmp_path):
     produced = []
     controller = _controller([_stack("a")], produced)
-    no_recon = Workflow("p", [Source("raw"), Save("s", input="raw", fmt="tiff")]).save(tmp_path / "n.yaml")
+    no_recon = Workflow("p", [Source("a"), Source("b"), Process("c", "image-calculator", inputs=["a", "b"]),
+                              Save("s", input="c", fmt="tiff")]).save(tmp_path / "n.yaml")
     assert controller.runWorkflowOnResults(str(no_recon), out_dir=str(tmp_path)) is False
-    assert any("no reconstruction step" in m for k, m in produced if k == "status")
+    assert any("no reconstruction step" in m and "2 sources (a, b)" in m for k, m in produced if k == "status")
     two = Workflow("t", [Source("raw"), Reconstruct("r1", "view-only", inputs=["raw"]),
                          Reconstruct("r2", "view-only", inputs=["raw"])]).save(tmp_path / "t.yaml")
     assert controller.runWorkflowOnResults(str(two), out_dir=str(tmp_path)) is False

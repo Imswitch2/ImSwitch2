@@ -714,14 +714,22 @@ class WorkflowController(QtCore.QObject):
             return None
 
     def _entryStep(self, workflow):
-        """The step id an in-memory result stands in for: the one reconstruction."""
-        from imswitch.improcess.workflows.steps import Reconstruct
+        """The step id an in-memory result stands in for: the one
+        reconstruction, or, in a workflow of processors only, its one source."""
+        from imswitch.improcess.workflows.steps import Reconstruct, Source
 
         candidates = [step.id for step in workflow.steps if isinstance(step, Reconstruct)]
         if len(candidates) == 1:
             return candidates[0]
         if not candidates:
-            self._status("This workflow has no reconstruction step to replace with a result.")
+            sources = [step.id for step in workflow.steps if isinstance(step, Source)]
+            if len(sources) == 1:
+                return sources[0]
+            self._status(
+                "This workflow has no reconstruction step to replace with a result, and "
+                + (f"{len(sources)} sources ({', '.join(sources)})" if sources else "no source")
+                + "; applying it to results needs one reconstruction step or exactly one source."
+            )
         else:
             self._status(
                 f"This workflow has {len(candidates)} reconstruction steps ({', '.join(candidates)}); "
