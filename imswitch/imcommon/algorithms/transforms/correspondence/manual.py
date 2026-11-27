@@ -19,7 +19,9 @@ needs that is not drawing lives here, Qt-free:
   leave-one-out residual -- the distance between where a pair's Moving
   point lands when the transform is fitted to the *other* pairs and where
   it was clicked, which singles out a bad click far better than the plain
-  residual, which a least-squares fit spreads over all pairs.
+  residual, which a least-squares fit spreads over all pairs -- and, with two
+  pairs more than the minimum, which pair the others agree without
+  (:meth:`PairFit.suspicious`).
 * :func:`manual_correspondence` / :func:`manual_strategy_spec` -- the pairs
   as a :class:`~.registry.CorrespondenceResult`, so the shared fitting and
   persistence path takes them like any other strategy's.
@@ -330,6 +332,9 @@ class PairFit:
     residuals: np.ndarray
     loo: np.ndarray | None
     model: str
+    #: Per pair: the RMS of the *other* pairs' residuals when the transform is
+    #: fitted without this pair (``None`` with too few pairs).
+    rest_rms: np.ndarray | None = None
 
     @property
     def worst(self) -> int | None:
@@ -339,20 +344,19 @@ class PairFit:
         return int(np.nanargmax(score))
 
     def suspicious(self, factor: float = 3.0) -> int | None:
-        """The pair whose leave-one-out residual is more than ``factor``
-        times the median of the others' -- a click that disagrees with the
-        rest -- or ``None`` when none stands out (or there are too few
-        pairs to tell: at least three leave-one-out residuals are needed)."""
-        if self.loo is None:
+        """The click that disagrees with the rest: the pair without which the
+        *other* pairs fit at least ``factor`` times better (their RMS) than
+        without any other one pair. ``None`` when no pair stands out, or
+        when there are too few pairs to tell (it takes two pairs more than
+        the model's minimum)."""
+        rest = self.rest_rms
+        if rest is None or np.isfinite(rest).sum() < 3:
             return None
-        finite = np.isfinite(self.loo)
-        if finite.sum() < 3:
-            return None
-        worst = int(np.nanargmax(self.loo))
-        others = np.delete(self.loo, worst)
+        best = int(np.nanargmin(rest))
+        others = np.delete(rest, best)
         others = others[np.isfinite(others)]
         typical = float(np.median(others)) if len(others) else 0.0
-        return worst if self.loo[worst] > factor * max(typical, 1e-12) else None
+        return best if typical > 0 and rest[best] * factor < typical else None
 
 
 def _ls_fit(model: str, source: np.ndarray, target: np.ndarray, degree: int,
@@ -377,9 +381,11 @@ def fit_point_pairs(source: Any, target: Any, model: str, *, degree: int = 2,
     fit = ModelFit(transform=raw.transform, residuals=ResidualStats.from_residuals(residuals, unit=unit),
                    inliers=np.ones(len(source), dtype=bool), mapped_points=raw.mapped_points,
                    estimator=raw.estimator, selection=raw.selection)
-    loo = None
-    if len(source) > minimum_pairs(model, degree):
+    loo = rest = None
+    need = minimum_pairs(model, degree)
+    if len(source) > need:
         loo = np.full(len(source), np.nan)
+        rest = np.full(len(source), np.nan) if len(source) > need + 1 else None
         for k in range(len(source)):
             keep = np.arange(len(source)) != k
             try:
@@ -388,7 +394,9 @@ def fit_point_pairs(source: Any, target: Any, model: str, *, degree: int = 2,
             except (ValueError, np.linalg.LinAlgError):
                 continue
             loo[k] = float(np.linalg.norm(other.transform.map_points(source[k:k + 1])[0] - target[k]))
-    return PairFit(fit=fit, residuals=residuals, loo=loo, model=str(model))
+            if rest is not None:
+                rest[k] = float(np.sqrt(np.mean(np.sum((other.mapped_points - target[keep]) ** 2, axis=1))))
+    return PairFit(fit=fit, residuals=residuals, loo=loo, model=str(model), rest_rms=rest)
 
 
 def manual_correspondence(source: Any, target: Any, metadata: Mapping[str, Any] | None = None

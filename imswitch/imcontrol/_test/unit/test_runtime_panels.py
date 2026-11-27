@@ -260,6 +260,29 @@ def test_a_runtime_setup_modes_panel_gets_what_startup_gives_it(imcontrolApp):
     assert modes._shortcutManager is app.controller.shortcutManager
 
 
+def test_transform_calibration_is_added_on_a_setup_that_does_not_list_it(imcontrolApp):
+    """The camera -> scan calibration lives in the Transform Calibration panel
+    (the Hardware menu window is gone): View > Add panel… must reach it on
+    any setup, even without the Image panel -- the file-based methods need
+    no viewer."""
+    app = imcontrolApp()
+    assert 'TransformCalibration' not in app.setup.availableWidgets
+    assert not any('scan calibration' in action.text()
+                   for menu in app.view.menuBar().actions() if menu.menu() is not None
+                   for action in menu.menu().actions())
+
+    assert app.controller.addPanel('TransformCalibration') == 'added'
+
+    controller = app.controller.controllers['TransformCalibration']
+    widget = app.view.widgets['TransformCalibration']
+    assert type(controller).__name__ == 'TransformCalibrationController'
+    assert controller._recordingWidget is app.view.widgets['Recording']
+    assert widget.storeControls.isVisibleTo(widget)          # saving under an id
+    assert widget._recording_reader is not None              # ImSwitch recordings
+    assert not widget.snapSourceButton.isVisibleTo(widget)    # no Image panel: no live snap
+    assert 'calibrations from files work' in widget.hostStatusLabel.text()
+
+
 def test_a_panel_that_cannot_be_added_says_why(imcontrolApp):
     app = imcontrolApp()
 

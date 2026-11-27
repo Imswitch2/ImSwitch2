@@ -46,7 +46,9 @@ def load_calibrations(folder=None) -> TransformRegistry:
 
     The folder is shared with the laser-power calibration store, whose
     records are ``*.calib.json``; those are not transforms and are left
-    alone."""
+    alone. So are shared transform-module records (``imswitch.transform/1``,
+    normally in ``transforms/``) saved here by hand: a pipeline reaches a
+    record through a ``spatial-transform`` entry naming it."""
     folder = Path(folder) if folder is not None else calibrations_folder()
     registry = TransformRegistry()
     if not folder.is_dir():
@@ -59,6 +61,8 @@ def load_calibrations(folder=None) -> TransformRegistry:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            if isinstance(payload, dict) and str(payload.get("schema", "")).startswith("imswitch.transform/"):
+                continue   # a module record, not a pipeline transform (see the docstring)
             if isinstance(payload, dict) and payload.get("type") == "spatial-transform":
                 # A reference to a shared-module record, relative to here.
                 payload = {**payload, "_base": str(folder)}
