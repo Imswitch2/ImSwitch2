@@ -83,6 +83,49 @@
         "docs:integer"
       ]
     },
+    "mockSample": {
+      "additionalProperties": true,
+      "description": "Simulation only: the voltage also follows the virtual sample under the beam, as for ``APDManager`` (same keys, see :doc:`../mock-infrastructure`): ``photonsPerSample`` photons per detector sample at brightness 1 (default ``20``), Poisson-distributed, each adding ``signalVolts / photonsPerSample`` volts (``signalVolts`` default ``1.0``) on top of the noise above.",
+      "properties": {
+        "photonsPerSample": {
+          "type": [
+            "integer",
+            "number",
+            "string"
+          ],
+          "x-imswitch-kind": "number",
+          "x-imswitch-source": [
+            "code:default:number",
+            "code:float()",
+            "code:optional(get)"
+          ]
+        },
+        "signalVolts": {
+          "type": [
+            "integer",
+            "number",
+            "string"
+          ],
+          "x-imswitch-kind": "number",
+          "x-imswitch-source": [
+            "code:default:number",
+            "code:float()",
+            "code:optional(get)"
+          ]
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "code:sub-keys",
+        "docs:object"
+      ]
+    },
     "mockVoltageMax": {
       "description": "Upper bound of the mock voltage signal.  Also read as ``mock_voltage_max``.",
       "type": [

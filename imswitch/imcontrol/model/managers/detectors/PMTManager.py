@@ -21,6 +21,10 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._mock_optics import (
+    Bleaching, LaserStates, PointScanOptics, PointScanSignal, unlit_message,
+)
+from ._mock_sample import MockSample
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -135,6 +139,25 @@ class PMTManager(DetectorManager):
             "mockRandomSeed",
             manager_props.get("mock_random_seed", None),
         )
+        # A synthetic sample imaged from the scan waveforms (simulation only),
+        # as for the APD: photons under the beam, each adding
+        # ``signalVolts / photonsPerSample`` to the noise.
+        mockSampleProperty = manager_props.get("mockSample")
+        self._mock_sample = MockSample.from_property(mockSampleProperty)
+        self._mock_optics = PointScanOptics.from_property(mockSampleProperty)
+        # The lasers' set state (read-only; see APDManager).
+        self._mock_laser_states = LaserStates()
+        self._mock_bleaching = (
+            Bleaching(self._mock_optics.bleach_half_life_s)
+            if self._mock_optics.bleach_half_life_s else None
+        )
+        if self._mock_sample is not None:
+            self._mock_signal_volts = float(mockSampleProperty.get("signalVolts", 1.0))
+            self._mock_photons_per_sample = float(
+                mockSampleProperty.get("photonsPerSample", 20.0)
+            )
+            if self._mock_photons_per_sample <= 0:
+                raise ValueError('mockSample "photonsPerSample" must be positive')
 
         self._scanWorker = None
         self._scanThread = None
@@ -209,6 +232,11 @@ class PMTManager(DetectorManager):
         )
         if self._simulation_mode:
             self._setMockActive("Simulated NI-DAQ detector backend")
+        if self._mock_sample is not None and self._simulation_mode:
+            # Built once per process (about a second); not on the first scan.
+            threading.Thread(target=self._mock_sample.view,
+                             args=(self._mock_optics.psf_sigma_um,), daemon=True,
+                             name='mock-sample').start()
 
     def crop(self, hpos, vpos, hsize, vsize):
         pass
@@ -342,6 +370,11 @@ class PMTManager(DetectorManager):
             self.__logger.exception(
                 'Failed to report PMT scan %s failure', stage
             )
+
+    def attachMockLaserStates(self, states):
+        """Simulation only: where the virtual sample reads the lasers' set
+        state (a read-only ``_mock_optics.LaserStates``; see MasterController)."""
+        self._mock_laser_states = states
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.initiateScan(scanInfoDict, signalDict)
@@ -1035,6 +1068,19 @@ class ScanWorker(Worker):
             int(round(self._manager._detection_samplerate * scanInfoDict["scan_time_step"])),
         )
         self._rng = np.random.default_rng(self._manager._mock_random_seed)
+        # The mock sample under the beam at every detector sample (see APD).
+        self._mock_signal = None
+        sample = self._manager._mock_sample
+        if self._manager._simulation_mode and sample is not None:
+            mockSignal = PointScanSignal(
+                sample, self._manager._mock_optics, signalDict,
+                self._frac_scan_det_rate, self._manager._detection_samplerate,
+                self._manager._mock_bleaching, self._manager._mock_laser_states,
+            )
+            if mockSignal.usable:
+                self._mock_signal = mockSignal
+            if mockSignal.unlit:
+                self.__logger.warning(unlit_message(self._manager._mock_optics.excitation))
 
         # img_dims contains physical scan axes only (no linestep); n_linesteps is separate.
         scan_dims = list(scanInfoDict["img_dims"])
@@ -1284,6 +1330,12 @@ class ScanWorker(Worker):
             scale=self._manager._mock_voltage_noise_std,
             size=datalen,
         )
+        if self._mock_signal is not None:
+            photons = self._manager._mock_photons_per_sample
+            detected = self._rng.poisson(
+                photons * self._mock_signal(self._samples_read, datalen)
+            )
+            signal += self._manager._mock_signal_volts * detected / photons
         signal = np.clip(
             signal,
             self._manager._mock_voltage_min,

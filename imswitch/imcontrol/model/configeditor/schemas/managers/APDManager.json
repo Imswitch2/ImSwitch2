@@ -85,7 +85,7 @@
       ]
     },
     "mockSample": {
-      "description": "Simulation only: image a synthetic sample (cells and beads) instead of uniform noise. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"seed\": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm.",
+      "description": "Simulation only: image a virtual sample instead of uniform noise. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"seed\": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm. Optional: ``preset`` (``cells``, ``filaments``, ``beads``, ``resolution``), ``psfFwhmUm``, ``zAxis``/``focusUm``/``rayleighRangeUm`` (defocus), ``excitation`` (lasers whose TTL or on/off state and power light the sample), ``saturationPower``/``scatterBackground`` (how the fluorophores and background answer the power), ``bleachHalfLifeS`` and ``darkCountRate``; see :doc:`../mock-infrastructure`.",
       "x-imswitch-kind": "object",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
