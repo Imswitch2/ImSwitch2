@@ -502,6 +502,11 @@ class PointScanView(ScanCloakView):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons, 2, 0, 1, 3)
+        # Why there are no lasers to place, on a scanner without digital lines.
+        self.laserNote = QtWidgets.QLabel('')
+        self.laserNote.setWordWrap(True)
+        self.laserNote.setVisible(False)
+        layout.addWidget(self.laserNote, 4, 0, 1, 3)
         self.detectorNote = QtWidgets.QLabel('')
         self.detectorNote.setWordWrap(True)
         layout.addWidget(self.detectorNote, 3, 0, 1, 3)
@@ -518,7 +523,7 @@ class PointScanView(ScanCloakView):
     # ------------------------------------------------------------------
 
     def configureSimpleScan(self, *, axes, gates, overviewAxes, detectorNote,
-                            detectors=()):
+                            detectors=(), laserNote=''):
         self._axes = list(axes)
         self._gates = list(gates)
         self._overviewAxes = tuple(overviewAxes)
@@ -538,6 +543,12 @@ class PointScanView(ScanCloakView):
         self.referenceLabel.setVisible(len(detectors) > 1)
         self.referenceCombo.setVisible(len(detectors) > 1)
         self.detectorNote.setText(detectorNote)
+        # No laser the scan can switch: no palette and no channels to build.
+        for widget in (self.paletteZone, self.togetherButton, self.separateButton):
+            widget.setVisible(bool(self._gates))
+        self._lanesShown = bool(self._gates)
+        self.laserNote.setText(laserNote)
+        self.laserNote.setVisible(bool(laserNote))
 
     # ------------------------------------------------------------------
     # The rectangle in the viewer
@@ -768,6 +779,9 @@ class PointScanView(ScanCloakView):
         hint.setStyleSheet('color: #808080;')
         layout.addWidget(hint)
         self.lanesLayout.addWidget(self.newChannelZone)
+        if not getattr(self, '_lanesShown', True):
+            for zone in self.laneZones + [self.newChannelZone]:
+                zone.setVisible(False)
 
     def _setDragging(self, dragging):
         # A drop rebuilds the channels, and the chip being dragged is one of

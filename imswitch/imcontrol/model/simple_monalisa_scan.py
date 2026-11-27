@@ -1034,7 +1034,6 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
     dwell = plan.dwell_s(limits)
     analog['sequence_time'] = dwell
     analog['phase_delay'] = 0.0
-    analog['d3step_delay'] = 0.0
 
     compiled = compile_plan_sequence(plan, limits)
     windows = compiled.windows_by_device

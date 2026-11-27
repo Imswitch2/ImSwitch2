@@ -1,0 +1,11 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "StepBoardPositionerManager",
+    "managerProperties": {
+      "conversionFactor": 1.5,
+      "maxVolt": 1.5,
+      "minVolt": 1.5
+    }
+  }
+}

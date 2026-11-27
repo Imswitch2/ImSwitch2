@@ -39,8 +39,12 @@ The seven device kinds loaded through ``MultiManager`` are
 ``detector``, ``laser``, ``positioner``, ``rotator``, ``rs232``,
 ``flip_mirror`` and ``slm``. ``stand`` (the ``microscopeStand`` section) has a
 loader of its own that resolves through the registry in the same order; see
-:doc:`stands`. ``pulse_generator`` is not plugin-resolved yet: a manifest that
-declares that kind is rejected.
+:doc:`stands`. So does ``scan_engine`` (the ``scanEngines`` section; see
+:doc:`scan_engines`): a board joins ImSwitch as a scan-engine plugin deriving
+from ``ScanEngine`` in ``imswitch.pluginapi.experimental``, which is not a
+compatibility promise yet. So does ``pulse_generator`` (the
+``pulseGenerators`` section; see :doc:`pulse_generators`): a plugin's
+generator is built as ``cls(info, name, **lowLevelManagers)``.
 
 
 Using an installed plugin

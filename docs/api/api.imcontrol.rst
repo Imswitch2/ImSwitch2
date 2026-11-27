@@ -164,6 +164,15 @@ api.imcontrol
 
       Needs *FlipMirror* in ``availableWidgets``.
 
+   .. method:: getDetectorLatestFrame(detectorName: str) -> numpy.ndarray
+
+      Returns a copy of the latest image the specified detector
+      produced -- after a point scan, the scan image (what the live view
+      shows for it). A script compares two detectors' images with it
+      (tutorial timetagger/09).
+
+      Needs *Settings* in ``availableWidgets``.
+
    .. method:: getDetectorNames() -> List[str]
 
       Returns the device names of all detectors. These device names can
@@ -420,7 +429,7 @@ api.imcontrol
       ``TTL_end`` in s) and ``positionersScan``. Edit it and give it back
       with setScanParameters.
 
-      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, Base, Expert, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
@@ -536,7 +545,7 @@ api.imcontrol
 
       Loads scanning parameters from the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, Expert, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: loadSetupMode(name, componentNames=None)
 
@@ -765,7 +774,7 @@ api.imcontrol
 
       Saves the set scanning parameters to the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, Expert, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: saveSetupMode(name, componentNames=None, description=None, shortcut=None)
 
@@ -1005,7 +1014,7 @@ api.imcontrol
       ValueError, naming what could not be applied, when the dict does
       not fit the setup (a device the setup lacks, say).
 
-      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced, Base, Expert, MoNaLISA, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
    .. method:: setSessionNote(note: str) -> None
 

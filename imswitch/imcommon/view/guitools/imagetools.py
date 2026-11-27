@@ -37,8 +37,12 @@ def bestLevels(arr):
 
 
 def minmaxLevels(arr):
+    """``(0, max + 2)`` over the finite values: a NaN (a trajectory bin no
+    window reached) must not make the contrast limits NaN."""
     minlevel = 0
-    maxlevel = arr.max() + 2
+    arr = np.asarray(arr)
+    finite = arr[np.isfinite(arr)] if np.issubdtype(arr.dtype, np.floating) else arr
+    maxlevel = (finite.max() if finite.size else 0) + 2
 
     return minlevel, maxlevel
 

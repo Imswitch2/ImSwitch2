@@ -1,0 +1,11 @@
+{
+  "name": "detection_window",
+  "reference": "peak",
+  "gates": [
+    {
+      "name": "window",
+      "start_ns": 1.0,
+      "stop_ns": 10.0
+    }
+  ]
+}

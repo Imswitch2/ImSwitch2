@@ -22,6 +22,18 @@ class DeviceInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the manager. Empty when omitted. """
 
+    ttlActiveLevel: str = 'high'
+    """ The electrical level of the ``digitalLine`` that means *on*: ``"high"``
+    (default) or ``"low"`` for an inverted input. Every path that drives the
+    line -- a scan, manual control, stopping, failure cleanup -- maps the
+    device's logical on/off through it. """
+
+    preparation: Optional[Union[str, Dict[str, float]]] = None
+    """ Time from the request of the device's state (the line's edge, or the
+    command) until it is ready (a shutter fully open, a laser emitting at its
+    set level): ``"notRequired"``, ``{"durationS": seconds}`` or ``"unknown"``.
+    Absent is not zero: see the scan-program plan, §2.4. """
+
     transient: bool = False
     """ Declared but not required at startup: left absent (not an error, no
     mock) until connected from the Hardware status window or a script. For
@@ -30,6 +42,15 @@ class DeviceInfo:
     connectOnStartup: bool = False
     """ For a transient device: still try to connect at startup; a failure
     leaves it absent with the error shown, never in mock. """
+
+    def ttlLevel(self, on: bool) -> bool:
+        """ The electrical level for logical ``on``/off on the digital line.
+
+        :meta private: """
+        if self.ttlActiveLevel not in ('high', 'low'):
+            raise ValueError(f'ttlActiveLevel must be "high" or "low", not '
+                             f'{self.ttlActiveLevel!r}')
+        return bool(on) if self.ttlActiveLevel == 'high' else not bool(on)
 
     def getAnalogChannel(self):
         """ :meta private: """
@@ -469,7 +490,9 @@ class TilingInfo:
 @dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
-    """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
+    """ Type of scan widget to generate: Base, PointScan, MoNaLISA, Advanced,
+    SimplePointScan, Expert or TriggerScope. Expert uses no signal designers:
+    scanDesigner and TTLCycleDesigner may be null for it. """
 
     scanDesigner: str
     """ Name of the scan designer class to use. """
@@ -484,7 +507,12 @@ class ScanInfo:
     """ Params to be read by the TTL cycle designer. """
 
     sampleRate: int
-    """ Scan sample rate. """
+    """ The waveform sample rate in Hz: the analog and digital waveforms are
+    built and played at it, and every dwell is a whole number of its
+    samples (the pixel rate is this over the samples per pixel). 100000 is
+    what every setup ran at; other rates are played from the board's
+    100 MHz timebase divided down, within what the driver reports for each
+    task, and must divide ``nidaq.detectionRateHz``. """
 
     cloak: Optional[str] = None
     """ Optional simplified frontend over ``scanWidgetType``. The cloak must
@@ -507,6 +535,10 @@ class ScanInfo:
     """ Line for frame end clock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
+
+    engine: Optional[str] = None
+    """ The scan engine (``scanEngines`` entry) the scan panel runs on.
+    ``null``/omitted: the NI-DAQ. """
 
     simplePointScan: Optional[Dict[str, Any]] = None
     """ Options for the ``SimplePointScan`` panel, all optional:
@@ -549,6 +581,31 @@ class EtSTEDDeviceInfo:
 
 
 @dataclass(frozen=True)
+class ScanEngineInfo:
+    managerName: str
+    """ The scan engine's manager: a registered ``scan_engine`` id or alias. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Properties to be read by the engine (its board's capabilities). """
+
+    triggerInput: Optional[str] = None
+    """ The line, driven by the engine the scan panel runs on, that this
+    engine's trigger input is wired to. It then follows that engine step by
+    step in a program that uses its devices (a pulse at every step). """
+
+
+@dataclass(frozen=True)
+class PulseGeneratorInfo:
+    managerName: str
+    """ The generator's manager: a registered ``pulse_generator`` id or
+    alias. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Properties to be read by the generator's manager (its port or
+    address, and what it needs to connect). """
+
+
+@dataclass(frozen=True)
 class MicroscopeStandInfo:
     managerName: str
     """ Name of the manager to use. """
@@ -579,7 +636,9 @@ class NidaqInfo:
     will be translated to "Dev1/ctr{timerCounterChannel}". """
 
     startTrigger: bool = False
-    """ Boolean for start triggering for sync. """
+    """ Start the digital output on the analog output's start trigger. The
+    point detectors and their timer start on it whenever a scan has analog
+    output, whatever this says. """
 
     simulation: Optional[bool] = False
     """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
@@ -588,6 +647,11 @@ class NidaqInfo:
     starts but NI-DAQ operations remain unavailable rather than silently
     switching to simulated acquisition.
     """
+
+    detectionRateHz: Optional[float] = None
+    """ Rate of the timer counter's pulse train the point detectors (APD, PMT)
+    sample on, in Hz. Absent: 1 000 000 Hz, as it always was. Must be a whole
+    multiple of ``scan.sampleRate``. """
 
     def getTimerCounterChannel(self):
         """ :meta private: """
@@ -635,6 +699,116 @@ class TeensyPulseInfo:
     """ Capabilities the mock advertises when the real device is
     unavailable.  Ignored when a real connection succeeds (firmware
     reports its own via ``*IDN?``). """
+
+
+@dataclass(frozen=True)
+class TimeTaggerInfo:
+    """One Swabian Time Tagger card, shared by every detector and script
+    that uses it.
+
+    Channels are named by *role*; the FLIM detector and the scripting facade
+    speak roles, so re-cabling the card is one edit here. A negative channel
+    number selects the falling edge of that input, the Swabian convention
+    (a SPAD's NIM pulse is triggered on its falling edge, so ``-1``).
+    Consumed by ``imswitch.imcontrol.model.managers.TimeTaggerManager``.
+    """
+    serial: Optional[str] = None
+    """ Serial number of the card to open; ``None`` = the first card found. """
+
+    simulation: bool = False
+    """ Use the in-process mock instead of a card, whether or not the
+    vendor library is installed. """
+
+    useMockOnFailure: bool = False
+    """ Fall back to the mock when the vendor library is missing or the card
+    cannot be opened -- only honoured while ``nidaq.simulation`` is also
+    true. On a rig a missing card stays a hard error that rolls the scan
+    back, so a cabling fault is never silently imaged as zeros. (The
+    default differs from ``TeensyPulseInfo`` on purpose.) """
+
+    photonsChannel: int = 1
+    """ Input carrying the single-photon detector pulses. """
+
+    photonsTriggerV: float = 0.5
+    """ Trigger threshold in volts for the photon input. Inputs are 50 ohm;
+    trigger range is +/-2.5 V. """
+
+    photonsDeadtimePs: int = 0
+    """ Dead time applied to the photon input, in picoseconds; ``0`` = the
+    card's minimum. Set it to the detector's own dead time to suppress
+    ringing and double counts. """
+
+    laserSyncChannel: int = 2
+    """ Input carrying the laser sync (the TCSPC reference). """
+
+    laserSyncTriggerV: float = 0.5
+    """ Trigger threshold in volts for the laser sync input. """
+
+    lineClockChannel: int = 3
+    """ Input carrying the scan's line clock (``scan.lineClockLine``). """
+
+    lineClockTriggerV: float = 0.5
+    """ Trigger threshold in volts for the line clock input. An NI DO line
+    drives about 1-1.5 V into the card's 50 ohm input, so stay well below
+    that. """
+
+    lineClockDelayPs: int = 0
+    """ Delay applied to the line clock (and the frame clock) in picoseconds,
+    to line the Time Tagger image up with the APD/PMT image. The NI-DAQ
+    already plays its clocks the scan's phase delay (D2) later, following
+    the beam, so this is what remains: positive for a clock still early,
+    negative for a late one (a long cable). A value measured before the
+    clocks followed the beam holds the galvo's lag: measure it again
+    (tutorial 09). """
+
+    lineClockDeadtimePs: int = 0
+    """ Dead time on the line clock (and the frame clock) inputs, in
+    picoseconds; ``0`` = the card's minimum. A DAQ line into the card's 50
+    ohm input has a slow falling edge that bounces back through the
+    threshold, and each bounce counts as another line start, which
+    re-triggers the FLIM pixel pattern mid-line. A dead time longer than the
+    clock pulse (10 DAQ samples, 100 us at 100 kS/s) and far below the line
+    period swallows the bounces; tutorial 07 measures and suggests it. """
+
+    frameClockChannel: Optional[int] = None
+    """ Input carrying the scan's frame-start clock, if cabled; ``None`` =
+    not cabled. """
+
+    frameClockTriggerV: float = 0.5
+    """ Trigger threshold in volts for the frame clock input. """
+
+    stedPulseChannel: Optional[int] = None
+    """ Input carrying a photodiode on the STED beam, if cabled, for the
+    STED-to-excitation delay readout; ``None`` = not cabled. """
+
+    stedPulseTriggerV: float = 0.5
+    """ Trigger threshold in volts for the STED photodiode input. """
+
+    pixelPatternOffsetPs: int = 10000
+    """ Where the first pixel marker sits after each line-clock edge, in
+    picoseconds. The scan designer raises the frame clock on the same DAQ
+    sample as the first line edge, and two DAQ lines through two cables and
+    two comparators arrive nanoseconds apart; the offset keeps the frame
+    marker ahead of the first pixel marker whatever the skew. Far below
+    any pixel dwell. A positive ``lineClockDelayPs`` is added to it. """
+
+    filterSyncByPhotons: bool = False
+    """ Enable the card's conditional filter so only the first laser sync
+    after each photon is transmitted. Needed on a Time Tagger 20 or Ultra
+    with a sync at tens of MHz. The TCSPC direction then reverses (start =
+    photon, click = sync); the FLIM detector handles that. """
+
+    mockSample: str = "beads_two_lifetimes"
+    """ What the mock card images when ``simulation`` is on: one of
+    ``"beads_two_lifetimes"`` (1.5 ns and 4.0 ns beads on a dim background),
+    ``"uniform"`` (2.5 ns everywhere) or ``"gradient"`` (1 to 5 ns across
+    the field). Ignored with a real card. """
+
+    mockFaults: Dict[str, Any] = field(default_factory=dict)
+    """ Faults the mock card reproduces, for the debugging tutorials:
+    ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``,
+    ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``,
+    ``{"laser_rep_rate_mhz": 40}``. Ignored with a real card. """
 
 
 @dataclass(frozen=True)
@@ -760,10 +934,29 @@ class SetupInfo:
     """ Teensy / Arduino pulse generator settings.  ``None`` = no
     Teensy in this setup.  See :class:`TeensyPulseInfo`. """
 
+    pulseGenerators: Dict[str, PulseGeneratorInfo] = field(default_factory=dict)
+    """ Pulse generators by name, each resolved through the device-plugin
+    registry (kind ``pulse_generator``): several in one setup, or a
+    plugin's. A scan engine or laser names the one it drives in its
+    ``managerProperties.pulseGenerator``. ``teensyPulse`` still builds the
+    generator named ``pulseGeneratorManager``. """
+
+    timeTagger: Optional[TimeTaggerInfo] = field(default_factory=lambda: None)
+    """ Swabian Time Tagger settings. ``None`` = no card in this setup (a
+    ``SwabianTimeTaggerManager`` detector then builds a private one from its
+    own channel properties, with a deprecation warning). See
+    :class:`TimeTaggerInfo`. """
+
     pyroServerInfo: PyroServerInfo = field(default_factory=PyroServerInfo)
 
     triggerScope: Optional[TriggerScopeInfo] = field(default_factory=lambda: None)
     """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
+
+    scanEngines: Dict[str, ScanEngineInfo] = field(default_factory=dict)
+    """ Scan engines besides the NI-DAQ, by name: what runs a scan program
+    (docs/design/plans/scan-engines-and-expert-scan.md). Empty: the NI-DAQ
+    alone, built from ``nidaq``. ``scan.engine`` chooses the one a scan panel
+    runs on. A channel two engines claim is a setup error. """
 
     shortcuts: Optional[Dict[str, Union[str, List[str], None]]] = field(default_factory=lambda: None)
     """ Keyboard shortcut configuration. Maps action IDs to key sequences.

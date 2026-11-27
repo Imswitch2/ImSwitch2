@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "description": "The power calibration (optional): volts and the power they give, one",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "StepBoardLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "StepBoardLaserManager",
+    "LaserManager"
+  ]
+}

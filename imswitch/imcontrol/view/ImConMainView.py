@@ -16,6 +16,7 @@ from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
+from .ScanCapabilitiesDialog import ScanCapabilitiesDialog
 from .SetupFolderDialog import SetupFolderDialog
 
 
@@ -167,6 +168,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenShortcutEditor = QtCore.Signal()
     sigOpenSessionNotes = QtCore.Signal()
     sigOpenConfigEditor = QtCore.Signal()
+    sigOpenScanCapabilities = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
     sigOpenRecordingFolder = QtCore.Signal()
     sigOpenSetupFolder = QtCore.Signal()
@@ -191,6 +193,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
+        self.scanCapabilitiesDialog = ScanCapabilitiesDialog(self)
         self.setupFolderDialog = SetupFolderDialog(
             self, appliesWhen='Saving restarts ImSwitch with the setup chosen here.'
         )
@@ -266,6 +269,15 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         hardware.addAction(self.configEditorAction)
 
+        hardware.addSeparator()
+
+        self.scanCapabilitiesAction = QtWidgets.QAction('What this setup can scan…', self)
+        self.scanCapabilitiesAction.setToolTip(
+            'Every scan engine of this setup and what it can do: native,'
+            ' emulated or impossible, and why.'
+        )
+        self.scanCapabilitiesAction.triggered.connect(self.sigOpenScanCapabilities)
+        hardware.addAction(self.scanCapabilitiesAction)
         self.addPanelAction = QtWidgets.QAction('Add panel…', self)
         self.addPanelAction.setToolTip(
             'Add a panel to this session without restarting, and optionally'
@@ -377,6 +389,8 @@ class ImConMainView(QtWidgets.QMainWindow):
             enabledDockKeys = []
         elif enabledDockKeys is True:
             enabledDockKeys = allDockKeys
+        else:
+            enabledDockKeys = _renameRetiredWidgetKeys(enabledDockKeys, self.__logger)
         # A setup with instruments always gets their panel: without it a
         # connected power meter or polarimeter shows no reading anywhere.
         if getattr(self.viewSetupInfo, 'instruments', None) and 'Instruments' not in enabledDockKeys:
@@ -638,6 +652,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog.raise_()
         self.memoryLimitsDialog.activateWindow()
 
+    def showScanCapabilitiesDialog(self):
+        """Raise the report of what this setup can scan."""
+        self.scanCapabilitiesDialog.show()
+        self.scanCapabilitiesDialog.raise_()
+        self.scanCapabilitiesDialog.activateWindow()
+
     def showRecordingFolderDialog(self):
         """Raise the recordings-folder editor."""
         self.recordingFolderDialog.show()
@@ -874,6 +894,29 @@ class _DockInfo:
     yPosition: int
 
 
+#: Widget keys retired in favour of another: a setup file naming the old key
+#: still boots, with the new panel and a log line asking for the rename.
+_RETIRED_WIDGET_KEYS = {
+    'FLIMHist': 'Lifetime',   # Lifetime 2.0: the FLIM histogram became the Lifetime widget
+}
+
+
+def _renameRetiredWidgetKeys(keys, logger=None):
+    """``keys`` with every retired widget key replaced by its successor (no
+    duplicates), logging each rename."""
+    renamed = []
+    for key in keys:
+        new = _RETIRED_WIDGET_KEYS.get(key, key)
+        if new != key and logger is not None:
+            logger.warning(
+                f'availableWidgets names "{key}", which is now "{new}": the setup '
+                f'file should say "{new}" (the panel opens either way).'
+            )
+        if new not in renamed:
+            renamed.append(new)
+    return renamed
+
+
 # Display names for every known widget key.  Used when widgetLayout is present
 # in the setup JSON so the dock title doesn't have to be specified separately.
 # Falls back to the raw key name for unknown/future widgets.
@@ -901,7 +944,7 @@ _DOCK_DISPLAY_NAMES = {
     'AlignXY': 'Rotational Alignment Tool',
     'ULenses': 'uLenses Tool',
     'FFT': 'FFT Tool',
-    'FLIMHist': 'FLIM Lifetime Histogram',
+    'Lifetime': 'Lifetime (FLIM / STED)',
     'FlipMirror': 'Flip Mirrors',
     'Watcher': 'File Watcher',
     'Tiling': 'Tiling',
@@ -942,6 +985,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
     'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
     'Scan':          _DockInfo(name='Scan',                          yPosition=2),
+    'Lifetime':      _DockInfo(name='Lifetime (FLIM / STED)',        yPosition=2),
     'RotationScan':  _DockInfo(name='RotationScan',                  yPosition=2),
     'BeadRec':       _DockInfo(name='Bead Rec',                      yPosition=3),
     'AlignmentLine': _DockInfo(name='Alignment Tool',                yPosition=3),
@@ -949,7 +993,6 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'AlignXY':       _DockInfo(name='Rotational Alignment Tool',     yPosition=3),
     'ULenses':       _DockInfo(name='uLenses Tool',                  yPosition=3),
     'FFT':           _DockInfo(name='FFT Tool',                      yPosition=3),
-    'FLIMHist':      _DockInfo(name='FLIM Lifetime Histogram',       yPosition=3),
     'FlipMirror':    _DockInfo(name='Flip Mirrors',                  yPosition=0),
     'Watcher':               _DockInfo(name='File Watcher',           yPosition=3),
     'Tiling':               _DockInfo(name='Tiling',                 yPosition=3),
@@ -984,7 +1027,7 @@ def _build_dock_infos_from_layout(tab_groups):
     """
     result = {}
     for y_pos, group in enumerate(tab_groups):
-        for key in group:
+        for key in _renameRetiredWidgetKeys(group):
             result[key] = _DockInfo(name=_DOCK_DISPLAY_NAMES.get(key, key), yPosition=y_pos)
     return result
 

@@ -39,7 +39,7 @@ class ScanCloakView(QtWidgets.QWidget):
         self.startButton = QtWidgets.QPushButton('Start')
         self.startButton.clicked.connect(self.sigStartClicked)
         self.stopButton = QtWidgets.QPushButton('Stop')
-        self.stopButton.setToolTip('No further frame. A frame already running completes.')
+        self.stopButton.setToolTip('Stop the scan now: its unfinished frame is dropped.')
         self.stopButton.setEnabled(False)
         self.stopButton.clicked.connect(self.sigStopClicked)
         self.runRow = QtWidgets.QHBoxLayout()

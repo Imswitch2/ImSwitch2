@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a pulse_generator entry in a setup file, as imswitch.imcontrol.model.SetupInfo.PulseGeneratorInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "managerName": {
+      "description": "The generator's manager: a registered ``pulse_generator`` id or alias.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:PulseGeneratorInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the generator's manager (its port or address, and what it needs to connect).",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:PulseGeneratorInfo.managerProperties: Dict[str, Any]"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "pulse_generator device entry (PulseGeneratorInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PulseGeneratorInfo"
+  ],
+  "x-imswitch-info-class": "PulseGeneratorInfo"
+}

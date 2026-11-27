@@ -1,3 +1,4 @@
+import re
 import time
 
 import numpy as np
@@ -75,6 +76,8 @@ class TriggerScopeManager(SignalInterface):
                             self._deviceInfo[targetName]['TTLLine'] = lineNr
                         else:
                             self._deviceInfo[targetName] = {'TTLLine': lineNr}
+                        # Logical on/off to the line's level (ttlActiveLevel).
+                        self._deviceInfo[targetName]['ttlLevel'] = targetInfo.ttlLevel
 
         self.setParSleepTime = 0.05
 
@@ -140,8 +143,10 @@ class TriggerScopeManager(SignalInterface):
         self._rs232manager.write(command)
 
     def setDigital(self, target, enable):
-        """ Set a TTL line high (True) or low (False) for a named device. """
-        val = '1' if enable else '0'
+        """ Switch a named device's TTL line on (True) or off (False): the
+        level follows the device's ``ttlActiveLevel``. """
+        level = self._deviceInfo[target].get('ttlLevel', bool)(enable)
+        val = '1' if level else '0'
         line = self._deviceInfo[target]['TTLLine']
         self.send(f'TTL{line},{val}')
 
@@ -197,6 +202,8 @@ class SerialMonitor(Worker):
         self._rs232Manager = rs232Manager
         self._updatePeriod = updatePeriod
         self._vtimer = None
+        # Bytes of a line that has begun and not ended yet (readWaiting path).
+        self._partial = ''
         # Diagnostic: throttle repeated read-timeout log lines so a quiet port
         # doesn't spam the log, while still proving the monitor thread is alive.
         self._emptyReads = 0
@@ -213,12 +220,22 @@ class SerialMonitor(Worker):
 
     def checkSerial(self):
         try:
-            # RS232Manager.read() takes an optional positional arg and applies
-            # the port's configured recv_termination itself. The previous
-            # read(termination='\r\n') passed an unsupported keyword, so every
-            # poll raised TypeError and the monitor never read a single byte —
-            # "Scan done" was never seen and scans hung. Call it with no args.
-            msg = self._rs232Manager.read()
+            # The port's read() waits for the configured termination and
+            # RS232Manager holds its I/O lock through the wait, so every DAC,
+            # TTL and PARAMETER write waited for the port's timeout (100 s
+            # here) whenever the termination did not come: on an idle port,
+            # and -- the Snouty rig, 2026-10-20 -- after every reply of a
+            # board that ends its lines with CR LF on a port configured for
+            # CR, which left an LF behind each time. Take what has arrived,
+            # no more, and split the lines here on CR or LF: nothing can make
+            # that wait. A backend that cannot do it (None) is read as before.
+            chunk = self._rs232Manager.readWaiting()
+            if chunk is None:
+                msg = self._rs232Manager.read()
+                lines = [] if msg is None else [msg]
+            else:
+                self._partial += chunk
+                *lines, self._partial = re.split(r'[\r\n]', self._partial)
         except (OSError, AttributeError):
             # The serial resource was closed during application shutdown while
             # a timer callback was still pending. Stop the timer and exit
@@ -227,10 +244,10 @@ class SerialMonitor(Worker):
                 self._vtimer.stop()
             return
         except (VisaIOError, InvalidSession, SerialException, TypeError) as exc:
-            # A read timeout (no data within the port timeout) is normal while
-            # the firmware is busy/idle. Log it occasionally so we can confirm
-            # the monitor thread is alive but receiving nothing — which would
-            # point at a recv_termination mismatch rather than a code bug.
+            # A read timeout (the read() path only): normal on an idle port
+            # there. Log it occasionally so we can confirm the monitor thread
+            # is alive but receiving nothing — which would point at a
+            # recv_termination mismatch rather than a code bug.
             self._emptyReads += 1
             if self._emptyReads <= 3 or self._emptyReads % 20 == 0:
                 self.__logger.debug(
@@ -238,24 +255,20 @@ class SerialMonitor(Worker):
                     'empty-read count=%d',
                     type(exc).__name__, self._emptyReads,
                 )
-            msg = None
+            lines = []
 
-        if msg is not None:
+        for msg in lines:
             # Diagnostic: log exactly what came off the wire, with repr() so any
             # invisible terminators (\r, \n) are visible. This is how we tell
             # what the firmware actually sends at end-of-scan.
             self.__logger.debug('[TriggerScope RX] %r', msg)
-            # Normalise line endings/whitespace before matching. The RS232
-            # layer's read() ignores the requested termination and relies on
-            # the port's configured recv_termination, which can leave a
-            # trailing '\r' (CR/LF mismatch). An unstripped "Scan done\r"
+            # Normalise whitespace before matching: an unstripped "Scan done\r"
             # fails the exact match below, so scanDone() never fires and the
-            # scan/laser widgets stay stuck (laser left armed). strip() makes
-            # the match tolerant of every CR/LF variant and also prevents the
-            # MSG branch from doing int("5\r") -> ValueError.
+            # scan/laser widgets stay stuck (laser left armed). strip() also
+            # prevents the MSG branch from doing int("5\r") -> ValueError.
             msg = msg.strip()
             if not msg:
-                return
+                continue
             if msg == 'Scan done':
                 self.sigScanDone.emit()
             elif msg[:3] == 'MSG':

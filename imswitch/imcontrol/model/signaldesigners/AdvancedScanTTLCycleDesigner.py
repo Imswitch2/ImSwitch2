@@ -1,5 +1,7 @@
 import numpy as np
 
+from ..scan_parameters import samples_for_duration
+
 from ..signaldesigners.basesignaldesigners import TTLCycleDesigner
 
 
@@ -84,7 +86,8 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
         # For preview, choose a reasonable pixel count & samples_per_pixel
         # (You can override later by passing these in p if you want.)
         n_pixels = 64
-        samples_per_pixel = max(1, int(round(dwell_s * Fs)))
+        samples_per_pixel = max(1, samples_for_duration(dwell_s, Fs))
+        dwell_s = samples_per_pixel / float(Fs)        # the dwell as it plays
         line_len = n_pixels * samples_per_pixel
 
         signal_dict = {}
@@ -133,7 +136,8 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
         dwell_s = float(parameterDict["sequence_time"])
         advanced = bool(parameterDict["advanced_mode"])
 
-        samples_per_pixel = max(1, int(round(dwell_s * Fs)))
+        samples_per_pixel = max(1, samples_for_duration(dwell_s, Fs))
+        dwell_s = samples_per_pixel / float(Fs)        # the dwell as it plays
 
         signal_dict = {}
         for dev in targets:
@@ -168,11 +172,13 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
 
         targets = self._ttl_targets(p["target_device"], setupInfo)
         S = int(p["n_linesteps"])
-        dwell_s = float(p["sequence_time"])
         advanced = bool(p["advanced_mode"])
 
         # scanInfoDict is already a complete ScanInfoContract dict from the scan designer.
         scanInfo = scanInfoDict
+        # the dwell as the scan designer realized it, never the request
+        # rounded again here
+        dwell_s = float(scanInfo.get("dwell_time", p["sequence_time"]))
 
         # Existing scan structure variables (img_dims is physical-only per ScanInfoContract)
         n_steps_dx = scanInfo["img_dims"]
@@ -400,8 +406,8 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
         for a, b in zip(starts_s, ends_s):
             if a is None or b is None:
                 continue
-            i0 = int(round(a * Fs))
-            i1 = int(round(b * Fs))
+            i0 = samples_for_duration(a, Fs, 'nearest-even')
+            i1 = samples_for_duration(b, Fs, 'nearest-even')
             i0 = max(0, min(samples_per_pixel, i0))
             i1 = max(0, min(samples_per_pixel, i1))
             if i1 > i0:

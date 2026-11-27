@@ -29,10 +29,32 @@ from imswitch.imcontrol.controller.WorkflowServices import (
 )
 from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcommon.model.gui_diagnostics import timedStep
 
 # ``ComponentStateApplyMode`` is re-exported above (defined in model.state_contracts)
 # so existing ``from ..basecontrollers import ComponentStateApplyMode`` imports keep
 # working while the canonical definition lives in the model layer.
+
+
+
+def scan_engine_of(master):
+    """The scan engine a controller runs its scans on: the master's selected
+    engine, or -- for a master that predates engines (test doubles) -- the
+    NI-DAQ manager seen as one."""
+    engine = getattr(master, 'scanEngine', None)
+    if engine is not None:
+        return engine
+    from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import (
+        NidaqScanEngine,
+    )
+    return NidaqScanEngine(nidaqManager=master.nidaqManager,
+                           setupInfo=getattr(master, '_MasterController__setupInfo', None))
+
+
+def same_run_signals(a, b) -> bool:
+    """Whether two engines' runs are heard on the same signals: one engine,
+    or a composite and its leader (a composite's signals are its leader's)."""
+    return getattr(a, 'leader', a) is getattr(b, 'leader', b)
 
 
 class ImConWidgetControllerFactory(WidgetControllerFactory):
@@ -315,6 +337,9 @@ class ScanLifecycleMixin:
     @isRunning.setter
     def isRunning(self, value: bool) -> None:
         self._isRunningFlag = bool(value)
+        # A run starting or ending ends any stop that was in flight for the
+        # run before it (the panel's Stop is held off only while one is).
+        self.__dict__['_stopInFlight'] = False
         if self._isRunningFlag:
             self._commChannel.setActiveScanSource(self)
         else:
@@ -422,6 +447,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._scanRunToken = None
         self._scanRunStartingPublished = False
         self._scanStopRequested = False
+        # True from the moment a Stop is handed to the engine until the run's
+        # end arrives (scanDone / scanFailed): the stop works on devices, so
+        # it takes as long as they take, and Stop and Start are held off for
+        # that time instead of re-entering a half-stopped run.
+        self._stopInFlight = False
         self._scanRunFailed = False
         self._scanClosing = False
         # Per-broadcast acknowledgement state. Recording uses this synchronous
@@ -466,20 +496,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             ),
         )
 
-        # Connect NidaqManager signals
-        self._master.nidaqManager.sigScanBuilt.connect(
-            lambda _, __, deviceList: self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
-        )
-        self._master.nidaqManager.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        # NI-DAQ is authoritative: abortScan() does not stop a running scan, so
-        # ownership is released on sigScanDone rather than at the user's abort
-        # click.
-        self._master.nidaqManager.sigScanDone.connect(self.__onNidaqScanDone)
-        self._master.nidaqManager.sigScanBuildFailed.connect(
-            self.__onNidaqScanBuildFailed
-        )
+        # The engine that runs this controller's scans. On the NI-DAQ its
+        # signals are the NI-DAQ manager's own, so nothing about when or how
+        # often they arrive changes.
+        self._scanEngine = None
+        self._bindScanEngine(scan_engine_of(self._master))
 
         # Connect CommunicationChannel signals
         self._commChannel.sigRunScan.connect(self.runScanExternal)
@@ -493,6 +514,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._widget.sigSaveScanClicked.connect(self.saveScan)
         self._widget.sigLoadScanClicked.connect(self.loadScan)
         self._widget.sigRunScanClicked.connect(self.runScan)
+        stopClicked = getattr(self._widget, 'sigStopClicked', None)
+        if stopClicked is not None:
+            stopClicked.connect(self._onPanelStopClicked)
         self._widget.sigSeqTimeParChanged.connect(self.updateScanTTLAttrs)
         self._widget.sigStageParChanged.connect(self.updatePixels)
         self._widget.sigStageParChanged.connect(self.updateScanStageAttrs)
@@ -713,9 +737,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def _completeExternalScanRequest(
         self, runToken, *, successful: bool, message: str = '',
-        completions=None,
+        completions=None, stopped: bool = False,
     ) -> bool:
-        """Resolve request terminals detached for this exact scan part."""
+        """Resolve request terminals detached for this exact scan part.
+        ``stopped``: it was stopped on request (ScanRequestCompletion)."""
         if runToken is None:
             return False
         if completions is None:
@@ -724,7 +749,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             )
         resolved = False
         for completion in tuple(completions):
-            if completion.resolve(runToken, successful, message):
+            if (completion.resolve(runToken, successful, message, stopped=True)
+                    if stopped else completion.resolve(runToken, successful, message)):
                 resolved = True
         return resolved
 
@@ -759,7 +785,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._scanCompletionPublishing = True
         signalError = None
         try:
-            self.emitScanSignal(self._commChannel.sigScanDone)
+            with timedStep('scan end', 'sigScanDone to its listeners', self._logger):
+                self.emitScanSignal(self._commChannel.sigScanDone)
         except Exception as error:
             signalError = error
             self._logger.error(
@@ -815,8 +842,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                         and not failed
                         and terminalError is None
                     ),
+                    stopped=aborted and not failed,
                     message=(
-                        'Scan was aborted.'
+                        'Scan was stopped.'
                         if aborted else
                         (
                             getattr(
@@ -1038,11 +1066,25 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def getNumScanPositions(self):
         """ Returns the number of scan positions for the configured scan. """
         with self._positionSnapshotForScanDesign():
-            _, positions, _ = self._master.scanManager.getScanSignalsDict(
+            _, positions, scanInfoDict = self._master.scanManager.getScanSignalsDict(
                 self._analogParameterDict
             )
+        # a recording asks before it starts: its file gets the played dwell
+        self._publishRealizedDwell(scanInfoDict)
         numPositions = functools.reduce(lambda x, y: x * y, positions)
         return numPositions
+
+    def _publishRealizedDwell(self, scanInfoDict):
+        """The dwell the scan plays -- whole samples of the waveform clock
+        (scan timing plan, rule 4) -- as ``ScanStage:dwell_time``, beside the
+        dwell asked for (``ScanStage:sequence_time``): a file says what its
+        pixels integrated, 20 µs where 15 µs was typed on a 10 µs clock."""
+        try:
+            dwell = scanInfoDict.get('dwell_time') if scanInfoDict is not None else None
+        except AttributeError:
+            dwell = None
+        if dwell is not None:
+            self.setSharedAttr(_attrCategoryStage, 'dwell_time', float(dwell))
 
     def saveScan(self):
         """ Save scan parameters template. """
@@ -1129,6 +1171,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
         if self.isRunning:
+            # Stop now (plan scan-stop-now, Lenny 2026-10-18): the engine ends
+            # the iteration in progress; its end arrives as the engine's
+            # stopped-then-done and the run ends through its usual path --
+            # FINISH_ABORT drops the unfinished frame, no repeat follows.
+            self._stopInFlight = self._stopEngineNow()
+            if self._stopInFlight:
+                self._showStopState('stopping')
             return
         if idle:
             # Nothing to fail: the usual state at shutdown (closeEvent aborts
@@ -1148,6 +1197,71 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # part, MoNaLISA axial follow-up -- or a request still arming has no
         # NI-DAQ completion left to end it, so terminalize it here.
         self.scanFailed()
+
+    def _onPanelStopClicked(self):
+        """The panel's Stop: the scan ends now (plan scan-stop-now).
+
+        Between two repeat frames nothing runs: the pending re-arm sees the
+        stop and ends the run as done, stopped. Aborting there failed the run
+        instead (an error logged, waiting requests told it failed) for what is
+        an ordinary stop -- the Simple panel's Stop does the same (#83).
+        """
+        if self.__dict__.get('_stopInFlight', False):
+            # A stop is already taking the devices down; a second click (or a
+            # click queued behind a slow one) has nothing to add.
+            self._logger.info('Stop ignored: the scan is already stopping.')
+            return
+        try:
+            if getattr(self, '_repeatPending', False):
+                self._scanStopRequested = True
+                return
+            self.abortScan()
+        except Exception as error:
+            # A Qt slot must not let an exception escape: say it in the log
+            # and on the panel, and let the user try again.
+            self._stopInFlight = False
+            self._logger.error('Stop failed', exc_info=True)
+            self._showStopState('failed', str(error) or type(error).__name__)
+
+    def _showStopState(self, state, message=''):
+        """Tell the panel its Stop is ``'stopping'``, ``'failed'`` or
+        ``'idle'`` again; a widget without the display is left alone."""
+        show = getattr(self._widget, 'setStopState', None)
+        if not callable(show):
+            return
+        try:
+            show(state, message)
+        except Exception:
+            self._logger.error('Failed to show the scan stop state', exc_info=True)
+
+    def runWasStopped(self) -> bool:
+        """Whether this controller's current or last run was stopped on
+        request -- Stop, a recording's stop, an API abort -- rather than
+        finished or failed: what it completed is good (plan scan-stop-now).
+        Reset when the next run starts."""
+        return bool(getattr(self, '_scanStopRequested', False))
+
+    def _stopEngineNow(self) -> bool:
+        """Tell the streaming engine this controller runs on to stop its
+        iteration now. A step engine is stopped by the panel that runs it
+        (ScanControllerExpert), at its step boundary.
+
+        Returns whether the stop is still in flight: an engine that waits for
+        its devices off the GUI thread (the NI-DAQ) says so with
+        ``stopInFlight``, and its end arrives as its signals. An engine that
+        stopped before ``abort`` returned, or that refused, has none to wait
+        for."""
+        try:
+            engine = self._engineForScans()
+            if getattr(engine, 'run_signals', None) is None:
+                return False
+            with timedStep('scan stop', 'ask the engine to stop', self._logger):
+                engine.abort()
+            return bool(getattr(engine, 'stopInFlight', False))
+        except Exception as error:
+            self._logger.error('The scan engine did not stop', exc_info=True)
+            self._showStopState('failed', str(error) or type(error).__name__)
+            return False
 
     def _holdsScanRunBetweenIterations(self) -> bool:
         """Whether an abort outside an iteration still has a run to fail.
@@ -1210,7 +1324,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return None
         if localToken is not None and activeRun is localToken:
             if activeIteration is not None or not sigScanStartingEmitted:
-                reason = 'Ignoring duplicate scan start from the active owner.'
+                reason = (
+                    'Ignoring duplicate scan start from the active owner: a '
+                    'scan (possibly started by tiling or a workflow) is '
+                    'already in progress.'
+                )
                 self._logger.warning(reason)
                 # Callers historically mark isRunning before entering this
                 # helper.  Restore the real iteration state so a duplicate
@@ -1405,6 +1523,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             nonlocal builtForNewRun
             if needsSignals:
                 self.signalDict, self.scanInfoDict = self._buildScanSignals()
+                self._publishRealizedDwell(self.scanInfoDict)
                 builtForNewRun = True
 
         token = self._beginScanRun(
@@ -1419,6 +1538,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._logger.error(f'Scan stopped: {error}')
             self.scanFailed(message=str(error))
             return None
+        self._publishRealizedDwell(self.scanInfoDict)
         return token
 
     def _scanRunReleaseProven(self, token) -> bool:
@@ -1534,7 +1654,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             endError = None
             try:
                 if startingPublished:
-                    self.emitScanSignal(self._commChannel.sigScanEnded)
+                    with timedStep('scan end', 'sigScanEnded to its listeners',
+                                   self._logger):
+                        self.emitScanSignal(self._commChannel.sigScanEnded)
             except Exception as error:
                 endError = error
                 self._logger.error(
@@ -1767,7 +1889,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         if separatedLaserPower:
             self._raiseIfLaserScanPreparationFailed()
         try:
-            devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
+            devices = self._engineForScans().resolveScanTTLDevices(signalDict)
         except Exception as error:
             if separatedLaserPower:
                 self._logger.error(
@@ -1803,7 +1925,56 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                     'Could not initialize the scan-recording watchdog',
                     exc_info=True,
                 )
-        return self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)
+        runSignals = getattr(self._engineForScans(), 'run_signals', None)
+        if runSignals is None:
+            raise ScanDesignRefusedError(
+                f'This panel builds sampled waveforms, which the scan engine '
+                f'{self._engineForScans().name!r} does not run: it does not stream. '
+                'Run the panel on a streaming engine (scan.engine), such as the NI-DAQ.'
+            )
+        return self._scanCoordinator.armWithStarter(
+            lambda: runSignals(signalDict, scanInfoDict),
+            owner=self, scanInfoDict=scanInfoDict,
+        )
+
+    def _engineForScans(self):
+        engine = self.__dict__.get('_scanEngine')
+        if engine is None:
+            engine = scan_engine_of(self._master)
+            self._scanEngine = engine
+        return engine
+
+    def _engineSignalSlots(self):
+        """``(signal name, slot)``: what this controller hears from the engine
+        it runs on. The engine is authoritative: abortScan() asks it to stop,
+        and the run's end still arrives as its signals, so ownership is
+        released on sigScanDone rather than at the user's abort click."""
+        return (('sigScanBuilt', self._onEngineScanBuilt),
+                ('sigScanStarted', self._onEngineScanStarted),
+                ('sigScanDone', self.__onNidaqScanDone),
+                ('sigScanBuildFailed', self.__onNidaqScanBuildFailed))
+
+    def _bindScanEngine(self, engine):
+        """Run on ``engine`` and hear its run signals instead of the bound
+        engine's."""
+        old = self.__dict__.get('_scanEngine')
+        if old is engine:
+            return
+        self._scanEngine = engine
+        for name, slot in self._engineSignalSlots():
+            if old is not None and getattr(old, name, None) is not None:
+                try:
+                    getattr(old, name).disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            if getattr(engine, name, None) is not None:
+                getattr(engine, name).connect(slot)
+
+    def _onEngineScanBuilt(self, _signals, _info, deviceList):
+        self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
+
+    def _onEngineScanStarted(self):
+        self.emitScanSignal(self._commChannel.sigScanStarted)
 
     def __onNidaqScanDone(self):
         """NI-DAQ finished a scan iteration.
@@ -1826,10 +1997,17 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if getattr(self, '_scanStopRequested', False)
             else FINISH_GRACEFUL
         )
+        # A stopped run's detectors tear their scan threads and input tasks
+        # down and are then stopped on release, each a driver call that can
+        # take seconds: that is asked from a worker thread, not from the GUI
+        # thread this slot runs on. The barrier's end is queued back to the
+        # controller thread below, as for a detector acknowledging late.
+        extra = {'background': True} if finishMode == FINISH_ABORT else {}
         self._scanCoordinator.resolve(
             token,
             finishMode,
             onComplete=lambda: self.__afterScanFinishBarrier(runToken),
+            **extra,
         )
 
     def __onNidaqScanBuildFailed(self):
@@ -2074,6 +2252,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         """ Runs a scan with the set scanning parameters (GUI Scan button).
         The API entry point is WorkflowFacadeController.runScan, exported once
         so rigs with several scanners do not collide on the name. """
+        if self.__dict__.get('_stopInFlight', False):
+            # Start straight after Stop: the devices are still being taken
+            # down, and the run's end has not arrived. Refused visibly (the
+            # panel says "Stopping..."), never started on a half-stopped run.
+            self._logger.info('Start ignored: the previous scan is still stopping.')
+            self._recordScanStartRejection('The previous scan is still stopping.')
+            return
         if not self._confirmUnreferencedScanIfNeeded():
             return
         self.runScanAdvanced(sigScanStartingEmitted=False)
@@ -2147,7 +2332,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         """
         self._scanPositionersRestored = True
         try:
-            self._resetReturnToCenterPositionersAfterScan()
+            with timedStep('scan end', 'park the return-to-center positioners',
+                           self._logger):
+                self._resetReturnToCenterPositionersAfterScan()
         except Exception:
             self._logger.warning(
                 "Failed to reset positioners after scan:\n%s",

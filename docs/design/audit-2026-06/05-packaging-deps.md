@@ -438,7 +438,7 @@ imswitch/_data/icon.ico
 imswitch/_data/icon.png
 imswitch/_data/libs/GPU_acc_recon.dll
 imswitch/_data/user_defaults/README.txt
-imswitch/_data/user_defaults/imcontrol_setups/example_sted.json
+imswitch/_data/user_defaults/imcontrol_setups/real/sted/example_sted.json
 ...
 ```
 

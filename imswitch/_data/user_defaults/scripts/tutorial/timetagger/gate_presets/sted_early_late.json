@@ -1,0 +1,20 @@
+{
+  "name": "sted_early_late",
+  "reference": "peak",
+  "gates": [
+    {
+      "name": "early",
+      "start_ns": 0.5,
+      "stop_ns": 2.5
+    },
+    {
+      "name": "late",
+      "start_ns": 2.5,
+      "stop_ns": 8.0
+    }
+  ],
+  "ratio": [
+    "late",
+    "early"
+  ]
+}

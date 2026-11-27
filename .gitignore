@@ -207,3 +207,6 @@ imswitch/ImSwitch/recordings*
 ./ImSwitch/recordings
 /tmp_test_scripts
 /.run
+
+# The firmware core built as a fake board on a PC
+firmware/triggerscope_step/host/host_board

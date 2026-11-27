@@ -14,9 +14,13 @@ class SuperScanWidget(Widget):
     sigSaveScanClicked = QtCore.Signal()
     sigLoadScanClicked = QtCore.Signal()
     sigRunScanClicked = QtCore.Signal()
+    sigStopClicked = QtCore.Signal()
     sigSeqTimeParChanged = QtCore.Signal()
     sigStageParChanged = QtCore.Signal()
     sigSignalParChanged = QtCore.Signal()
+
+    _STOP_TOOLTIP = ('Stop the scan now: its unfinished frame is dropped and the scanners '
+                     'return to where it started.')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,6 +44,11 @@ class SuperScanWidget(Widget):
         self.scanDims = []
 
         self.scanButton = guitools.BetterPushButton('Run Scan')
+        # Stop ends the scan now (plan scan-stop-now, Lenny 2026-10-18); the
+        # panel had nothing that stopped a running scan, Run is disabled.
+        self.stopButton = guitools.BetterPushButton('Stop')
+        self.stopButton.setToolTip(self._STOP_TOOLTIP)
+        self.stopButton.setEnabled(False)
 
         self.repeatBox = QtWidgets.QCheckBox('Repeat')
 
@@ -65,6 +74,7 @@ class SuperScanWidget(Widget):
         self.saveScanBtn.clicked.connect(self.sigSaveScanClicked)
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
         self.scanButton.clicked.connect(self.sigRunScanClicked)
+        self.stopButton.clicked.connect(self.sigStopClicked)
 
     def confirmUnreferencedScan(self, unreferenced):
         lines = [
@@ -148,6 +158,33 @@ class SuperScanWidget(Widget):
         self.scanButton.setEnabled(not checked)
         self.scanButton.setCheckable(checked)
         self.scanButton.setChecked(checked)
+        self.stopButton.setEnabled(bool(checked))
+        # A run starting or ending ends whatever the Stop button was saying.
+        self._showStopLabel('idle')
+
+    def setStopState(self, state, message=''):
+        """Show what Stop is doing: ``'stopping'`` (the devices are being
+        taken down: the button says so and takes no second click),
+        ``'failed'`` (the stop raised: it says so and may be tried again) or
+        ``'idle'``."""
+        self._showStopLabel(state, message)
+        if state == 'stopping':
+            self.stopButton.setEnabled(False)
+        elif state == 'failed':
+            self.stopButton.setEnabled(True)
+
+    def _showStopLabel(self, state, message=''):
+        button = self.stopButton
+        if state == 'stopping':
+            button.setText('Stopping\u2026')
+            button.setToolTip('The scan is stopping: its devices are being brought to rest.')
+        elif state == 'failed':
+            button.setText('Stop failed')
+            button.setToolTip(f'Stop failed ({message}); see the log. Click to try again.'
+                              if message else 'Stop failed; see the log. Click to try again.')
+        else:
+            button.setText('Stop')
+            button.setToolTip(self._STOP_TOOLTIP)
 
     def setScanDim(self, index, positionerName):
         scanDimPar = self.scanPar['scanDim' + str(index)]
@@ -229,6 +266,7 @@ class ScanWidgetBase(SuperScanWidget):
         )
         self.grid.addWidget(self.repeatBox, currentRow, 5)
         self.grid.addWidget(self.scanButton, currentRow, 6)
+        self.grid.addWidget(self.stopButton, currentRow, 7)
         currentRow += 1
 
         # Add space item to make the grid look nicer

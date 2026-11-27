@@ -452,7 +452,7 @@ contention.
   acquisition. Deferred until the rig confirms the trigger works at all.
 
 ### Phase 4 — Config, cleanup, docs
-- **Setup files.** [`example_sted.json`](../../../imswitch/_data/user_defaults/imcontrol_setups/example_sted.json)
+- **Setup files.** [`example_sted.json`](../../../imswitch/_data/user_defaults/imcontrol_setups/real/sted/example_sted.json)
   declares two `TISManager` detectors — both need migrating. **Decided: serial,
   not index** — an index is positional and silently rebinds when USB enumeration
   order changes. The plugin therefore takes `cameraSerial` (matching

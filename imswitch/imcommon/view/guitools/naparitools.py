@@ -384,6 +384,138 @@ class MplCanvas(FigureCanvas):
         super(MplCanvas, self).__init__(fig)
 
 
+class NapariSumAxesWidget(NapariBaseWidget):
+    """A "Sum" checkbox per dimension the live frames have beyond their image
+    (line steps, z, t), shown only while some live frame has one: checked,
+    every live layer with that dimension shows the sum over it instead of
+    one slice at a time. Display only -- the controller that owns the
+    frames does the reduction. It tells this widget which dimensions each
+    source's frames have (``setAxes``) and hears which are summed, by name
+    (``sigSumAxesChanged``)."""
+
+    sigSumAxesChanged = QtCore.Signal(tuple)
+
+    @property
+    def name(self):
+        return 'sum over dimensions'
+
+    @classmethod
+    def addToViewer(cls, napariViewer, position='left'):
+        widget = super().addToViewer(napariViewer, position)
+        dock = widget._dock()
+        if dock is not None:
+            # Closing the dock destroyed it for the session, leaving a ticked
+            # sum on with no box to untick (review 2026-10-16): it can be
+            # hidden, not closed, and hiding it by hand unticks every sum.
+            closer = getattr(getattr(dock, 'title', None), 'close_button', None)
+            if closer is not None:
+                closer.hide()
+            dock.visibilityChanged.connect(widget._onDockVisibility)
+        widget._showIfOffered()            # docked now: hidden until a frame has a dimension
+        return widget
+
+    def __init__(self, napariViewer):
+        super().__init__(napariViewer)
+        self._axes = {}            # source -> [name per extra dimension, outermost first]
+        self._summed = set()       # the summed dimensions, by name
+        self._boxes = {}           # dimension name -> its checkbox
+        self._hidingDock = False   # this widget hides its dock, not the user
+        self.setLayout(QtWidgets.QVBoxLayout())
+        self.layout().setContentsMargins(4, 4, 4, 4)
+        self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                                 QtWidgets.QSizePolicy.Maximum))
+
+    def setAxes(self, source, labels, summed=None):
+        """The dimensions ``source``'s frames have beyond their image,
+        outermost first (none: the source offers nothing to sum); ``summed``,
+        when given, replaces which dimensions are summed, by name."""
+        labels = [str(label) for label in labels]
+        changed = self._axes.get(source, []) != labels
+        if labels:
+            self._axes[source] = labels
+        else:
+            self._axes.pop(source, None)
+        if summed is not None and {str(name) for name in summed} != self._summed:
+            self._summed = {str(name) for name in summed}
+            changed = True
+        if changed:
+            self._rebuild()
+
+    def dimensions(self):
+        """Every dimension some source offers, in the order first offered."""
+        seen = []
+        for labels in self._axes.values():
+            seen.extend(label for label in labels if label not in seen)
+        return seen
+
+    def summedAxes(self):
+        """The summed dimensions, by name -- also those no frame has just now,
+        so a choice outlasts the scans in between."""
+        return tuple(sorted(self._summed))
+
+    def isOffered(self):
+        return bool(self._boxes)
+
+    def _rebuild(self):
+        dimensions = self.dimensions()
+        if list(self._boxes) != dimensions:
+            for box in self._boxes.values():
+                self.layout().removeWidget(box)
+                box.deleteLater()
+            self._boxes = {}
+            for label in dimensions:
+                box = QtWidgets.QCheckBox(f'Sum {label}')
+                box.setToolTip(f'Show the sum over all {label} instead of one at a time. '
+                               'The recording keeps them all.')
+                box.toggled.connect(lambda on, label=label: self._toggled(label, on))
+                self.layout().addWidget(box)
+                self._boxes[label] = box
+        for label, box in self._boxes.items():
+            if box.isChecked() != (label in self._summed):
+                box.blockSignals(True)
+                box.setChecked(label in self._summed)
+                box.blockSignals(False)
+        self._showIfOffered()
+
+    def _dock(self):
+        parent = self.parentWidget()
+        while parent is not None and not isinstance(parent, QtWidgets.QDockWidget):
+            parent = parent.parentWidget()
+        return parent
+
+    def _showIfOffered(self):
+        dock = self._dock()
+        if dock is not None:
+            self._hidingDock = True
+            try:
+                dock.setVisible(self.isOffered())
+            finally:
+                self._hidingDock = False
+
+    def _onDockVisibility(self, visible):
+        """The user hid the panel (its title bar's hide button): every sum is
+        unticked, so no image stays summed with its box out of reach. A dock
+        merely out of view -- a minimized window, a tab behind another -- is
+        not hidden and keeps its sums."""
+        dock = self._dock()
+        if visible or self._hidingDock or dock is None or not dock.isHidden():
+            return
+        if self._summed:
+            self._summed = set()
+            for box in self._boxes.values():
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+            self.sigSumAxesChanged.emit(self.summedAxes())
+
+    def _toggled(self, label, on):
+        if on:
+            self._summed.add(label)
+        else:
+            self._summed.discard(label)
+        self.sigSumAxesChanged.emit(self.summedAxes())
+
+
 class NapariSumImageWidget(NapariBaseWidget):
     """ Napari widget for plotting the sum of individual frames in a stack. """
 

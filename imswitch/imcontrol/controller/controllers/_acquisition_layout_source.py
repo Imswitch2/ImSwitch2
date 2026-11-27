@@ -21,6 +21,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     TraversalRule,
     validate_acquisition_layout,
 )
+from imswitch.imcontrol.model.scan_program.bindings import frames_per_step
 
 
 @runtime_checkable
@@ -485,6 +486,111 @@ def _advanced_spans(
     return tuple(spans)
 
 
+#: ``scanInfoDict`` key with each image axis's visit order (plan M2; the
+#: scan-program adapter writes it, ``_visit_order`` in the detectors reads it).
+AXIS_VISIT_ORDER_KEY = "axis_visit_order"
+
+
+def _interleave_loops(loop: AcquisitionLoop, order: Sequence[int]) -> tuple[AcquisitionLoop, ...]:
+    """An interleaved axis as a frame stream: ``cycle`` outside ``plane``,
+    position = cycle + cycles * plane -- the SNOUTY order (plane immediately
+    inside cycle). A visit order of any other form is refused."""
+    order = [int(value) for value in order]
+    count = len(order)
+    if count != loop.count or 1 not in order:
+        raise ValueError(f"The visit order of {loop.id!r} does not cover its {loop.count} positions")
+    planes = order.index(1)
+    cycles = count // planes if planes else 0
+    expected = [cycle + cycles * plane for cycle in range(cycles) for plane in range(planes)]
+    if not planes or cycles * planes != count or order != expected:
+        raise ValueError(
+            f"The visit order of {loop.id!r} is not cycles x planes, so its frames cannot be "
+            "described yet"
+        )
+    step = loop.step
+    # cycle and plane are not spatial kinds: the layout gives them no
+    # direction (the stage's sign stays with the device).
+    return (
+        replace(loop, id="cycle", kind="cycle", count=cycles, storage_axis=None,
+                direction=None),
+        replace(
+            loop,
+            id="plane",
+            kind="plane",
+            count=planes,
+            step=None if step is None else step * cycles,
+            storage_axis=None,
+            direction=None,
+        ),
+    )
+
+
+def _with_visit_order(
+    layout: AcquisitionLayout,
+    physical: Sequence[AcquisitionLoop],
+    orders: Sequence[Any],
+) -> AcquisitionLayout:
+    """A frame stream's loops and traversal for a scan that visits an axis
+    out of order (plan M2). Spans are unchanged: an interleaved axis splits
+    into cycle x plane in the same chronological order, and a serpentine
+    keeps every count."""
+    by_axis = {physical[len(physical) - 1 - index].id: index for index in range(len(physical))}
+    orders = list(orders) + [None] * (len(physical) - len(orders))
+    interleaved = any(isinstance(order, Mapping) and "interleave" in order for order in orders)
+    loops: list[AcquisitionLoop] = []
+    group: dict[str, int] = {}  # loop id -> image axis it carries
+    for loop in layout.event_loops:
+        axis = by_axis.get(loop.id)
+        order = orders[axis] if axis is not None and axis < len(orders) else None
+        if isinstance(order, Mapping) and "interleave" in order:
+            for part in _interleave_loops(loop, order["interleave"]):
+                loops.append(part)
+                group[part.id] = axis
+            continue
+        if interleaved and axis is not None and loop.count == 1:
+            # A scan axis held at one position adds no coordinate. An
+            # interleaved stream is read as cycles x planes (SNOUTY), whose
+            # reader refuses loops it does not place; the held axis is not
+            # one of them.
+            continue
+        loops.append(loop)
+        if axis is not None:
+            group[loop.id] = axis
+    if len({loop.id for loop in loops}) != len(loops):
+        raise ValueError("Only one interleaved axis can be described per frame stream")
+
+    ids = [loop.id for loop in loops]
+    rules = []
+    for loop in loops:
+        axis = group.get(loop.id)
+        order = orders[axis] if axis is not None else None
+        if not (isinstance(order, Mapping) and "serpentine" in order):
+            rules.append(TraversalRule(loop.id, "forward"))
+            continue
+        position = ids.index(loop.id)
+        # x runs back on every other line played in a slice (the y loops and
+        # the line steps), y on every other slice (the z loops).
+        outer_axes = {1} if axis == 0 else {2}
+        first = position
+        while first > 0 and (
+            group.get(ids[first - 1]) in outer_axes
+            or (axis == 0 and loops[first - 1].kind == "condition")
+        ):
+            first -= 1
+        parity = tuple(ids[first:position])
+        if not parity:
+            raise ValueError(f"The serpentine {loop.id!r} has no loop outside it to alternate with")
+        rules.append(TraversalRule(loop.id, "serpentine", parity))
+    return _validated(replace(layout, event_loops=tuple(loops), traversal=tuple(rules)))
+
+
+def _enabled_conditions(mask, condition_count):
+    """The line steps a detector takes part in, from a per-step mask or a
+    per-expanded-line one (line ``i`` is step ``i % condition_count``)."""
+    return sorted({index % condition_count
+                   for index, enabled in enumerate(mask) if bool(enabled)})
+
+
 def build_advanced_scan_layouts(
     scan_info: Mapping[str, Any],
     detector_names: Sequence[str],
@@ -567,8 +673,14 @@ def build_advanced_scan_layouts(
             raise ValueError(
                 f"Advanced pulse counts for {detector!r} must match n_linesteps"
             )
-        repeat_count = max(counts, default=0)
-        if repeat_count <= 0 or not any(bool(value) for value in mask):
+        # Sized by the line steps the detector takes part in: a step it is
+        # off in records nothing, so its pulses size nothing (Lenny,
+        # 2026-10-09; the program's view, plan §7.1).
+        repeat_count = max(
+            (counts[c] for c in _enabled_conditions(mask, condition_count)),
+            default=0,
+        )
+        if repeat_count <= 0:
             raise ValueError(
                 f"Advanced detector {detector!r} has no recorded pulse in this scan"
             )
@@ -597,6 +709,160 @@ def build_advanced_scan_layouts(
                 scan_source=scan_source,
                 provenance="recorded",
             )
+        )
+    orders = scan_info.get(AXIS_VISIT_ORDER_KEY)
+    if orders and any(order is not None for order in orders):
+        # Point detectors place every visit at its image index while they
+        # assemble (``_visit_order``); a frame stream records in visit order
+        # and the layout says how.
+        for detector, layout in layouts.items():
+            if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+                layouts[detector] = _with_visit_order(layout, physical, orders)
+    return layouts
+
+
+def _program_loop(program, loop) -> AcquisitionLoop:
+    """One program loop as a layout loop: its step and device when exactly
+    one drive weights it (a composite axis has neither)."""
+    if loop.kind == "condition":
+        return replace(_condition_loop(loop.count), id=loop.id)
+    weighted = [(d.device, float(d.weights_um[loop.id])) for d in program.drives
+                if loop.id in d.weights_um]
+    device = step = direction = None
+    if len(weighted) == 1:
+        device, weight = weighted[0]
+        step = abs(weight)
+        if loop.kind.startswith("scan_"):   # a direction is spatial
+            direction = 1 if weight >= 0 else -1
+    return AcquisitionLoop(
+        loop.id, loop.kind, int(loop.count), step=step,
+        unit="um" if step is not None else None, direction=direction, device=device,
+    )
+
+
+def build_program_layouts(
+    program: Any,
+    schedule: Any,
+    detector_names: Sequence[str],
+    *,
+    scan_source: str,
+    scan_driven_detectors: Sequence[str] = (),
+    raster_refusal: str = "",
+    modality: str | None = None,
+) -> dict[str, AcquisitionLayout]:
+    """Layouts for an Expert program (plan §2.5, M3), from the program's
+    loops, its detector bindings and its realized schedule (``schedule``: the
+    run's, or the leader's and each follower's).
+
+    A frame stream (a camera) has the program's loops, outermost first, and
+    a ``repeat`` loop when it takes several frames per step; when it takes
+    frames in only some steps, the recorded spans say which. Its frames per
+    step are its binding's, checked against its line before the run; without
+    a binding, its line's (``scan_program.bindings``). A serpentine
+    loop is a serpentine traversal. A point detector stores an assembled
+    image, which it can only build from a regular raster: ``raster_refusal``
+    says why this program is not one.
+    """
+    tables = [d.table_loop for d in program.drives if d.table_loop is not None]
+    loops = tuple(_program_loop(program, loop) for loop in program.loops)
+    traversal = tuple(
+        TraversalRule(loop.id, loop.traversal, tuple(loop.parity_loops))
+        if loop.traversal == "serpentine" else TraversalRule(loop.id, loop.traversal)
+        for loop in program.loops
+    )
+    scan_driven = set(scan_driven_detectors)
+    layouts = {}
+    for raw_detector in detector_names:
+        detector = str(raw_detector)
+        if detector in scan_driven:
+            if raster_refusal:
+                raise ValueError(f"{detector} cannot assemble this scan: {raster_refusal}")
+            physical = [loop for loop in loops if loop.kind != "condition"]
+            kinds = [loop.kind for loop in physical]
+            if len(set(kinds)) != len(kinds):
+                raise ValueError(
+                    f"{detector} stores one image axis per loop kind; this scan repeats "
+                    f"{sorted(k for k in kinds if kinds.count(k) > 1)}"
+                )
+            storage_axes = ["frame"]
+            assembled = list(loops)
+            if program.phase_loop is not None:
+                assembled = [replace(loop, storage_axis="condition")
+                             if loop.kind == "condition" else loop for loop in assembled]
+                storage_axes.append("condition")
+            storage_axes.extend(kinds)
+            layouts[detector] = _assembled_layout(
+                detector=detector, loops=assembled, storage_axes=storage_axes,
+                scan_source=scan_source, modality=modality,
+            )
+            continue
+        if tables:
+            raise ValueError(
+                f"{detector}: the loop(s) {', '.join(tables)} visit their positions from a "
+                "table, which a frame stream cannot describe; write the order as loops "
+                "(cycle and plane) instead"
+            )
+        counts = frames_per_step(program, schedule, detector)
+        repeat = max(counts, default=0)
+        if repeat <= 0:
+            raise ValueError(f"{detector} takes no frame in this scan")
+        event_loops = loops + ((AcquisitionLoop("repeat", "repeat", repeat),)
+                               if repeat > 1 else ())
+        rules = traversal + ((TraversalRule("repeat", "forward"),) if repeat > 1 else ())
+        spans = None
+        if any(count != repeat for count in counts):
+            spans = []
+            for index, count in enumerate(counts):
+                if count:
+                    spans.append(RecordedEventSpan(start=index * repeat, count=count))
+            spans = tuple(spans)
+        layouts[detector] = _validated(
+            AcquisitionLayout(
+                schema=ACQUISITION_LAYOUT_SCHEMA,
+                payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+                detector=detector,
+                storage_axes=("frame", "detector_y", "detector_x"),
+                event_loops=event_loops,
+                traversal=rules,
+                recorded_event_spans=spans,
+                modality=modality,
+                scan_source=scan_source,
+                provenance="recorded",
+            )
+        )
+    return layouts
+
+
+def build_trajectory_layouts(
+    grid: Any,
+    labels: Sequence[str],
+    detector_names: Sequence[str],
+    *,
+    scan_source: str,
+    scan_driven_detectors: Sequence[str] = (),
+) -> dict[str, AcquisitionLayout]:
+    """Layouts for a trajectory (plan §6, M4): a point detector stores the
+    grid its windows were binned onto, as one assembled image; a camera takes
+    no frames on a trajectory and is refused."""
+    loops = []
+    for index in reversed(range(len(grid.shape))):     # outermost (rows) first
+        kind = _kind(labels[index] if index < len(labels) else None, index)
+        loops.append(AcquisitionLoop(
+            kind, kind, int(grid.shape[index]), step=float(grid.pixel_um), unit="um",
+            device=grid.devices[index]))
+    scan_driven = set(scan_driven_detectors)
+    layouts = {}
+    for raw_detector in detector_names:
+        detector = str(raw_detector)
+        if detector not in scan_driven:
+            raise ValueError(
+                f"{detector} takes no frames on a trajectory: point detectors measure it, "
+                "window by window"
+            )
+        layouts[detector] = _assembled_layout(
+            detector=detector, loops=loops,
+            storage_axes=["frame", *(loop.kind for loop in loops)],
+            scan_source=scan_source,
         )
     return layouts
 

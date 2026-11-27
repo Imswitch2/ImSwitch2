@@ -27,6 +27,11 @@ class LiveDisplayThrottle:
         self._clock = clock
         self._last = None
 
+    @property
+    def interval_s(self) -> float:
+        """The least time between two redraws, in seconds."""
+        return self._min_interval_s
+
     def due(self) -> bool:
         """Return True if enough time has elapsed to emit another redraw.
 

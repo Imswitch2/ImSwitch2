@@ -114,7 +114,10 @@ PANELS: Dict[str, PanelSpec] = {spec.key: spec for spec in (
     _spec('AlignmentLine', 'Alignment Tool', 'Analysis', _L, requiresPanels=('Image',)),
     _spec('ULenses', 'uLenses Tool', 'Analysis', _L, requiresPanels=('Image',)),
     _spec('FFT', 'FFT Tool', 'Analysis', _L),
-    _spec('FLIMHist', 'FLIM Lifetime Histogram', 'Analysis', _L),
+    # Lifetime 2.0: the FLIM histogram became the Lifetime widget (a
+    # widgetLayout naming FLIMHist builds it). It is built on the setup's one
+    # Time Tagger card and the scan coordinator at startup.
+    _spec('Lifetime', 'Lifetime (FLIM / STED)', 'Analysis', _S, _HARDWARE),
     _spec('BeadRec', 'Bead Rec', 'Analysis', _S, _UNCHECKED),
     _spec('BFTimelapse', 'BFTimelapse', 'Analysis', _S, _HARDWARE),
     # -- Advanced -------------------------------------------------------------

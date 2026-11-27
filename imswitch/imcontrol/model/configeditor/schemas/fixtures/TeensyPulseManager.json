@@ -1,7 +1,15 @@
 {
-  "category": "pulsegen",
+  "category": "pulseGenerators",
   "device": {
     "managerName": "TeensyPulseManager",
-    "managerProperties": {}
+    "managerProperties": {
+      "baud": 1,
+      "mockMaxSteps": 1,
+      "mockMinPulseUs": 1,
+      "mockNChannels": 1,
+      "pinMap": {},
+      "port": "example",
+      "useMockOnFailure": true
+    }
   }
 }

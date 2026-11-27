@@ -59,6 +59,7 @@ class ScanWidgetMoNaLISA(SuperScanWidget):
         )
         self.grid.addWidget(self.repeatBox, currentRow, 5)
         self.grid.addWidget(self.scanButton, currentRow, 6)
+        self.grid.addWidget(self.stopButton, currentRow, 7)
         currentRow += 1
 
         # Add space item to make the grid look nicer

@@ -3,7 +3,8 @@
   "device": {
     "managerName": "PulseGeneratorLaserManager",
     "managerProperties": {
-      "calibCsvPath": "example"
+      "calibCsvPath": "example",
+      "pulseGenerator": "example"
     }
   }
 }

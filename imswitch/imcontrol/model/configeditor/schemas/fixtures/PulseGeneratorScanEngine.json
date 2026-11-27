@@ -1,0 +1,10 @@
+{
+  "category": "scanEngines",
+  "device": {
+    "managerName": "PulseGeneratorScanEngine",
+    "managerProperties": {
+      "channels": [],
+      "pulseGenerator": "example"
+    }
+  }
+}

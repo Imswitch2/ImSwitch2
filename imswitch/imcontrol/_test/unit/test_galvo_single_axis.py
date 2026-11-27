@@ -89,15 +89,21 @@ def test_piezo_d1_with_galvo_d2_generates():
     assert len(plateau_values) > 50  # 50 steps + positioning ramp samples
 
 
-def test_zero_sample_period_raises_actionable_error():
-    """A fast-axis period shorter than one sample step must fail with an
-    explanation, not an opaque numpy error."""
+def test_a_dwell_below_the_sample_step_is_one_sample_not_a_crash():
+    """A dwell shorter than one sample step used to evaluate a fast-axis
+    period of zero samples (an actionable ValueError). Since the dwell is
+    realized as a whole number of samples first (plan scan-timing, S0), it
+    is one sample -- said in the contract beside the request -- and the
+    line is as many samples as it has pixels."""
     params = _params(["GalvoX", "GalvoY", "PiezoZ"],
                      [0.7, 0.7, 1.0], [0.1, 0.1, 1.0])
     setup = _setup_sted_like()
-    setup.scan.sampleRate = 10  # 100 ms sample step >> one line period
-    with pytest.raises(ValueError, match="zero samples"):
-        _run(params, setup)
+    setup.scan.sampleRate = 10  # 100 ms sample step >> the 20 µs dwell
+    _sig, _positions, info = _run(params, setup)
+    assert info["samples_per_pixel"] == 1
+    assert info["dwell_time"] == pytest.approx(0.1)
+    assert info["dwell_requested_s"] == pytest.approx(params["sequence_time"])
+    assert info["scan_samples"][1] == info["img_dims"][0]
 
 
 # --- Phase B: per-device smoothScan -> stepped fast axis -------------------
