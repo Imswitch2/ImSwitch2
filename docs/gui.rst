@@ -982,6 +982,16 @@ configured* and offers **Configure…**; the panel can also be added to a
 running session with **View → Add panel…** (see :ref:`adding-panels`).
 
 
+Timelapse widget
+----------------
+
+The Timelapse widget repeats camera frames, a scan or a whole tiling N times
+with a delay between the repetitions, switching the chosen lasers on only
+while a timepoint is acquired.  Camera and scan timelapses are saved by the
+Recording panel in its ordinary timelapse format; a timelapse of tilings is
+one tiling dataset folder per timepoint.  See :doc:`timelapse`.
+
+
 TriggerScope panels
 -------------------
 

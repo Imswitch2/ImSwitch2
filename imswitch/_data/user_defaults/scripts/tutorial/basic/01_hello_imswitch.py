@@ -27,7 +27,8 @@ Next: 02_snap_an_image.py
 #   api.imcontrol   the microscope: cameras, stages, lasers, recording, scans
 #   mainWindow      the ImSwitch window, e.g. mainWindow.setCurrentModule(...)
 #   getLogger(), sleep(), waitUntil(), callAndWaitForSignal(),
-#   getWaitForSignal(), runScanAndWait(), importScript(), getScriptDirPath()
+#   getWaitForSignal(), runScanAndWait(), importScript(), getScriptDirPath(),
+#   scriptInput()
 #
 # A code editor outside ImSwitch will mark them as undefined; inside
 # ImSwitch they exist. Everything else -- numpy, h5py, your own code -- is

@@ -5,7 +5,7 @@ Tiling acquisitions
 Tiling covers an area larger than one field of view by driving the stage
 through a square spiral, acquiring one tile at each stop, and stitching them
 into a single overview as the run proceeds. The overview is live: it can be
-clicked to drive the stage, and it is what cell targeting operates on.
+clicked to drive the stage or to mark a target to come back to.
 
 The spiral starts at the current position and grows outward, so the run can be
 stopped at any point and still leaves a filled, centred mosaic rather than a
@@ -97,31 +97,81 @@ Stitching
     tile win. ``Intensity correction`` matches each tile's brightness to its
     neighbours where they overlap.
 
+    What it corrects is what changes from tile to tile: a lamp that flickered,
+    a frame taken before the light had settled, illumination that faded during
+    the run. What the detector does is left out of the comparison. Vignetting
+    is fixed to the detector, so wherever two tiles overlap, one sees the
+    sample through the bright side of the field and the other through the dim
+    side; matched as if that were sample, every tile came out a little darker
+    than the last, and the mosaic ran from bright to dark across its width.
+    The correction divides out the illumination profile estimated from the
+    tiles themselves (as ``Correct vignetting`` does offline, from four tiles
+    on), then takes out whatever every overlap of the same direction still
+    agrees on. A real change belongs to one tile, and so to only a few of its
+    direction's overlaps, and is still corrected.
+
+    Two limits follow from this. A brightness trend that runs evenly across
+    the whole mosaic looks exactly like vignetting from the overlaps, so it is
+    left as captured, as with the correction off; strong tile-to-tile flicker
+    can leave a gentle slope of a few percent for the same reason. And with
+    only one overlap in a direction there is nothing to compare against, so
+    two tiles alone are left as they are. Gains are solved again at 4 and 9
+    tiles, each time the count doubles after that, and once more when the run
+    ends.
+
+    Each tile keeps its own vignetting in the live overview; ``Correct
+    vignetting`` in the offline reconstructor removes it.
+
+Contrast
+    The levels and colour map sit beside the overview. ``Auto contrast``
+    (beside the run buttons, on by default) fits the levels to every update
+    with ImageJ's *Auto* rule, so a few hot pixels saturate instead of setting
+    the range and the empty canvas around the first tiles is ignored. Drag the
+    levels to set your own: ``Auto contrast`` turns off and they hold while
+    tiles arrive -- also across the timepoints of a tiling timelapse -- until
+    it is ticked again. Right-click the colour bar for other colour maps.
+    Contrast is display only; the saved tiles and mosaic are unchanged.
+
 Offline, the **Tiling mosaic** reconstructor additionally offers ``Correct
 vignetting``, which is described under `Correcting uneven illumination`_.
 
 
-Navigating and detecting cells
+Navigating and marking targets
 ==============================
 
-The stitched overview maps image pixels back to sample positions. Enable
-``Navigate on click`` and click the overview to move the XY positioner there.
-Clicks are ignored while tiling or automated cell iteration owns the stage.
+The stitched overview maps image pixels back to sample positions. The
+``Click`` chooser next to the run buttons decides what a click on it does:
 
-Cell detection deliberately separates *finding targets* from *moving hardware*:
+* **moves the stage** drives the XY positioner to the clicked spot;
+* **adds a target** remembers the clicked spot in the **Targets** list under
+  the overview, without moving anything.
 
-* ``Tune segmentation…`` adjusts the segmentation parameters used on the
-  stitched overview.
-* ``Detect cells`` segments the overview and overlays target markers. It does
-  **not** move the stage.
-* Manual click navigation moves to one location chosen by the operator.
-* Automated movement through every detected target is available only through
-  the explicit :meth:`runCellTargeting` controller API described below. It
-  requires either a per-cell callback or ``move_only=True``.
+Clicks are ignored while a tiling run owns the stage.
 
-Cell detection becomes available only after a complete tiling run has restored
-the stage origin successfully. It remains disabled for a stopped or failed run,
-even though partial tiles may still have been saved.
+Targets
+-------
+
+A target is a stage position, not a pixel: the list survives a new run, a
+stopped run and a change of detector, and its markers are drawn again on
+whatever overview is current. A target that lies outside the overview is
+listed but not drawn.
+
+Each row shows the target's id, its stage position in µm, and where it came
+from (``manual`` for a click, ``segmentation``, ``imported``). Untick ``On`` to
+keep a target in the list but skip it. Select a row to ring its marker on the
+overview; ``Go to`` drives the stage there, ``Remove`` and ``Clear`` edit the
+list, and ``Save…`` / ``Load…`` write and read it as JSON. Scripts work with
+the same list through the controller API below, and anything that finds
+positions — the Segmentation processor in ImProcess, a script of your own —
+feeds it with ``setTargets`` or ``addTarget`` rather than through a button
+here.
+
+Detecting cells is no longer a tiling-widget action. Segmenting a large
+mosaic on the GUI thread hung the window, and its result was an overlay that
+nothing in the GUI could act on. Segment the saved run in ImProcess, where
+the Segmentation processor runs on a worker and can be cancelled, or in a
+script with ``detect_cell_targets`` and ``TargetList.from_segmentation``
+(see :doc:`scripting-wfs-workflows`), and hand the positions to the list.
 
 
 How alignment works
@@ -395,7 +445,7 @@ The Tiling controller exports these methods through ImSwitch2's generated API:
 
 ``startTiling()`` / ``stopTiling()``
     Start with the values currently shown in the widget, or request cancellation
-    of the active tiling/cell-targeting worker.
+    of the active tiling run.
 
 ``setTileLabel(label)``
     Change the widget's status label.
@@ -408,15 +458,24 @@ The Tiling controller exports these methods through ImSwitch2's generated API:
     Return the last alignment report as text, or an empty string when no report
     exists.
 
-``detectCellTargets()``
-    Detect and display targets without moving the stage; returns their overview
-    row/column coordinates.
+``getTargets()``
+    The target list as dicts: ``id``, ``stage_xy`` (x, y in µm), ``enabled``,
+    ``source``, ``row_col``, ``z_um``, ``props``. For a target workflow, build a
+    :class:`~imswitch.imcontrol.model.workflows.target.TargetList` with
+    ``TargetList([Target.from_dict(t) for t in api.imcontrol.getTargets()])``.
 
-``runCellTargeting(feature_callback=None, move_only=False)``
-    Detect targets and, when a callback is supplied or ``move_only`` is true,
-    iterate the stage through them on a worker thread. With neither argument it
-    remains passive, like ``detectCellTargets()``. The callback receives
-    ``(index, properties_for_cell, stage_xy)`` after each move.
+``setTargets(targets)`` / ``addTarget(x_um, y_um, enabled=True, source='imported')``
+    Replace the list (each entry needs ``stage_xy``; ids are assigned afresh)
+    or append one target and get its id back.
+
+``removeTarget(targetId)`` / ``setTargetEnabled(targetId, enabled)`` / ``clearTargets()``
+    Edit the list; the widget follows.
+
+``goToTarget(targetId)``
+    Drive the XY stage to a target. Refused while a tiling run owns the stage.
+
+``saveTargets(path)`` / ``loadTargets(path)``
+    The same JSON file the widget's ``Save…`` and ``Load…`` use.
 
 
 Tiling troubleshooting

@@ -3360,7 +3360,9 @@ def _load_widget_registry() -> dict:
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
+        "Timelapse": "Advanced",
         "Watcher": "Advanced",
+        "ScriptRunner": "Advanced",
     }
 
     # ── Source 1: hardcoded baseline (always present) ──
@@ -3403,7 +3405,9 @@ def _load_widget_registry() -> dict:
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),
             ("Tiling",     "Spiral tiling scan"),
+            ("Timelapse",  "Timelapse of camera frames, scans or tilings"),
             ("Watcher",    "File watcher"),
+            ("ScriptRunner", "Run a script with inputs"),
         ],
     }
 

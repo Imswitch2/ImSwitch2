@@ -88,6 +88,19 @@ SHADING_TRUSTWORTHY_TILES = 9
 #: A profile is a gentle envelope. Anything outside this is a failed estimate,
 #: and dividing by it would do more damage than the shading it corrects.
 SHADING_CLIP = (0.2, 5.0)
+#: Ways the shading estimate may treat the tile border (see
+#: :func:`estimate_shading_profile`).
+SHADING_EDGES_NEAREST = 'nearest'
+SHADING_EDGES_LINEAR = 'linear'
+#: Samples per smoothing sigma when the estimate is made on a block-averaged
+#: copy of the mean tile rather than at full resolution. Derived, not tuned:
+#: averaging blocks of ``b`` pixels is a box filter that adds ``b**2 / 12`` to
+#: the Gaussian's variance, so at ``b = sigma / 4`` the smoothing widens by
+#: ``sqrt(1 + 1/192) - 1``, about 0.3 %; and linear interpolation back to full
+#: size errs by ``b**2 / 8`` times the profile's curvature, which a Gaussian of
+#: width sigma bounds at ``1/128`` of its amplitude. Both are well below what
+#: the estimate is used to tell apart.
+SHADING_SAMPLES_PER_SIGMA = 4
 
 #: A link is dropped as an outlier when its residual exceeds the median
 #: residual by this many robust standard deviations.
@@ -1870,6 +1883,8 @@ def estimate_shading_profile(
     planes: Iterable[np.ndarray],
     *,
     smooth_fraction: float = SHADING_SMOOTH_FRACTION,
+    edges: str = SHADING_EDGES_NEAREST,
+    samples_per_sigma: Optional[float] = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Optional[np.ndarray]:
     """Estimate the illumination profile every tile shares, or None.
@@ -1891,8 +1906,23 @@ def estimate_shading_profile(
     trusted: too few tiles for the sample to average out, tiles that are not
     all the same shape, or a result outside :data:`SHADING_CLIP`, which means
     the specimen dominated rather than cancelled.
+
+    ``edges`` says what the smoothing assumes beyond the tile border.
+    :data:`SHADING_EDGES_NEAREST` holds the border value, which flattens a
+    falloff over the last sigma or so -- 6 to 13 % at the edge for a one-sided
+    ramp, measured. :data:`SHADING_EDGES_LINEAR` fits the profile locally as a
+    plane instead (a Gaussian-weighted local linear fit), which follows the
+    falloff to the border: about four times closer there on textured tiles,
+    and identical to the plain smoothing away from it. Matching tiles where
+    they overlap -- that is, at their borders -- needs the second.
+
+    ``samples_per_sigma`` estimates on a block-averaged copy of the mean tile
+    with that many samples per sigma (see :data:`SHADING_SAMPLES_PER_SIGMA`)
+    and interpolates back. None smooths at full resolution, which costs
+    seconds per call on a 2048 px camera.
     """
-    from scipy.ndimage import gaussian_filter
+    if edges not in (SHADING_EDGES_NEAREST, SHADING_EDGES_LINEAR):
+        raise ValueError(f'unknown shading edge mode {edges!r}')
 
     report = _reporter(progress)
     total: Optional[np.ndarray] = None
@@ -1935,11 +1965,9 @@ def estimate_shading_profile(
 
     profile = (total / count).astype(np.float32)
     sigma = max(4.0, min(shape) * float(smooth_fraction))
-    # ``nearest`` matters more than the sigma. The default zero-padding would
-    # pull the estimate down at the borders, i.e. invent vignetting exactly
-    # where real vignetting lives, and the correction would then brighten the
-    # edges whether or not anything was wrong with them.
-    profile = gaussian_filter(profile, sigma, mode='nearest')
+    profile = _smooth_shading(
+        profile, sigma, edges=edges, samples_per_sigma=samples_per_sigma,
+    )
 
     median = float(np.median(profile))
     if not np.isfinite(median) or median <= 0.0:
@@ -1966,6 +1994,108 @@ def estimate_shading_profile(
             'be baked into the correction.'
         )
     return profile
+
+
+def _smooth_shading(
+    plane: np.ndarray,
+    sigma: float,
+    *,
+    edges: str,
+    samples_per_sigma: Optional[float],
+) -> np.ndarray:
+    """Smooth a mean tile into an illumination envelope of the same shape."""
+    from scipy.ndimage import gaussian_filter
+
+    block = 1
+    if samples_per_sigma:
+        block = max(1, int(sigma // float(samples_per_sigma)))
+        # Interpolating back needs two samples a side to draw a line through.
+        if min(plane.shape[0], plane.shape[1]) // block < 2:
+            block = 1
+    small = plane if block == 1 else _block_mean(plane, block)
+    small_sigma = sigma / block
+
+    if edges == SHADING_EDGES_LINEAR:
+        smooth = _local_linear_smooth(small, small_sigma)
+    else:
+        # ``nearest`` matters more than the sigma. The default zero-padding
+        # would pull the estimate down at the borders, i.e. invent vignetting
+        # exactly where real vignetting lives, and the correction would then
+        # brighten the edges whether or not anything was wrong with them.
+        smooth = gaussian_filter(small, small_sigma, mode='nearest')
+
+    if block > 1:
+        extrapolate = edges == SHADING_EDGES_LINEAR
+        rows = _block_interpolation(plane.shape[0], smooth.shape[0], block, extrapolate)
+        cols = _block_interpolation(plane.shape[1], smooth.shape[1], block, extrapolate)
+        smooth = rows @ smooth @ cols.T
+    return np.asarray(smooth, dtype=np.float32)
+
+
+def _block_mean(plane: np.ndarray, block: int) -> np.ndarray:
+    """Means of whole ``block`` x ``block`` squares, from the top-left corner.
+
+    A remainder narrower than a block is left out; :func:`_block_interpolation`
+    reaches it from the samples beside it. Sample ``i`` is centred on pixel
+    ``i * block + (block - 1) / 2``.
+    """
+    rows, cols = plane.shape[0] // block, plane.shape[1] // block
+    whole = np.asarray(plane[:rows * block, :cols * block], dtype=np.float64)
+    return whole.reshape(rows, block, cols, block).mean(axis=(1, 3))
+
+
+def _block_interpolation(
+    n_out: int, n_in: int, block: int, extrapolate: bool,
+) -> np.ndarray:
+    """Matrix taking ``n_in`` block samples to ``n_out`` pixels, linearly.
+
+    Pixels beyond the outermost sample centres -- half a block at each border,
+    plus any remainder :func:`_block_mean` left out -- continue the line
+    through the last two samples when ``extrapolate``, and hold the last
+    sample otherwise.
+    """
+    position = (np.arange(n_out, dtype=np.float64) - (block - 1) / 2.0) / block
+    if not extrapolate:
+        position = np.clip(position, 0.0, n_in - 1)
+    left = np.clip(np.floor(position).astype(int), 0, n_in - 2)
+    weight = position - left
+    matrix = np.zeros((n_out, n_in), dtype=np.float64)
+    pixels = np.arange(n_out)
+    matrix[pixels, left] = 1.0 - weight
+    matrix[pixels, left + 1] = weight
+    return matrix
+
+
+def _local_linear_smooth(plane: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian-weighted local fit of a plane at every pixel, evaluated there.
+
+    Normalized convolution with the basis ``1, x, y``: weight only where the
+    tile has pixels, and solve the three-term least-squares fit at each
+    position. Away from the border the linear terms balance out and this is
+    the plain Gaussian smoothing; at the border the fit carries the local
+    slope out to the edge instead of holding the last value.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    values = np.asarray(plane, dtype=np.float64)
+    height, width = values.shape
+    # Coordinates in units of sigma, so the moments stay well conditioned.
+    y = np.repeat(((np.arange(height) - (height - 1) / 2.0) / sigma)[:, None], width, 1)
+    x = np.repeat(((np.arange(width) - (width - 1) / 2.0) / sigma)[None, :], height, 0)
+
+    def smooth(a):
+        return gaussian_filter(a, sigma, mode='constant', cval=0.0)
+
+    m1, mx, my = smooth(np.ones_like(values)), smooth(x), smooth(y)
+    mxx, mxy, myy = smooth(x * x), smooth(x * y), smooth(y * y)
+    moments = np.stack([
+        np.stack([m1, mx, my], axis=-1),
+        np.stack([mx, mxx, mxy], axis=-1),
+        np.stack([my, mxy, myy], axis=-1),
+    ], axis=-2)
+    weighted = np.stack([smooth(values), smooth(values * x), smooth(values * y)], axis=-1)
+    coefficients = np.linalg.solve(moments, weighted[..., None])[..., 0]
+    return coefficients[..., 0] + coefficients[..., 1] * x + coefficients[..., 2] * y
 
 
 def _apply_shading(data: np.ndarray, profile: Optional[np.ndarray]):

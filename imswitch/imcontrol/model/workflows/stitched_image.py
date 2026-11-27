@@ -30,7 +30,20 @@ class StitchedImage:
             tile_shape_px: Tile shape as ``(height, width)``.
             pixel_size_um: Detector pixel size as ``(y, x)`` or one scalar.
             blend_overlaps: Average overlapping pixels instead of overwriting.
-            intensity_correction: Match each new tile's overlap mean to existing canvas.
+            intensity_correction: Scale each tile so it matches its
+                already-placed neighbours where they overlap. The comparison
+                leaves out what the detector does: vignetting is fixed to the
+                detector, so a tile's bright edge always overlaps a
+                neighbour's dim one, and matching those as if they were sample
+                darkened every tile further than the last -- a mosaic bright on
+                one side and dark on the other (found on the rig, 2026-11-18).
+                The shared profile is divided out (:meth:`_estimate_shading`)
+                and whatever every overlap of one direction still agrees on is
+                taken out too (:meth:`_direction_bias`). What is corrected is
+                what changes from tile to tile; a brightness trend running
+                uniformly across the whole mosaic cannot be told from
+                vignetting and is left as captured. Call :meth:`finish` when a
+                run ends.
         """
         if not 0 <= overlap < 1:
             raise ValueError(f"overlap must be in [0, 1), got {overlap}")
@@ -72,6 +85,22 @@ class StitchedImage:
         # Storage for tiles: {(grid_x, grid_y): np.ndarray}
         self._tiles: Dict[Tuple[int, int], np.ndarray] = {}
 
+        # Intensity correction: each tile's gain, solved in insertion order
+        # against the tiles placed before it, and the shared illumination
+        # profile left out of that comparison (None until it can be estimated).
+        self._gains: Dict[Tuple[int, int], float] = {}
+        self._shading: np.ndarray | None = None
+        # Tile count at the last full solve (profile, every overlap, every
+        # gain); see _full_solve_due.
+        self._fullSolveAt: int = 0
+        # Every overlap measured so far, keyed by the pair in canonical order
+        # (see :meth:`_canonical_pair`): its grid direction and the summed
+        # intensity of each side over the overlap, profile divided out.
+        self._links: Dict[
+            Tuple[Tuple[int, int], Tuple[int, int]],
+            Tuple[Tuple[int, int], float, float],
+        ] = {}
+
         # Incremental canvas state. The canvas is accumulated as tiles arrive
         # instead of being rebuilt from every tile on each get_overview() call:
         # a live scan asks for the overview once per tile, and rebuilding made
@@ -97,6 +126,13 @@ class StitchedImage:
     def canvas_origin_px(self) -> Tuple[int, int]:
         """Virtual coordinate of canvas pixel (0, 0), as ``(row, col)``."""
         return (self._canvas_row0, self._canvas_col0)
+
+    @property
+    def canvas_shape_px(self) -> Tuple[int, int]:
+        """``(rows, cols)`` of what :meth:`get_overview` returns, without building it."""
+        if self._canvas_sum is None:
+            return (self.tile_size_px, self.tile_size_px)
+        return (int(self._canvas_sum.shape[0]), int(self._canvas_sum.shape[1]))
 
     def placement(self, grid_x: int, grid_y: int) -> Tuple[int, int] | None:
         """Where a placed tile actually sits, in virtual pixels."""
@@ -160,6 +196,9 @@ class StitchedImage:
                 changed = True
         if changed:
             self._overview_cache = None
+            if self.intensity_correction:
+                # Moved tiles overlap differently, so their gains change too.
+                self._recompute_gains()
             self._rebuild_canvas()
 
     def add_tile(
@@ -208,6 +247,19 @@ class StitchedImage:
         self._tiles[(grid_x, grid_y)] = normalized
         self._placements[(grid_x, grid_y)] = placement
         self._overview_cache = None
+
+        if self.intensity_correction:
+            if self._full_solve_due():
+                self._full_solve()
+                return
+            if replacing:
+                # Every gain depends on the tiles before it, so a replaced
+                # tile re-solves them all and redraws once.
+                self._recompute_gains()
+                self._rebuild_canvas()
+                return
+            earlier = [key for key in self._tiles if key != (grid_x, grid_y)]
+            self._gains[(grid_x, grid_y)] = self._gain_for((grid_x, grid_y), earlier)
 
         if replacing:
             # A tile's old contribution cannot be subtracted back out of the
@@ -311,7 +363,8 @@ class StitchedImage:
         weight_view = self._canvas_weight[row_start:row_start + tile_h, col_start:col_start + tile_w]
 
         if self.intensity_correction:
-            tile_view = self._match_overlap_intensity(tile_view, sum_view, weight_view)
+            gain = self._gains.get((grid_x, grid_y), 1.0)
+            tile_view = np.clip(tile_view * gain, 0, 1)
 
         if self.blend_overlaps:
             sum_view += tile_view
@@ -329,25 +382,207 @@ class StitchedImage:
         for (grid_x, grid_y), tile in self._tiles.items():
             self._paste_tile(tile, grid_x, grid_y)
 
-    def _match_overlap_intensity(
-        self,
-        tile: np.ndarray,
-        existing_sum: np.ndarray,
-        existing_weight: np.ndarray,
-    ) -> np.ndarray:
-        """Scale a tile to match the mean intensity in existing overlap."""
-        overlap_mask = existing_weight > 0
-        if not np.any(overlap_mask):
-            return tile
+    # ------------------------------------------------------------------
+    # Intensity correction
+    # ------------------------------------------------------------------
 
-        existing = existing_sum[overlap_mask] / existing_weight[overlap_mask]
-        incoming = tile[overlap_mask]
-        incoming_mean = float(np.mean(incoming))
-        if incoming_mean <= np.finfo(np.float32).eps:
-            return tile
+    def finish(self) -> bool:
+        """Solve every gain again against everything placed; True if redrawn.
 
-        scale = float(np.mean(existing)) / incoming_mean
-        return np.clip(tile * scale, 0, 1)
+        Between checkpoints (see :meth:`_full_solve_due`) a tile's gain is
+        solved once, on arrival, against the profile and the direction biases
+        known then. When a run ends everything is known, and solving again
+        is what keeps the finished mosaic level: measured with 5 % tile
+        flicker on a serpentine, 19 % left without it and 3 % with it. A
+        no-op when nothing arrived since the last full solve.
+        """
+        if not self.intensity_correction or not self._tiles:
+            return False
+        if self._fullSolveAt == len(self._tiles):
+            return False
+        self._full_solve()
+        return True
+
+    def _full_solve_due(self) -> bool:
+        """Whether this tile is a checkpoint for re-solving everything.
+
+        First at the two counts the offline estimator itself defines -- the
+        first at which a profile can be estimated at all, and the one from
+        which it is trustworthy -- then each time the count doubles. A full
+        solve redraws every tile, so doubling keeps the redraw work of a
+        whole run under twice that of drawing each tile once; and the
+        estimates' noise falls as one over the square root of the count, so
+        each doubling is where they improve by the same factor.
+        """
+        from imswitch.imcommon.algorithms.tile_mosaic import (
+            SHADING_MIN_TILES,
+            SHADING_TRUSTWORTHY_TILES,
+        )
+
+        count = len(self._tiles)
+        last = self._fullSolveAt
+        for threshold in (SHADING_MIN_TILES, SHADING_TRUSTWORTHY_TILES):
+            if last < threshold:
+                return count >= threshold
+        return count >= 2 * last
+
+    def _full_solve(self) -> None:
+        """Estimate the profile from every tile, re-solve every gain, redraw."""
+        self._fullSolveAt = len(self._tiles)
+        self._shading = self._estimate_shading()
+        self._recompute_gains()
+        self._rebuild_canvas()
+
+    def _estimate_shading(self) -> np.ndarray | None:
+        """The illumination profile every tile shares, or None.
+
+        The offline tiling reconstructor's estimate ("Correct vignetting"):
+        averaged in detector coordinates, the specimen cancels and the
+        illumination envelope remains. None when it cannot be trusted; the
+        comparison then uses the tiles as captured, as it always did.
+
+        Two choices differ from the offline default, both because of where
+        and when this runs. The border is fitted as a local plane rather than
+        held, since overlaps are exactly the tile borders and a held border
+        flattens the falloff there -- enough to leave a 15 % drift across five
+        tiles. And the smoothing runs on a block-averaged copy: at full
+        resolution it took 8.5 s per call on 2048 px tiles, in the tiling
+        worker, between two tiles.
+        """
+        from imswitch.imcommon.algorithms.tile_mosaic import (
+            SHADING_EDGES_LINEAR,
+            SHADING_SAMPLES_PER_SIGMA,
+            estimate_shading_profile,
+        )
+
+        try:
+            profile = estimate_shading_profile(
+                self._tiles.values(),
+                edges=SHADING_EDGES_LINEAR,
+                samples_per_sigma=SHADING_SAMPLES_PER_SIGMA,
+            )
+        except Exception:
+            return None
+        if profile is None or tuple(profile.shape) != tuple(self.tile_shape_px):
+            return None
+        return profile
+
+    def _recompute_gains(self) -> None:
+        """Measure every overlap again, then solve every gain in arrival order.
+
+        Measuring all of them first means each direction's bias (see
+        :meth:`_direction_bias`) is taken over the whole mosaic rather than
+        over whatever had arrived when a tile was placed.
+        """
+        self._gains = {}
+        self._links = {}
+        keys = list(self._tiles)
+        for index, key in enumerate(keys):
+            for other in keys[:index]:
+                self._link(other, key)
+        earlier = []
+        for key in keys:
+            self._gains[key] = self._gain_for(key, earlier)
+            earlier.append(key)
+
+    @staticmethod
+    def _canonical_pair(first, second):
+        """The pair ordered so its grid step points right, or down when vertical.
+
+        Returns ``((a, b), direction)`` with ``direction = b - a`` in grid
+        units. Every overlap in the same direction compares the same two
+        stretches of the detector, which is what makes them comparable.
+        """
+        step = (second[0] - first[0], second[1] - first[1])
+        if step[0] < 0 or (step[0] == 0 and step[1] < 0):
+            return (second, first), (-step[0], -step[1])
+        return (first, second), step
+
+    def _link(self, first, second):
+        """Measure (once) and remember the overlap between two placed tiles.
+
+        Returns ``((a, b), direction, sum_a, sum_b)`` in canonical order, or
+        None when they do not overlap or one side is empty. The sums are over
+        the shared pixels with the illumination profile divided out of both
+        sides when it is known: the two sides sit at different places on the
+        detector, so without that the shading itself reads as a brightness
+        difference.
+        """
+        pair, direction = self._canonical_pair(first, second)
+        cached = self._links.get(pair)
+        if cached is not None:
+            return (pair,) + cached
+        a, b = pair
+        tile_a, tile_b = self._tiles.get(a), self._tiles.get(b)
+        place_a, place_b = self._placements.get(a), self._placements.get(b)
+        if tile_a is None or tile_b is None or place_a is None or place_b is None:
+            return None
+        r0 = max(place_a[0], place_b[0])
+        r1 = min(place_a[0] + tile_a.shape[0], place_b[0] + tile_b.shape[0])
+        c0 = max(place_a[1], place_b[1])
+        c1 = min(place_a[1] + tile_a.shape[1], place_b[1] + tile_b.shape[1])
+        if r1 <= r0 or c1 <= c0:
+            return None
+        in_a = (slice(r0 - place_a[0], r1 - place_a[0]),
+                slice(c0 - place_a[1], c1 - place_a[1]))
+        in_b = (slice(r0 - place_b[0], r1 - place_b[0]),
+                slice(c0 - place_b[1], c1 - place_b[1]))
+        patch_a, patch_b = tile_a[in_a], tile_b[in_b]
+        if self._shading is not None:
+            patch_a = patch_a / self._shading[in_a]
+            patch_b = patch_b / self._shading[in_b]
+        sum_a, sum_b = float(patch_a.sum()), float(patch_b.sum())
+        floor = float(np.finfo(np.float32).eps)
+        if sum_a <= floor or sum_b <= floor:
+            return None
+        self._links[pair] = (direction, sum_a, sum_b)
+        return pair, direction, sum_a, sum_b
+
+    def _direction_bias(self, direction) -> float:
+        """What every overlap in one grid direction disagrees by, as a log ratio.
+
+        The median over all of them of ``log(sum_b / sum_a)``. Whatever the
+        profile estimate still gets wrong at the tile border is the same in
+        every tile, so it biases every overlap of that direction alike -- and
+        chained from tile to tile, a bias of a few percent per overlap became
+        a mosaic a third darker on one side (measured on blobby specimens).
+        A real brightness change belongs to one tile and so to a minority of
+        overlaps, which the median leaves out; it is still corrected. What
+        cannot be told apart from vignetting -- a brightness trend that runs
+        uniformly across the whole mosaic -- is left alone, as with the
+        correction off.
+        """
+        ratios = [
+            np.log(sum_b / sum_a)
+            for step, sum_a, sum_b in self._links.values()
+            if step == direction
+        ]
+        return float(np.median(ratios)) if ratios else 0.0
+
+    def _gain_for(self, key, earlier) -> float:
+        """The gain that makes ``key`` agree with ``earlier`` tiles where they overlap.
+
+        Pooled over every overlap with an earlier tile (each at its own
+        gain), each overlap's direction bias taken out. 1.0 when nothing
+        overlaps yet.
+        """
+        existing = 0.0
+        incoming = 0.0
+        for other in earlier:
+            link = self._link(other, key)
+            if link is None:
+                continue
+            (a, _), direction, sum_a, sum_b = link
+            bias = self._direction_bias(direction)
+            if a == other:
+                theirs, mine, correction = sum_a, sum_b, np.exp(bias)
+            else:
+                theirs, mine, correction = sum_b, sum_a, np.exp(-bias)
+            existing += theirs * self._gains.get(other, 1.0) * correction
+            incoming += mine
+        if incoming <= 0.0 or existing <= 0.0:
+            return 1.0
+        return existing / incoming
 
     def pixel_to_stage(
         self, row: int, col: int, origin_stage_xy: Tuple[float, float]

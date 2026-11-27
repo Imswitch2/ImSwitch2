@@ -29,4 +29,5 @@ hardware from a script is covered under :doc:`scripting`.
     gui
     advanced-scanning
     tiling
+    timelapse
     zstack-workflow

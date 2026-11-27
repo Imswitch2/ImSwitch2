@@ -119,6 +119,11 @@ PANELS: Dict[str, PanelSpec] = {spec.key: spec for spec in (
     _spec('BFTimelapse', 'BFTimelapse', 'Analysis', _S, _HARDWARE),
     # -- Advanced -------------------------------------------------------------
     _spec('Watcher', 'File Watcher', 'Advanced', _L),
+    # Repeats an acquisition from the panels that exist: loadable as it is
+    # (its timelapse section only holds defaults).
+    _spec('Timelapse', 'Timelapse', 'Advanced', _L),
+    # Runs a script file through the Scripting module: loadable as it is.
+    _spec('ScriptRunner', 'Script Runner', 'Advanced', _L),
     _spec('Tiling', 'Tiling', 'Advanced', _F,
           section='tiling', silentWithoutSection=True),
     _spec('SLMs', 'SLMs', 'Advanced', _S, _HARDWARE),

@@ -1,7 +1,10 @@
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.view.guitools.imagetools import bestLevels
 from imswitch.imcontrol.model.workflows.spiral import SERPENTINE, SPIRAL
 
 from imswitch.imcontrol.view import guitools
@@ -12,6 +15,23 @@ from .basewidgets import Widget
 MODE_FREE_RUNNING = 'free-running'
 MODE_TRIGGERED = 'triggered'
 
+#: Auto contrast reads a strided subsample of the overview, strided the way
+#: pyqtgraph's own histogram is (``ImageItem.getHistogram``'s default
+#: ``targetImageSize``): a mosaic of 2048 px tiles runs to hundreds of
+#: megapixels, and the levels are a statistic of the whole, not of each pixel.
+_AUTO_CONTRAST_SAMPLES_PER_SIDE = 200
+#: The range ``StitchedImage.get_overview`` returns values in, and so the
+#: levels when an overview gives nothing to fit (blank, or uniform).
+_OVERVIEW_RANGE = (0.0, 1.0)
+
+#: What a click on the overview does. The overview maps pixels back to stage
+#: positions, so a click can either go there or remember the place.
+CLICK_NONE = 'none'
+CLICK_NAVIGATE = 'navigate'
+CLICK_ADD_TARGET = 'add-target'
+
+_TARGET_FILE_FILTER = 'Target list (*.json);;All files (*)'
+
 
 class TilingWidget(Widget):
     """Widget for controlling spiral tiling scans."""
@@ -20,10 +40,16 @@ class TilingWidget(Widget):
     sigStopTiling = QtCore.Signal()
     sigParamsChanged = QtCore.Signal()
     sigClickOnOverview = QtCore.Signal(int, int)  # row, col in stitched canvas
-    sigTuneSegmentation = QtCore.Signal()
-    sigRunCellTargeting = QtCore.Signal()
     sigModeChanged = QtCore.Signal(str)
     sigDetectorChanged = QtCore.Signal()
+    # Target list actions. Each carries a target id, never a row index: the
+    # controller owns the list and the table is only a view of it.
+    sigGoToTarget = QtCore.Signal(int)
+    sigRemoveTarget = QtCore.Signal(int)
+    sigClearTargets = QtCore.Signal()
+    sigTargetEnabledChanged = QtCore.Signal(int, bool)
+    sigSaveTargets = QtCore.Signal(str)  # path
+    sigLoadTargets = QtCore.Signal(str)  # path
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -46,13 +72,11 @@ class TilingWidget(Widget):
         # The overview is the point of the widget, so it takes every pixel the
         # controls above it do not need, and all of the width.
         layout.addWidget(self._buildOverview(), 1)
-        layout.addLayout(self._buildTargetingRow())
+        layout.addWidget(self._buildTargetsGroup())
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
         self.stopButton.clicked.connect(self.sigStopTiling)
-        self.tuneSegmentationButton.clicked.connect(self.sigTuneSegmentation)
-        self.runCellTargetingButton.clicked.connect(self.sigRunCellTargeting)
         self.nTilesXSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.nTilesYSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.patternCombo.currentIndexChanged.connect(self.sigParamsChanged)
@@ -70,6 +94,19 @@ class TilingWidget(Widget):
         self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
         self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
         self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
+        # Display only: contrast changes nothing the run records.
+        self.autoContrastCheck.toggled.connect(self._onAutoContrastToggled)
+        self.overviewHist.sigLevelsChanged.connect(self._onOverviewLevelsChanged)
+
+        self.goToTargetButton.clicked.connect(self._onGoToTarget)
+        self.removeTargetButton.clicked.connect(self._onRemoveTarget)
+        self.clearTargetsButton.clicked.connect(self.sigClearTargets)
+        self.saveTargetsButton.clicked.connect(self._onSaveTargets)
+        self.loadTargetsButton.clicked.connect(self._onLoadTargets)
+        self.targetsTable.itemSelectionChanged.connect(
+            self._onTargetSelectionChanged
+        )
+        self.targetsTable.itemChanged.connect(self._onTargetItemChanged)
 
     # ------------------------------------------------------------------
     # Layout blocks
@@ -260,7 +297,9 @@ class TilingWidget(Widget):
         )
         self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
         self.intensityCorrectionCheck.setToolTip(
-            'Match each tile to its neighbours\' brightness where they overlap.'
+            'Match each tile\'s brightness to its neighbours\' where they overlap.\n'
+            'Corrects what changes from tile to tile (flicker, fading light);\n'
+            'the vignetting every tile shares is left out of the comparison.'
         )
         row.addWidget(self.blendOverlapsCheck)
         row.addWidget(self.intensityCorrectionCheck)
@@ -272,13 +311,32 @@ class TilingWidget(Widget):
         self.startButton = guitools.BetterPushButton('Start Tiling')
         self.stopButton = guitools.BetterPushButton('Stop')
         self.stopButton.setEnabled(False)
-        self.navigateToggle = QtWidgets.QCheckBox('Navigate on click')
-        self.navigateToggle.setToolTip(
-            'Click anywhere on the overview to drive the stage there.'
+        # One chooser rather than two checkboxes: a click cannot both drive
+        # the stage and mark a target, so the choices are exclusive.
+        self.clickModeCombo = QtWidgets.QComboBox()
+        self.clickModeCombo.addItem('does nothing', CLICK_NONE)
+        self.clickModeCombo.addItem('moves the stage', CLICK_NAVIGATE)
+        self.clickModeCombo.addItem('adds a target', CLICK_ADD_TARGET)
+        self.clickModeCombo.setToolTip(
+            'What a click on the overview does.\n'
+            'Moves the stage: drive the XY positioner to the clicked spot.\n'
+            'Adds a target: remember the clicked spot in the target list\n'
+            'below, without moving anything.'
+        )
+        self.autoContrastCheck = QtWidgets.QCheckBox('Auto contrast')
+        self.autoContrastCheck.setChecked(True)
+        self.autoContrastCheck.setToolTip(
+            "Fit the overview's contrast to each update (ImageJ's Auto).\n"
+            'Drag the levels beside the overview to set your own: they then\n'
+            'hold while tiles arrive, until this is ticked again.\n'
+            'Right-click the colour bar for other colour maps.\n'
+            'Display only: saved tiles and the mosaic are not changed.'
         )
         row.addWidget(self.startButton, 2)
         row.addWidget(self.stopButton, 1)
-        row.addWidget(self.navigateToggle)
+        row.addWidget(QtWidgets.QLabel('Click:'))
+        row.addWidget(self.clickModeCombo)
+        row.addWidget(self.autoContrastCheck)
         return row
 
     def _buildStatusBlock(self) -> QtWidgets.QWidget:
@@ -312,33 +370,93 @@ class TilingWidget(Widget):
         self._overviewVB.invertY(True)
         self._overviewVB.addItem(self.overviewItem)
 
-        # Cell marker overlays
-        self.cellMarkers = pg.ScatterPlotItem(
-            symbol='+', size=14, pen=pg.mkPen('y', width=2), brush=None
-        )
-        self.currentCellMarker = pg.ScatterPlotItem(
+        # Levels and colour map beside the overview. Every repaint used to
+        # fit the levels to the image's own minimum and maximum, so there was
+        # no way to set a contrast and keep it while tiles arrived.
+        self._overviewImage = None
+        self._settingOverviewLevels = False
+        self.overviewHist = pg.HistogramLUTItem(image=self.overviewItem)
+        self.overviewView.addItem(self.overviewHist)
+
+        # Target markers: one cross per target that lies on the overview, and
+        # a ring around the one selected in the table.
+        self._targetPenOn = pg.mkPen('y', width=2)
+        self._targetPenOff = pg.mkPen((160, 160, 160), width=1)
+        self.targetMarkers = pg.ScatterPlotItem(symbol='+', size=14, brush=None)
+        self.selectedTargetMarker = pg.ScatterPlotItem(
             symbol='o', size=24, pen=pg.mkPen('r', width=3), brush=None
         )
-        self._overviewVB.addItem(self.cellMarkers)
-        self._overviewVB.addItem(self.currentCellMarker)
-        self._cellPositions = None  # Store positions for highlightCurrentCell
+        self._overviewVB.addItem(self.targetMarkers)
+        self._overviewVB.addItem(self.selectedTargetMarker)
+        self._targetMarkers: Dict[int, Tuple[float, float]] = {}
+        self._targetEnabled: Dict[int, bool] = {}
         return self.overviewView
 
-    def _buildTargetingRow(self) -> QtWidgets.QHBoxLayout:
-        """Acts on the finished overview, so it sits under it."""
-        row = QtWidgets.QHBoxLayout()
-        self.tuneSegmentationButton = guitools.BetterPushButton(
-            'Tune segmentation...'
+    def _buildTargetsGroup(self) -> QtWidgets.QGroupBox:
+        """Stage positions to come back to, listed under the overview.
+
+        The list is the controller's; the table shows it and sends back what
+        the operator asked for. It is sized to stay a strip under the
+        overview rather than compete with it for height.
+        """
+        outer = QtWidgets.QVBoxLayout()
+
+        self.targetsTable = QtWidgets.QTableWidget(0, 5)
+        self.targetsTable.setHorizontalHeaderLabels(
+            ['On', '#', 'X (µm)', 'Y (µm)', 'Source']
         )
-        self.tuneSegmentationButton.setEnabled(False)
-        self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
-        self.runCellTargetingButton.setEnabled(False)
-        row.addWidget(self.tuneSegmentationButton)
-        row.addWidget(self.runCellTargetingButton)
-        return row
+        self.targetsTable.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows
+        )
+        self.targetsTable.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection
+        )
+        self.targetsTable.setEditTriggers(
+            QtWidgets.QAbstractItemView.NoEditTriggers
+        )
+        self.targetsTable.verticalHeader().setVisible(False)
+        header = self.targetsTable.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.targetsTable.setMaximumHeight(160)
+        self.targetsTable.setToolTip(
+            'Stage positions to return to. Tick a target off to keep it in\n'
+            'the list but skip it; select one to see where it is on the\n'
+            'overview. Scripts read the same list through\n'
+            'api.imcontrol.getTargets().'
+        )
+        outer.addWidget(self.targetsTable)
+
+        buttons = QtWidgets.QHBoxLayout()
+        self.goToTargetButton = guitools.BetterPushButton('Go to')
+        self.goToTargetButton.setToolTip(
+            'Drive the stage to the selected target.'
+        )
+        self.removeTargetButton = guitools.BetterPushButton('Remove')
+        self.clearTargetsButton = guitools.BetterPushButton('Clear')
+        self.saveTargetsButton = guitools.BetterPushButton('Save…')
+        self.loadTargetsButton = guitools.BetterPushButton('Load…')
+        self.saveTargetsButton.setToolTip(
+            'Write the list to a JSON file a script or a later session can\n'
+            'load again.'
+        )
+        self.goToTargetButton.setEnabled(False)
+        self.removeTargetButton.setEnabled(False)
+        for button in (
+            self.goToTargetButton, self.removeTargetButton,
+            self.clearTargetsButton, self.saveTargetsButton,
+            self.loadTargetsButton,
+        ):
+            buttons.addWidget(button)
+        self.targetsCountLabel = QtWidgets.QLabel('')
+        buttons.addStretch(1)
+        buttons.addWidget(self.targetsCountLabel)
+        outer.addLayout(buttons)
+        self._updatingTargets = False
+        return self._group('Targets', outer)
 
     def _onSceneClicked(self, event):
-        if not self.navigateToggle.isChecked():
+        if self.getClickMode() == CLICK_NONE:
             return
         pos = self._overviewVB.mapSceneToView(event.scenePos())
         col = int(pos.x())
@@ -347,8 +465,59 @@ class TilingWidget(Widget):
             self.sigClickOnOverview.emit(row, col)
 
     def updateOverview(self, image: np.ndarray) -> None:
-        """Display a new stitched overview (float32 H×W array)."""
-        self.overviewItem.setImage(image.T)
+        """Display a new stitched overview (float32 H×W array, 0 to 1).
+
+        With Auto contrast ticked the levels are fitted to it; otherwise the
+        operator's levels stay where they are.
+        """
+        self._overviewImage = image
+        if self.autoContrastCheck.isChecked():
+            levels = self._autoContrastLevels(image)
+        else:
+            levels = tuple(self.overviewHist.getLevels())
+        self._showOverview(image, levels)
+
+    def _showOverview(self, image: np.ndarray, levels) -> None:
+        # The histogram follows the image's levels on every update, and says
+        # so through the same signal a drag does; this flag tells them apart.
+        self._settingOverviewLevels = True
+        try:
+            self.overviewItem.setImage(image.T, autoLevels=False, levels=levels)
+        finally:
+            self._settingOverviewLevels = False
+
+    @staticmethod
+    def _autoContrastLevels(image: np.ndarray):
+        """ImageJ's Auto levels for an overview, or its full range if blank.
+
+        The canvas outside the tiles placed so far is zero; ImageJ's rule
+        already ignores a bin holding over a tenth of the pixels, so it does
+        not drag the levels down while the mosaic is still small.
+        """
+        stride = [
+            max(1, int(np.ceil(extent / _AUTO_CONTRAST_SAMPLES_PER_SIDE)))
+            for extent in image.shape[:2]
+        ]
+        sample = np.asarray(image[::stride[0], ::stride[1]])
+        if sample.size == 0:
+            return _OVERVIEW_RANGE
+        low, high = (float(level) for level in bestLevels(sample))
+        if not (np.isfinite(low) and np.isfinite(high)) or high <= low:
+            return _OVERVIEW_RANGE
+        return low, high
+
+    def _onOverviewLevelsChanged(self, *_args) -> None:
+        if self._settingOverviewLevels:
+            return
+        # The operator moved the levels: theirs from now on.
+        if self.autoContrastCheck.isChecked():
+            self.autoContrastCheck.setChecked(False)
+
+    def _onAutoContrastToggled(self, checked: bool) -> None:
+        if checked and self._overviewImage is not None:
+            self._showOverview(
+                self._overviewImage, self._autoContrastLevels(self._overviewImage),
+            )
 
     def setProgress(self, current: int, total: int) -> None:
         self.progressLabel.setText(f'{current} / {total}')
@@ -425,9 +594,24 @@ class TilingWidget(Widget):
         if index >= 0:
             self.modeCombo.setCurrentIndex(index)
 
+    def getClickMode(self) -> str:
+        """What a click on the overview does: one of the ``CLICK_*`` values."""
+        return self.clickModeCombo.currentData() or CLICK_NONE
+
+    def setClickMode(self, mode: str) -> None:
+        index = self.clickModeCombo.findData(mode)
+        if index >= 0:
+            self.clickModeCombo.setCurrentIndex(index)
+
     def getScanSource(self):
-        """Selected scan-source widget key, or None to let the app resolve it."""
-        if not self.scanSourceCombo.isVisible():
+        """Selected scan-source widget key, or None to let the app resolve it.
+
+        None when the setup offers no choice. Asked with ``isHidden()``, not
+        ``isVisible()``: the latter is also False while this panel is a tab
+        behind another one, and a run started then -- from a timelapse or a
+        script -- silently used the default instead of the selection.
+        """
+        if self.scanSourceCombo.isHidden():
             return None
         return self.scanSourceCombo.currentData()
 
@@ -458,7 +642,10 @@ class TilingWidget(Widget):
         None when the setup offers no choice, so the setup-file value (and its
         fallback) stays the single authority on rigs with one camera.
         """
-        if not self.detectorCombo.isVisible():
+        # isHidden(), not isVisible(): see getScanSource. A tiling timelapse
+        # started from the Timelapse tab aligned on the setup's default
+        # detector (a scan-driven APD) instead of the selected camera.
+        if self.detectorCombo.isHidden():
             return None
         return self.detectorCombo.currentData()
 
@@ -514,51 +701,149 @@ class TilingWidget(Widget):
     def setLabel(self, label: str) -> None:
         self.progressLabel.setText(label)
 
-    def showCellMarkers(self, positions: np.ndarray) -> None:
-        """Display cell position markers on the overview.
-        
-        Args:
-            positions: (N, 2) array of (row, col) pixel coordinates.
+    # ------------------------------------------------------------------
+    # Targets
+    # ------------------------------------------------------------------
+
+    def setTargets(self, records) -> None:
+        """Show the target list.
+
+        ``records`` are the controller's target dicts (``id``, ``stage_xy``,
+        ``enabled``, ``source``). The selection survives a rebuild when its
+        target is still there, so ticking one target does not drop the
+        selection on another.
         """
-        if positions is None or len(positions) == 0:
-            self.cellMarkers.clear()
-            self._cellPositions = None
+        records = list(records or [])
+        selected = self.selectedTargetId()
+        self._updatingTargets = True
+        try:
+            self.targetsTable.setRowCount(0)
+            self.targetsTable.setRowCount(len(records))
+            self._targetEnabled = {}
+            for rowIndex, record in enumerate(records):
+                target_id = int(record['id'])
+                x_um, y_um = record['stage_xy']
+                enabled = bool(record.get('enabled', True))
+                self._targetEnabled[target_id] = enabled
+
+                onItem = QtWidgets.QTableWidgetItem()
+                onItem.setFlags(
+                    QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled
+                    | QtCore.Qt.ItemIsSelectable
+                )
+                onItem.setCheckState(
+                    QtCore.Qt.Checked if enabled else QtCore.Qt.Unchecked
+                )
+                onItem.setData(QtCore.Qt.UserRole, target_id)
+                self.targetsTable.setItem(rowIndex, 0, onItem)
+                for column, text in enumerate(
+                    (
+                        str(target_id),
+                        f'{float(x_um):.1f}',
+                        f'{float(y_um):.1f}',
+                        str(record.get('source', '')),
+                    ),
+                    start=1,
+                ):
+                    item = QtWidgets.QTableWidgetItem(text)
+                    item.setData(QtCore.Qt.UserRole, target_id)
+                    self.targetsTable.setItem(rowIndex, column, item)
+                if target_id == selected:
+                    self.targetsTable.selectRow(rowIndex)
+        finally:
+            self._updatingTargets = False
+
+        enabledCount = sum(1 for on in self._targetEnabled.values() if on)
+        if not records:
+            self.targetsCountLabel.setText('')
+        elif enabledCount == len(records):
+            self.targetsCountLabel.setText(f'{len(records)} targets')
+        else:
+            self.targetsCountLabel.setText(
+                f'{enabledCount} of {len(records)} targets on'
+            )
+        self._redrawTargetMarkers()
+        self._onTargetSelectionChanged()
+
+    def setTargetMarkers(self, markers) -> None:
+        """Place targets on the overview.
+
+        ``markers`` maps a target id to its ``(row, col)`` overview pixel.
+        Targets that are not in it — because there is no overview, or they
+        lie outside it — are listed but not drawn.
+        """
+        self._targetMarkers = {
+            int(target_id): (float(rc[0]), float(rc[1]))
+            for target_id, rc in dict(markers or {}).items()
+        }
+        self._redrawTargetMarkers()
+
+    def selectedTargetId(self) -> Optional[int]:
+        items = self.targetsTable.selectedItems()
+        if not items:
+            return None
+        value = items[0].data(QtCore.Qt.UserRole)
+        return None if value is None else int(value)
+
+    def _redrawTargetMarkers(self) -> None:
+        spots = []
+        for target_id, (row, col) in self._targetMarkers.items():
+            on = self._targetEnabled.get(target_id, True)
+            spots.append({
+                'pos': (col, row),
+                'pen': self._targetPenOn if on else self._targetPenOff,
+                'data': target_id,
+            })
+        self.targetMarkers.setData(spots=spots)
+        self._highlightSelectedTarget()
+
+    def _highlightSelectedTarget(self) -> None:
+        marker = self._targetMarkers.get(self.selectedTargetId())
+        if marker is None:
+            self.selectedTargetMarker.clear()
             return
-        
-        self._cellPositions = positions
-        # ScatterPlotItem expects x, y where x=col, y=row (with invertY enabled)
-        x = positions[:, 1]  # col
-        y = positions[:, 0]  # row
-        self.cellMarkers.setData(x=x, y=y)
+        row, col = marker
+        self.selectedTargetMarker.setData(x=[col], y=[row])
 
-    def highlightCurrentCell(self, idx: int) -> None:
-        """Highlight a specific cell with a red circle.
-        
-        Args:
-            idx: Index into the positions array from showCellMarkers.
-                 Use -1 to clear the highlight.
-        """
-        if idx < 0 or self._cellPositions is None or idx >= len(self._cellPositions):
-            self.currentCellMarker.clear()
+    def _onTargetSelectionChanged(self) -> None:
+        hasSelection = self.selectedTargetId() is not None
+        self.goToTargetButton.setEnabled(hasSelection)
+        self.removeTargetButton.setEnabled(hasSelection)
+        self._highlightSelectedTarget()
+
+    def _onTargetItemChanged(self, item) -> None:
+        if self._updatingTargets or item.column() != 0:
             return
-        
-        row, col = self._cellPositions[idx]
-        self.currentCellMarker.setData(x=[col], y=[row])
+        target_id = item.data(QtCore.Qt.UserRole)
+        if target_id is None:
+            return
+        self.sigTargetEnabledChanged.emit(
+            int(target_id), item.checkState() == QtCore.Qt.Checked
+        )
 
-    def clearCellMarkers(self) -> None:
-        """Clear all cell markers from the overview."""
-        self.cellMarkers.clear()
-        self.currentCellMarker.clear()
-        self._cellPositions = None
+    def _onGoToTarget(self) -> None:
+        target_id = self.selectedTargetId()
+        if target_id is not None:
+            self.sigGoToTarget.emit(target_id)
 
-    def setCellTargetingEnabled(self, enabled: bool) -> None:
-        """Enable or disable cell-target detection controls.
-        
-        Args:
-            enabled: True to enable the segmentation and targeting buttons.
-        """
-        self.tuneSegmentationButton.setEnabled(enabled)
-        self.runCellTargetingButton.setEnabled(enabled)
+    def _onRemoveTarget(self) -> None:
+        target_id = self.selectedTargetId()
+        if target_id is not None:
+            self.sigRemoveTarget.emit(target_id)
+
+    def _onSaveTargets(self) -> None:
+        path, _filter = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Save targets', '', _TARGET_FILE_FILTER
+        )
+        if path:
+            self.sigSaveTargets.emit(path)
+
+    def _onLoadTargets(self) -> None:
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Load targets', '', _TARGET_FILE_FILTER
+        )
+        if path:
+            self.sigLoadTargets.emit(path)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -43,11 +43,13 @@ class ScriptSession:
         self.namespace.update(self._baseScope)
         self._installed = set(self.namespace)
 
-    def prepareRun(self, scriptPath: Optional[str]) -> Dict[str, Any]:
+    def prepareRun(self, scriptPath: Optional[str],
+                   inputs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Script thread, before a run: (re)installs the helpers bound to
         this run's script file (``importScript`` resolves paths against it)
-        and returns the namespace to execute in."""
-        actions = getActionsScope(self._baseScope, scriptPath)
+        and to its ``scriptInput`` values, and returns the namespace to
+        execute in."""
+        actions = getActionsScope(self._baseScope, scriptPath, inputs)
         self.namespace.update(actions)
         self._installed.update(actions)
         return self.namespace

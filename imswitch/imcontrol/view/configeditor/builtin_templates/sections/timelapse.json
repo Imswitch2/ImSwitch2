@@ -1,0 +1,16 @@
+{
+  "section": true,
+  "key": "timelapse",
+  "group": "system",
+  "display": "Timelapse",
+  "summary": "Optional defaults for the Timelapse widget. The widget works without this section.",
+  "fields": [
+    {"key": "defaultKind",          "label": "Default kind",                "type": "enum",  "default": "camera",         "req": false, "grp": "Basic", "tip": "What a timepoint is when the widget opens: camera frames, a scan, or a tiling. Kinds the setup cannot run are not offered.", "opts": ["camera", "scan", "tiling"]},
+    {"key": "defaultTimepoints",    "label": "Default timepoints",          "type": "int",   "default": 10,               "req": false, "grp": "Basic", "tip": "Initial value of the widget only; every run uses what the operator entered.", "opts": []},
+    {"key": "defaultIntervalS",     "label": "Default interval (s)",        "type": "float", "default": 60.0,             "req": false, "grp": "Basic", "tip": "Initial value of the widget only; every run uses what the operator entered.", "opts": []},
+    {"key": "defaultIntervalMode",  "label": "Default interval measured",   "type": "enum",  "default": "start_to_start", "req": false, "grp": "Basic", "tip": "start_to_start = fixed cadence; end_to_start = delay after each timepoint ends.", "opts": ["start_to_start", "end_to_start"]},
+    {"key": "defaultFramesPerPoint","label": "Default frames per timepoint","type": "int",   "default": 1,                "req": false, "grp": "Basic", "tip": "Camera timelapses only. Initial value of the widget only.", "opts": []},
+    {"key": "defaultSingleFile",    "label": "Default one file for all",    "type": "bool",  "default": true,             "req": false, "grp": "Basic", "tip": "Camera and scan timelapses: one grouped HDF5/Zarr file for all timepoints instead of one file each.", "opts": []},
+    {"key": "illuminationSettleMs", "label": "Illumination settle (ms)",    "type": "float", "default": null,             "req": false, "grp": "Illumination", "tip": "Extra wait after switching the lasers on, for sources slower than one camera frame (shutters, AOTF rise). Leave blank when none is declared; the data then says so.", "opts": []}
+  ]
+}

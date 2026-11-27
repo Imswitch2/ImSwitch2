@@ -29,6 +29,10 @@ from ._acquisition_layout_source import with_lapse_partition
 # the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
 # as soon as the previous recording clears, without busy-spinning the GUI thread.
 _LAPSE_RECORDING_DRAIN_RETRY_MS = 25
+_EXTERNALLY_PACED_NEEDS_PROVIDER = (
+    'An externally paced series needs a positioning provider to hold each '
+    'point until it is due.'
+)
 # QTimer uses a signed 32-bit millisecond interval on supported Qt versions.
 # Long camera lapses are scheduled in bounded chunks so intervals longer than
 # roughly 24 days cannot wrap into an immediate timer.
@@ -76,6 +80,19 @@ class _ScanSeriesRequest:
     intervalSeconds: float
     singleFile: bool
     previousMode: Any
+    # 'scan' (a scan panel's series, ``source`` is that panel) or 'camera'
+    # (a camera lapse for a caller such as the Timelapse module; ``source`` is
+    # None because nothing is being scanned).
+    kind: str = 'scan'
+    # Frames written per camera-lapse point. Scan series ignore it.
+    framesPerPoint: int = 1
+    # True when something else decides when each point is due: Recording then
+    # starts every next point at once and lets the installed positioning gate
+    # hold it. ``intervalSeconds`` is still the operator's interval, reported
+    # in the metadata.
+    externallyPaced: bool = False
+    # Who may stop the series (stopSeries). Defaults to ``source``.
+    owner: Any = None
 
 
 def _dispatchWithoutLifecycle(dispatch, *args):
@@ -150,6 +167,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._shutdownRequested = False
         # See recordScanSeries: set only while a panel-requested recording runs.
         self._seriesRequest = None
+        # ``(failed, message)`` callback of the running series; kept beside the
+        # request (not in it) because it is stored only once the series was
+        # accepted, and fired once from _endScanSeriesRequest.
+        self._seriesOnEnded = None
+        self._seriesEndOutcome = None
         self._activeScanSeriesSettings = None
         self._lastRecordingFailure = ''
         # Set while a scan-once recording is armed and waiting for the operator
@@ -626,22 +648,36 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     return
             elif self.recMode == RecMode.CameraLapse:
                 try:
-                    self.lapseTotal = (
-                        self._widget.getTimelapseNumFrames()
-                    )
-                    self._cameraLapseIntervalS = (
-                        self._widget.getSpecTimelapseFrameTime()
-                    )
+                    cameraRequest = self.__dict__.get('_seriesRequest')
+                    if (
+                        cameraRequest is not None
+                        and cameraRequest.kind == 'camera'
+                    ):
+                        # A caller's series: its numbers, never the widget's.
+                        self.lapseTotal = cameraRequest.frames
+                        self._cameraLapseIntervalS = (
+                            cameraRequest.intervalSeconds
+                        )
+                        cameraSingleFile = cameraRequest.singleFile
+                    else:
+                        cameraRequest = None
+                        self.lapseTotal = (
+                            self._widget.getTimelapseNumFrames()
+                        )
+                        self._cameraLapseIntervalS = (
+                            self._widget.getSpecTimelapseFrameTime()
+                        )
+                        cameraSingleFile = (
+                            self._widget.getTimelapseSingleFile()
+                        )
                     self._validateCameraLapse(
                         detectorsBeingCaptured,
                         self.lapseTotal,
                         self._cameraLapseIntervalS,
                         SaveFormat(self._widget.getSaveFormat()),
-                        self._widget.getTimelapseSingleFile(),
+                        cameraSingleFile,
                     )
-                    self.recordingArgs['singleLapseFile'] = (
-                        self._widget.getTimelapseSingleFile()
-                    )
+                    self.recordingArgs['singleLapseFile'] = cameraSingleFile
                     self.recordingArgs['recFrames'] = 1
                     self.lapseCurrent = 0
                     self._cameraLapseNextDeadline = time.monotonic()
@@ -718,7 +754,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     else self._activeScanSeriesSettings.timepoints
                 )
                 self.lapseCurrent = 0
-                if not self.nextLapse():
+                if not self.nextLapse() and not (
+                    # A first point held by its positioning gate is a lapse
+                    # that has started and is waiting, not one that failed:
+                    # the gate's retry timer is armed and will arm the point.
+                    # Returning here would leave that timer running a lapse
+                    # nobody records as active.
+                    self.__dict__.get('_pendingPositioning') is not None
+                    and not self.__dict__.get('_recordingFailedCurrent', False)
+                ):
                     return
             else:
                 if not self._startManagerRecording():
@@ -1027,6 +1071,35 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         try:
             self._assertCameraLapsePointIsIdle()
+        except Exception as error:
+            return failPoint(str(error))
+
+        # Whoever owns the stage / lasers gets to prepare this point before the
+        # writer is armed -- asked for, never waited on (see nextLapse). Looked
+        # up rather than called for the same reason as there: a camera lapse
+        # with no provider is the ordinary timed one.
+        #
+        # Before the point's arguments are built, not after: while the gate is
+        # pending this method re-enters every _LAPSE_RECORDING_DRAIN_RETRY_MS,
+        # and the attribute snapshot below must describe the instrument as it
+        # is when the point is released (a timelapse gate switches the lasers
+        # on just before releasing it), not as it was when Recording asked.
+        self._recordingCycleTerminalHandled = False
+        await_positioning = getattr(self, '_awaitPositioning', None)
+        if (
+            callable(await_positioning)
+            and self.__dict__.get('_positioningProvider') is not None
+        ):
+            # A point the provider declines (``None``) must not inherit the
+            # previous point's attributes. The failure guard is re-opened so a
+            # failed, cancelled or timed-out request can terminalise the series.
+            self._positionedAttributes = {}
+            self._recordingFailureHandled = False
+            positioning = await_positioning(retry=self.nextCameraLapse)
+            if positioning is not True:
+                return positioning
+
+        try:
             self.endedRecording = False
             self.doneScan = True
             self._recordingCycleTerminalHandled = False
@@ -1040,22 +1113,42 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             else:
                 self.recordingArgs['savename'] = self.savename
 
+            # Camera-lapse attrs are rebuilt for every point, so the gate's
+            # attributes merged here cannot leak into the next point.
+            extra = dict(self.__dict__.get('_positionedAttributes') or {})
             self.recordingArgs['attrs'] = {
-                detectorName:
-                    self._commChannel.sharedAttrs.getHDF5Attributes()
+                detectorName: {
+                    **self._commChannel.sharedAttrs.getHDF5Attributes(),
+                    **extra,
+                }
                 for detectorName in self.recordingArgs['detectorNames']
             }
-            self.recordingArgs['recFrames'] = 1
+            cameraRequest = self.__dict__.get('_seriesRequest')
+            if cameraRequest is not None and cameraRequest.kind != 'camera':
+                cameraRequest = None
+            self.recordingArgs['recFrames'] = (
+                cameraRequest.framesPerPoint
+                if cameraRequest is not None else 1
+            )
             self.recordingArgs['recLapseTotal'] = self.lapseTotal
             self.recordingArgs['recLapseIndex'] = self.lapseCurrent
             self.recordingArgs['recLapseIntervalS'] = (
                 self._cameraLapseIntervalS
             )
-            planned = self.__dict__.get('_cameraLapsePlannedStart')
-            self.recordingArgs['recLapseScheduledTime'] = (
-                planned.isoformat()
-                if isinstance(planned, datetime) else None
-            )
+            if cameraRequest is not None and cameraRequest.externallyPaced:
+                # Externally paced: the gate, not this controller, decided
+                # when the point started, so the recorded schedule is the UTC
+                # time the gate released it rather than the time Recording
+                # asked for it (which is "immediately").
+                self.recordingArgs['recLapseScheduledTime'] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
+            else:
+                planned = self.__dict__.get('_cameraLapsePlannedStart')
+                self.recordingArgs['recLapseScheduledTime'] = (
+                    planned.isoformat()
+                    if isinstance(planned, datetime) else None
+                )
         except Exception as error:
             return failPoint(str(error))
 
@@ -1366,8 +1459,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         """
         self._cycleTerminalCallback = callback
 
-    def _awaitPositioning(self):
-        """True to proceed, False to stop; re-arms the timer while pending."""
+    def _awaitPositioning(self, retry=None):
+        """True to proceed, False to stop; re-arms the timer while pending.
+
+        ``retry`` is what the timer re-enters: ``nextLapse`` by default, the
+        camera lapse passes ``nextCameraLapse``.
+        """
         provider = self.__dict__.get('_positioningProvider')
         if provider is None:
             return True
@@ -1395,7 +1492,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             try:
                 timer = Timer(singleShot=True)
                 self.timer = timer
-                timer.timeout.connect(self.nextLapse)
+                timer.timeout.connect(
+                    retry if retry is not None else self.nextLapse
+                )
                 timer.start(_LAPSE_RECORDING_DRAIN_RETRY_MS)
             except Exception as error:
                 self._handleRecordingFailure(
@@ -2651,6 +2750,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                             settings = self._scanSeriesSettingsSnapshot()
                         interval_s = settings.interval_s
                     nextDelayMs = int(float(interval_s) * 1000)
+                    if (
+                        seriesRequest is not None
+                        and getattr(seriesRequest, 'externallyPaced', False)
+                    ):
+                        # The installed gate holds each point until it is due.
+                        nextDelayMs = 0
             except Exception as error:
                 cadenceFailure = (
                     'Could not inspect recording-lapse cadence state while its '
@@ -2716,7 +2821,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     previousDeadline = self.__dict__.get(
                         '_cameraLapseNextDeadline'
                     )
-                    if previousDeadline is None:
+                    pacedRequest = self.__dict__.get('_seriesRequest')
+                    if (
+                        pacedRequest is not None
+                        and getattr(pacedRequest, 'externallyPaced', False)
+                    ):
+                        # Due now: the gate holds the point until it really is.
+                        # ``interval`` stays the operator's, for the metadata.
+                        nextDeadline = now
+                    elif previousDeadline is None:
                         nextDeadline = now + interval
                     else:
                         nextDeadline = previousDeadline + interval
@@ -2779,6 +2892,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # work. A deleted widget or plugin signal must never make this terminal
         # permanently unrepeatable with a live accepted owner still pinned.
         timer = self.__dict__.get('timer')
+        # Read before the flags below are cleared: the series' end callback is
+        # told whether the series failed and why.
+        seriesFailed = bool(self.__dict__.get('_recordingFailedCurrent', False))
+        self._seriesEndOutcome = (
+            seriesFailed,
+            str(self.__dict__.get('_lastRecordingFailure', '') or '')
+            if seriesFailed else '',
+        )
         self.timer = None
         self.recording = False
         self.lapseCurrent = -1
@@ -3403,14 +3524,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             elif self.recMode == RecMode.SpecTime:
                 self.setSharedAttr(_timeAttr, self._widget.getTimeToRec())
             elif self.recMode == RecMode.CameraLapse:
-                self.setSharedAttr(
-                    _framesAttr,
-                    self._widget.getTimelapseNumFrames(),
-                )
-                self.setSharedAttr(
-                    _freqAttr,
-                    self._widget.getSpecTimelapseFrameTime(),
-                )
+                request = self.__dict__.get('_seriesRequest')
+                if request is not None and request.kind == 'camera':
+                    self.setSharedAttr(_framesAttr, request.frames)
+                    self.setSharedAttr(_freqAttr, request.intervalSeconds)
+                else:
+                    self.setSharedAttr(
+                        _framesAttr,
+                        self._widget.getTimelapseNumFrames(),
+                    )
+                    self.setSharedAttr(
+                        _freqAttr,
+                        self._widget.getSpecTimelapseFrameTime(),
+                    )
             elif self.recMode == RecMode.ScanLapse:
                 request = self.__dict__.get('_seriesRequest')
                 if request is not None:
@@ -3762,7 +3888,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     def recordScanSeries(
         self, source, detectorNames, frames: int = 1, intervalSeconds: float = 0.0,
-        singleFile: bool = True,
+        singleFile: bool = True, *, externallyPaced: bool = False,
+        onEnded=None,
     ) -> ScanSeriesRecordingResult:
         """Record ``frames`` scans of ``source`` at a snapshotted cadence.
 
@@ -3785,6 +3912,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         not reopenable as one lapse file). A failure while arming
         or starting ends the attempt exactly as a REC press would, and its
         reason is returned.
+
+        ``externallyPaced`` makes Recording start each next point at once and
+        leaves the wait to the installed positioning provider (see
+        :meth:`setPositioningProvider`), while the metadata still reports
+        ``intervalSeconds``. Without that gate the points would run back to
+        back, so it is refused unless a provider is installed. ``onEnded`` is
+        called once as ``onEnded(failed, message)`` when an accepted series
+        has ended; a refused one never calls it.
         """
         def refuse(reason):
             return ScanSeriesRecordingResult(False, reason)
@@ -3836,6 +3971,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 f'Saving {frames} frames in one file needs HDF5 or Zarr; '
                 'select separate files or change the Recording format.'
             )
+        if externallyPaced and not self._hasPositioningProvider():
+            return refuse(_EXTERNALLY_PACED_NEEDS_PROVIDER)
 
         self._seriesRequest = _ScanSeriesRequest(
             source=source,
@@ -3844,6 +3981,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             intervalSeconds=intervalSeconds,
             singleFile=singleFile,
             previousMode=self.recMode,
+            externallyPaced=bool(externallyPaced),
+            owner=source,
         )
         self._publishScanSeriesActivity(source, True)
         self.recMode = RecMode.ScanOnce if frames == 1 else RecMode.ScanLapse
@@ -3860,23 +3999,248 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._lastRecordingFailure = self._lastRecordingFailure or str(error)
 
         if self.recording and not self.__dict__.get('_recordingFailedCurrent', False):
+            # Stored only now that the series is accepted, so a refusal can
+            # never also report an end.
+            self._seriesOnEnded = onEnded
             return ScanSeriesRecordingResult(True)
         reason = self._lastRecordingFailure or 'The recording did not start.'
         if not self.recording:
             # A refusal that ended before the operation opened leaves nothing
             # for the terminal reset to clear.
-            RecordingController._endScanSeriesRequest(self)
+            RecordingController._endScanSeriesRequest(self, notify=False)
         return refuse(reason)
 
-    def _endScanSeriesRequest(self) -> None:
-        """Forget a panel-requested recording; restore the user's mode."""
+    def _hasPositioningProvider(self) -> bool:
+        return self.__dict__.get('_positioningProvider') is not None
+
+    def recordCameraSeries(
+        self, detectorNames, timepoints: int, intervalSeconds: float = 0.0,
+        singleFile: bool = True, *, framesPerPoint: int = 1,
+        externallyPaced: bool = False, owner=None, onEnded=None,
+    ) -> ScanSeriesRecordingResult:
+        """Record ``timepoints`` camera-lapse points of the caller's detectors.
+
+        The camera twin of :meth:`recordScanSeries`, for a caller such as the
+        Timelapse module: it runs the ordinary camera-lapse transaction by
+        pressing REC, for the caller's detectors, and answers synchronously.
+        Every point is ``framesPerPoint`` frames. The Recording widget's mode,
+        detector selection and lapse settings are left as the user set them,
+        and no scan-series activity is published (nothing is scanned). Folder,
+        file name and save format are the Recording panel's. Runs on the GUI
+        thread, like :meth:`recordScanSeries`; not an API export because
+        ``onEnded`` is a callable.
+
+        ``intervalSeconds`` is the delay between point starts. With
+        ``externallyPaced`` Recording starts each next point at once and the
+        installed positioning provider (:meth:`setPositioningProvider`) holds
+        it until it is due, while the metadata still reports
+        ``intervalSeconds``; without that gate the points would run back to
+        back, so it is refused unless a provider is installed.
+
+        ``owner`` is who may stop the series with :meth:`stopSeries`.
+        ``onEnded(failed, message)`` is called once when an accepted series
+        has ended (``failed`` False and an empty message for a completed or
+        operator-stopped one); a refused series never calls it.
+
+        Refused, with the reason and nothing changed, for a bad number, no
+        detector, a recording running, finalizing or armed, an acquisition
+        owned by a scan widget, a grouped TIFF lapse, a scan-driven or
+        externally triggered detector, or ``framesPerPoint`` below 1.
+        """
+        def refuse(reason):
+            return ScanSeriesRecordingResult(False, reason)
+
+        def whole(value, what, minimum):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = float('nan')
+            if not np.isfinite(number) or not number.is_integer():
+                return None, (
+                    f'The number of {what} must be a whole number, '
+                    f'not {value!r}.'
+                )
+            number = int(number)
+            if number < minimum:
+                return None, (
+                    f'The number of {what} must be at least {minimum}, '
+                    f'not {number}.'
+                )
+            return number, None
+
+        timepoints, problem = whole(timepoints, 'timepoints', 1)
+        if problem:
+            return refuse(problem)
+        framesPerPoint, problem = whole(framesPerPoint, 'frames per point', 1)
+        if problem:
+            return refuse(problem)
+        try:
+            intervalSeconds = float(intervalSeconds)
+        except (TypeError, ValueError):
+            intervalSeconds = float('nan')
+        if not np.isfinite(intervalSeconds) or intervalSeconds < 0:
+            return refuse(
+                'The interval must be a finite number >= 0, '
+                f'not {intervalSeconds!r}.'
+            )
+        names = tuple(str(name) for name in (detectorNames or ()))
+        if not names:
+            return refuse('Choose at least one detector to save.')
+        if self._recordingAcquisitionOwner() is not None:
+            return refuse(
+                'Recording acquisition is currently configured by another '
+                'scan widget.'
+            )
+        if (
+            self.__dict__.get('_seriesRequest') is not None
+            or self.recording
+            or self.__dict__.get('_awaitingScanSourceArm', False)
+            or self._widget.isRecButtonChecked()
+        ):
+            return refuse(
+                'A recording is already running or being finalized; wait for '
+                'it to end.'
+            )
+        singleFile = bool(singleFile)
+        if externallyPaced and not self._hasPositioningProvider():
+            return refuse(_EXTERNALLY_PACED_NEEDS_PROVIDER)
+        try:
+            self._validateCameraLapse(
+                names, timepoints, intervalSeconds,
+                SaveFormat(self._widget.getSaveFormat()), singleFile,
+            )
+        except Exception as error:
+            return refuse(str(error))
+
+        self._seriesRequest = _ScanSeriesRequest(
+            source=None,
+            detectorNames=names,
+            frames=timepoints,
+            intervalSeconds=intervalSeconds,
+            singleFile=singleFile,
+            previousMode=self.recMode,
+            kind='camera',
+            framesPerPoint=framesPerPoint,
+            externallyPaced=bool(externallyPaced),
+            owner=owner,
+        )
+        # Even one timepoint is a camera lapse, so that its frames-per-point
+        # and gate apply; no scan-series activity is published.
+        self.recMode = RecMode.CameraLapse
+        self._lastRecordingFailure = ''
+        try:
+            self._widget.setRecButtonChecked(True)
+        except Exception as error:
+            self.__logger.error(
+                'Starting the requested camera series failed', exc_info=True
+            )
+            self._lastRecordingFailure = (
+                self._lastRecordingFailure or str(error)
+            )
+
+        if (
+            self.recording
+            and not self.__dict__.get('_recordingFailedCurrent', False)
+        ):
+            self._seriesOnEnded = onEnded
+            return ScanSeriesRecordingResult(True)
+        reason = self._lastRecordingFailure or 'The recording did not start.'
+        if not self.recording:
+            RecordingController._endScanSeriesRequest(self, notify=False)
+        return refuse(reason)
+
+    def _endScanSeriesRequest(
+        self, *, failed=None, message=None, notify: bool = True,
+    ) -> None:
+        """Forget a panel-requested recording; restore the user's mode.
+
+        Tells the series' ``onEnded`` callback, once, how it ended: by default
+        with the outcome recordingCycleEnded captured before it cleared its
+        failure flags (``_seriesEndOutcome``), or with ``failed``/``message``
+        when a caller passes them.
+        """
         request = self.__dict__.get('_seriesRequest')
+        outcome = self.__dict__.get('_seriesEndOutcome') or (False, '')
+        self._seriesEndOutcome = None
         if request is None:
             return
+        if failed is None:
+            failed = outcome[0]
+        if message is None:
+            message = outcome[1]
         self._seriesRequest = None
         self.recMode = request.previousMode
-        self._publishScanSeriesActivity(request.source, False)
+        if getattr(request, 'kind', 'scan') == 'scan':
+            self._publishScanSeriesActivity(request.source, False)
         self._refreshScanFilenameSuffixPreview()
+        onEnded = self.__dict__.get('_seriesOnEnded')
+        self._seriesOnEnded = None
+        if notify and callable(onEnded):
+            try:
+                onEnded(bool(failed), str(message or ''))
+            except Exception:
+                self.__logger.error(
+                    'The series end callback failed', exc_info=True
+                )
+
+    def getActiveSeriesInfo(self):
+        """What a UI needs about the running series, or None when idle."""
+        request = self.__dict__.get('_seriesRequest')
+        if request is None:
+            return None
+        return {
+            'kind': request.kind,
+            'timepoints': int(request.frames),
+            'current': max(0, int(self.__dict__.get('lapseCurrent', -1))),
+            'externallyPaced': bool(request.externallyPaced),
+        }
+
+    def stopSeries(self, owner) -> bool:
+        """Gracefully stop the series ``owner`` started; False if it owns none.
+
+        A point being recorded is never aborted: it finishes, and the series
+        then ends instead of starting the next. Between points the series ends
+        now.
+        """
+        request = self.__dict__.get('_seriesRequest')
+        if request is None:
+            return False
+        if request.kind == 'scan':
+            return self.stopScanSeries(request.source) if (
+                owner is request.owner or owner is request.source
+            ) else False
+        if owner is not request.owner:
+            return False
+        if self.__dict__.get('stopRequested', False):
+            return True
+        self.stopRequested = True
+        timer = self.__dict__.get('timer')
+        # A single-shot retry timer that already fired stays referenced while
+        # its point runs, so "a timer exists" does not mean "between points";
+        # only a timer still counting down does.
+        timerPending = False
+        if timer is not None:
+            try:
+                timerPending = bool(timer.isActive())
+            except Exception:
+                timerPending = False
+        if timerPending:
+            # Waiting between points (cadence or gate retry): end it now
+            # through the ordinary terminal.
+            self.timer = None
+            try:
+                timer.stop()
+            except Exception:
+                self.__logger.error(
+                    'Could not cancel the camera-series timer',
+                    exc_info=True,
+                )
+            self._pendingPositioning = None
+            self._recordingCycleTerminalHandled = False
+            self.recordingCycleEnded()
+        # Otherwise a point is active: it finishes and recordingCycleEnded
+        # sees stopRequested.
+        return True
 
     def stopScanSeries(self, source) -> bool:
         """Gracefully stop a panel-requested timelapse owned by ``source``.
