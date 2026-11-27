@@ -31,6 +31,19 @@ from .grid_correspondence import (
     grid_ordering_permutation,
     resolve_grid_correspondence,
 )
+from .manual import (
+    DegeneratePointsError,
+    PairFit,
+    PointPair,
+    PointPairEditor,
+    check_point_geometry,
+    fit_point_pairs,
+    manual_correspondence,
+    manual_strategy_spec,
+    minimum_pairs,
+    minimum_pairs_table,
+    snap_to_local_maximum,
+)
 from .registry import (
     LocalizationDiagnostics,
     LocalizationFailure,
@@ -41,6 +54,17 @@ from .registry import (
 )
 
 __all__ = [
+    "DegeneratePointsError",
+    "PairFit",
+    "PointPair",
+    "PointPairEditor",
+    "check_point_geometry",
+    "fit_point_pairs",
+    "manual_correspondence",
+    "manual_strategy_spec",
+    "minimum_pairs",
+    "minimum_pairs_table",
+    "snap_to_local_maximum",
     "BeadDetections",
     "BeadMatch",
     "BeadMatchError",

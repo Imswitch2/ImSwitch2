@@ -393,7 +393,11 @@ class _TransformCorrespondenceViewer(QtWidgets.QWidget):
                 self.outliers.setData([], [])
                 self.residuals.setData([], [])
             else:
-                mapped = np.asarray(fit.mapped_points, dtype=np.float64)
+                # In Reference pixels even when the fit is in world units (a scan Reference).
+                mapper = getattr(owner, "mappedReferencePixels", None)
+                mapped = np.asarray(
+                    mapper() if mapper is not None else fit.mapped_points, dtype=np.float64
+                )
                 inliers = np.asarray(fit.inliers, dtype=bool)
                 self.mapped.setData(x=mapped[inliers, 1], y=mapped[inliers, 0])
                 self.outliers.setData(x=mapped[~inliers, 1], y=mapped[~inliers, 0])

@@ -15,6 +15,12 @@ registration, and saves the result where both consumers find it:
   ``transform`` step can name ``<id>``;
 * ``<id>_qc.png`` and ``<id>_report.txt`` next to the record.
 
+(The same layout as every calibration the Transform Calibration panel saves
+under an id: :mod:`imswitch.imcontrol.model.transform_store`.) The Transform
+Calibration panel reads the recordings through :func:`summarize_recording`
+and :func:`compare_summaries` and fits them through its *Beads* method, with
+the same detection, pairing and model choice as :func:`calibrate_from_files`.
+
 What is read from the files (and what is done when it is missing):
 
 * The image: the dataset of the detector asked for (``<detector>/data``),
@@ -64,7 +70,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from imswitch.imcommon.algorithms.transforms import AcquisitionContext, SpatialTransform, io as transform_io
+from imswitch.imcommon.algorithms.transforms import AcquisitionContext, SpatialTransform
 from imswitch.imcommon.algorithms.transforms.bead_registration import (
     BeadRegistration,
     BeadRegistrationError,
@@ -458,28 +464,20 @@ def _physical_order(scan: Recording, geometry: Mapping) -> tuple[str, str]:
 def save_bead_calibration(result: BeadCalibration, folder=None, *, figure: bool = True,
                           overwrite: bool = False) -> dict:
     """Write the module record, the pipeline entry, the report and (with
-    ``figure``) the QC figure; returns their paths."""
-    from imswitch.imcontrol.model.smartpipeline.calibrations import (
-        CalibrationError, _file_name, save_calibration,
-    )
-    from imswitch.imcommon.model.smartpipeline import SpatialTransformRef
+    ``figure``) the QC figure (:func:`imswitch.imcontrol.model.transform_store.save_record`);
+    returns their paths."""
+    from imswitch.imcontrol.model import transform_store
+    from imswitch.imcontrol.model.smartpipeline.calibrations import CalibrationError
 
-    root = calibrations_root(folder)
-    name = _file_name(result.calibration_id)
-    record_path = root / TRANSFORMS_DIRNAME / f"{name}.json"
-    if record_path.exists() and not overwrite:
-        raise CalibrationError(f"{record_path} exists; choose another id or pass overwrite")
-    transform_io.save_json(record_path, result.transform)
-    reference = SpatialTransformRef(
-        id=result.calibration_id, source_frame=result.transform.source_frame,
-        target_frame=result.transform.target_frame, path=f"{TRANSFORMS_DIRNAME}/{record_path.name}",
-        base=root)
-    pipeline_path = save_calibration(reference, root, overwrite=True)
-    paths = {"record": record_path, "pipeline": pipeline_path}
-    if figure:
-        paths["figure"] = qc_figure(result.registration, result.camera.image, result.scan.image,
-                                    record_path.with_name(f"{name}_qc.png"))
-    report_path = record_path.with_name(f"{name}_report.txt")
+    record = transform_store.record_path(result.calibration_id, folder)
+    if record.exists() and not overwrite:
+        raise CalibrationError(f"{record} exists; choose another id or pass overwrite")
+    draw = (lambda path: qc_figure(result.registration, result.camera.image, result.scan.image, path)) \
+        if figure else None
+    saved = transform_store.save_record(result.transform, result.calibration_id, folder, overwrite=True,
+                                        figure=draw)
+    paths = {kind: saved[kind] for kind in ("record", "pipeline", "figure") if kind in saved}
+    report_path = record.with_name(f"{transform_store.file_name(result.calibration_id)}_report.txt")
     result.paths = dict(paths)
     report_path.write_text(result.report() + f"\nreport: {report_path}\n", encoding="utf-8")
     paths["report"] = report_path
@@ -549,10 +547,9 @@ def qc_figure(registration: BeadRegistration, camera_image, scan_image, path=Non
 def load_bead_calibration(calibration, folder=None) -> SpatialTransform:
     """A saved calibration by id (``<calibrations>/transforms/<id>.json``)
     or by path."""
-    path = Path(calibration)
-    if not path.suffix:
-        path = calibrations_root(folder) / TRANSFORMS_DIRNAME / f"{calibration}.json"
-    return transform_io.load_json(path)
+    from imswitch.imcontrol.model import transform_store
+
+    return transform_store.load_record(calibration, folder)
 
 
 def predict_scan_centre(transform: SpatialTransform, row: float, col: float) -> dict:
@@ -834,35 +831,17 @@ def plain_reason(error: Exception) -> tuple[str, str]:
 
 
 def record_path(calibration_id: str, folder=None) -> Path:
-    from imswitch.imcontrol.model.smartpipeline.calibrations import _file_name
+    from imswitch.imcontrol.model import transform_store
 
-    return calibrations_root(folder) / TRANSFORMS_DIRNAME / f"{_file_name(calibration_id)}.json"
+    return transform_store.record_path(calibration_id, folder)
 
 
 def archive_calibration(calibration_id: str, folder=None) -> str:
     """Keep an existing calibration under a dated id
-    (``<id>_<YYYYmmdd-HHMMSS>``): its record, figure and report are renamed
-    and its pipeline entry rewritten to the new id. Returns the new id."""
-    from imswitch.imcontrol.model.smartpipeline.calibrations import _file_name
+    (:func:`imswitch.imcontrol.model.transform_store.archive`). Returns the new id."""
+    from imswitch.imcontrol.model import transform_store
 
-    root = calibrations_root(folder)
-    name = _file_name(calibration_id)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    new_id = f"{name}_{stamp}"
-    transforms = root / TRANSFORMS_DIRNAME
-    for suffix in (".json", "_qc.png", "_report.txt"):
-        old = transforms / f"{name}{suffix}"
-        if old.exists():
-            old.rename(transforms / f"{new_id}{suffix}")
-    entry = root / f"{name}.json"
-    if entry.exists():
-        payload = json.loads(entry.read_text(encoding="utf-8"))
-        payload["id"] = new_id
-        if payload.get("path"):
-            payload["path"] = f"{TRANSFORMS_DIRNAME}/{new_id}.json"
-        (root / f"{new_id}.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        entry.unlink()
-    return new_id
+    return transform_store.archive(calibration_id, folder)
 
 
 # --------------------------------------------------------------------------
