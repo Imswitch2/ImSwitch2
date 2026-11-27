@@ -10,6 +10,10 @@ module is and what else it can do, see :doc:`imcontrol`; for the
 shortcuts and state-saving that apply across every module, see
 :doc:`working-in-imswitch2`.
 
+Which widgets appear is decided by ``availableWidgets`` in the setup file;
+many of them can also be added to a running session with **View → Add
+panel…** (see :ref:`adding-panels`).
+
 .. note::
 
    The screenshots on this page live under ``docs/images/auto/`` and
@@ -496,7 +500,12 @@ has no peak, always within the searched range.
 ``Autofocus`` in ``availableWidgets`` loads the panel.  It needs an
 ``autofocus`` section in the setup file naming the ``camera`` and the
 ``positioner``, which must have a ``Z`` axis (see :doc:`setupinfo-reference`);
-without it the panel loads but its button does nothing.  ``settleTimeMs``
+without it the dock reads *Autofocus is not configured* and offers
+**Configure…**, which asks for the section while ImSwitch runs (see
+:ref:`adding-panels`).  The camera runs only while a search does: the panel
+takes it when **Autofocus** is pressed and lets go when the search is over,
+so having the panel starts no camera (a camera already in live view keeps
+running).  ``settleTimeMs``
 (default 150) is the wait after each move before the frame is taken.  The
 sharpness is computed over the whole frame: the ``frameCrop*`` and
 ``updateFreq`` keys that section requires are not read by this widget.
@@ -967,6 +976,10 @@ drives the stage, and it is what cell targeting operates on.
 
 See :doc:`tiling` for the controls in detail, cell detection, illumination
 correction, multi-detector runs, the saved output and the controller API.
+
+Without a ``tiling`` section in the setup file the dock reads *Tiling is not
+configured* and offers **Configure…**; the panel can also be added to a
+running session with **View → Add panel…** (see :ref:`adding-panels`).
 
 
 Timelapse widget

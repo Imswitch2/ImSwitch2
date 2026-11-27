@@ -576,6 +576,11 @@ class MoNaLISAView(ScanCloakView):
         self.scanSummaryLabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         scanTypeLayout.addWidget(self.scanSummaryLabel, 1)
         layout.addWidget(scanTypeRow, 0, 0, 1, 2)
+        self.stageTimingWarningLabel = QtWidgets.QLabel()
+        self.stageTimingWarningLabel.setWordWrap(True)
+        self.stageTimingWarningLabel.setStyleSheet('color: #d98c10;')
+        self.stageTimingWarningLabel.hide()
+        layout.addWidget(self.stageTimingWarningLabel, 4, 0, 1, 2)
 
         self.lateralStepControl = _RangeControl(suffix=' nm', decimals=1, low=5.0, high=1000.0)
         self.lateralStepControl.valueChanged.connect(self._emitEdited)
@@ -1122,6 +1127,13 @@ class MoNaLISAView(ScanCloakView):
         finally:
             self._updating = False
         self._updateControlState()
+
+    def setStageTimingWarning(self, message: str = '', tooltip: str = ''):
+        """One concise warning under the scan estimate; no popup on each run."""
+        message = str(message or '')
+        self.stageTimingWarningLabel.setText(('⚠ ' + message) if message else '')
+        self.stageTimingWarningLabel.setToolTip(str(tooltip or ''))
+        self.stageTimingWarningLabel.setVisible(bool(message))
 
     def setEstimate(self, seconds: float, note: str = '', refusal: str = ''):
         self._estimateRefusal = str(refusal or '')

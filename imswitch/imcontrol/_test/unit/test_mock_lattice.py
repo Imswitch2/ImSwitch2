@@ -22,7 +22,7 @@ from imswitch.imcontrol.model.managers.detectors._mock_lattice import (
     trigger_positions_um,
 )
 
-SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/simple_monalisa_mock_scan_setup.json'
+SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/mock/monalisa/simple_monalisa_mock_scan_setup.json'
 PROPERTY = {'axes': {'X': 5.0, 'Y': 5.0}, 'latticePeriodUm': 0.72}
 SHAPE = (120, 120)
 PIXEL_UM = 0.1

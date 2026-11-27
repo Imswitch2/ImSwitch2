@@ -5,6 +5,9 @@ class PickSetupController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def setFolder(self, folder):
+        self._widget.setFolder(folder)
+
     def setSetups(self, setupList):
         self._widget.setSetups(setupList)
 

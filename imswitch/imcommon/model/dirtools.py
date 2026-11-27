@@ -5,7 +5,7 @@ import os
 import sys
 from abc import ABC
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from shutil import copy2
 
 import imswitch
@@ -75,6 +75,14 @@ _defaultsHistoryPath = os.path.join(_baseDataFilesDir, 'user_defaults_history.js
 #: options name as its configuration.
 _REMOVABLE_ROOTS = ('scripts',)
 
+#: A default under one of these user-folder subdirectories that ImSwitch now
+#: ships at another path in the same subdirectory, under the same file name,
+#: was moved -- the example setups were sorted into subfolders. Its untouched
+#: copy at the old path is removed once the copy at the new path is in place;
+#: a rig whose options named it finds it again by its file name
+#: (imcontrol's configfiletools). An edited copy is the user's and stays.
+_MOVABLE_ROOTS = ('imcontrol_setups',)
+
 _userDefaultsSynced = False
 
 
@@ -119,6 +127,8 @@ class UserDefaultsReport:
     copied: list = field(default_factory=list)
     updated: list = field(default_factory=list)
     removed: list = field(default_factory=list)
+    #: 'old -> new' for each untouched copy of a moved default that was removed.
+    moved: list = field(default_factory=list)
     keptEdited: list = field(default_factory=list)
     failed: list = field(default_factory=list)
 
@@ -132,7 +142,9 @@ def syncUserDefaults(sourceRoot, userRoot, history, *, trash=None):
     * A copy with any other content was edited (by the user, or by ImSwitch
       saving a setup) and is kept.
     * A file ImSwitch no longer ships is moved to the trash when it is an
-      untouched shipped version and lives under a removable root (scripts).
+      untouched shipped version and lives under a removable root (scripts),
+      or when it was moved: ImSwitch ships it at another path under a
+      movable root (imcontrol_setups) and that copy is in place.
 
     ``trash(path)`` deletes a file; it defaults to send2trash. Every failure
     is recorded rather than raised: this runs at startup.
@@ -172,7 +184,9 @@ def syncUserDefaults(sourceRoot, userRoot, history, *, trash=None):
     if trash is None:
         from send2trash import send2trash as trash
     for relativePath in sorted(set(history) - set(shipped)):
-        if not relativePath.startswith(tuple(root + '/' for root in _REMOVABLE_ROOTS)):
+        newPath = movedDefaultPath(relativePath, shipped)
+        if newPath is None and not relativePath.startswith(
+                tuple(root + '/' for root in _REMOVABLE_ROOTS)):
             continue
         destination = userRoot / relativePath
         try:
@@ -180,12 +194,31 @@ def syncUserDefaults(sourceRoot, userRoot, history, *, trash=None):
                 continue
             if defaultFileHash(destination) not in history[relativePath]:
                 continue  # edited: it is the user's now
+            if newPath is not None and not (userRoot / newPath).is_file():
+                continue  # the copy at the new path failed: keep this one
             trash(str(destination))
-            report.removed.append(relativePath)
+            if newPath is None:
+                report.removed.append(relativePath)
+            else:
+                report.moved.append(f'{relativePath} -> {newPath}')
             _removeEmptyParents(destination.parent, userRoot)
         except Exception as error:  # send2trash raises its own types
             report.failed.append(f'{relativePath}: {error}')
     return report
+
+
+def movedDefaultPath(relativePath, shippedPaths):
+    """ Where ImSwitch now ships a default it no longer ships at
+    ``relativePath``: the one shipped path under the same movable root with
+    the same file name. None when there is no such path, or several. """
+    parts = PurePosixPath(relativePath).parts
+    if len(parts) < 2 or parts[0] not in _MOVABLE_ROOTS:
+        return None
+    matches = [path for path in shippedPaths
+               if path != relativePath
+               and PurePosixPath(path).parts[0] == parts[0]
+               and PurePosixPath(path).name == parts[-1]]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _removeEmptyParents(directory, userRoot):
@@ -220,7 +253,8 @@ def initUserFilesIfNeeded():
 
 
 def _logUserDefaultsReport(report):
-    if not (report.updated or report.removed or report.keptEdited or report.failed):
+    if not (report.updated or report.removed or report.moved or report.keptEdited
+            or report.failed):
         return
     from .logging import initLogger
 
@@ -231,6 +265,10 @@ def _logUserDefaultsReport(report):
     if report.removed:
         logger.info(f'Moved {len(report.removed)} default file(s) ImSwitch no longer ships, '
                     f'and you had not edited, to the trash: {", ".join(report.removed)}')
+    if report.moved:
+        logger.info(f'Sorted {len(report.moved)} default file(s) you had not edited into '
+                    f'their new folders (the old copies went to the trash): '
+                    f'{", ".join(report.moved)}')
     if report.keptEdited:
         logger.info(f'Kept {len(report.keptEdited)} edited file(s) that differ from this '
                     f'version\'s defaults (delete one and restart ImSwitch to get the '

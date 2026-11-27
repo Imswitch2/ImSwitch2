@@ -1,9 +1,39 @@
-This directory contains example setups for the hardware control module and
-processing-only ImProcess presets.
+Example hardware setups for the hardware control module, and processing-only
+ImProcess presets. ImSwitch copies them into the default setup folder,
+<Documents>/ImSwitchConfig/imcontrol_setups (~/ImSwitchConfig/imcontrol_setups
+outside Windows). Preferences > Setup folder… (in ImSwitch and in the Config
+Studio) points ImSwitch at another folder of setups; these examples stay in the
+default one.
 
-Processing-only presets:
-- fiji_processor.json
-- monalisa_processor.json
-- snouty_processor.json
-- widefieldstarss_processor.json
-- general_image_processing.json
+Setups may be sorted into subfolders of a setup folder. The setup in use is
+named by its path relative to the folder, e.g.
+mock/point_scanning/simple_mock_setup.json.
+
+example_no_hardware.json   The default: preselected on a first start, and the
+                           only setup at the top. Runs without hardware.
+
+mock/<modality>/           Hardware-free setups: simulated cameras, stages,
+                           lasers and NI-DAQ, for trying ImSwitch and for tests.
+  widefield/               example_mock.json
+  point_scanning/          simple_mock_setup.json, galvo_apd_mock_scan_setup.json,
+                           galvo_apd_simple_mock_scan_setup.json,
+                           mixed_hamamatsu_apd_mock_scan_setup.json
+  monalisa/                mock_scan_setup.json, mock_scan_monalisa_live.json,
+                           simple_monalisa_mock_scan_setup.json,
+                           hamamatsu_mock_scan_setup.json
+  lightsheet/              example_snouty_smart_modes.json
+
+real/<modality>/           Setups of real microscopes, to adapt to your own.
+  widefield/               example_coolLED.json
+  widefieldstarss/         example_kiralux_teensy.json
+  monalisa/                example_monalisa.json
+  sted/                    example_sted.json
+
+processing/                ImProcess on its own, no hardware: fiji_processor.json,
+                           general_image_processing.json, monalisa_processor.json,
+                           snouty_processor.json, widefieldstarss_processor.json
+
+Every file name is unique across the folders: a setup can be found by its file
+name alone (the scripting tutorials name their mock setup that way), and an
+options file that still names one of these by its old top-level name follows it
+into its subfolder.

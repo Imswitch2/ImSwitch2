@@ -45,13 +45,9 @@ class AutofocusController(ImConWidgetController):
         self.camera = self._setupInfo.autofocus.camera
         self.positioner = self._setupInfo.autofocus.positioner
 
-        # FOCUS lease instead of reaching past the DetectorsManager to the
-        # sub-manager: the camera is now refcounted, so an unrelated global
-        # stop can no longer disarm it underneath us. FOCUS leases are
-        # excluded from the user-visible acquisition signals.
-        self._focusAcqHandle = self._master.detectorsManager.acquire(
-            [self.camera], LeasePurpose.FOCUS
-        )
+        # The camera is not started here: building the panel touches no
+        # hardware. It runs only while a focus search does -- see
+        # _startFocusCameraAcquisition() and _onFocusStopped().
 
         self._widget.focusButton.clicked.connect(self._onFocusButton)
         self.sigFocusDone.connect(self._onFocusDone)
@@ -234,6 +230,9 @@ class AutofocusController(ImConWidgetController):
             return
         self._focusCancel.clear()
         self._yieldActuator = False
+        if not self._startFocusCameraAcquisition():
+            self._onFocusStopped()
+            return
         self._focusing = True
         self._widget.focusButton.setText('Focusing...')
         self._widget.focusButton.setEnabled(False)
@@ -251,6 +250,35 @@ class AutofocusController(ImConWidgetController):
                 f'Autofocus worker could not start: {e}', exc_info=True
             )
             self._onFocusStopped()
+
+    def _startFocusCameraAcquisition(self) -> bool:
+        """Take the FOCUS lease on the autofocus camera for one search.
+
+        A FOCUS lease instead of reaching past the DetectorsManager to the
+        sub-manager: the camera is refcounted, so an unrelated global stop
+        cannot disarm it underneath the search, and FOCUS leases are excluded
+        from the user-visible acquisition signals. Taken when a search starts
+        rather than when the panel is built, so that adding the panel --
+        at startup or while ImSwitch runs -- starts no camera; released by
+        _onFocusStopped() once the search is over (or, on close, by
+        closeEvent() / the worker). A camera that is already running for
+        another lease is not restarted: the lease only adds a reference.
+        Returns whether the camera is leased.
+        """
+        if self.__dict__.get('_focusAcqHandle') is not None:
+            return True
+        try:
+            self._focusAcqHandle = self._master.detectorsManager.acquire(
+                [self.camera], LeasePurpose.FOCUS
+            )
+        except Exception as e:
+            self._logger.error(
+                f'Autofocus could not start its camera '
+                f'{self.__dict__.get("camera")}: {e}',
+                exc_info=True,
+            )
+            return False
+        return True
 
     def _runFocus(self, rangez: float, resolutionz: float) -> None:
         positioner = None
@@ -375,6 +403,11 @@ class AutofocusController(ImConWidgetController):
 
     @QtCore.Slot()
     def _onFocusStopped(self):
+        # The search is over: let the camera go, as at close. Never while a
+        # search is still running -- an input rejected while one runs also
+        # lands here, and the worker is reading the camera.
+        if not self.__dict__.get('_focusing', False):
+            self._releaseFocusLease()
         if self.__dict__.get('_closed', False):
             return
         self._widget.focusButton.setText('Autofocus')
