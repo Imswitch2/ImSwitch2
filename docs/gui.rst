@@ -1856,13 +1856,72 @@ calibrations in ``calibrations/``, an action the catalogue's actions, and the
 start page offers the recipe *Threshold → move*; save there and the panel
 reloads the file when the designer closes. The panel checks the file against
 the setup before anything can be armed: the detector the ``live`` step names must exist, the
-actions and their parameters must be in the catalogue (``move-to``, ``snap``,
-``log``), every ``transform`` must be a calibration file in
+actions and their parameters must be in the catalogue (see *Actions* below), every ``transform`` must be a calibration file in
 ``calibrations/*.json`` (one transform per file, as the ``identity`` and
 ``scale-flip`` types write themselves), processing steps need the ImProcess
 module, and points may reach an action only through a ``transform`` whose
 target frame is the one the action takes. Problems are listed under the
 file name; **Reload** reads the file again after an edit.
+
+The panel is four boxes in the order you go through them: **Pipeline** (the
+file, what it does, its problems), **Parameters**, **Run** (mode, Arm/Stop,
+the state and what arming checked), **ROIs** -- shown only for a pipeline that
+measures ROIs (below) -- and the **Event log**.
+
+**Parameters.** A pipeline can expose step parameters, and they show in the
+Parameters box as ordinary controls with the parameter's bounds and unit: the
+shipped ``roi_dff_triggered_apd_scan.json`` exposes its *dF/F threshold*, the
+*frames above* it before a cell triggers, the *minimum time between scans*
+and the *scan budget*; ``threshold_move_demo.json`` its threshold and move
+interval. Exposing is done in the designer: right-click a step's parameter
+(a processing step's, a gate's or an action's) and choose **Expose as
+control…**; with nothing selected, the designer's *Controls* panel lists the
+exposed parameters, where you rename, label (the text the panel shows, and a
+help line) or **Stop exposing** them. In the file they are the workflow's
+``controls`` (schema 2: ``name``, ``targets`` -- each ``"step.param"`` --,
+``label``, ``help``); the type, default, bounds and unit are those of the
+parameter itself. A file without ``controls`` loads as before. A value set in
+the panel is checked against those bounds, kept for that pipeline file in the
+panel's own settings (``config/smart_pipeline.json``; the pipeline file is not
+changed -- save a new default in the designer) and comes back at the next
+start; a changed value shows its label in bold, and **Reset to file** goes back
+to the file's values. Arming uses the panel's values (the armed copy saved with
+the run's records carries them, and the event log's ``parameters`` line lists
+them). **While armed**, an edit is applied to the running pipeline between two
+frames and logged as a ``parameter`` event: a processing step or a gate uses it
+from the next frame, an action from its next start. Two exceptions, said in
+the box: an action parameter whose new value would change the devices the
+action needs (what arming reserved and checked) is kept for the next arm; and
+a setting a step only reads when it starts -- ``roi-dff``'s mask settings or
+baseline length -- takes effect at the next arm even though it is applied.
+
+**Actions** (the designer lists them by category, *Category › Label (id)*):
+
+- *Scan* -- ``run-scan`` (below).
+- *Motion* -- ``move-to``: positioner axes to the first point.
+- *Light* -- ``laser``: a laser's emission on or off, and with ``set_power``
+  its live power first, through the Laser panel (its row and the recorded
+  metadata follow; the panel's own rule, read-only while a scan uses the
+  lasers, refuses it then); the emission state is read back.
+- *Devices* -- ``flip-mirror``: a flip mirror, filter wheel or light-path
+  switch to ``position`` (0..N-1; the designer lists each mirror's positions)
+  through the Flip Mirrors panel, followers included -- e.g. switching
+  etSNOUTY's beam path when a cell triggers; ``setup-mode``: apply a saved setup
+  mode as the Setup Modes panel does (what etSNOUTY does on an event).
+- *Recording* -- ``snap``.
+- *Other* -- ``wait``, ``log``.
+
+``laser``, ``flip-mirror`` and ``setup-mode`` are offered only on a setup that
+has a laser, a flip mirror, or setup modes. Arming in Validate or Experiment
+refuses a pipeline whose action names a device the setup does not have (in
+Visualize actions are skipped and it arms); Validate logs ``would set flip
+mirror 'Snouty' to position 1 (light sheet)`` / ``would switch laser '488'
+off`` / ``would apply setup mode 'event'``. They go through the panels and
+reserve nothing (a laser reservation would refuse the panel's own command;
+flip mirrors have no reservation key), like ``run-scan``. A device that
+refuses -- a mirror that does not move, a laser that does not switch, a setup
+mode component that fails -- fails the action with the reason in the log, and
+the run stops as for any failed action; nothing else is affected.
 
 **Mode** decides what arming does:
 
@@ -1986,13 +2045,19 @@ triggered cell only) → gates ``triggered`` (at least one row), ``rest``
 #. Arm in *Experiment*. Scans are started automatically: keep ``budget`` low
    for the first run.
 
-*Your ROIs (the panel's ROIs box).* Segmentation fails on real samples --
+*Your ROIs (the panel's ROIs box).* The box is shown only for a pipeline
+whose ``roi-dff`` step measures a segmented or a file mask; a pipeline that
+needs no ROIs -- a whole-frame threshold, a processor that finds its own
+points, ``roi-dff`` reading labels another step makes (``mask_source:
+input``) -- shows no ROIs box, and arming asks for no ROIs and no
+segmentation. Segmentation fails on real samples --
 dim, touching or out-of-focus cells, structured background -- so the ROIs are
 yours to see and fix before arming:
 
 * **Segment now** averages the next *Average frames* camera frames (the live
   view of the pipeline's camera must be running) and segments them with the
-  form's *Threshold* (otsu, triangle, yen, local, or manual with its value),
+  settings under **Settings** (folded away; the form starts with the pipeline's
+  own): *Mask threshold* (otsu, triangle, yen, local, or manual with its value),
   *Smooth σ*, *Min area*, *Fill holes* and *Drop ROIs on the border* -- the
   form starts with the pipeline's own ``roi-dff`` settings. Drawn ROIs are
   kept; the segmented ones are replaced.

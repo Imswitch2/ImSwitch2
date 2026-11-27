@@ -811,8 +811,10 @@ Building
   **frame** around the selected steps; drag its title to move it with what
   it holds, its corner to resize it, double-click the title to rename it.
 * **F** fits the workflow in the window, **H** (*Tidy up*) lays it out left
-  to right; the wheel zooms, the middle button or Space+drag pans. **Help →
-  Keyboard shortcuts** lists them all.
+  to right; the wheel zooms, dragging with the middle button (press the
+  wheel) or Space+drag pans (the empty canvas and the zoom controls' tooltip
+  say so). A sideways wheel (a tilted wheel, a mouse driver's auto-scroll)
+  does not move the canvas. **Help → Keyboard shortcuts** lists them all.
 
 The **inspector** on the right shows the selected step in words — what it
 does, what it takes and makes — then what it reads (each input with its

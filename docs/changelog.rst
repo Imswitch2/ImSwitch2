@@ -7,6 +7,17 @@ Unreleased
 
 **Fixes**
 
+- **Workflow editor: pressing the wheel to pan no longer drifts the canvas
+  sideways.**  Many mice report a horizontal (tilt) wheel event when the wheel
+  is pressed, repeated while it is held, and mouse drivers' auto-scroll sends
+  wheel events too; the canvas handed every wheel event without a vertical
+  part to the scroll area, which scrolled the view sideways with the pointer
+  standing still.  The canvas now uses the wheel only to zoom, ignores it
+  while panning, ends a pan whose button release went elsewhere, and treats a
+  quick second middle press (which Qt delivers as a double-click) as a pan
+  instead of opening the step search.  The empty canvas and the zoom controls'
+  tooltip say how to pan.  Shared by ImProcess and the smart-pipeline designer.
+
 - **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
   used to do the whole stop on the thread that took the click: stop and close
   every NI-DAQ task (up to 2 s each), join the waiter threads, write the lines
@@ -65,6 +76,31 @@ Unreleased
   dialog instead of raw JSON under Extras.
 
 **New Features**
+
+- **Smart pipeline: exposed parameters.**  A pipeline can expose step
+  parameters -- of processing steps, gates and actions -- as workflow
+  controls (schema 2); the designer exposes, renames, labels and un-exposes
+  them (*Expose as control…*, the *Controls* panel), and the Smart Pipeline
+  panel shows them in a new **Parameters** box with the parameter's bounds and
+  unit.  A value set there is kept per pipeline file, used at the next arm,
+  and applied to an armed pipeline from the next frame (logged as a
+  ``parameter`` event) unless it would change an action's devices.  The
+  shipped ``roi_dff_triggered_apd_scan.json`` exposes its dF/F threshold,
+  frames above it, the minimum time between scans and the scan budget; the
+  mock demo its threshold and move interval.  Files without controls load as
+  before.
+- **Smart pipeline: flip-mirror, laser and setup-mode actions.**  On a setup
+  with the device, a trigger can move a flip mirror (or filter wheel, light
+  path) to a position, switch a laser on or off (optionally at a power), or
+  apply a saved setup mode -- what etSNOUTY does on an event -- each through
+  its panel, with a dry-run line, a device check at arm and a soft failure
+  when the device refuses.  The designer lists actions by category (Scan,
+  Motion, Light, Devices, Recording, Other).
+- **Smart Pipeline panel layout.**  The panel is grouped into Pipeline,
+  Parameters, Run, ROIs and Event log boxes; the ROIs box (and the ROI
+  preflight) appears only for a pipeline that measures a ROI set -- a
+  pipeline without ROIs needs no segmentation to arm; the segmentation
+  settings fold away; the panel is narrower.
 
 - **Spot counting and a spot-triggered confocal revisit.** Two ImProcess
   processors share the SMLM localizer's net-gradient detection (without the
