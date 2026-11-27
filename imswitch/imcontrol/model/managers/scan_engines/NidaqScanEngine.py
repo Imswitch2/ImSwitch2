@@ -443,8 +443,16 @@ class NidaqScanEngine(ScanEngine):
     def abort(self) -> str:
         # The run stops now: the NI-DAQ ends it, brings its outputs to rest
         # and ends it stopped (plan scan-stop-now, Lenny 2026-10-18).
-        self._nidaq.stopScan()
+        # The panel's thread asks, a worker waits for the driver: the same
+        # steps in the same order, the end signals from the manager's thread.
+        self._nidaq.stopScan(background=True)
         return 'immediate'
+
+    @property
+    def stopInFlight(self) -> bool:
+        """Whether an ``abort`` is still taking the run down on a worker
+        thread; its end then arrives as the engine's stopped and done signals."""
+        return bool(getattr(getattr(self, '_nidaq', None), '_stopInFlight', False))
 
     @property
     def outcome(self):

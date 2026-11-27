@@ -76,6 +76,40 @@ class _TransportBackedLifecycle:
     disconnect = shutdown = connect
 
 
+class _NidaqResetLifecycle:
+    """"Reset NI-DAQ" on the NI-DAQ board rows of the Hardware status window.
+
+    Offered as the row's reconnect: it ends the run, closes every registered
+    task and returns the manager to idle, or says why it cannot. It never
+    takes the scan/recording guard: it is the way out of a scan that never
+    ended, and the manager itself refuses while a move or arm is writing.
+    """
+
+    affectsAcquisition = False
+
+    def __init__(self, hardware_id, manager) -> None:
+        self.hardware_id = hardware_id
+        self._manager = manager
+
+    @property
+    def capabilities(self) -> DeviceLifecycleCapabilities:
+        return DeviceLifecycleCapabilities(reconnect=True)
+
+    def reconnect(self):
+        idle, message = self._manager.resetDaq()
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=bool(idle),
+            summary=message,
+        )
+
+    def connect(self):
+        raise DeviceLifecycleNotSupportedError("Not supported.")
+
+    disconnect = probe = shutdown = connect
+
+
 #: Actions the service runs (shutdown is not offered). ``probe`` is a check
 #: that replaces nothing: it is serialised and ownership-checked like a
 #: transition, but never takes the acquisition gate.
@@ -161,7 +195,17 @@ class DeviceLifecycleService:
                     manager = self._supervisor.getManager(source_id)
                 except KeyError:
                     # Synthetic graph endpoints (currently NI-DAQ boards) do
-                    # not correspond one-to-one with manager objects.
+                    # not correspond one-to-one with manager objects; the
+                    # board rows get the DAQ reset.
+                    nidaq = getattr(self._master, "nidaqManager", None)
+                    if (
+                        source_id.kind == "nidaq_board"
+                        and callable(getattr(nidaq, "resetDaq", None))
+                        and not lifecycles
+                    ):
+                        lifecycles.append(
+                            _NidaqResetLifecycle(hardware_id, nidaq)
+                        )
                     continue
                 provider = getattr(type(manager), "getDeviceLifecycle", None)
                 if not callable(provider):

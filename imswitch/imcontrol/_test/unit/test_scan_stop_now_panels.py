@@ -98,3 +98,46 @@ def test_the_simple_point_scan_stop_ends_the_frame_now(qtbot):
         assert rig.master.nidaqManager.runStopped
     finally:
         rig.close()
+
+
+@pytest.mark.parametrize('panel', ['advanced', 'expert'])
+def test_a_stop_between_two_repeat_frames_ends_the_run_stopped_not_failed(
+        panel, qtbot, caplog, monkeypatch):
+    """The rig logged 'Scan failed' for a Stop that landed in the re-arm gap
+    between two Live frames (#83, the Simple panel): the abort failed the
+    held run. On every panel the pending re-arm ends it, stopped."""
+    rig = AdvancedRig() if panel == 'advanced' else ExpertRig()
+    try:
+        if panel == 'advanced':
+            rig.load(lengths=[2.0, 2.0, 0.0], steps=[1.0, 1.0, 1.0], dwell=1e-3)
+        else:
+            rig.scan.setProgram(_ms_resolft(rig))
+        arm, scanFailed = rig.scan._armRepeatScan, rig.scan.scanFailed
+        stoppedInGap, failed, started = [], [], []
+
+        def armThenStop():
+            arm()                                       # the next frame is pending
+            if not stoppedInGap:
+                stoppedInGap.append(rig.scan._repeatPending)
+                rig.widget.stopButton.click()
+
+        def countFailed(*args, **kwargs):
+            failed.append(1)
+            return scanFailed(*args, **kwargs)
+
+        monkeypatch.setattr(rig.scan, '_armRepeatScan', armThenStop)
+        monkeypatch.setattr(rig.scan, 'scanFailed', countFailed)
+        rig.channel.sigScanStarted.connect(lambda *a: started.append(1))
+        rig.widget.repeatBox.setChecked(True)
+        rig.ended.clear()
+        rig.scan.runScanAdvanced()
+        assert _until(lambda: bool(rig.ended), 10.0)
+        QtTest.QTest.qWait(300)                         # no frame after the stop
+        assert stoppedInGap == [True]
+        assert rig.ended == [1] and started == [1]
+        assert failed == [] and 'Scan failed' not in caplog.text
+        assert rig.scan.runWasStopped()
+        assert not rig.scan.isRunning and rig.scan.shutdownComplete()
+        assert rig.widget.scanButton.isEnabled() and not rig.widget.stopButton.isEnabled()
+    finally:
+        rig.close()

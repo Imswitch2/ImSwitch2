@@ -8,6 +8,9 @@ import imswitch
 from imswitch.imcommon import prepareApp, launchApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel, MultiModuleWindowController
 from imswitch.imcommon.model import dirtools, modulesconfigtools, pythontools, initLogger
+from imswitch.imcommon.model.gui_diagnostics import (
+    startGuiStallWatchdog, stallThresholdFromEnvironment,
+)
 from imswitch.imcommon.model.logging import attachLogFile, setLogLevel
 from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
@@ -32,6 +35,12 @@ def main():
                              'exactly one subfolder holds. Anything outside the '
                              'setup folder is refused. '
                              f'"{_CHOOSE_SETUP}" asks for it in the setup dialog.')
+    parser.add_argument('--gui-stall-seconds', type=float, default=None, metavar='N',
+                        help='Diagnostics: when the window has not handled events for N '
+                             'seconds, write the stacks of all threads to '
+                             'logs/gui_stall.log in the ImSwitch user folder (again every N '
+                             'seconds while it lasts). Off by default. Overrides the '
+                             'IMSWITCH_GUI_STALL_SECONDS environment variable.')
     args, _unused = parser.parse_known_args()
     if args.debug:
         setLogLevel('DEBUG')
@@ -46,6 +55,14 @@ def main():
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
     app = prepareApp(scale=args.scale)
+
+    stallSeconds = (args.gui_stall_seconds if args.gui_stall_seconds is not None
+                    else stallThresholdFromEnvironment())
+    if stallSeconds:
+        # Kept referenced for the life of the process: the heartbeat timer and
+        # the watching thread stop when it is collected.
+        stallWatchdog = startGuiStallWatchdog(
+            stallSeconds, os.path.join(dirtools.UserFileDirs.Root, 'logs'))
 
     if args.setup is not None:
         # After prepareApp: importing imcontrol pulls in the Qt bindings it picks.

@@ -73,6 +73,7 @@ from imswitch.imcontrol.model.scan_stop import axis_limits_volts, rest_to_rest_r
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.gui_diagnostics import timedStep
 from .mockscan import ScanSimulationCoordinator
 
 
@@ -268,6 +269,10 @@ class NidaqManager(SignalInterface):
     # contract every engine follows for a stopped run, ScanEngine).
     sigScanStopped = Signal()
 
+    # Worker thread -> this manager's thread: a background stop's hardware part
+    # is over (stopScan(background=True)).
+    _sigStopHardwareDone = Signal()
+
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
@@ -325,6 +330,12 @@ class NidaqManager(SignalInterface):
         # can wait with a deadline without starting concurrent close attempts
         # against the same native handle.
         self._taskTeardownOperations = {}
+        # One-shot outputs between their reservation and their teardown: what
+        # is registered while this is non-zero belongs to a live caller.
+        self._oneShotActive = 0
+        # Who set busy and since when, so a refusal can say what holds the DAQ.
+        self._busyHolder = None
+        self._busySince = None
         self._scanGeneration = 0
         self._scanTransactionActive = False
         self._scanBuildFailure = None
@@ -340,6 +351,9 @@ class NidaqManager(SignalInterface):
         # what that stop did (lastStop).
         self._runStopped = False
         self._lastStop = None
+        self._stopInFlight = False
+        self._stopThread = None
+        self._sigStopHardwareDone.connect(self._onStopHardwareDone)
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
         self.__scanSimulator = None
@@ -465,6 +479,15 @@ class NidaqManager(SignalInterface):
         state = object.__getattribute__(self, '__dict__')
         finalizeLock = self._getFinalizeLock()
 
+        # A stop still writing the outputs to rest finishes first (bounded):
+        # shutting down under it would refuse those writes and leave the
+        # lines where they were. Joined before the lifecycle lock is taken,
+        # which the stop's own one-shot writes need.
+        stopThread = state.get('_stopThread')
+        if (stopThread is not None and stopThread.is_alive()
+                and stopThread is not threading.current_thread()):
+            stopThread.join(max(0, int(waiterTimeoutMs)) / 1000)
+
         with finalizeLock:
             if state.get('_finalized', False):
                 return bool(state.get('_finalizeResult', True))
@@ -579,7 +602,8 @@ class NidaqManager(SignalInterface):
             if state.get('_taskTeardownOperations', {}):
                 raise NidaqManagerError(
                     'Cannot create NI-DAQ resources while a previous native '
-                    'task teardown is unresolved'
+                    'task teardown is unresolved: '
+                    + ', '.join(sorted(state['_taskTeardownOperations']))
                 )
 
     def close(self, waiterTimeoutMs=_TASK_WAITER_JOIN_TIMEOUT_MS):
@@ -1425,6 +1449,154 @@ class NidaqManager(SignalInterface):
         ttlDic = (signalDic or {}).get('TTLCycleSignalsDict', {}) or {}
         return list(ttlDic.keys())
 
+    def _markBusyHolder(self, holder):
+        """Remember what claimed the DAQ (caller holds ``_scanStateLock``)."""
+        self._busyHolder = holder
+        self._busySince = time.monotonic()
+
+    def describeBusy(self):
+        """Say what holds the DAQ, for a refusal's message and the log."""
+        with self._scanStateLock:
+            holder = self.__dict__.get('_busyHolder') or 'an unknown operation'
+            since = self.__dict__.get('_busySince')
+            age = (
+                f' for {time.monotonic() - since:.1f} s'
+                if since is not None else ''
+            )
+            tasks = sorted(self.__dict__.get('tasks', {}))
+            pending = sorted(self.__dict__.get('_taskTeardownOperations', {}))
+            if self.__dict__.get('_shutdownRequested', False):
+                state = 'shutting down'
+            elif self.__dict__.get('_scanTransactionActive', False):
+                state = 'arming'
+            elif self.__dict__.get('_stopInFlight', False):
+                state = 'stopping'
+            elif self.__dict__.get('signalSent') and (tasks or pending):
+                state = 'finished but its tasks are not closed'
+            else:
+                state = 'running'
+            text = f'{holder} ({state}{age}'
+            if tasks:
+                text += f'; open tasks: {", ".join(tasks)}'
+            if pending:
+                text += f'; native teardown unresolved: {", ".join(pending)}'
+            return text + ')'
+
+    def resetDaq(self):
+        """Operator recovery ("Reset NI-DAQ"): end whatever runs, close every
+        registered task, put the outputs to rest, and report the truth.
+
+        Returns ``(idle, message)``. Idle is claimed only when no native task
+        is registered or still in a driver call; a close that fails or does
+        not return leaves the manager busy and says which task.
+        """
+        with self._scanStateLock:
+            if self._shutdownRequested:
+                return False, 'The NI-DAQ manager is shutting down.'
+            if self._oneShotActive > 0 or self._scanTransactionActive:
+                return False, (
+                    'The NI-DAQ is arming a scan or writing an output right '
+                    f'now: {self.describeBusy()}. Try again in a moment.'
+                )
+            snapshot = {
+                'digital': self.__dict__.get('_lastDigitalWrite') or ((), (), 0),
+                'lines': list(self.__dict__.get('_lastDigitalLines') or ()),
+                'analog': self.__dict__.get('_lastAnalogWrite') or ((), (), 0),
+                'channels': list(self.__dict__.get('_lastAnalogChannels') or ()),
+            }
+            hadWork = bool(self.busy or self.tasks or self._taskTeardownOperations)
+        self.__logger.warning('Reset NI-DAQ requested: %s',
+                              self.describeBusy() if hadWork else 'idle')
+        # A run in progress ends the way Stop ends it (its listeners hear
+        # sigScanStopped/sigScanDone), tasks closed first.
+        self.stopScan()
+        idle = self._recoverStaleDaqState()
+        with self._scanStateLock:
+            idle = idle and not self.tasks and not self._taskTeardownOperations
+            if not idle:
+                return False, (
+                    'NI-DAQ tasks are still open and could not be closed: '
+                    f'{self.describeBusy()}. The driver did not release them; '
+                    'restart ImSwitch if this persists.'
+                )
+        if hadWork:
+            # Rest state of the last run's lines and lasers (positions are
+            # unknown here, so scanners are left where they are).
+            stop = {'found': {}, 'left': {}, 'held': {}, 'errors': []}
+            self._writeStoppedOutputs(
+                snapshot['digital'], snapshot['lines'], snapshot['analog'],
+                snapshot['channels'], {}, stop)
+            if stop['errors']:
+                return True, ('NI-DAQ idle again, but ' + '; '.join(stop['errors']))
+        return True, 'NI-DAQ reset: no task open, ready for the next scan.'
+
+    def _recoverStaleDaqState(self):
+        """Close what a finished or failed operation left registered.
+
+        A task whose close failed or timed out, or a teardown that ended after
+        its caller gave up waiting, keeps the manager busy fail-closed -- and
+        nothing retried it, so one transient driver error refused every later
+        scan and move until restart. Called where a new operation or a Stop
+        meets that state. Never touches a scan in flight, a build, a stop in
+        progress, a live one-shot or a shutdown, and never reports idle while
+        a task is still open: busy is cleared only once the same bounded
+        close that stop and rollback use has actually succeeded.
+        Returns whether the manager is idle.
+        """
+        if '_scanStateLock' not in self.__dict__:
+            return False  # a shell built without its hardware initializer
+        with self._getFinalizeLock():
+            with self._scanStateLock:
+                if (
+                    self._shutdownRequested
+                    or self._scanTransactionActive
+                    or self.__dict__.get('_stopInFlight', False)
+                    or self._oneShotActive > 0
+                ):
+                    return False
+                operations = self.__dict__.get('_taskTeardownOperations', {})
+                if not (self.busy or self.tasks or operations):
+                    return True
+                simulator = self.__scanSimulator
+                scanGenerations = [
+                    self._taskGenerations.get(name) for name in self.tasks
+                ] + [op.get('generation') for op in operations.values()]
+                scanTasks = any(
+                    not isinstance(generation, tuple)
+                    for generation in scanGenerations
+                )
+                if not self.signalSent and (
+                    scanTasks
+                    or (simulator is not None and simulator.isActive)
+                ):
+                    return False
+                if any(not op['event'].is_set()
+                       for op in operations.values()):
+                    return False
+                leftover = sorted(set(self.tasks) | set(operations))
+            self.__logger.warning(
+                'NI-DAQ manager is busy with nothing running (left over: '
+                '%s); closing it.', ', '.join(leftover) or 'no task',
+            )
+            cleaned = self._cleanupScanResources()
+            with self._scanStateLock:
+                if (
+                    cleaned
+                    and not self._shutdownRequested
+                    and not self._scanTransactionActive
+                    and self._oneShotActive == 0
+                    and not self.tasks
+                    and not self.__dict__.get('_taskTeardownOperations', {})
+                ):
+                    self.busy = False
+                    self.__logger.warning('NI-DAQ manager is idle again.')
+                    return True
+            self.__logger.error(
+                'NI-DAQ manager could not close its left-over tasks; it stays '
+                'busy.'
+            )
+            return False
+
     def _reserveOneShotTask(self, taskName, createTask):
         """Create and register one short output task before native I/O.
 
@@ -1437,9 +1609,13 @@ class NidaqManager(SignalInterface):
             self._assertResourceCreationAllowed()
             with self._scanStateLock:
                 if self.busy:
+                    holder = self.describeBusy()
+                    self.__logger.warning(
+                        'NI-DAQ task "%s" refused: busy with %s',
+                        taskName, holder)
                     raise ScanBusyError(
                         f'Cannot start NI-DAQ task "{taskName}": the manager '
-                        'is busy with another DAQ operation'
+                        f'is busy with another DAQ operation: {holder}'
                     )
                 if (
                     taskName in self.tasks
@@ -1452,6 +1628,8 @@ class NidaqManager(SignalInterface):
                         f'NI-DAQ task "{taskName}" is already registered'
                     )
                 self.busy = True
+                self._markBusyHolder(f'one-shot "{taskName}"')
+                self._oneShotActive += 1
                 self._oneShotGeneration = (
                     getattr(self, '_oneShotGeneration', 0) + 1
                 )
@@ -1461,6 +1639,7 @@ class NidaqManager(SignalInterface):
                 task = createTask()
             except BaseException:
                 with self._scanStateLock:
+                    self._oneShotActive -= 1
                     if not self._shutdownRequested:
                         self.busy = False
                 raise
@@ -1474,6 +1653,9 @@ class NidaqManager(SignalInterface):
     def _finishOneShotTaskState(self, taskName, generation):
         """Release coarse busy state only after this exact task is gone."""
         with self._scanStateLock:
+            # This caller is done with the DAQ; whatever it leaves registered
+            # below is residue that _recoverStaleDaqState may retry closing.
+            self._oneShotActive = max(0, self._oneShotActive - 1)
             operation = self.__dict__.get(
                 '_taskTeardownOperations', {}
             ).get(taskName)
@@ -1554,6 +1736,7 @@ class NidaqManager(SignalInterface):
         locally. With ``raise_on_error=True`` the original DAQ error is raised.
         """
         with self._getFinalizeLock():
+            self._recoverStaleDaqState()
             self._assertResourceCreationAllowed()
             device = self.__setupInfo.getDevice(target)
             line = device.getDigitalLine()
@@ -1617,6 +1800,7 @@ class NidaqManager(SignalInterface):
         locally. With ``raise_on_error=True`` the original DAQ error is raised.
         """
         with self._getFinalizeLock():
+            self._recoverStaleDaqState()
             self._assertResourceCreationAllowed()
             channel = self.__setupInfo.getDevice(target).getAnalogChannel()
         if channel is None:
@@ -1673,6 +1857,9 @@ class NidaqManager(SignalInterface):
         # scan could otherwise register hardware immediately after that
         # snapshot and leave a "finalized" manager owning a live task.
         with self._getFinalizeLock():
+            # A busy flag with nothing running behind it is a failed close,
+            # not a scan: retry it before refusing this start.
+            self._recoverStaleDaqState()
             self._assertResourceCreationAllowed()
             return self._runScanUnlocked(signalDic, scanInfoDict)
 
@@ -1702,9 +1889,13 @@ class NidaqManager(SignalInterface):
                     'Cannot start scan: the NI-DAQ manager is shutting down'
                 )
             if self.busy:
+                holder = self.describeBusy()
+                logger = self.__dict__.get('_NidaqManager__logger')
+                if logger is not None:
+                    logger.warning('Scan start refused: busy with %s', holder)
                 raise ScanBusyError(
                     'Cannot start scan: the NI-DAQ manager is busy with another '
-                    'scan or DAQ operation'
+                    f'scan or DAQ operation: {holder}'
                 )
             # Preserve the pre-existing refusal contract before consulting the
             # hardware backend. A scan that is already busy must report BUSY,
@@ -1713,6 +1904,7 @@ class NidaqManager(SignalInterface):
             self._scanGeneration += 1
             scanGeneration = self._scanGeneration
             self.busy = True
+            self._markBusyHolder(f'scan #{scanGeneration}')
             self.signalSent = False
             self._runStopped = False
             self._scanTransactionActive = True
@@ -1998,7 +2190,9 @@ class NidaqManager(SignalInterface):
             self.__logger.debug('Nidaq scan started!')
             if not self.__simulating and not self.tasks:
                 self.scanDone()
-        except Exception:
+        except BaseException:
+            # BaseException too: whatever ends the arming, the rollback runs
+            # and busy never outlives the transaction.
             self.__logger.error(traceback.format_exc())
             with self._scanStateLock:
                 self._scanTransactionActive = False
@@ -2292,7 +2486,7 @@ class NidaqManager(SignalInterface):
         stop = self.__dict__.get('_lastStop')
         return None if stop is None else copy.deepcopy(stop)
 
-    def stopScan(self) -> bool:
+    def stopScan(self, *, background=False) -> bool:
         """Stop the run in progress now (plan scan-stop-now, Lenny 2026-10-18).
 
         Every task of the run stops and closes -- the rollback a failed run
@@ -2305,20 +2499,88 @@ class NidaqManager(SignalInterface):
         ``acc_max``. A scanner that declares no limits, or whose position the
         driver does not report, stays where it is, and the log says so. The
         run then ends stopped: ``sigScanStopped``, then ``sigScanDone``.
-        Returns whether there was a run to stop."""
+        Returns whether there was a run to stop.
+
+        Every step above waits on the driver: a task's stop and close (each
+        to ``_TASK_DRIVER_TEARDOWN_TIMEOUT_MS``), the waiter threads' joins,
+        and the rest writes, which play out for as long as the ramp. A GUI
+        caller passes ``background=True``: the same steps then run in the
+        same order on one worker thread, and the two end signals are sent
+        from this manager's own thread when it is done -- the thread the run's
+        other signals come from -- so no handler sees a different thread than
+        before. The stop is accepted at once (the run is marked stopped, and
+        a second stop is refused until it ends); ``False`` is returned for a
+        second stop while one is in flight, as for one with nothing left to
+        stop. A new scan is refused as busy until the stop has ended.
+        """
         with self._scanStateLock:
             simulator = self.__scanSimulator
             simulated = simulator is not None and simulator.isActive
-            if self.signalSent or not (self.tasks or simulated):
+            nothingToStop = (
+                self.signalSent or self.__dict__.get('_stopInFlight', False)
+                or not (self.tasks or simulated)
+            )
+        if nothingToStop:
+            # No run to stop; Stop is still the way out of a busy state a
+            # failed close left behind. Outside the state lock: it takes the
+            # lifecycle lock first, as every other entry point does.
+            self._recoverStaleDaqState()
+            return False
+        with self._scanStateLock:
+            if self.signalSent or self.__dict__.get('_stopInFlight', False):
                 return False
             self._runStopped = True
-            analog = self.__dict__.get('_lastAnalogWrite') or ((), (), 0)
-            channels = list(self.__dict__.get('_lastAnalogChannels') or ())
-            digital = self.__dict__.get('_lastDigitalWrite') or ((), (), 0)
-            lines = list(self.__dict__.get('_lastDigitalLines') or ())
-            aoTask = self.tasks.get('ao')
-        found = self._outputPositionsAtStop(aoTask, analog, simulator if simulated else None)
-        cleanupSucceeded = self._cleanupScanResources()
+            self._stopInFlight = True
+            # Terminal from here on: a completion arriving while the stop is
+            # still taking the tasks down must not end the run a second time.
+            self.signalSent = True
+            snapshot = {
+                'analog': self.__dict__.get('_lastAnalogWrite') or ((), (), 0),
+                'channels': list(self.__dict__.get('_lastAnalogChannels') or ()),
+                'digital': self.__dict__.get('_lastDigitalWrite') or ((), (), 0),
+                'lines': list(self.__dict__.get('_lastDigitalLines') or ()),
+                'aoTask': self.tasks.get('ao'),
+                'simulator': simulator if simulated else None,
+            }
+        if not background:
+            try:
+                self._runScanStop(snapshot)
+            finally:
+                self._endScanStop()
+            return True
+        thread = threading.Thread(
+            target=self._runScanStopInBackground, args=(snapshot,),
+            name='NidaqScanStop', daemon=True)
+        self._stopThread = thread
+        try:
+            thread.start()
+        except BaseException:
+            # No thread to do it: stop here rather than leave the run armed.
+            try:
+                self._runScanStop(snapshot)
+            finally:
+                self._endScanStop()
+        return True
+
+    def _runScanStopInBackground(self, snapshot):
+        try:
+            self._runScanStop(snapshot)
+        except BaseException:
+            self.__logger.error('The scan stop failed', exc_info=True)
+        finally:
+            # Queued to this manager's thread: the run's end is published from
+            # where its other signals are.
+            self._sigStopHardwareDone.emit()
+
+    def _runScanStop(self, snapshot):
+        """The hardware part of a stop, in the order it has always had."""
+        analog, channels = snapshot['analog'], snapshot['channels']
+        digital, lines = snapshot['digital'], snapshot['lines']
+        with timedStep('scan stop', 'where the outputs were'):
+            found = self._outputPositionsAtStop(
+                snapshot['aoTask'], analog, snapshot['simulator'])
+        with timedStep('scan stop', 'stop and close the run\'s tasks'):
+            cleanupSucceeded = self._cleanupScanResources()
         with self._scanStateLock:
             self._scanTransactionActive = False
             # Free for the safe-state writes below; a run whose tasks did not
@@ -2326,14 +2588,25 @@ class NidaqManager(SignalInterface):
             self.busy = not cleanupSucceeded
         stop = {'found': dict(found), 'left': {}, 'held': {}, 'errors': []}
         if cleanupSucceeded:
-            self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
+            with timedStep('scan stop', 'lines off and scanners to rest'):
+                self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
         else:
-            stop['errors'].append('the run\'s tasks did not all close; no output was written')
+            stop['errors'].append('the run\'s tasks did not all close; no output was written '
+                                  '(use Reset NI-DAQ in the Hardware status window)')
         self._lastStop = stop
         self._logStop(stop)
+
+    def _onStopHardwareDone(self):
+        self._endScanStop()
+
+    def _endScanStop(self):
+        """Publish the stopped run's end (on the manager's own thread)."""
+        with self._scanStateLock:
+            if not self.__dict__.get('_stopInFlight', False):
+                return
+            self._stopInFlight = False
         self.sigScanStopped.emit()
         self.sigScanDone.emit()
-        return True
 
     def _outputPositionsAtStop(self, aoTask, analog, simulator):
         """Each analog output's volts where the run is now: the sample its
