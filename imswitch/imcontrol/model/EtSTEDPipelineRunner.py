@@ -1,8 +1,11 @@
 import importlib
+import importlib.util
+import sys
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from inspect import signature
+from pathlib import Path
 
 import numpy as np
 
@@ -29,6 +32,46 @@ class EtSTEDPipelineRunner:
     def load(self, name: str) -> dict:
         """Load a pipeline by module/function name and return its signature parameters."""
         pipeline = getattr(importlib.import_module(name), name)
+        parameters = signature(pipeline).parameters
+        self._validate_signature(name, parameters)
+        self.name = name
+        self.function = pipeline
+        self.parameters = parameters
+        return parameters
+
+    def load_file(self, path) -> dict:
+        """Load a pipeline from its file (``<name>.py`` defining ``<name>``).
+
+        What :meth:`load` does for a module found on ``sys.path``, for a caller
+        that has the file: the module gets a private name (so two folders can
+        hold a pipeline of the same name, and an edited file is read again),
+        and the file's folder is put on ``sys.path`` as etSTED does, for a
+        pipeline that imports a helper next to it. The signature check and
+        everything after are the same.
+        """
+        path = Path(path)
+        name = path.stem
+        if not name.isidentifier():
+            raise RuntimeError(f'{path.name}: the file name must be the pipeline function name '
+                               f'(a valid Python name), not {name!r}.')
+        folder = str(path.resolve().parent)
+        if folder not in sys.path:
+            sys.path.append(folder)
+        module_name = f'_etsted_pipeline_{abs(hash(str(path.resolve())))}_{name}'
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f'Cannot load the pipeline file {path}.')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            raise
+        pipeline = getattr(module, name, None)
+        if not callable(pipeline):
+            raise RuntimeError(f'{path.name} must define a function called {name!r} '
+                               f'(the file name without .py).')
         parameters = signature(pipeline).parameters
         self._validate_signature(name, parameters)
         self.name = name

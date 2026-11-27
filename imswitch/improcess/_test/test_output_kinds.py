@@ -156,6 +156,15 @@ def _fixture(pid, processor, tmp_path, monkeypatch):
         return [LocalizationResult("storm", _drifting_cloud(), pixel_size_nm=100.0)], {
             **params, "segments": 8, "render_pixel_size_nm": 10.0,
         }
+    if pid == "etsted-pipeline":
+        # It runs the pipeline file it names: a minimal one, on a camera frame.
+        path = tmp_path / "fixed_event.py"
+        path.write_text(
+            "import numpy as np\n"
+            "def fixed_event(img, prev_frames, binary_mask, testmode, exinfo, gain=1.0):\n"
+            "    return np.array([[3.0, 2.0]]), exinfo\n"
+        )
+        return [_image_2d()], {**params, "pipeline": str(path)}
     if pid == "pick":
         from imswitch.improcess.model import PointsResult
 

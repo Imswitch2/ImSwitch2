@@ -131,10 +131,13 @@ LOCALIZATION_PROCESSOR_IDS = {
 #: ``roi-dff`` is here as ``regionprops`` is: a label mask is its optional second input
 #: (the cells to measure), the image its first.
 #:
+#: ``etsted-pipeline`` is here as ``roi-dff`` is: a labels or mask image is its optional second input
+#: (the region the pipeline may report in), the camera image its first.
+#:
 #: ``python`` is here because its code decides what the values mean: it is the
 #: escape hatch for the transformation no processor covers, and ``make_labels``
 #: exists so its outputs can be labels too.
-LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python", "regionprops", "roi-dff"}
+LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python", "regionprops", "roi-dff", "etsted-pipeline"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():

@@ -670,6 +670,7 @@ threshold               Processor      Otsu or absolute threshold to connected-c
 regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
 pick                    Processor      One point out of many: largest, brightest, first, nearest or max-column (by a named column, optionally only where another is true)
 roi-dff                 Processor      dF/F per ROI of a frozen cell mask with per-ROI baseline and trigger flag, as ``points``
+etsted-pipeline        Processor      An etSTED analysis pipeline file run on each frame of a smart pipeline (previous frames, state, mask as etSTED passes them): its detections as ``points``, its analysis image as a second output
 spot-count              Processor      Diffraction-limited spots per frame (SMLM net-gradient detection): ``points`` with an image overlay and a count graph
 tile-spots              Processor      Spots per tile of a tiling run; tiles ranked by count with their stage targets
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations

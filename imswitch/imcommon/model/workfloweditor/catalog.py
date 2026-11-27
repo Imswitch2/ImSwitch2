@@ -77,6 +77,19 @@ class PluginEntry:
     def field(self, key: str) -> ParamField | None:
         return fields_by_key(self.fields).get(key)
 
+    def step_fields(self, params: dict | None = None) -> tuple[ParamField, ...]:
+        """The fields of the parameters a step takes beyond :attr:`fields`, given the step's own
+        ``params`` (the plugin's ``step_param_spec(params)``: the numeric parameters of the
+        analysis pipeline file ``etsted-pipeline`` names). Empty for a plugin without one or when it
+        cannot say (a missing file is the run's to report)."""
+        hook = getattr(self.plugin, "step_param_spec", None)
+        if not callable(hook):
+            return ()
+        try:
+            return tuple(hook(dict(params or {})) or ())
+        except Exception:  # noqa: BLE001 - the form just shows no more fields
+            return ()
+
     def param_keys(self) -> frozenset[str] | None:
         """Keys a step may set, or ``None`` when any key is accepted."""
         if self.accepts_any_key:

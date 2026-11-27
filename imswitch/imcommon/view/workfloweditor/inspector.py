@@ -677,6 +677,10 @@ class Inspector(QtWidgets.QScrollArea):
             descriptor = document.descriptor_for(step)
             if descriptor is not None:
                 entry = SimpleNamespace(fields=descriptor.params_fields(step), extra_keys=())
+        more = entry.step_fields(step.params) if hasattr(entry, "step_fields") else ()
+        if more:
+            # the parameters the step's own settings add (an etSTED pipeline's), after the plugin's
+            entry = SimpleNamespace(fields=tuple(entry.fields) + tuple(more), extra_keys=entry.extra_keys)
         layout.addWidget(_section("Parameters"))
         form = ParamForm()
         exposed = {}
@@ -971,7 +975,13 @@ class Inspector(QtWidgets.QScrollArea):
 
     def _set_param(self, key: str, value) -> None:
         step_id = self._step_id
-        self._edit(f"Change {key}", lambda: self._document.set_param(step_id, key, value), merge=("param", step_id, key))
+        edited = self._edit(f"Change {key}", lambda: self._document.set_param(step_id, key, value),
+                            merge=("param", step_id, key))
+        entry = self._document.entry_for(self._document.step(step_id)) if self._document.has(step_id) else None
+        if edited and key in ("pipeline", "folder") and entry is not None and callable(
+                getattr(entry.plugin, "step_param_spec", None)):
+            # the fields depend on the file named: show them for the new one (not inside the form's own signal)
+            QtCore.QTimer.singleShot(0, lambda: self._step_id == step_id and self.show_step(step_id))
 
     def _clear_param(self, key: str) -> None:
         step_id = self._step_id

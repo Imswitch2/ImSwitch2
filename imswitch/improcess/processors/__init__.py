@@ -17,6 +17,7 @@ from .combine import StackCombineProcessor
 from .deconvolution import RichardsonLucyProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
+from .etsted_pipeline import EtstedPipelineProcessor
 from .filters import FilterProcessor
 from .frc import FRCProcessor
 from .image_calculator import ImageCalculatorProcessor
@@ -57,6 +58,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'colocalization': ColocalizationProcessor,
     'convert-type': ConvertTypeProcessor,
     'drift-correct': DriftCorrectProcessor,
+    'etsted-pipeline': EtstedPipelineProcessor,
     'filter': FilterProcessor,
     'frc': FRCProcessor,
     'image-calculator': ImageCalculatorProcessor,
@@ -288,6 +290,7 @@ __all__ = [
     "ColocalizationProcessor",
     "ConvertTypeProcessor",
     "DriftCorrectProcessor",
+    "EtstedPipelineProcessor",
     "FilterProcessor",
     "FRCProcessor",
     "ImageCalculatorProcessor",

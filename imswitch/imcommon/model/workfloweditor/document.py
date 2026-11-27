@@ -254,7 +254,8 @@ class WorkflowDocument:
         step = self.step(step_id)
         entry = self.entry_for(step)
         if entry is not None:
-            return entry.defaults()
+            more = {f.key: f.default for f in entry.step_fields(getattr(step, "params", None))}
+            return {**more, **entry.defaults()}
         descriptor = self.descriptor_for(step)
         return descriptor.defaults(step) if descriptor is not None else {}
 

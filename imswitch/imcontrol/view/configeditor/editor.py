@@ -365,6 +365,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "deconvolve-rl",
     "denoise",
     "drift-correct",
+    "etsted-pipeline",
     "filter",
     "frc",
     "image-calculator",

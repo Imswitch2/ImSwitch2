@@ -748,6 +748,9 @@
    "8590b0a7ae53f20cfc3d7bead3c4b5425fffc48a375c7555fed464c67cbab323",
    "8ea0d028ca64dfc2b355f18e22070b186fddc6fb5de336ca17958244984d5275"
   ],
+  "smart_pipelines/etsted_dff_event.json": [
+   "7bf0c85d18c5edc3f99ac02c2b25c742a18fa0314c8b4c7684cbbeada6328f7a"
+  ],
   "smart_pipelines/roi_dff_triggered_apd_scan.json": [
    "996b35ac4df316e203e9582a26d35c8ab041fafb7463c13438b31e8e2029638e",
    "d3781f3a9065ba558119fe9f9983a25b119b969eca1b6bc0036e69e18b6a9ef3",

@@ -123,6 +123,26 @@ Unreleased
 **New Features**
 
 - **ImProcess: Stack/Combine pads and appends instead of only refusing.** The *Stack/Combine* dialog has a new default mode, *Automatic*, which stacks equal-rank inputs on a new axis as before and appends lower-rank data to the axis it lacks (a ``Y, X`` plane to a ``Z, Y, X`` stack, a stack to a ``T, Z, Y, X`` series, in any selection order; labels and scales come from the higher-rank input, and a chooser asks when the labels do not say which axis). A new *Pad to a common size* option pads inputs that differ only in the size of the Y/X plane (centred or at the origin; zeros, NaN or edge pixels), refusing by default to grow any input past 2x along an axis, with the padded share shown and recorded per input in the result's ``metadata["padding"]``. The dialog shows what it will do and the resulting shape, offers the pad/append option when that is what separates the inputs, and points to *Scale/Resize* or *Swap / Relabel Axes* when scales or labels differ, which no option fixes. The processor takes the same parameters (``mode: auto``, ``append_axis``, ``pad``, ``pad_anchor``, ``pad_value``, ``pad_max_ratio``), the panel and workflow editor expose them, and the panel-level check accepts inputs that a pad or append could combine. Existing ``stack``/``concatenate`` workflows without the new parameters behave exactly as before.
+- **etSTED analysis pipelines run inside a smart pipeline.**  A new ImProcess
+  step, **etSTED analysis pipeline** (``etsted-pipeline``, *Spots and
+  points*), runs a file from etSTED's ``analysis_pipelines`` folder (or
+  etSNOUTY's, etMonalisa's, or any ``.py`` path) on every frame, calling it as
+  etSTED does -- previous frames, ``exinfo``, an optional mask, ``testmode``,
+  the numeric parameters, the first 6 frames ignored -- and publishes its
+  ``(column, row)`` detections as ``(row, column)`` points in the camera's
+  pixels (pixel centres at integers; ``coord_offset_px``).  After a triggered
+  scan the step starts afresh as etSTED does (the engine now tells a step when
+  a real scan started and ended, and the step is not called while it runs).
+  The pipeline's parameters are read from the file without running it, show in
+  the designer's form and can be exposed as controls, so they appear in the
+  Smart Pipeline panel's *Parameters* box.  A file that raises fails the step
+  with its name and line, not the run.  ``python -m
+  imswitch.improcess.processors.etsted_pipeline <name or path>`` checks a file
+  in one line.  The shipped ``smart_pipelines/etsted_dff_event.json`` is the
+  shipped ``dff_event`` pipeline with etSTED's cooldown and scan budget; the
+  ``min-interval`` gate gained ``from_end`` (the interval counts from the end
+  of the action it started).  See *Using an etSTED analysis pipeline in a
+  smart pipeline* in the GUI documentation.
 - **Swap / Relabel Axes** (``axis-swap``, *Dimensions and channels*). A small ImProcess processor for data whose axes are in the wrong order or carry the wrong name: *Order* swaps two axes (``Z,T``, ``X,Y``) or puts all of them in a new order (``Z,X,Y``), by label or index, and each axis takes its label and scale with it; with *Keep labels in place* the labels stay and the data changes meaning (X becomes Y). *Labels* renames axes without touching the array, all of them (``X,Y,T``) or as pairs (``Z=T``), so a stack read as ``Z`` that is a time series becomes ``T``.
 - **Smart pipeline: exposed parameters.**  A pipeline can expose step
   parameters -- of processing steps, gates and actions -- as workflow

@@ -392,6 +392,7 @@ class Engine:
         self._fresh_after: int | None = None
         self._source_step = source_step_of(self.workflow)
         self._tick_opened: list = []
+        self._real_chain = False   # a hardware action of the running chain was really started
         #: The ``state`` a processing step's result says it is in (roi-dff:
         #: "warming up, 3 of 20", "running"), per step id: for the panel.
         self.step_states: dict[str, str] = {}
@@ -455,6 +456,7 @@ class Engine:
             self._state = {}
             self._gates = {step.id: _GateState() for step in self.workflow.steps if isinstance(step, Gate)}
             self._pending = None
+            self._real_chain = False
             self._armed_identity = None
             self._last_sequence = None
             self._fresh_after = None
@@ -868,6 +870,7 @@ class Engine:
         else:
             self.log.append(tick, now, step.id, "started", **summary)
             completion = self.actions.start(request)
+            self._note_actions(started=True)
         self.summary.actions_started += 1
         self._tell_consumed(inputs)
         opened = list(self._tick_opened) if from_tick else []
@@ -895,6 +898,18 @@ class Engine:
             self.log.append(pending.tick, now, pending.step.id, "gates-given-back", gates=given,
                             why="the action did nothing (every target skipped)")
 
+    def _restart_intervals(self, pending: "_Pending", now: float) -> None:
+        """The action ended: a ``min-interval`` gate with ``from_end`` that opened for it counts its
+        interval from now (a cooldown after the scan, not after the decision to scan)."""
+        for gate_id, _fired, _last_t in pending.opened:
+            state = self._gates.get(gate_id)
+            try:
+                step = self.workflow.step(gate_id)
+            except KeyError:
+                continue
+            if state is not None and getattr(step, "rule", "") == "min-interval" and step.params.get("from_end"):
+                state.last_t = now
+
     def _tell_consumed(self, inputs: list) -> None:
         """An action was started (or would be, or was skipped by the mode)
         for the ROIs whose labels its points carry: a step that keeps a
@@ -913,6 +928,29 @@ class Engine:
             consumed = state.get("consumed") if isinstance(state, dict) else None
             if isinstance(consumed, list):
                 consumed.extend(labels)
+
+    def _note_actions(self, *, started: bool = False, settled: bool = False, did_something: bool = True) -> None:
+        """Tell the steps that keep an ``engine_actions`` entry in their state (``etsted-pipeline``) about
+        the hardware actions of this run: ``busy`` from the start of the first action of a chain (a real
+        one: Validate and Visualize start nothing) until the chain is complete, and ``epoch``, one more each
+        time a chain that did something has completed. A step that holds the entry reads it on its next
+        frame: it is how etSTED's "after a triggered scan, start the analysis afresh" is expressed here."""
+        if started:
+            self._real_chain = True
+        elif settled:
+            if not self._real_chain:
+                return    # Validate / Visualize: nothing was done, so nothing to start afresh from
+            self._real_chain = False
+        for state in self._state.values():
+            info = state.get("engine_actions") if isinstance(state, dict) else None
+            if not isinstance(info, dict):
+                continue
+            if started:
+                info["busy"] = True
+            if settled:
+                info["busy"] = False
+                if did_something:
+                    info["epoch"] = int(info.get("epoch", 0)) + 1
 
     def _on_settled(self, pending: "_Pending") -> None:
         """A completion settled (any thread): continue the chain if it is
@@ -959,8 +997,11 @@ class Engine:
             return
         self.summary.actions_completed += 1
         result = completion.result
-        if isinstance(result, dict) and result.get(NOTHING_DONE):
+        nothing_done = isinstance(result, dict) and bool(result.get(NOTHING_DONE))
+        if nothing_done:
             self._give_back(pending, now)
+        else:
+            self._restart_intervals(pending, now)
         self.log.append(pending.tick, now, pending.step.id, "done", seconds=now - pending.started_at,
                         result=_plain(result) if not isinstance(result, dict) else _plain(result))
         values = pending.values
@@ -980,6 +1021,7 @@ class Engine:
             return
         # chain complete: what was taken before now is stale
         self._fresh_after = self._last_sequence
+        self._note_actions(settled=True, did_something=not nothing_done)
         self.log.append(pending.tick, now, "pipeline", "chain-done", fresh_after=self._fresh_after)
 
 

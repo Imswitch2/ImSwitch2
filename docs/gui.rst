@@ -2360,6 +2360,125 @@ without moving the stage between them, or recalibrate), field distortion,
 chromatic shift between the two channels, z.
 
 
+**Using an etSTED analysis pipeline in a smart pipeline.** The ``etsted-pipeline``
+step (*Spots and points*) runs a file from etSTED's ``analysis_pipelines``
+folder on every frame -- the very function etSTED would call, with the
+arguments etSTED would give it -- and publishes its detections as points in
+the camera's pixels, so a ``pick``, the gates, a ``transform`` and ``run-scan``
+take them like those of any other step. Nothing in the file is rewritten: any
+file etSTED's panel accepts works here. The shipped ``etsted_dff_event.json``
+is ``dff_event`` (a local rise in dF/F, the one analysis pipeline that ships
+with ImSwitch) run this way, scanning the strongest event.
+
+*Operating the shipped pipeline.*
+
+#. Load ``smart_pipelines/etsted_dff_event.json`` in the Smart Pipeline panel.
+   Put your camera in the ``cam`` step and in ``etsted`` → ``frame``
+   (``detector:<camera>``), your camera → scan calibration in ``tf`` (for a
+   demonstration set ``tf`` to ``identity``: the camera pixel numbers are then
+   used as they are), and the two scanner axes in ``scan`` → ``axes``.
+#. Set the widefield laser, the camera and the Advanced scan panel (size,
+   pixel size, dwell, laser lines) as for etSTED. The scan step takes no size of
+   its own: like etSTED it recentres the panel's current scan on the event.
+#. The *Parameters* box shows the pipeline's parameters (*dF/F threshold*,
+   binning, baseline, ...), the *Cooldown* and *Max. scans per run*; they can
+   be changed while armed.
+#. Arm in *Validate*: the log says ``would run-scan to (y=..., x=...)`` at each
+   event and nothing scans; check the position, tune the threshold against a
+   quiet sample, then arm in *Experiment*. Every scan is saved as a
+   scan-once recording per event.
+
+*Your own pipeline files.*
+
+* **Where the file goes.** ``<ImSwitchConfig>/imcontrol_etsted/analysis_pipelines/<name>.py``,
+  defining ``<name>(img, prev_frames, binary_mask, testmode, exinfo, <numeric
+  parameters>)``, as for etSTED (so a file you use there is already in the
+  right place). etSNOUTY's and etMonalisa's folders (``imcontrol_etsnouty``,
+  ``imcontrol_etmonalisa``) are read the same way: their pipelines are called
+  with the same arguments (etMonalisa is etSTED's controller; etSNOUTY's
+  differs only after a scan, where it keeps ``exinfo`` and the previous frames
+  and only restarts the frame count: ``after_scan`` ``restart-count``, and it
+  does not use the positions to place its scan); choose ``folder`` in the step. A path to a ``.py``
+  file also works as ``pipeline``.
+* **Check it in one line**, before arming anything::
+
+     python -m imswitch.improcess.processors.etsted_pipeline my_pipeline
+     python -m imswitch.improcess.processors.etsted_pipeline C:/path/my_pipeline.py --shape 512x512
+     python -m imswitch.improcess.processors.etsted_pipeline --folder etsnouty name
+
+  It reads the signature, loads the file with the runner etSTED's panel uses,
+  prints the parameters the step will show (with the help from the file's
+  docstring) and runs it on a few synthetic frames, in experiment and in test
+  mode, naming file and line of an error. The exit code is 1 when anything is
+  wrong.
+* **Picking it.** In the Smart Pipeline designer add an *etSTED analysis
+  pipeline* step and type the ``pipeline`` name; its numeric parameters then
+  appear in the step's form, one field each, with the signature's defaults
+  (0 where there is none, as in etSTED's panel). Right-click one for *Expose as
+  control…* and it is in the panel's *Parameters* box. In a file: a step
+  parameter of the same name (``"dff_threshold": 0.5``) and a control with
+  target ``etsted.dff_threshold``. A parameter whose name is also one of the
+  step's own settings (``mask``, ``frame``, ...) is given in ``params``
+  (``{"mask": 3}``) and cannot be a control. Only numbers (and flags) can be
+  parameters, as in etSTED.
+* **Trust.** The file is run with your privileges, like the Python step and
+  like etSTED's panel: use files you trust. It is read once per arm (and again
+  if it changes on disk while armed); the designer and the panel read the
+  signature without running it.
+
+*What the step passes to the pipeline (what etSTED does).* ``img``: the camera
+frame; ``prev_frames``: a deque of the last ``prev_frames`` (10) frames, oldest
+first, without the current one; ``binary_mask``: ``None``, or the boolean array
+of ``mask`` = ``input`` (a second input: labels or a mask image, non-zero =
+inside) or ``file`` (``.npy`` / ``.tif``; etSTED's own recorded mask lives only
+in the panel's memory and cannot be reused); ``testmode``: the step's
+``testmode`` (etSTED passes True in Visualize and Validate; with it on, the
+pipeline's analysis image is the step's second output ``analysis``);
+``exinfo``: what the pipeline returned last time (``None`` the first time);
+then the numeric parameters as floats in signature order. The first
+``ignore_frames`` (6) frames after arming and after each triggered scan are run
+but report nothing. After a triggered scan etSTED clears ``exinfo`` and the
+previous frames; so does the step (``after_scan`` ``reset``): the engine tells it
+when a scan has started and when it has ended, it does not call the pipeline
+while the scan runs, and the first frame after it starts afresh. A Validate or
+Visualize run starts nothing and resets nothing (as in etSTED). The state is
+discarded at every arm.
+
+*Coordinates.* A pipeline returns rows of ``(column, row)`` of the full frame,
+strongest first. The step publishes ``(row, column)`` in the camera's frame,
+integer = pixel centre (the smart pipeline's convention), so it subtracts
+``coord_offset_px`` (0.5) from both: ``dff_event`` reports the centre of a
+binned pixel with the first pixel's centre at 0.5 (``(j + 0.5) * bin_px``). A
+pipeline that returns plain array indices needs ``coord_offset_px`` 0. The
+pipeline's own numbers stay in the point's ``etsted_c1`` (column) and
+``etsted_c2`` (row) columns, and in the event log. The camera → scan calibration
+of the transform step is the same one you would use for any other camera
+points; an etSTED calibration (the 20 coefficients of ``transform_pipelines``)
+becomes one with ``imswitch.imcontrol.model.smartpipeline.calibrations.et_polynomial``
+(a calibration made in the etSTED panel is saved so, too, in ``calibrations/``
+as ``etsted_<name>``, mapping ``detector:<camera>`` into the frame
+``scanner:etSTED``: name that id in ``tf`` and that frame in the ``scan`` step's
+``frame``, with ``axes`` ``["Y", "X"]``).
+
+*What differs from etSTED.*
+
+* The cooldown is the gate ``rest`` with ``from_end``: counted from the end of
+  the previous scan, as etSTED's. *Max. scans* is the gate ``budget`` (a count of
+  at least 1; etSTED's 0 = unlimited has no equivalent: use a large number).
+* etSTED scans the first row and logs the others; the pipeline here keeps the
+  first (``pick`` ``first``, ``run-scan`` ``points: first``); all rows are on
+  the step's output, in the event log, and in ``etsted_c1`` / ``etsted_c2``.
+* The fast-axis shift option of etSTED's transform, the *Test mode* check box
+  of etSNOUTY and the analysis-image window are not reproduced: the analysis
+  image is the ``analysis`` output (set ``testmode`` on the step).
+* A frame the camera delivered while the scan was running is dropped, as
+  etSTED never saw one; the ``(unchanged)`` roles replace etSTED's fast-laser
+  selection (set the widefield laser before arming, or name setup modes for
+  ``scouting`` and ``idle``).
+* No recording of a *binary mask* in the pipeline: use ``mask: file`` or
+  ``input``.
+
+
 Alignment tools
 ===============
 

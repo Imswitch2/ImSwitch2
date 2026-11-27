@@ -125,7 +125,9 @@ class Gate:
     Rules: ``condition`` (points: at least ``min_count`` of them, 1 by
     default; a value: within ``min``..``max``; an event: fired; ``invert``
     opens when the condition does not hold),
-    ``min-interval`` (at most once per ``seconds``), ``once`` (the first
+    ``min-interval`` (at most once per ``seconds``, counted from when the gate
+    opened, or with ``from_end`` from the end of the action that opening
+    started: etSTED's cooldown), ``once`` (the first
     time only, until re-armed), ``count-limit`` (``count`` times), ``busy``
     (not while an action of this pipeline is still running), ``delay`` (a
     trigger -- an event that fired, points that are there, any other input
@@ -152,6 +154,9 @@ class Gate:
             # seconds defaults to 1 (DEFAULT_INTERVAL_S); given, it must be above 0
             if _non_negative(self.id, "seconds", self.params.get("seconds", DEFAULT_INTERVAL_S)) <= 0:
                 raise WorkflowError(f"{self.id}: a {self.rule} gate needs seconds above 0")
+            if self.rule == "min-interval" and "from_end" in self.params:
+                if not isinstance(self.params["from_end"], bool):
+                    raise WorkflowError(f"{self.id}: from_end must be true or false, got {self.params['from_end']!r}")
         elif self.rule == "count-limit":
             try:
                 count = int(self.params.get("count", DEFAULT_COUNT))

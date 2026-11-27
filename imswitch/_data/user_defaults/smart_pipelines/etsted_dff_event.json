@@ -1,0 +1,165 @@
+{
+  "name": "etSTED dF/F event (smart pipeline)",
+  "schema": 2,
+  "description": "etSTED's shipped analysis pipeline dff_event (a local rise in dF/F on the widefield camera) run by the Smart Pipeline, scanning the strongest event with the Advanced scan panel. The 'etsted' step calls the file <ImSwitchConfig>/imcontrol_etsted/analysis_pipelines/dff_event.py exactly as etSTED does (previous frames, exinfo, the first 6 frames ignored, everything restarted after a triggered scan) and publishes its detections as points in the camera's pixels; any other etSTED analysis pipeline file works by changing its 'pipeline' name (and its parameters appear in the Parameters box once exposed as controls). Of the detections only the strongest is kept; the gates pass at most one scan per cooldown, counted from the END of the previous scan as etSTED does, and at most 'Max. scans' per run; the point goes through the named camera->scan calibration (an etSTED calibration is turned into one by 'et_polynomial', see the user docs; set the step 'tf' to 'identity' for a demonstration: the numbers are then used 1:1) and the Advanced panel recentres its CURRENT scan (its size, pixel size, dwell and laser lines stay as set) on it, then puts its own settings back. Every triggered scan is saved as a Scan-once recording per event. The roles are '(unchanged)': arming applies no setup mode and Stop puts nothing back, so set the widefield laser, the camera and the scan panel as you want them before arming (or name your own setup modes there). Set the placeholders marked in the user docs: the camera name (steps 'cam', 'etsted' frame, 'tf' source), the calibration id (step 'tf'), the axes of the scan step. Run it first in Validate mode (dry run): everything runs, the scan action only logs where it WOULD scan. Then in Experiment.",
+  "metadata": {
+    "smart_pipeline": {
+      "roles": {
+        "scouting": "(unchanged)",
+        "idle": "(unchanged)"
+      }
+    }
+  },
+  "controls": [
+    {
+      "name": "dff_threshold",
+      "targets": ["etsted.dff_threshold"],
+      "label": "dF/F threshold"
+    },
+    {
+      "name": "bin_px",
+      "targets": ["etsted.bin_px"],
+      "label": "Binning"
+    },
+    {
+      "name": "baseline_frames",
+      "targets": ["etsted.baseline_frames"],
+      "label": "Baseline time constant"
+    },
+    {
+      "name": "smooth_px",
+      "targets": ["etsted.smooth_px"],
+      "label": "Smoothing"
+    },
+    {
+      "name": "min_baseline",
+      "targets": ["etsted.min_baseline"],
+      "label": "Min. baseline"
+    },
+    {
+      "name": "warmup_frames",
+      "targets": ["etsted.warmup_frames"],
+      "label": "Warm-up frames"
+    },
+    {
+      "name": "cooldown_s",
+      "targets": ["rest.seconds"],
+      "label": "Cooldown",
+      "help": "At least this many seconds between the END of one triggered scan and the next trigger (etSTED's cooldown)"
+    },
+    {
+      "name": "max_scans",
+      "targets": ["budget.count"],
+      "label": "Max. scans per run",
+      "help": "The pipeline triggers at most this many scans, then only watches (at least 1: for 'no limit' use a large number)"
+    }
+  ],
+  "steps": [
+    {
+      "step": "live",
+      "id": "cam",
+      "detector": "Camera"
+    },
+    {
+      "step": "process",
+      "id": "etsted",
+      "processor": "etsted-pipeline",
+      "params": {
+        "pipeline": "dff_event",
+        "folder": "etsted",
+        "frame": "detector:Camera",
+        "prev_frames": 10,
+        "ignore_frames": 6,
+        "mask": "none",
+        "max_points": 0,
+        "coord_offset_px": 0.5,
+        "after_scan": "reset",
+        "testmode": false,
+        "dff_threshold": 0.5,
+        "bin_px": 4,
+        "baseline_frames": 20,
+        "smooth_px": 1.0,
+        "min_baseline": 20,
+        "warmup_frames": 10
+      },
+      "inputs": ["cam"]
+    },
+    {
+      "step": "process",
+      "id": "best",
+      "processor": "pick",
+      "params": {
+        "rule": "first"
+      },
+      "inputs": ["etsted"]
+    },
+    {
+      "step": "gate",
+      "id": "triggered",
+      "rule": "condition",
+      "inputs": ["best"],
+      "params": {
+        "min_count": 1
+      }
+    },
+    {
+      "step": "gate",
+      "id": "rest",
+      "rule": "min-interval",
+      "inputs": ["triggered"],
+      "params": {
+        "seconds": 5.0,
+        "from_end": true
+      }
+    },
+    {
+      "step": "gate",
+      "id": "budget",
+      "rule": "count-limit",
+      "inputs": ["rest"],
+      "params": {
+        "count": 10
+      }
+    },
+    {
+      "step": "transform",
+      "id": "tf",
+      "transform": "cam_to_scan",
+      "inputs": ["budget"]
+    },
+    {
+      "step": "action",
+      "id": "scan",
+      "action": "run-scan",
+      "params": {
+        "source": "Scan",
+        "mode": "acquisition",
+        "axes": ["Y", "X"],
+        "frame": "scanner:galvo",
+        "points": "first",
+        "max_points": 1,
+        "box": "off",
+        "length_um": 0,
+        "pixel_um": 0,
+        "dwell_s": 0,
+        "lasers": [],
+        "restore": true,
+        "save": true
+      },
+      "inputs": ["tf"],
+      "timeout_s": 300.0
+    },
+    {
+      "step": "sink",
+      "id": "marks",
+      "sink": "overlay",
+      "inputs": ["etsted"]
+    },
+    {
+      "step": "sink",
+      "id": "log_trigger",
+      "sink": "event-log",
+      "inputs": ["tf"]
+    }
+  ]
+}

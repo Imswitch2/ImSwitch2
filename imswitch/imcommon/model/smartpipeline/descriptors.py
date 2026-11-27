@@ -50,6 +50,9 @@ _GATE_FIELDS = {
     ),
     "min-interval": (
         ParamField("seconds", "float", 1.0, label="At most every", suffix="s", min=1e-3, decimals=3),
+        ParamField("from_end", "bool", False, label="From the end of the action",
+                   help="Count the interval from when the action this opening started has ended (a cooldown "
+                        "after a scan), not from when the gate opened"),
     ),
     "count-limit": (
         ParamField("count", "int", 1, label="Times", help="Opens this many times, then stays closed", min=1),

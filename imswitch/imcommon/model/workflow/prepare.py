@@ -326,6 +326,21 @@ def _field(plugin, param):
     return fields_by_key(spec_for(plugin)).get(param)
 
 
+def _step_fields(plugin, step) -> tuple[dict, str]:
+    """``({key: ParamField}, why)``: the parameters this step takes beyond the plugin's static spec.
+
+    A plugin whose parameters depend on what the step says (``etsted-pipeline``: the numeric
+    parameters of the pipeline file it names) offers ``step_param_spec(params)``; none means no more
+    fields, and an exception it raises (the file is missing) is the ``why`` a control's issue adds."""
+    hook = getattr(plugin, "step_param_spec", None)
+    if not callable(hook):
+        return {}, ""
+    try:
+        return {f.key: f for f in (hook(dict(getattr(step, "params", None) or {})) or ())}, ""
+    except Exception as exc:
+        return {}, str(exc)
+
+
 def control_states(recipe: Workflow, registry=None, reason_for=None, *,
                    field_for=None) -> tuple[dict[str, ControlState], list[Issue]]:
     """Every control's targets, activity, combined field and file value, and
@@ -422,11 +437,13 @@ def control_states(recipe: Workflow, registry=None, reason_for=None, *,
             if plugin is None:
                 continue        # unknown plugin: plain validation says so for a running step
             keys = _param_keys(plugin)
+            more, why = _step_fields(plugin, step)
             plugin_id = getattr(step, "processor", None) or getattr(step, "reconstructor", "")
-            if keys is not None and param not in keys:
-                issues.append(Issue(step_id, f"control {name!r}: {plugin_id!r} has no parameter {param!r}"))
+            if keys is not None and param not in keys and param not in more:
+                issues.append(Issue(step_id, f"control {name!r}: {plugin_id!r} has no parameter {param!r}"
+                                             + (f" ({why})" if why else "")))
                 continue
-            spec = _field(plugin, param)
+            spec = _field(plugin, param) or more.get(param)
             if spec is None:
                 issues.append(Issue(step_id, f"control {name!r}: {plugin_id!r} declares no field for {param!r}"))
                 continue
@@ -435,7 +452,8 @@ def control_states(recipe: Workflow, registry=None, reason_for=None, *,
                                              f"takes {', '.join(CONTROL_FIELD_TYPES)}"))
                 continue
             if target.active:
-                value = {**_defaults(plugin), **dict(step.params)}.get(param, _MISSING)
+                value = {**_defaults(plugin), **{k: f.default for k, f in more.items()},
+                         **dict(step.params)}.get(param, _MISSING)
                 state.fields.append((text, spec, value))
         if state.fields:
             combined, problems = combine(control, [(text, spec) for text, spec, _value in state.fields])
