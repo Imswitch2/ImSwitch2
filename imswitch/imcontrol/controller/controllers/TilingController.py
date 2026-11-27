@@ -33,8 +33,8 @@ from imswitch.imcontrol.model.workflows.tilt_preferences import (
 )
 from imswitch.imcontrol.model import configfiletools
 from imswitch.imcontrol.model.workflows.stage_tilt_compensation import (
-    TiltCompensationRecorder, load_tilt_plane, validate_z_target,
-    require_reference_signal,
+    TiltCompensationRecorder, TiltSafetyLimits, load_tilt_plane, plan_compensation,
+    require_reference_signal, return_path, validate_z_target,
 )
 from imswitch.imcontrol.model.workflows.tile_dataset import (
     TileDataset,
@@ -622,6 +622,7 @@ class TilingController(ImConWidgetController):
         self._widget.sigTiltRecordModeSelected.connect(self._updateTiltRecordActuator)
         self.sigTiltCompensationError.connect(self._showTiltCompensationError)
         self.sigTiltCalibrationCreated.connect(self._onTiltCalibrationCreated)
+        self._widget.sigParamsChanged.connect(self._updateTiltPreview)
         self._restoreSelectedTiltCalibration()
         self._updateTiltRecordActuator()
 
@@ -635,10 +636,62 @@ class TilingController(ImConWidgetController):
             self._widget, 'Tilt compensation stopped', message
         )
 
+    def _tiltLimits(self) -> TiltSafetyLimits:
+        """The panel's Apply limits (defaults without a panel)."""
+        getter = getattr(self.__dict__.get('_widget'), 'getTiltLimits', None)
+        values = getter() if callable(getter) else {}
+        try:
+            return TiltSafetyLimits(**{k: float(v) for k, v in (values or {}).items()}).validate()
+        except (TypeError, ValueError):
+            return TiltSafetyLimits()
+
+    def _tiltNeedsConfirmation(self, plane) -> list:
+        return plane.foreign_or_stale(
+            setup_name=self.__dict__.get('_setupNameForTilt', ''), limits=self._tiltLimits())
+
+    def _confirmTiltCalibration(self, plane) -> bool:
+        """GUI selection: a foreign or old calibration needs an explicit yes."""
+        reasons = self._tiltNeedsConfirmation(plane)
+        confirmed = self.__dict__.setdefault('_confirmedTiltCalibrations', set())
+        if not reasons or plane.sha256 in confirmed:
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self._widget, 'Use this tilt calibration?',
+            'This calibration ' + '; '.join(reasons) + '.\n\n' + plane.summary()
+            + '\n\nUse it for Apply anyway?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if answer == QtWidgets.QMessageBox.Yes:
+            confirmed.add(plane.sha256)
+            return True
+        return False
+
+    def _updateTiltPreview(self, *_):
+        """Show the selected calibration and the Z the run would command."""
+        widget = self.__dict__.get('_widget')
+        setter = getattr(widget, 'setTiltPreview', None)
+        if not callable(setter):
+            return
+        path = getattr(widget, 'getTiltCalibrationPath', lambda: '')()
+        if not path or not bool(getattr(widget, 'getApplyTiltCalibration', lambda: False)()):
+            setter('')
+            return
+        try:
+            plane = self._validateSelectedTiltPlane(path)
+            plan = plan_compensation(
+                plane, moves=tile_moves(widget.getNTilesX(), widget.getNTilesY(),
+                                        widget.getPattern()),
+                step_um=widget.getTileStepUm(), limits=self._tiltLimits())
+            note = self._tiltNeedsConfirmation(plane)
+            setter(f'{plane.summary()}\nPredicted: {plan.describe()}'
+                   + (f'\nNeeds confirmation: {"; ".join(note)}' if note else ''), True)
+        except Exception as error:
+            setter(f'Apply refused: {error}', False)
+
     def _validateSelectedTiltPlane(self, path):
         """The calibration file names the Z actuator; the setup must provide it."""
         plane = load_tilt_plane(
             path, xy_positioner=self._setupInfo.tiling.xyPositioner,
+            limits=self._tiltLimits(),
         )
         info = self._setupInfo.positioners.get(plane.focus_positioner)
         if info is None or 'Z' not in info.axes or not info.forPositioning:
@@ -658,6 +711,7 @@ class TilingController(ImConWidgetController):
         self._widget.setLoadedTiltCalibration(
             plane.path, plane, calibration_display_name(plane.path)
         )
+        self._updateTiltPreview()
         return plane
 
     def _restoreSelectedTiltCalibration(self):
@@ -698,7 +752,9 @@ class TilingController(ImConWidgetController):
         if not filename:
             return
         try:
-            self._selectTiltCalibration(filename)
+            plane = self._validateSelectedTiltPlane(filename)
+            if self._confirmTiltCalibration(plane):
+                self._selectTiltCalibration(filename, plane)
         except (OSError, ValueError, TypeError, KeyError) as error:
             QtWidgets.QMessageBox.warning(
                 self._widget, 'Invalid tilt calibration', str(error)
@@ -789,6 +845,11 @@ class TilingController(ImConWidgetController):
             return
         try:
             settings = self.snapshotRunSettings()
+            if (not settings.build_overview and not settings.save_tiles
+                    and not settings.tilt_calibration_only):
+                raise RuntimeError(
+                    'Nothing would be kept: turn on "Build mosaic preview" or "Save tiles" '
+                    '(or record a calibration only).')
             self._resetRunState(settings)
 
             self._widget.setRunning(True)
@@ -839,6 +900,8 @@ class TilingController(ImConWidgetController):
             )
             if bool(getattr(self._widget, 'getApplyTiltCalibration', lambda: False)()):
                 self._showTiltCompensationError(str(e))
+            elif 'Nothing would be kept' in str(e):
+                QtWidgets.QMessageBox.warning(self._widget, 'Tiling not started', str(e))
 
     def snapshotRunSettings(self) -> TilingRunSettings:
         """Take one GUI-thread snapshot, including tilt and preview choices.
@@ -882,6 +945,13 @@ class TilingController(ImConWidgetController):
             if not path:
                 raise RuntimeError('Load a tilt calibration before enabling compensation')
             tilt_plane = self._validateSelectedTiltPlane(path)
+            needs = self._tiltNeedsConfirmation(tilt_plane)
+            if needs and tilt_plane.sha256 not in self.__dict__.get(
+                    '_confirmedTiltCalibrations', set()):
+                raise RuntimeError(
+                    'The selected tilt calibration needs confirmation ('
+                    + '; '.join(needs) + '): choose it again with "Choose calibration…" '
+                    'and confirm, or record a new one')
             if (focus is not None and focus.positioner == tilt_plane.focus_positioner
                     and focus.focusLockState() != 'unlocked'):
                 raise RuntimeError(
@@ -1017,6 +1087,9 @@ class TilingController(ImConWidgetController):
         self._lastRunResult = None
         try:
             self._resetRunState(settings)
+            # As startTiling does: blocks the focus-actuator switch meanwhile.
+            self._commChannel._tilingActive = True
+            self._workflowRun = True
             self.sigRunningChanged.emit(True)
             self.sigProgressUpdated.emit(0, settings.n_tiles)
             self.sigRegistrationSummary.emit('')
@@ -1027,20 +1100,28 @@ class TilingController(ImConWidgetController):
             with self._getActivityLock():
                 self._scanning = False
                 self._scanThread = None
+            self._workflowRun = False
+            try:
+                self._commChannel._tilingActive = False
+            except Exception:
+                pass
             return TilingRunResult(
                 False, False, f'Tiling could not start: {e}'
             )
 
         # _runScan owns the claim from here on and releases it in its finally.
-        self._runScan(
-            *self._runScanArgs(tilingInfo, settings),
-            **self._runScanKwargs(
-                settings,
-                save_tiles=True,
-                save_folder=Path(saveFolder),
-                illumination_gate=illuminationGate,
-            ),
-        )
+        try:
+            self._runScan(
+                *self._runScanArgs(tilingInfo, settings),
+                **self._runScanKwargs(
+                    settings,
+                    save_tiles=True,
+                    save_folder=Path(saveFolder),
+                    illumination_gate=illuminationGate,
+                ),
+            )
+        finally:
+            self._workflowRun = False
         result = self.__dict__.get('_lastRunResult')
         if result is None:
             return TilingRunResult(
@@ -1066,6 +1147,34 @@ class TilingController(ImConWidgetController):
                 cancel()
             except Exception:
                 self._logger.error('Tiling: could not cancel the focus relock', exc_info=True)
+
+    def _reservePositioners(self, names):
+        """Reserve the run's positioners (XY, compensation Z) so other
+        actions are refused cleanly instead of colliding. Returns the token."""
+        from imswitch.imcontrol.model.resources import get_resource_registry, positioner_key
+        keys = sorted({positioner_key(n) for n in names if n})
+        if not keys:
+            return None
+        reservation = get_resource_registry().reserve(keys, 'tiling', deadline_s=2.0)
+        return reservation.token
+
+    @staticmethod
+    def _releaseReservation(token, logger):
+        if token is None:
+            return
+        from imswitch.imcontrol.model.resources import get_resource_registry
+        try:
+            get_resource_registry().release(token)
+        except Exception as error:
+            logger.error(f'Tiling: could not release its positioner reservation: {error}')
+
+    @staticmethod
+    def _ownedCall(method, *args, token=None):
+        """Call a positioner command with the run's reservation token when
+        the manager admits commands through the resource registry."""
+        if token is not None and getattr(method, '__resource_guarded__', False):
+            return method(*args, owner=token)
+        return method(*args)
 
     def _focusPauser(self, enabled, mode):
         """The focus lock to pause per tile, or None (option off, no lock,
@@ -1425,6 +1534,9 @@ class TilingController(ImConWidgetController):
         runMessage = ''
         focusPauser = None
         focusTiles = []
+        reservationToken = None
+        tiltPlan = None
+        zNote = ''
         # The caller's illumination gate, in free-running mode only: in
         # triggered mode the scan arms its own lasers for every tile.
         gate = illumination_gate if mode != MODE_TRIGGERED else None
@@ -1437,6 +1549,11 @@ class TilingController(ImConWidgetController):
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
             x_axis, y_axis = axes[0], axes[1]
+            # Reserve before anything moves; refused cleanly when another
+            # owner (a script, a measurement) holds one of them.
+            reservationToken = self._reservePositioners(
+                [tilingInfo.xyPositioner]
+                + ([tilt_plane.focus_positioner] if tilt_plane is not None else []))
             applied_um = {x_axis: 0.0, y_axis: 0.0}
 
             # Precedence: this run's widget selection, then the setup file,
@@ -1561,26 +1678,18 @@ class TilingController(ImConWidgetController):
                 ]
                 originZ = float(focusZPositioner.get_abs('Z'))
                 lastCompensatedZ = originZ
-                # Basic finite-value and availability checks remain unconditional.
-                validate_z_target(focusZPositioner, originZ)
-                if precheck_tilt:
-                    tilt_plane.check_grid(
-                        origin_xy=origin_xy,
-                        moves=tile_moves(n_tiles_x, n_tiles_y, pattern),
-                        step_um=step_um,
-                    )
-                    validate_z_target(focusZPositioner, originZ, strict_limits=True)
-                    gx_check = gy_check = 0
-                    for dx_check, dy_check in tile_moves(n_tiles_x, n_tiles_y, pattern):
-                        gx_check += dx_check
-                        gy_check += dy_check
-                        validate_z_target(
-                            focusZPositioner,
-                            originZ + tilt_plane.delta_z(
-                                gx_check * step_um, gy_check * step_um
-                            ),
-                            strict_limits=True,
-                        )
+                # Mandatory, whatever Pre-check says: slope, total excursion,
+                # step per move, XY bounds (no extrapolation), the actuator's
+                # reference and output range for every target -- all before
+                # anything moves.
+                tiltLimits = self._tiltLimits()
+                tiltPlan = plan_compensation(
+                    tilt_plane, moves=tile_moves(n_tiles_x, n_tiles_y, pattern),
+                    step_um=step_um, limits=tiltLimits, origin_xy=origin_xy)
+                validate_z_target(focusZPositioner, originZ, strict_limits=True)
+                for planned in tiltPlan.deltas_um:
+                    validate_z_target(focusZPositioner, originZ + planned, strict_limits=True)
+                self._logger.info(f'Tiling: tilt compensation planned, {tiltPlan.describe()}')
                 # The focus camera is optional for feed-forward. When present,
                 # retain the first usable estimate for offline validation.
                 reference_signal = None
@@ -1615,9 +1724,11 @@ class TilingController(ImConWidgetController):
                 if i > 0:
                     if focusPauser is not None:
                         self._pauseFocusForMove(focusPauser)
-                    positioner.move(dx * step_um, x_axis)
+                    self._ownedCall(positioner.move, dx * step_um, x_axis,
+                                    token=reservationToken)
                     applied_um[x_axis] += dx * step_um
-                    positioner.move(dy * step_um, y_axis)
+                    self._ownedCall(positioner.move, dy * step_um, y_axis,
+                                    token=reservationToken)
                     applied_um[y_axis] += dy * step_um
                     if tilt_plane is not None:
                         if (compensationSharesFocusZ and
@@ -1632,9 +1743,16 @@ class TilingController(ImConWidgetController):
                             (gx + dx) * step_um, (gy + dy) * step_um
                         )
                         validate_z_target(focusZPositioner, target_z)
+                        # Defence in depth: the plan checked these already.
+                        if (abs(target_z - lastCompensatedZ) > tiltLimits.max_step_um + 1e-9
+                                or abs(target_z - originZ) > tiltLimits.max_excursion_um + 1e-9):
+                            raise RuntimeError(
+                                f'Compensation Z target {target_z:g} µm exceeds the step or '
+                                'excursion limit; not commanded')
                         if abs(target_z - lastCompensatedZ) > 1e-9:
                             zCommandAttempted = True
-                            result = focusZPositioner.setPosition(target_z, 'Z')
+                            result = self._ownedCall(focusZPositioner.setPosition, target_z,
+                                                     'Z', token=reservationToken)
                             if result is False:
                                 raise RuntimeError(
                                     f'Compensation Z rejected target {target_z:g} µm'
@@ -1946,13 +2064,51 @@ class TilingController(ImConWidgetController):
             if (focusPauser is not None and positioner is not None
                     and any(applied_um.get(a, 0.0) for a in (x_axis, y_axis))):
                 self._pauseFocusForMove(focusPauser)
+            zFollowedReturn = False
+            if (zCommandAttempted and focusZPositioner is not None and originZ is not None
+                    and positioner is not None and applied_um
+                    and (not compensationSharesFocusZ
+                         or focusForCompensation.focusLockState() == 'unlocked')):
+                # XY back to the origin in short segments with Z following the
+                # plane: the objective tracks the sample surface the whole way,
+                # so neither "Z first" nor "XY first" can push it into the
+                # sample on a tilted coverslip. A failure stops where it is,
+                # with Z matching the last XY that was reached.
+                try:
+                    limitsForReturn = self._tiltLimits()
+                    for sx, sy, sdz in return_path(
+                            tilt_plane, (applied_um.get(x_axis, 0.0),
+                                         applied_um.get(y_axis, 0.0)),
+                            step_um=step_um, max_z_step_um=limitsForReturn.max_step_um):
+                        for axis, d in ((x_axis, sx), (y_axis, sy)):
+                            if d:
+                                self._ownedCall(positioner.move, d, axis,
+                                                token=reservationToken)
+                                applied_um[axis] += d
+                        target = originZ + sdz
+                        validate_z_target(focusZPositioner, target)
+                        if self._ownedCall(focusZPositioner.setPosition, target, 'Z',
+                                           token=reservationToken) is False:
+                            raise RuntimeError('Compensation Z rejected a return target')
+                        lastCompensatedZ = target
+                    for axis in (x_axis, y_axis):
+                        if abs(applied_um.get(axis, 0.0)) < 1e-6:
+                            applied_um[axis] = 0.0
+                    zFollowedReturn = True
+                except Exception as error:
+                    origin_restored = False
+                    self._logger.error(
+                        f'Tiling: return to the origin with Z following the tilt '
+                        f'failed: {error}', exc_info=True)
+                    applied_um = {}       # never continue with a blind XY unwind
             if positioner is not None and applied_um:
                 for axis in (x_axis, y_axis):
                     offset = applied_um.get(axis, 0.0)
                     if not offset:
                         continue
                     try:
-                        positioner.move(-offset, axis)
+                        self._ownedCall(positioner.move, -offset, axis,
+                                        token=reservationToken)
                         applied_um[axis] = 0.0
                     except Exception as e:
                         origin_restored = False
@@ -1982,9 +2138,16 @@ class TilingController(ImConWidgetController):
                     if not zCommandAttempted:
                         # Do not override an actuator we never commanded.
                         pass
+                    elif zFollowedReturn and origin_restored:
+                        self._logger.info('Tiling: compensation Z followed the XY return '
+                                          'to its start value')
+                    elif zFollowedReturn or not origin_restored:
+                        # XY is not at the origin: Z stays matched to where XY is.
+                        z_restored = False
                     elif origin_restored and focus_is_safe:
                         validate_z_target(focusZPositioner, originZ)
-                        result = focusZPositioner.setPosition(originZ, 'Z')
+                        result = self._ownedCall(focusZPositioner.setPosition, originZ, 'Z',
+                                                 token=reservationToken)
                         if result is False:
                             raise RuntimeError('Compensation Z rejected return-to-origin command')
                         # A successful command is not proof of physical arrival.
@@ -2060,10 +2223,18 @@ class TilingController(ImConWidgetController):
                         f'Failed to release tiling detector lease: {e}',
                         exc_info=True,
                     )
+            if zCommandAttempted and not z_restored and originZ is not None:
+                zNote = (f'Compensation Z was left at {lastCompensatedZ:.2f} µm '
+                         f'(start {originZ:.2f} µm), matched to where XY stopped; check '
+                         'the focus before continuing.')
             if (tilt_plane is not None and not self.__dict__.get('_closed', False)
+                    and not self.__dict__.get('_workflowRun', False)
                     and (compensationFailure or not origin_restored or not z_restored)):
+                # The popup is for an operator at the GUI; an unattended
+                # workflow (Timelapse) gets the same text in its run result.
                 self.sigTiltCompensationError.emit(
-                    compensationFailure or 'XY/Z origin restoration incomplete'
+                    ' '.join(filter(None, [compensationFailure
+                                           or 'XY/Z origin restoration incomplete.', zNote]))
                 )
             focusNote = ''
             if focusPauser is not None:
@@ -2095,6 +2266,8 @@ class TilingController(ImConWidgetController):
                 runMessage = 'Stopped.'
             if focusNote:
                 runMessage = (runMessage + ' ' + focusNote).strip()
+            if zNote:
+                runMessage = (runMessage + ' ' + zNote).strip()
             self._lastRunResult = TilingRunResult(
                 completed=completed,
                 stopped=stopped,
@@ -2105,6 +2278,7 @@ class TilingController(ImConWidgetController):
                 illumination_gated=gate is not None,
                 focus_lock_tiles=tuple(focusTiles),
             )
+            self._releaseReservation(reservationToken, self._logger)
             with self._getActivityLock():
                 self._scanAcqHandle = None
                 self._scanning = False

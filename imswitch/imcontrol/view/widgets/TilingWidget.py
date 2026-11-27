@@ -433,8 +433,9 @@ class TilingWidget(Widget):
         grid.addWidget(self.tiltModeCombo, 0, 1)
         self.precheckTiltCheck = QtWidgets.QCheckBox('Pre-check')
         self.precheckTiltCheck.setToolTip(
-            'Optional full-route check of calibrated XY limits, Z output limits\n'
-            'and actuator reference before moving. Basic validation always applies.'
+            'Kept for compatibility: the full-route check of calibrated XY limits,\n'
+            'Z output limits, actuator reference and the Max slope / ΔZ / step\n'
+            'limits now always runs before anything moves.'
         )
         grid.addWidget(self.precheckTiltCheck, 0, 3, QtCore.Qt.AlignRight)
 
@@ -525,6 +526,45 @@ class TilingWidget(Widget):
         apply_row.addWidget(self.tiltActionsButton)
         grid.addWidget(self.tiltApplyRow, 1, 0, 1, 4)
 
+        # Safety limits for Apply: always enforced, refused before any move.
+        self.tiltLimitsRow = QtWidgets.QWidget()
+        limits_row = QtWidgets.QHBoxLayout(self.tiltLimitsRow)
+        limits_row.setContentsMargins(0, 0, 0, 0)
+        limits_row.setSpacing(6)
+
+        def limit_spin(value, maximum, suffix, tip):
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(0.1, maximum)
+            spin.setDecimals(1)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            spin.setToolTip(tip)
+            spin.setKeyboardTracking(False)
+            spin.valueChanged.connect(self.sigParamsChanged)
+            return spin
+
+        self.tiltMaxSlopeSpin = limit_spin(15.0, 100.0, ' µm/mm',
+                                           'Refuse a calibration whose X or Y slope is steeper')
+        self.tiltMaxExcursionSpin = limit_spin(30.0, 500.0, ' µm',
+                                               'Refuse a run whose Z would move further than '
+                                               'this from its start')
+        self.tiltMaxStepSpin = limit_spin(5.0, 100.0, ' µm',
+                                          'Refuse a run whose Z would step more than this '
+                                          'in one move')
+        for label, spin in (('Max slope', self.tiltMaxSlopeSpin),
+                            ('Max ΔZ', self.tiltMaxExcursionSpin),
+                            ('Max step', self.tiltMaxStepSpin)):
+            limits_row.addWidget(QtWidgets.QLabel(label))
+            limits_row.addWidget(spin)
+        limits_row.addStretch(1)
+        grid.addWidget(self.tiltLimitsRow, 2, 0, 1, 4)
+        self.tiltPreviewLabel = QtWidgets.QLabel('')
+        self.tiltPreviewLabel.setWordWrap(True)
+        self.tiltPreviewLabel.setToolTip('The selected calibration, and the Z the run would '
+                                         'command, predicted before Start')
+        grid.addWidget(self.tiltPreviewLabel, 3, 0, 1, 4)
+        self.tiltModeCombo.currentIndexChanged.connect(self.sigParamsChanged)
+
         self._tiltCalibrationPath = ''
         self._tiltCalibrationName = ''
         self._tiltDefaultPath = ''
@@ -537,6 +577,8 @@ class TilingWidget(Widget):
         self.tiltRecordRow.setVisible(mode == 'record')
         self.tiltOptionsRow.setVisible(mode == 'record')
         self.tiltApplyRow.setVisible(mode == 'apply')
+        self.tiltLimitsRow.setVisible(mode == 'apply')
+        self.tiltPreviewLabel.setVisible(mode == 'apply')
         self.precheckTiltCheck.setVisible(mode == 'apply')
         self.precheckTiltCheck.setEnabled(
             mode == 'apply' and self.startButton.isEnabled()
@@ -945,6 +987,8 @@ class TilingWidget(Widget):
         self.precheckTiltCheck.setEnabled(
             not running and self.tiltModeCombo.currentData() == 'apply'
         )
+        for spin in (self.tiltMaxSlopeSpin, self.tiltMaxExcursionSpin, self.tiltMaxStepSpin):
+            spin.setEnabled(not running)
         self.buildOverviewCheck.setEnabled(not running)
         self.focusPauseCheck.setEnabled(not running)
 
@@ -1021,6 +1065,15 @@ class TilingWidget(Widget):
 
     def getTiltCalibrationPath(self) -> str:
         return self._tiltCalibrationPath
+
+    def getTiltLimits(self) -> dict:
+        return {'max_abs_slope_um_per_mm': float(self.tiltMaxSlopeSpin.value()),
+                'max_excursion_um': float(self.tiltMaxExcursionSpin.value()),
+                'max_step_um': float(self.tiltMaxStepSpin.value())}
+
+    def setTiltPreview(self, text: str, ok: bool = True) -> None:
+        self.tiltPreviewLabel.setText(text)
+        self.tiltPreviewLabel.setStyleSheet('' if ok else 'color: #d9534f;')
 
     def setLoadedTiltCalibration(self, path, plane, display_name: str = '') -> None:
         self._tiltCalibrationPath = str(Path(path).resolve())

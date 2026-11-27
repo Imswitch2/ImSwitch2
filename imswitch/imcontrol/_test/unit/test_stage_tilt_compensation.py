@@ -15,7 +15,7 @@ def _calibration(tmp_path, **overrides):
     fit = dict(
         model='plane', slope_x_um_per_um=-0.0092599672,
         slope_y_um_per_um=-0.0029596949,
-        rms_residual_um=0.0593, n_fit_points=25,
+        rms_residual_um=0.0593, max_abs_residual_um=0.15, n_fit_points=25,
         valid_xy_bounds_um={'x': [1000., 1400.], 'y': [2000., 2400.]},
     )
     document = dict(
@@ -151,14 +151,15 @@ def test_optional_preflight_and_nidaq_voltage_limits():
         _maxVolt = 10
 
     daq = DAQZ()
-    # The optional pre-check is intentionally not an implicit restriction.
-    validate_z_target(daq, 110)
+    # Reference and output range apply always, not only with Pre-check.
+    with pytest.raises(RuntimeError, match='referenced'):
+        validate_z_target(daq, 10)
     with pytest.raises(RuntimeError, match='referenced'):
         validate_z_target(daq, 10, strict_limits=True)
     daq.isReferenced = True
     validate_z_target(daq, 90, strict_limits=True)
     with pytest.raises(ValueError, match='NI-DAQ voltage'):
-        validate_z_target(daq, 110, strict_limits=True)
+        validate_z_target(daq, 110)
     with pytest.raises(ValueError, match='Nonfinite'):
         validate_z_target(daq, float('nan'))
 

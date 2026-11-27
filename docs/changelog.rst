@@ -7,6 +7,21 @@ Unreleased
 
 **Fixes**
 
+- **Tilt compensation: limits that always apply, fit gates, a safe return.**
+  Apply now refuses, before any movement, a calibration steeper than
+  15 µm/mm, a run whose Z would leave its start by more than 30 µm or step
+  more than 5 µm (all settings in the panel, which shows the predicted
+  excursion), any tile outside the calibrated area, an unreferenced Z, and a
+  target outside the Z output range -- with or without Pre-check.  Recording
+  rejects fit outliers and reports a quality gate; loading refuses fits with
+  fewer than four points, RMS above 1 µm or a worst residual above 3 µm (old
+  files lacking residuals must be re-recorded).  Foreign or old calibrations
+  need confirmation.  XY returns to the origin with Z following the plane; a
+  Z left uncompensated is reported in the popup and the run result (no popup
+  for Timelapse runs).  The run reserves its XY and Z positioners; a run that
+  keeps nothing is refused; Timelapse tilings block the focus-actuator switch
+  like GUI tilings.  Simulated only.
+
 - **Stopping a scan no longer freezes the window.**  Stop (and an API abort)
   used to do the whole stop on the thread that took the click: stop and close
   every NI-DAQ task (up to 2 s each), join the waiter threads, write the lines

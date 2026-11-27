@@ -198,10 +198,13 @@ def test_separate_z_compensation_and_fine_focus_can_run_together(rig):
     assert data['n_recorded_tiles'] == 9
 
 
-def test_optional_precheck_is_truly_optional(rig):
-    ctrl, _, _, _, source, _ = _run(rig, bounds=50., precheck=False)
-    assert not ctrl._logger.errors
-    assert source.count == 9
+def test_bounds_check_is_mandatory_without_precheck(rig):
+    """Pre-check used to be the only guard against extrapolating the plane;
+    the XY-bounds check now always runs, before anything moves."""
+    ctrl, _, z, _, source, _ = _run(rig, bounds=50., precheck=False)
+    assert ctrl._logger.errors
+    assert source.count == 0
+    assert not z.moves
 
 
 def test_optional_precheck_blocks_outside_calibrated_area(rig):

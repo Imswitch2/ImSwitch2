@@ -86,11 +86,33 @@ def validate_sample(sample: dict) -> str:
     return ''
 
 
+#: Outlier rejection: a point is rejected when its residual exceeds this
+#: many robust sigmas (1.4826 x MAD) and at least OUTLIER_FLOOR_UM; at most a
+#: quarter of the points, and never below four, are rejected.
+OUTLIER_SIGMAS = 3.5
+OUTLIER_FLOOR_UM = 0.2
+#: Fit quality gate at recording (the same limits are checked at load).
+GATE_MIN_POINTS = 4
+GATE_MAX_RMS_UM = 1.0
+GATE_MAX_ABS_RESIDUAL_UM = 3.0
+
+
+def _lstsq_plane(x, y, z):
+    x0, y0 = float(x.mean()), float(y.mean())
+    A = np.column_stack((np.ones(len(x)), x - x0, y - y0))
+    if np.linalg.matrix_rank(A) < 3:
+        return None
+    coefficients, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
+    return x0, y0, coefficients, z - A @ coefficients
+
+
 def fit_plane(samples):
     """Fit z = z0 + sx*(x-x0) + sy*(y-y0); return JSON-safe metrics.
 
     Uses actual stage-axis coordinates (not camera/image orientation). Requires
     noncollinear XY coverage; does not extrapolate or reinterpret drift as tilt.
+    Outliers (a dirt particle, a lock that jumped) are rejected one at a time
+    by a robust residual test and reported; the quality gate is reported too.
     """
     valid = [sample for sample in samples if sample.get('valid_for_fit')]
     if len(valid) < 3:
@@ -99,14 +121,35 @@ def fit_plane(samples):
                         float(s['focus_z_um'])] for s in valid], dtype=float)
     if not np.isfinite(values).all():
         return None
-    x, y, z = values.T
-    x0, y0 = float(x.mean()), float(y.mean())
-    A = np.column_stack((np.ones(len(x)), x - x0, y - y0))
-    if np.linalg.matrix_rank(A) < 3:
-        return None
-    coefficients, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
-    fitted = A @ coefficients
-    residual = z - fitted
+    keep = np.ones(len(values), dtype=bool)
+    max_reject = len(values) // 4
+    rejected = []
+    while True:
+        x, y, z = values[keep].T
+        solved = _lstsq_plane(x, y, z)
+        if solved is None:
+            return None
+        x0, y0, coefficients, residual = solved
+        if len(rejected) >= max_reject or keep.sum() <= GATE_MIN_POINTS:
+            break
+        sigma = 1.4826 * float(np.median(np.abs(residual - np.median(residual))))
+        threshold = max(OUTLIER_SIGMAS * sigma, OUTLIER_FLOOR_UM)
+        worst = int(np.argmax(np.abs(residual)))
+        if abs(residual[worst]) <= threshold:
+            break
+        index = np.flatnonzero(keep)[worst]
+        keep[index] = False
+        rejected.append(index)
+    fitted = z - residual
+    rms = float(np.sqrt(np.mean(residual ** 2)))
+    worst_abs = float(np.max(np.abs(residual)))
+    gate = []
+    if int(keep.sum()) < GATE_MIN_POINTS:
+        gate.append(f'{int(keep.sum())} points (need {GATE_MIN_POINTS})')
+    if rms > GATE_MAX_RMS_UM:
+        gate.append(f'RMS {rms:.3g} µm > {GATE_MAX_RMS_UM:g} µm')
+    if worst_abs > GATE_MAX_ABS_RESIDUAL_UM:
+        gate.append(f'max residual {worst_abs:.3g} µm > {GATE_MAX_ABS_RESIDUAL_UM:g} µm')
     return {
         'model': 'plane',
         'equation': 'z = z0 + slope_x*(x-x0) + slope_y*(y-y0)',
@@ -118,7 +161,12 @@ def fit_plane(samples):
         'max_abs_residual_um': float(np.max(np.abs(residual))),
         'measured_z_range_um': float(np.ptp(z)),
         'predicted_z_range_um': float(np.ptp(fitted)),
-        'n_fit_points': len(valid),
+        'n_fit_points': int(keep.sum()),
+        'n_outliers_rejected': len(rejected),
+        'outlier_tile_indices': [valid[i].get('tile_index') for i in rejected],
+        'outlier_rule': (f'|residual| > max({OUTLIER_SIGMAS:g} x 1.4826 MAD, '
+                         f'{OUTLIER_FLOOR_UM:g} µm), at most a quarter of the points'),
+        'quality_gate': {'passed': not gate, 'reasons': gate},
         'valid_xy_bounds_um': {'x': [float(x.min()), float(x.max())],
                                'y': [float(y.min()), float(y.max())]},
     }
@@ -216,6 +264,7 @@ class StageTiltRecorder:
         self.samples = []
         self._origin_initial = None
         self._origin_final = None
+        self._origin_xy = None
         self._bidirectional = bool(bidirectional)
         self.metadata = {
             'version': 1,
@@ -268,6 +317,7 @@ class StageTiltRecorder:
             self._origin_final = value
         else:
             self._origin_initial = value
+            self._origin_xy = (float(x_um), float(y_um))
 
     def finish(self, *, completed: bool) -> dict:
         if not self._file.closed:
@@ -277,6 +327,15 @@ class StageTiltRecorder:
         else:
             fit_samples, differences = self.samples, []
         model = fit_plane(fit_samples)
+        if model is not None and self._origin_xy is not None:
+            # Bounds relative to this calibration's origin, so a later run can
+            # check its span even if the stage's absolute frame was re-zeroed.
+            ox, oy = self._origin_xy
+            bounds = model['valid_xy_bounds_um']
+            model['calibration_origin_xy_um'] = [ox, oy]
+            model['valid_xy_bounds_relative_um'] = {
+                'x': [bounds['x'][0] - ox, bounds['x'][1] - ox],
+                'y': [bounds['y'][0] - oy, bounds['y'][1] - oy]}
         rejected = [s for s in self.samples if not s['valid_for_fit']]
         drift = {
             'available': False,

@@ -18,6 +18,52 @@ from pathlib import Path
 import numpy as np
 
 
+class TiltSafetyError(ValueError):
+    """A tilt calibration or a planned compensation exceeds a safety limit."""
+
+
+@dataclass(frozen=True)
+class TiltSafetyLimits:
+    """Limits that always apply to Apply (not only with Pre-check).
+
+    Defaults are deliberately small but cover the tilts seen so far (about
+    9 µm/mm on one rig): 15 µm/mm per axis, 30 µm in total per run and 5 µm
+    per move leave room for real samples while refusing a wrong or foreign
+    calibration before anything moves.
+    """
+    max_abs_slope_um_per_mm: float = 15.0   # per axis
+    max_excursion_um: float = 30.0          # |Z - Z_start| over the run
+    max_step_um: float = 5.0                # |ΔZ| per move
+    min_fit_points: int = 4                 # more than three
+    max_rms_um: float = 1.0                 # fit RMS residual
+    max_abs_residual_um: float = 3.0        # worst fit residual
+    max_age_days: float = 30.0              # older needs confirmation
+
+    def validate(self) -> 'TiltSafetyLimits':
+        for name in ('max_abs_slope_um_per_mm', 'max_excursion_um', 'max_step_um',
+                     'max_rms_um', 'max_abs_residual_um', 'max_age_days'):
+            value = getattr(self, name)
+            if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
+                raise ValueError(f'Tilt limit {name} must be a positive number')
+        if int(self.min_fit_points) < 4:
+            raise ValueError('A tilt fit needs more than three points')
+        if self.max_step_um > self.max_excursion_um:
+            raise ValueError('Tilt max step must not exceed the max excursion')
+        return self
+
+
+@dataclass(frozen=True)
+class CompensationPlan:
+    """Predicted Z offsets (from the run's Z start) for one grid."""
+    deltas_um: tuple                 # per tile, in acquisition order
+    max_excursion_um: float
+    max_step_um: float
+
+    def describe(self) -> str:
+        return (f'max |ΔZ| {self.max_excursion_um:.2f} µm, '
+                f'max step {self.max_step_um:.2f} µm')
+
+
 @dataclass(frozen=True)
 class TiltPlane:
     path: Path
@@ -29,6 +75,47 @@ class TiltPlane:
     x_bounds: tuple[float, float]
     y_bounds: tuple[float, float]
     rms_residual_um: float
+    max_abs_residual_um: float = float('nan')
+    n_fit_points: int = 0
+    created_utc: str = ''
+    setup_file_name: str = ''
+    #: Calibrated span relative to the calibration's own origin, when stored.
+    relative_x_bounds: tuple | None = None
+    relative_y_bounds: tuple | None = None
+    n_outliers_rejected: int = 0
+
+    def age_days(self, now: datetime | None = None) -> float | None:
+        try:
+            created = datetime.fromisoformat(self.created_utc)
+        except (TypeError, ValueError):
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        now = now or datetime.now(timezone.utc)
+        return (now - created).total_seconds() / 86400.0
+
+    def summary(self) -> str:
+        date = self.created_utc[:10] if self.created_utc else 'date unknown'
+        return (f'{date} · RMS {self.rms_residual_um:.3g} µm · '
+                f'slopes X {self.slope_x * 1000:+.2f} / Y {self.slope_y * 1000:+.2f} µm/mm'
+                + (f' · {self.n_outliers_rejected} outlier(s) rejected'
+                   if self.n_outliers_rejected else ''))
+
+    def foreign_or_stale(self, *, setup_name: str, limits: 'TiltSafetyLimits',
+                         now: datetime | None = None) -> list:
+        """Reasons this calibration needs an explicit confirmation."""
+        reasons = []
+        if self.setup_file_name and setup_name and self.setup_file_name != setup_name:
+            reasons.append(f'recorded on setup {self.setup_file_name!r}, '
+                           f'this is {setup_name!r}')
+        if not self.setup_file_name:
+            reasons.append('the calibration does not name its setup')
+        age = self.age_days(now)
+        if age is None:
+            reasons.append('the calibration has no valid date')
+        elif age > limits.max_age_days:
+            reasons.append(f'{age:.0f} days old (limit {limits.max_age_days:g})')
+        return reasons
 
     def delta_z(self, dx_um: float, dy_um: float) -> float:
         delta = self.slope_x * float(dx_um) + self.slope_y * float(dy_um)
@@ -57,6 +144,87 @@ class TiltPlane:
             self.check_xy(origin_xy[0] + gx * step_um,
                           origin_xy[1] + gy * step_um)
 
+    def check_span(self, *, moves, step_um: float) -> None:
+        """The run's XY span must fit inside the calibrated span (relative
+        to each origin) -- holds even when the stage's absolute frame was
+        re-zeroed since the calibration."""
+        gx = gy = 0
+        xs, ys = [0.0], [0.0]
+        for dx, dy in moves:
+            gx += dx
+            gy += dy
+            xs.append(gx * step_um)
+            ys.append(gy * step_um)
+        span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
+        cal_x = self.x_bounds[1] - self.x_bounds[0]
+        cal_y = self.y_bounds[1] - self.y_bounds[0]
+        if span_x > cal_x + 1.0 or span_y > cal_y + 1.0:
+            raise TiltSafetyError(
+                f'The tiling area ({span_x:.0f} × {span_y:.0f} µm) is larger than the '
+                f'calibrated area ({cal_x:.0f} × {cal_y:.0f} µm); refusing to extrapolate')
+
+
+def plan_compensation(plane: TiltPlane, *, moves, step_um: float,
+                      limits: TiltSafetyLimits, origin_xy=None) -> CompensationPlan:
+    """Predict every commanded Z offset and refuse anything over a limit.
+
+    Called before any movement (and for the panel's preview without an
+    origin). With ``origin_xy`` the XY bounds/extrapolation check is
+    included; it is mandatory at run start.
+    """
+    limits.validate()
+    for label, slope in (('X', plane.slope_x), ('Y', plane.slope_y)):
+        if abs(slope) * 1000.0 > limits.max_abs_slope_um_per_mm:
+            raise TiltSafetyError(
+                f'Calibration {label} slope {slope * 1000:+.2f} µm/mm exceeds the '
+                f'{limits.max_abs_slope_um_per_mm:g} µm/mm limit')
+    moves = list(moves)
+    plane.check_span(moves=moves, step_um=step_um)
+    if origin_xy is not None:
+        plane.check_grid(origin_xy=origin_xy, moves=moves, step_um=step_um)
+    gx = gy = 0
+    deltas, previous, max_step = [], 0.0, 0.0
+    for dx, dy in moves:
+        gx += dx
+        gy += dy
+        delta = plane.delta_z(gx * step_um, gy * step_um)
+        max_step = max(max_step, abs(delta - previous))
+        previous = delta
+        deltas.append(delta)
+    excursion = max((abs(d) for d in deltas), default=0.0)
+    if excursion > limits.max_excursion_um:
+        raise TiltSafetyError(
+            f'Tilt compensation would move Z by up to {excursion:.2f} µm from the start; '
+            f'limit {limits.max_excursion_um:g} µm')
+    if max_step > limits.max_step_um:
+        raise TiltSafetyError(
+            f'Tilt compensation would step Z by {max_step:.2f} µm in one move; '
+            f'limit {limits.max_step_um:g} µm')
+    return CompensationPlan(tuple(deltas), excursion, max_step)
+
+
+def return_path(plane: TiltPlane, offset_xy_um, *, step_um: float,
+                max_z_step_um: float):
+    """Segments ``(dx, dy, delta_z_at_end)`` taking XY from ``offset_xy_um``
+    (relative to the run origin) back to 0 in a straight line, with the Z
+    offset following the plane: Z tracks the sample surface the whole way
+    instead of being restored before or after the XY travel. No segment is
+    longer than ``step_um`` or changes Z by more than ``max_z_step_um``."""
+    ox, oy = float(offset_xy_um[0]), float(offset_xy_um[1])
+    length = math.hypot(ox, oy)
+    if length == 0:
+        return []
+    dz_total = abs(plane.delta_z(ox, oy))
+    n = max(1, math.ceil(length / max(step_um, 1e-9)),
+            math.ceil(dz_total / max(max_z_step_um, 1e-9)))
+    segments, px, py = [], ox, oy
+    for k in range(1, n + 1):
+        f = 1.0 - k / n
+        nx, ny = ox * f, oy * f
+        segments.append((nx - px, ny - py, plane.delta_z(nx, ny) if k < n else 0.0))
+        px, py = nx, ny
+    return segments
+
 
 def _finite(value, label):
     try:
@@ -68,8 +236,14 @@ def _finite(value, label):
     return number
 
 
-def load_tilt_plane(path, *, xy_positioner: str, focus_positioner: str | None = None) -> TiltPlane:
-    """Validate only the completed v1 calibration format produced by ImSwitch."""
+def load_tilt_plane(path, *, xy_positioner: str, focus_positioner: str | None = None,
+                    limits: TiltSafetyLimits | None = None) -> TiltPlane:
+    """Validate only the completed v1 calibration format produced by ImSwitch.
+
+    The fit quality gate applies at load: more than three points, RMS and
+    worst residual within ``limits``. A file that lacks what the gate needs
+    is refused with a request to re-record."""
+    limits = (limits or TiltSafetyLimits()).validate()
     path = Path(path).expanduser().resolve()
     data_bytes = path.read_bytes()
     document = json.loads(data_bytes)
@@ -95,8 +269,26 @@ def load_tilt_plane(path, *, xy_positioner: str, focus_positioner: str | None = 
     fit = document.get('fit')
     if not isinstance(fit, dict) or fit.get('model') != 'plane':
         raise ValueError('Calibration contains no planar fit')
-    if int(fit.get('n_fit_points', 0)) < 3:
-        raise ValueError('Calibration has too few fitted points')
+    n_points = int(fit.get('n_fit_points', 0))
+    if n_points < limits.min_fit_points:
+        raise TiltSafetyError(
+            f'Calibration has {n_points} fitted points; at least {limits.min_fit_points} '
+            'are needed. Re-record it with more sampling positions.')
+    if 'max_abs_residual_um' not in fit:
+        raise TiltSafetyError('Calibration lacks the residuals the quality gate needs; '
+                              're-record it.')
+    rms = _finite(fit.get('rms_residual_um'), 'fit RMS')
+    worst = _finite(fit.get('max_abs_residual_um'), 'fit max residual')
+    if rms > limits.max_rms_um:
+        raise TiltSafetyError(f'Calibration fit RMS {rms:.3g} µm exceeds the '
+                              f'{limits.max_rms_um:g} µm gate; re-record it.')
+    if worst > limits.max_abs_residual_um:
+        raise TiltSafetyError(f'Calibration worst residual {worst:.3g} µm exceeds the '
+                              f'{limits.max_abs_residual_um:g} µm gate; re-record it.')
+    gate = fit.get('quality_gate')
+    if isinstance(gate, dict) and gate.get('passed') is False:
+        raise TiltSafetyError('Calibration failed its quality gate when recorded: '
+                              + '; '.join(map(str, gate.get('reasons', []))))
     bounds = fit.get('valid_xy_bounds_um')
     if not isinstance(bounds, dict):
         raise ValueError('Calibration has no XY bounds')
@@ -110,13 +302,25 @@ def load_tilt_plane(path, *, xy_positioner: str, focus_positioner: str | None = 
             raise ValueError(f'Calibration has degenerate {axis} bounds')
         return lo, hi
 
+    relative = fit.get('valid_xy_bounds_relative_um')
+    rel_x = rel_y = None
+    if isinstance(relative, dict):
+        try:
+            rel_x = tuple(_finite(v, 'relative x') for v in relative['x'])
+            rel_y = tuple(_finite(v, 'relative y') for v in relative['y'])
+        except (KeyError, TypeError, ValueError):
+            rel_x = rel_y = None
     return TiltPlane(
         path=path, sha256=hashlib.sha256(data_bytes).hexdigest(),
         xy_positioner=xy_positioner, focus_positioner=calibrated_z,
         slope_x=_finite(fit.get('slope_x_um_per_um'), 'X slope'),
         slope_y=_finite(fit.get('slope_y_um_per_um'), 'Y slope'),
         x_bounds=_bounds('x'), y_bounds=_bounds('y'),
-        rms_residual_um=_finite(fit.get('rms_residual_um'), 'fit RMS'),
+        rms_residual_um=rms, max_abs_residual_um=worst, n_fit_points=n_points,
+        created_utc=str(document.get('created_utc') or ''),
+        setup_file_name=str(document.get('setup_file_name') or ''),
+        relative_x_bounds=rel_x, relative_y_bounds=rel_y,
+        n_outliers_rejected=int(fit.get('n_outliers_rejected', 0) or 0),
     )
 
 
@@ -136,14 +340,16 @@ def require_reference_signal(focus: dict, *, allow_locked=False) -> float:
 
 
 def validate_z_target(positioner, target_um: float, *, strict_limits=False) -> None:
-    """Always reject invalid numbers/devices; optionally pre-check hardware limits."""
+    """Reject invalid numbers, unavailable or unreferenced devices, and
+    targets outside the output's voltage range -- always. (``strict_limits``
+    is kept for callers; the checks no longer depend on it.)"""
     target_um = _finite(target_um, 'Z target')
     if getattr(positioner, 'isAvailable', True) is False:
         raise RuntimeError('Compensation Z positioner is unavailable')
-    if not strict_limits:
-        return
+    # Always, not only with Pre-check: an unreferenced Z has no meaningful
+    # absolute frame for the plane's targets.
     if getattr(positioner, 'requiresReference', False) and not getattr(positioner, 'isReferenced', False):
-        raise RuntimeError('Compensation Z positioner must be referenced for pre-check')
+        raise RuntimeError('Compensation Z positioner must be referenced before Apply')
     fields = ('_offset_voltage', '_volts_per_um', '_min_voltage', '_max_voltage')
     if all(hasattr(positioner, field) for field in fields):
         voltage = (_finite(positioner._offset_voltage, 'DAC offset')
