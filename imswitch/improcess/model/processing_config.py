@@ -27,7 +27,9 @@ def selected_setup_path() -> Path | None:
 
         options, _ = configfiletools.loadOptions()
         name = str(getattr(options, "setupFileName", "") or "")
-        if not name or Path(name).name != name:
+        # Relative to the setup folder, subfolders allowed ('mock/x.json'),
+        # or absolute; never climbing out of the setup folder with '..'.
+        if not name or ".." in Path(name.replace("\\", "/")).parts:
             return None
         return Path(configfiletools.getSetupFilePath(name))
     except (ImportError, OSError, AttributeError):

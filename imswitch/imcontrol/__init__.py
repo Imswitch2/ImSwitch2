@@ -14,26 +14,35 @@ def getMainViewAndController(moduleCommChannel, *_args,
     def pickSetup(options):
         import dataclasses
         import sys
-        from qtpy import QtWidgets
-        from imswitch.imcontrol.view.PickSetupDialog import PickSetupDialog
+        from imswitch.imcontrol.view.PickSetupDialog import askForSetup
 
-        # Let user pick the setup to use
-        pickSetupDialog = PickSetupDialog()
-        pickSetupDialog.setSetups(configfiletools.getSetupList())
-        pickSetupDialog.setSelectedSetup(options.setupFileName)
-        result = pickSetupDialog.exec_()
-        setupFileName = pickSetupDialog.getSelectedSetup()
-        if result != QtWidgets.QDialog.Accepted or not setupFileName:
+        # Let user pick the setup to use. A setup folder that holds no setup
+        # (a share that is not mounted, a mistyped path) must not leave the
+        # operator with an empty list and no way out: offer the default
+        # folder's setups instead.
+        folder = configfiletools.getSetupFilesDir(options)
+        setups = configfiletools.getSetupList(folder)
+        if not setups and getattr(options, 'setupFolder', ''):
+            logger.warning(f'No setup files in the setup folder {folder}; '
+                           f'offering the default setup folder instead')
+            options = dataclasses.replace(options, setupFolder='')
+            folder = configfiletools.getSetupFilesDir(options)
+            setups = configfiletools.getSetupList(folder)
+        setupFileName = askForSetup(setups, options.setupFileName, folder=folder)
+        if not setupFileName:
             logger.critical('User did not pick a setup to use')
             sys.exit()
         return dataclasses.replace(options, setupFileName=setupFileName)
 
     if overrideOptions is None:
         options, optionsDidNotExist = configfiletools.loadOptions()
-        if optionsDidNotExist:
-            options = pickSetup(options)  # Setup to use not set, let user pick
+        # A setup given with --setup is for this run only: no first-run pick,
+        # and an options file that did not exist still does not.
+        if configfiletools.setupForThisRun() is None:
+            if optionsDidNotExist:
+                options = pickSetup(options)  # Setup to use not set, let user pick
 
-        configfiletools.saveOptions(options)
+            configfiletools.saveOptions(options)
     else:
         options = overrideOptions
 
@@ -48,7 +57,10 @@ def getMainViewAndController(moduleCommChannel, *_args,
     else:
         setupInfo = overrideSetupInfo
 
-    logger.info(f'Setup used: {options.setupFileName}')
+    if configfiletools.setupForThisRun() is not None:
+        logger.info(f'Setup used: {options.setupFileName} (--setup, for this run only)')
+    else:
+        logger.info(f'Setup used: {options.setupFileName}')
 
     # The queue and working-set limits are per machine and read from these
     # options by every manager that bounds a buffer; adopt them before any
