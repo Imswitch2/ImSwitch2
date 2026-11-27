@@ -16,6 +16,7 @@ _CONTROLLER_MODULES = {
     "AutofocusController": "AutofocusController",
     "BeadRecController": "BeadRecController",
     "BFTimelapseController": "BFTimelapseController",
+    "CalibrationsController": "CalibrationsController",
     "ConsoleController": "ConsoleController",
     "EtMonalisaController": "EtMonalisaController",
     "EtSTEDController": "EtSTEDController",
@@ -61,6 +62,7 @@ _CONTROLLER_MODULES = {
     "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
     "ReservationController": "ReservationController",
+    "ReplayController": "ReplayController",
     "InstrumentsController": "InstrumentsController",
 }
 

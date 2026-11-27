@@ -43,6 +43,8 @@ _ALWAYS_LOADED = {
     'CommunicationChannel': 'imswitch.imcontrol.controller.CommunicationChannel',
     'SetupModeController': 'imswitch.imcontrol.controller.SetupModeController',
     'WorkflowFacadeController': 'imswitch.imcontrol.controller.controllers.WorkflowFacadeController',
+    'ReplayController': 'imswitch.imcontrol.controller.controllers.ReplayController',
+    'CalibrationsController': 'imswitch.imcontrol.controller.controllers.CalibrationsController',
 }
 
 

@@ -339,6 +339,18 @@ class LaserWidget(Widget):
     def setValue(self, laserName, value, emitSignal=True):
         self.laserModules[laserName].setValue(value, emitSignal=emitSignal)
 
+    def setLaserScale(self, laserName, valueUnits, valueDecimals, valueRange, valueRangeStep):
+        """ Change what a laser's setpoint means (percent of a calibration,
+        or the raw drive), after its calibration was swapped. """
+        self.laserModules[laserName].setValueScale(
+            valueUnits, valueDecimals, valueRange, valueRangeStep)
+
+    def setLaserCalibrationInfo(self, laserName, tooltip, state):
+        """ Tooltip of the setpoint (power, location, comment, or "raw
+        units") and, for ``state == 'failed'``, a visible indicator that the
+        calibration the setup names did not load. """
+        self.laserModules[laserName].setCalibrationInfo(tooltip, state)
+
     def setLaserAOOwned(self, laserName, aoOwned, tooltip=''):
         self.laserModules[laserName].setAOOwned(aoOwned, tooltip=tooltip)
 
@@ -473,6 +485,15 @@ class LaserModule(QtWidgets.QWidget):
         self.powerFrame.setFrameStyle(QtWidgets.QFrame.Panel | QtWidgets.QFrame.Plain)
         self.powerFrame.setLayout(self.powerGrid)
         powerFrame = self.powerFrame
+
+        # Shown only when the calibration the setup names did not load: the
+        # row then runs on raw units, and must say so.
+        self.calibrationIndicator = QtWidgets.QLabel('calibration not loaded')
+        self.calibrationIndicator.setStyleSheet(
+            'color: #ffffff; background-color: #b3261e; padding: 1px 4px; border-radius: 3px;')
+        self.calibrationIndicator.hide()
+        self.calibrationState = 'raw'
+        self.powerGrid.addWidget(self.calibrationIndicator, 0, 5, 2, 1)
 
         self.powerGrid.addWidget(self.setPointLabel, 0, 0, 2, 1)
         self.powerGrid.addWidget(self.setPointEdit, 0, 1, 2, 1)
@@ -680,6 +701,36 @@ class LaserModule(QtWidgets.QWidget):
             self.slider.setValue(value)
         finally:
             self.slider.blockSignals(False)
+
+    def setValueScale(self, valueUnits, valueDecimals, valueRange, singleStep):
+        """ Re-label and re-range the setpoint (after a calibration swap). """
+        if self.isBinary or valueRange is None:
+            return
+        self.valueUnits = valueUnits
+        self.valueDecimals = valueDecimals
+        self.setPointLabel.setText(f'Setpoint [{valueUnits}]')
+        valueRangeMin, valueRangeMax = valueRange
+        self.minpower.setText(str(valueRangeMin))
+        self.maxpower.setText(str(valueRangeMax))
+        self.slider.blockSignals(True)
+        try:
+            # FloatSlider fixes its integer resolution at construction; the
+            # new scale may need a finer one (raw amplitude -> 0.5 % steps).
+            if hasattr(self.slider, '_multiplier'):
+                self.slider._multiplier = 10 ** int(valueDecimals)
+            self.slider.setMinimum(valueRangeMin)
+            self.slider.setMaximum(valueRangeMax)
+            if singleStep is not None:
+                self.slider.setSingleStep(singleStep)
+        finally:
+            self.slider.blockSignals(False)
+
+    def setCalibrationInfo(self, tooltip, state):
+        self.calibrationState = state
+        for widget in (self.setPointLabel, self.setPointEdit, self.slider,
+                       self.minpower, self.maxpower, self.calibrationIndicator):
+            widget.setToolTip(tooltip)
+        self.calibrationIndicator.setVisible(state == 'failed' and not self.isBinary)
 
     def setContext(self, context):
         self._context = str(getattr(context, 'value', context)).lower()

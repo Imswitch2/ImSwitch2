@@ -1,14 +1,22 @@
-import numpy as np
-from scipy.interpolate import interp1d
-
 from .LaserManager import LaserManager, RawDriveError
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.calibrations import CalibrationRangeError
+
 
 class NidaqLaserManager(LaserManager):
     """ LaserManager for analog-value NI-DAQ-controlled lasers.
 
-    Manager properties: None
+    Manager properties:
+
+    - ``calibCsvPath`` -- optional power calibration file (volts in column 0,
+      measured power in column 1); the value is then a 0-100 % setpoint
+    - ``calibrationId`` -- optional id of a calibration in the global store
+      (``<ImSwitchConfig>/calibrations``); takes precedence over
+      ``calibCsvPath``. ``"raw"`` runs the laser on volts even when
+      ``calibCsvPath`` is set
     """
+
+    supportsPowerCalibration = True
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
 
@@ -17,26 +25,25 @@ class NidaqLaserManager(LaserManager):
             self._setMockActive("Simulated NI-DAQ laser backend")
         self.__logger = initLogger(self, tryInheritParent=True)
 
-        self._lut = None
-        self._value_units = 'V'
         getDigitalLine = getattr(laserInfo, 'getDigitalLine', None)
         #: Without a digital line, emission has no switch (analog only).
         self._hasEmissionSwitch = not callable(getDigitalLine) or getDigitalLine() is not None
-        try:
-            calib_csv_path = laserInfo.managerProperties["calibCsvPath"]
-            self.create_lut_from_calib(calib_csv_path)
-            self._value_units = '%'
+        self._analogChannel = laserInfo.getAnalogChannel()
+        # A calibration that does not load leaves the laser on volts, and the
+        # Laser panel then says so (it shows % only while one is in force).
+        self._resolvePowerCalibration(
+            name, 'V',
+            calibCsvPath=laserInfo.managerProperties.get("calibCsvPath"),
+            calibrationId=laserInfo.managerProperties.get("calibrationId"),
+            wavelength=getattr(laserInfo, 'wavelength', None),
+            logger=self.__logger,
+        )
 
-        except AttributeError:
-            pass # Calib file not specified, managerProperties doesnt exist
-        except KeyError:
-            pass  # Calib file not specified, managerProperties does exist but calib is missing
-        except Exception as e:
-            self.__logger.warning(f"Creating LUT for {laserInfo} from calib failed due to: {e}")
+        super().__init__(laserInfo, name, isBinary=self._analogChannel is None,
+                         valueUnits='V', valueDecimals=2)
 
-
-        super().__init__(laserInfo, name, isBinary=laserInfo.getAnalogChannel() is None,
-                         valueUnits=self._value_units, valueDecimals=2)
+    def calibrationDeviceIdentifier(self):
+        return f'analog {self._analogChannel}' if self._analogChannel is not None else ''
 
     def setEnabled(self, enabled):
         try:
@@ -49,12 +56,18 @@ class NidaqLaserManager(LaserManager):
     def setValue(self, val, enabled=True, for_scanning=False):
         if self.isBinary:
             return
-        if self._lut is not None:
-            voltage = self._lut(val)
-        else:
-            voltage = val
+        calibration = self.powerCalibration
         if for_scanning and not enabled:
             voltage = 0
+        elif calibration is not None:
+            try:
+                voltage = calibration.drive_for_percent(val)
+            except CalibrationRangeError as exc:
+                # Refused, not passed on: the DAQ would get NaN (or a clamp).
+                self.__logger.error(f"Laser {self.name}: {exc}; nothing sent.")
+                return False
+        else:
+            voltage = val
         try:
             succeeded = self._nidaqManager.setAnalog(
                 target=self.name, voltage=voltage,
@@ -106,14 +119,15 @@ class NidaqLaserManager(LaserManager):
         return True
 
     def applyValue(self, value):
-        """ The UI value through the calibration lookup (if loaded); raises
-        on a value the lookup cannot convert or on any DAQ failure. """
-        if self._lut is None:
+        """ The UI value through the calibration in force (if any); raises
+        on a value the calibration refuses or on any DAQ failure. """
+        calibration = self.powerCalibration
+        if calibration is None:
             return self.applyRawDrive(value)
-        voltage = float(self._lut(value))
-        if not np.isfinite(voltage):
-            raise RawDriveError(
-                f'{self.name}: {value!r} % is outside the calibration lookup')
+        try:
+            voltage = calibration.drive_for_percent(value)
+        except CalibrationRangeError as exc:
+            raise RawDriveError(f'{self.name}: {exc}') from exc
         return self.applyRawDrive(voltage)
 
     def setScanModeActive(self, active):
@@ -123,12 +137,6 @@ class NidaqLaserManager(LaserManager):
             # Scan end: zero the output and leave the laser off. The scan
             # module owns laser emission; the manager must never force ON.
             self.setValue(0)
-
-    def create_lut_from_calib(self, calib_csv_path):
-        data = np.loadtxt(calib_csv_path)
-        data[:, 1] -= data[:, 1].min()
-        data[:, 1] /= data[:, 1].max() * 0.01 # convert to %
-        self._lut = interp1d(data[:, 1], data[:, 0], bounds_error=False)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

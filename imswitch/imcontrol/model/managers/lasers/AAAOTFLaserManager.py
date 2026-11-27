@@ -1,7 +1,5 @@
-import numpy as np
-from scipy.interpolate import interp1d
-
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.calibrations import CalibrationRangeError
 from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError, DeviceRuntimeMode
 from .LaserManager import LaserManager, RawDriveError
 from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
@@ -45,6 +43,11 @@ class AAAOTFLaserManager(LaserManager):
     - ``ttlToggling`` -- bool describing if the channel should default to
       an extrenal control after setting a power value, to allow fast ttl
       toggling from another source.
+    - ``calibCsvPath`` -- optional power calibration file (AOTF amplitude in
+      column 0, measured power in column 1); the value is then a 0-100 %
+      setpoint
+    - ``calibrationId`` -- optional id of a calibration in the global store;
+      takes precedence over ``calibCsvPath`` (``"raw"``: amplitude units)
     - ``useMockOnFailure`` -- when the controller does not answer at startup,
       continue with this channel in mock mode (nothing further is sent to it)
       instead of aborting ImSwitch. A best-effort channel OFF is sent first.
@@ -52,6 +55,8 @@ class AAAOTFLaserManager(LaserManager):
       Configuration errors (unknown profile, bad channel or frequency) abort
       startup either way.
     """
+
+    supportsPowerCalibration = True
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
@@ -132,20 +137,17 @@ class AAAOTFLaserManager(LaserManager):
         except ProtocolError as exc:
             self._startWithoutController(name, exc)
 
-        self._lut = None
-        self._value_units = 'arb'
-        try:
-            calib_csv_path = laserInfo.managerProperties["calibCsvPath"]
-            self.create_lut_from_calib(calib_csv_path)
-            self._value_units = '%'
-        except AttributeError:
-            pass  # Calib file not specified, managerProperties doesnt exist
-        except KeyError:
-            pass  # Calib file not specified, managerProperties does exist but calib is missing
-        except Exception as e:
-            self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
+        # A calibration that does not load leaves the channel on amplitude
+        # units, and the Laser panel then says so.
+        self._resolvePowerCalibration(
+            name, 'arb',
+            calibCsvPath=laserInfo.managerProperties.get("calibCsvPath"),
+            calibrationId=laserInfo.managerProperties.get("calibrationId"),
+            wavelength=getattr(laserInfo, 'wavelength', None),
+            logger=self.__logger,
+        )
 
-        super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
+        super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
         if self._controllerAnswered:
             self._setConnected("AA AOTF initialized")
 
@@ -354,6 +356,9 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self.internalControl()
 
+    def calibrationDeviceIdentifier(self):
+        return f'{self._rs232Name} channel {self._channel}'
+
     def getDeviceDescriptorSpec(self):
         return sharedRs232ComponentSpec(
             category='laser',
@@ -445,12 +450,13 @@ class AAAOTFLaserManager(LaserManager):
         amplitude would be an unsafe behavior change.
         """
         try:
-            if self._lut is not None:
-                converted = float(self._lut(power))
-                if np.isnan(converted):
+            calibration = self.powerCalibration
+            if calibration is not None:
+                try:
+                    converted = calibration.drive_for_percent(power)
+                except CalibrationRangeError as exc:
                     self.__logger.error(
-                        f'AA channel {self._channel}: calibration lookup '
-                        f'produced no value for {power!r}; not sending an '
+                        f'AA channel {self._channel}: {exc}; not sending an '
                         f'amplitude.'
                     )
                     return None
@@ -497,18 +503,6 @@ class AAAOTFLaserManager(LaserManager):
     def externalControl(self):
         """Switch the channel to external control"""
         self._run('select_external_control')
-
-    def create_lut_from_calib(self, calib_csv_path):
-        """Build the percentage-to-amplitude lookup from a calibration file.
-
-        The measured output is normalized to a 0-100 % input span. Requests
-        outside that span produce NaN, which :meth:`_amplitude_for` rejects
-        without sending a command.
-        """
-        data = np.loadtxt(calib_csv_path)
-        data[:, 1] -= data[:, 1].min()
-        data[:, 1] /= data[:, 1].max() * 0.01 # convert to %
-        self._lut = interp1d(data[:, 1], data[:, 0], bounds_error=False)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

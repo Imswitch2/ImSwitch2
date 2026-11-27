@@ -22,6 +22,17 @@ api.imcontrol
 
       Always available.
 
+   .. method:: activateLaserCalibration(laserName: 'str', calibrationId: 'str', allowMismatch: 'bool' = False) -> 'bool'
+
+      Put the stored calibration ``calibrationId`` in force for
+      ``laserName`` for this session (refused while the laser is on; its
+      setpoint is reset to 0 %). A calibration made for another device is
+      refused unless ``allowMismatch``; one with a different drive unit
+      always, and so is any swap without the *Laser* panel. Returns True
+      when it is in force.
+
+      Always available.
+
    .. method:: activateRotScan(activate: bool)
 
       API callable method to activate or deactivate the scan.
@@ -255,7 +266,20 @@ api.imcontrol
 
    .. method:: getLaserActive(laserName: str) -> bool
 
-      Return the current Live ON/OFF state for ``laserName``.
+      Whether the specified laser's emission is switched on: the state the
+      controller last applied (the ``Enabled`` shared attribute), which the
+      laser power LUT procedure records and restores. ``isLaserActive`` reads
+      the Laser widget's toggle instead.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserCalibration(laserName: 'str') -> 'Dict[str, Any]'
+
+      What the laser's value means now: ``state`` (``'calibrated'``,
+      ``'raw'`` or ``'failed'``), ``units``, the calibration ``id``,
+      ``contentHash``, ``measuredAt``, ``comment``, ``powerUnit`` and the
+      predicted ``power`` at the current setpoint (None without a power
+      unit), and ``error`` when a referenced calibration did not load.
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -480,6 +504,26 @@ api.imcontrol
 
       Needs *Tiling* in ``availableWidgets``.
 
+   .. method:: getStoredCalibrations() -> 'List[Dict[str, Any]]'
+
+      The calibrations in the global store: ``id``, ``laser`` (made
+      for), ``wavelength``, ``measuredAt``, ``comment``, ``created``,
+      ``contentHash`` and ``path``.
+
+      Always available.
+
+   .. method:: importLaserCalibration(path: 'str', laserName: 'str' = '', fitMonotone: 'bool' = False) -> 'str'
+
+      Import a calibration CSV (for example the ``lut_file`` of
+      :meth:`measureLaserPowerLut`) into the global calibration store and
+      return its id. ``laserName`` names the laser it was made for when
+      the file does not say. A file whose power is not monotonic in the
+      drive is refused unless ``fitMonotone``: then the isotonic fit of
+      ``measureLaserPowerLut`` is applied and recorded as "fitted on
+      import". Nothing is activated.
+
+      Always available.
+
    .. method:: isFocusLocked() -> bool
 
       Whether the focus is locked right now.
@@ -571,6 +615,8 @@ api.imcontrol
       Runs go to ``folder`` (default ``ImSwitchConfig/measurement_runs``).
       With ``allow_unverified_timing`` (until the meter's timing is checked
       on hardware) the run is kept but no LUT is written.
+      ``importLaserCalibration(report.lut_file)`` adds the LUT to the global
+      calibration store, where Hardware → Calibrations… can activate it.
 
       Needs *Instruments* in ``availableWidgets``.
 
@@ -628,6 +674,17 @@ api.imcontrol
       way round (the Rotator widget's **+** and **-**, with any step).
 
       Needs *Rotator* in ``availableWidgets``.
+
+   .. method:: planReplayFromFile(filePath: 'str', dataset: 'Optional[str]' = None) -> 'Dict[str, Any]'
+
+      Describes what loading the settings of the recording ``filePath``
+      (an HDF5 file, or a Zarr store folder) into this setup would do,
+      without applying anything: every device the file names, whether this
+      setup has it, the candidates that could replace it and each stored
+      value checked against the current device's range. ``dataset`` names
+      the detector group when the file holds several.
+
+      Always available.
 
    .. method:: post_json(path: str, payload: dict) -> str
 
@@ -698,6 +755,18 @@ api.imcontrol
 
       Always available.
 
+   .. method:: replaySettingsFromFile(filePath: 'str', dataset: 'Optional[str]' = None, allowMoves: 'bool' = False) -> 'Dict[str, Any]'
+
+      Loads the settings of the recording ``filePath`` (an HDF5 file or
+      a Zarr store folder) into this setup without asking: only devices
+      that match exactly and values inside the current device's range are
+      applied; lasers are never switched on, and stages and rotators move
+      only with ``allowMoves=True``. Returns ``{'plan': ..., 'result':
+      {'applied', 'skipped', 'failed'}}``. ``dataset`` names the detector
+      group when the file holds several.
+
+      Always available.
+
    .. method:: reserve(rotators: 'Iterable[str]' = (), lasers: 'Iterable[str]' = (), positioners: 'Iterable[Sequence[str]]' = (), instruments: 'Iterable[str]' = (), *, waveform_outputs: 'bool' = True, owner: 'str' = 'script', deadline_s: 'float' = 5.0) -> 'ReservationHandle'
 
       Reserve audited devices for exclusive, owner-bound use.
@@ -725,6 +794,14 @@ api.imcontrol
       method behaves like ``detectCellTargets()`` and does not move hardware.
 
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: runLaserOnRawUnits(laserName: 'str') -> 'bool'
+
+      Run ``laserName`` without a calibration for this session (its
+      value becomes the raw drive, reset to the minimum; refused while the
+      laser is on).
+
+      Always available.
 
    .. method:: runScan(source: Optional[str] = None) -> imswitch.imcontrol.model.scan_request.ScanRunHandle
 
@@ -886,9 +963,10 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: setLaserValue(laserName: str, value: Union[int, float]) -> None
+   .. method:: setLaserValue(laserName: str, value: Union[int, float]) -> bool
 
-      Set the live value of a laser (legacy API).
+      Set the live value of a laser (legacy API). Returns False when the
+      laser refused the value (it then keeps its previous value).
 
       Needs *Laser* in ``availableWidgets``.
 
