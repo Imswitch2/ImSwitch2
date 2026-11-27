@@ -2026,7 +2026,8 @@ triggered cell only) → gates ``triggered`` (at least one row), ``rest``
 
 #. Have a calibration record in ``calibrations/`` that maps camera (row,
    column) to scan micrometres (``source_frame`` ``detector:<camera>``,
-   ``target_frame`` ``scanner:galvo``). Put its id in step ``tf`` (the shipped
+   ``target_frame`` ``scanner:galvo``) -- made in the Transform Calibration
+   panel (:ref:`transform-calibration`). Put its id in step ``tf`` (the shipped
    id is ``cam_to_scan``). A box is mapped through the same transform by its
    four corners; the scan rectangle is their axis-aligned bounding box, so with
    a rotation or shear it is larger than the cell's own box, never smaller.
@@ -2216,13 +2217,23 @@ the detector grid (shape, binning, ROI offset) the calibration was made on,
 and arming on a different grid is refused. A file of type
 ``spatial-transform`` points at a record of the shared transform module
 (``"path": "transforms/<id>.json"``, relative to ``calibrations/``) -- what
-the bead calibration below and the Transform Calibration panel save.
+the Transform Calibration panel (below) saves under an id.
 
+.. _transform-calibration:
 .. _bead-calibration:
 
-**Camera → scan calibration from beads.** The map from camera pixels to the
-Advanced scan's centre coordinates that the ROI dF/F pipeline's ``tf`` step
-needs, from one camera image and one APD scan of the same bead field.
+**Transform Calibration panel: camera → scan from beads, and other
+calibrations.** One panel calibrates the map between two images: a camera
+and a point scan (the map from camera pixels to the Advanced scan's centre
+coordinates that the ROI dF/F pipeline's ``tf`` step needs), two cameras, a
+camera and an SLM pattern. It is in **View → Add panel… → Transform
+Calibration** on any setup (``TransformCalibration`` in a setup's
+``availableWidgets`` docks it at startup; without the Image panel the
+calibrations from files still work, only live *Snap* and *Apply* are off).
+It replaces the former **Hardware → Camera → scan calibration…** window.
+
+The flow, top to bottom: *Images* (Reference, Moving) → *Method* →
+*Transform* (model, fit, result, checks) → *Save / use*.
 
 #. *Bead sample.* Sparse (beads a few µm apart), random -- not a grid or rows,
    which are refused as ambiguous -- visible in both channels and not
@@ -2234,49 +2245,98 @@ needs, from one camera image and one APD scan of the same bead field.
    axes, step, dwell and **phase delay** -- over the beads; Recording panel,
    select the APD, **Scan once**, Record. The scan may cover only part of
    the camera field.
-#. *Calibrate in the window.* **Hardware → Camera → scan calibration…**: pick
-   the two files (**Browse…** → an HDF5 file or a Zarr store folder). Each
-   shows at once what it holds -- detector (a choice when the file holds
-   several), time, setup, for the camera the frame, ROI offset, binning,
-   pixel size, exposure, frames averaged and counts, for the scan the fast
-   and slow axes, field, step, centre, pixels, dwell, phase delay, scan panel
-   and lasers -- and a thumbnail with the beads found. Warnings say when the
-   files come from different setups or from another setup than the one
-   running, when the camera's current ROI or binning differs from the
-   recorded one (the pipeline would then refuse the calibration), and when
-   the scan file is not an Advanced "Scan once" recording. Set the id
-   (``cam_to_scan``; an existing one is replaced or kept under a dated id),
-   the model, and, under *Advanced*, the detection; **Fit** runs in the
-   background (**Cancel** drops it). The result says accepted or refused
-   (why, in plain words, and what to do; a refused fit saves nothing), the
-   beads found and paired, the residuals, rotation, mirror, scale next to the
-   configured pixel size, translation, the model and why, and the ``axes``
-   for the pipeline's scan step; **Open QC figure**, **Open folder**, **Copy
-   report**, **Verify with another pair of files…** and **Predict scan
-   position** for a camera pixel are below it. No device is touched.
+#. *Load them.* **Load moving image… → File…** for the camera file and **Load
+   reference image… → File…** for the APD file (**Zarr recording (folder)…**
+   for a Zarr store); plain images (TIFF, NPY, PNG) load too, and **Snap**
+   takes the current live image when the Image panel is there. Each slot shows
+   a thumbnail, the coordinates the image brings (*pixels* for a camera, *Y, X
+   in µm* for a scan: its recorded scan geometry), a detector choice when the
+   file holds several, for a scan the **Fast axis** choice (auto, swept,
+   stepped: it only matters when the scan length is not a whole number of
+   steps), and under **Details** what the file holds -- time, setup, for the
+   camera the frame, ROI offset, binning, pixel size, exposure, frames
+   averaged and counts, for the scan the axes, field, step, centre, pixels,
+   dwell, phase delay, scan panel and lasers. Warnings say when the files come
+   from different setups or another setup than the one running, when the
+   camera's current ROI or binning differs from the recorded one (the
+   pipeline would then refuse the calibration), when pixels are saturated,
+   when the scan is not an Advanced "Scan once" recording, when a scan sits in
+   the Moving slot, and when both are camera recordings (pixels to pixels).
+   A scan Reference selects the **Beads** method, the **Auto** model and a
+   0.25 µm residual limit (unless you chose otherwise).
+#. *Beads (automatic).* **Localize + fit** finds the beads in both images,
+   pairs them without an approximate transform (any rotation, mirror, scale,
+   partial overlap; regular patterns refused) and fits the model, in the
+   background (**Cancel** drops it). The Moving pixels are mapped into the
+   Reference's coordinates: scan µm for a scan Reference. **Inspect / tune…**
+   shows the detections and pairs per image and lets you change the
+   detection (threshold, spot size, *Measure the PSF*) and the pairing.
+   **Model** *Auto* is a similarity (rotation, one scale, mirror or not)
+   unless a full affine lowers the residual significantly (F-test p < 0.01,
+   ≥ 10 % lower RMS, ≥ 10 pairs); any model of the transform module can be
+   chosen instead.
+#. *Manual point pairs (the backup).* Method **Manual point pairs (click)**,
+   **Pick points…**: both images side by side (scroll to zoom, drag to pan).
+   Click a feature in one image, then the same feature in the other; the pair
+   is numbered in both. Clicks snap to the brightness centre of the spot
+   under them (on by default, within 3 px; untick to place them exactly). The
+   table lists the pairs with **Delete**, **Up** / **Down**, **Undo** (Ctrl+Z)
+   and **Clear all**. As soon as there are enough pairs for the model the fit
+   is redone after every click: each pair's residual and its *leave-one-out*
+   residual (where its Moving point lands when the transform is fitted to the
+   *other* pairs) are shown, and a pair the others agree without is marked in
+   red -- a bad click. Minimum pairs: translation 1; rigid, similarity (with or
+   without mirror) and Auto 2; affine 3; polynomial 6 / 10 / 15 (degree
+   2 / 3 / 4); residuals mean something from one pair more. Points on a line
+   are refused for an affine or polynomial (the shear across the line is
+   undetermined), and two clicks on one spot for any model, with the reason.
+   The pairs are fitted by least squares over every pair (no outlier
+   rejection: with a handful of clicks every one counts).
+#. *Read the result.* *Accepted* or *Refused* (residuals above the limit:
+   nothing can be saved) with the pairs, residual RMS and maximum (nm for a
+   scan Reference), rotation, mirror, scale (µm per camera pixel, compared
+   with the camera's configured pixel size), translation, the model and why,
+   the matrix and the warnings. **QC figure** (both images with the pairs
+   numbered, the residual vectors magnified, their histogram), **Copy
+   report**, **Verify…** (another pair of files of the same bead field
+   localized with the same settings -- Beads for clicked pairs -- and each
+   Reference bead compared with the nearest mapped Moving bead: no fit; how
+   many match within 0.5 µm, their RMS, median, maximum and mean offset, and
+   whether the camera grid is the calibrated one), and **Predict** (where one
+   Moving pixel lands: for a scan Reference, the scan centre to enter in the
+   Advanced scan panel).
+#. *Save.* **Id** (``cam_to_scan`` for a scan Reference) and **Save**: an
+   existing id is replaced, kept under a dated id (``cam_to_scan_<date-time>``),
+   or the save is cancelled. It writes ``calibrations/transforms/<id>.json``
+   (the record), ``<id>_qc.png`` and ``<id>_report.txt`` next to it, and
+   ``calibrations/<id>.json``, the pipeline entry -- a ``spatial-transform``
+   from ``detector:<camera>`` to ``scanner:galvo`` (to ``detector:<reference>``
+   for two cameras) -- which a ``transform`` step names by ``<id>``. When the
+   frames are not known (two plain image files) the record is saved without a
+   pipeline entry and the result says so. **Save as file…** writes the record
+   anywhere (JSON or HDF5) without a pipeline entry; **Load…** reads any
+   record back (the bead window's ``cam_to_scan``, earlier panel saves).
 #. *Or from a script or a terminal.* Run ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``
    (edit the two file names), or in a terminal
    ``python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5``
    (``--id`` sets the id, default ``cam_to_scan``; ``--camera-detector`` /
    ``--scan-detector`` pick a detector in a file that holds several; ``--help``
-   for the rest). It writes ``calibrations/cam_to_scan.json`` (the pipeline
-   transform: ``detector:<camera>`` → ``scanner:galvo``) and, in
-   ``calibrations/transforms/``, the record ``cam_to_scan.json``, a QC figure
-   ``cam_to_scan_qc.png`` (both images with the paired beads numbered, the
-   residuals magnified, their histogram) and the report.
-#. *Read the report.* Paired beads, residual RMS and maximum (nm and camera
-   pixels), rotation, scale (µm per camera pixel, compared with the camera's
-   configured pixel size), mirror, translation. It refuses -- with the reason
-   -- too few beads, an ambiguous (regular) pattern, two images that do not
-   show the same beads, and residuals above 0.25 µm.
-#. *Validate on the rig before trusting it.*
-   ``python -m imswitch.imcontrol.model.bead_calibration verify cam_to_scan CAM2.h5 APD2.hdf5``
-   on a *second* bead field: no fit, it reports how far the camera beads land
-   from the APD beads and whether the camera grid is the calibrated one.
-   ``... predict cam_to_scan ROW COL`` gives the scan centre for one camera
-   pixel: enter it in the Advanced scan panel and scan by hand -- the bead at
-   that pixel must be in the centre. Then run the pipeline in *Validate* mode
-   and check that the ``would scan ROI ...`` rectangles lie on the cells.
+   for the rest). Same detection, pairing, model choice and files as the
+   panel's Beads method.
+#. *Validate on the rig before trusting it.* **Verify…** (or
+   ``python -m imswitch.imcontrol.model.bead_calibration verify cam_to_scan CAM2.h5 APD2.hdf5``)
+   on a *second* bead field; **Predict** a camera pixel (``... predict
+   cam_to_scan ROW COL``), enter the centre in the Advanced scan panel and scan
+   by hand -- the bead at that pixel must be in the centre. Then run the
+   pipeline in *Validate* mode and check that the ``would scan ROI ...``
+   rectangles lie on the cells.
+
+*Spot size.* Bead detection does not need a PSF: the spot scale is estimated
+from the brightest beads (the scale at which a Laplacian-of-Gaussian responds
+most), each bead's centre comes from a Gaussian fit, and beads much wider than
+the median (aggregates) are left out. *Measure the PSF* (Inspect / tune…,
+advanced) fits the brightest beads first and judges widths against that; on
+the mock bead recordings both give the same beads and the same transform.
 
 *Conventions.* Input: camera (row, column) pixels, integer = pixel centre,
 ``(0, 0)`` the first pixel of the frame as delivered (the ROI, binned).

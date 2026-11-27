@@ -694,6 +694,7 @@
    "e282f7bd8fab56b0094ab042867b4c5144bddaca62677d12980f71386fe54cb3"
   ],
   "scripts/workflows/smart/01_bead_calibration_camera_to_scan.py": [
+   "0e24baf113d700a853b08048de2f0fe446c339d3e9b66a015fca87d9a82d4709",
    "171c2c0118c5f3f63b13a4c56e3e43100f3882cbe4c3db5f3177989bb6f0123b"
   ],
   "scripts/workflows/timeresolved/01_binned_photon_arrivals.py": [

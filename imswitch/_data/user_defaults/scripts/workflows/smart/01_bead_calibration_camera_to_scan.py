@@ -21,6 +21,10 @@ in both channels, not saturated. The APD field may be a part of the camera
 field. The result is valid for that camera ROI/binning and that scan
 configuration only; the stage position is not modelled.
 
+In ImSwitch the same calibration is made in the Transform Calibration panel
+(View > Add panel… when the setup does not list it): load the camera file as
+Moving and the APD file as Reference, Localize + fit, Save under the id.
+
 Edit the settings below and run this script (Scripting module), or run the
 same from a terminal:
   python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5 --id cam_to_scan

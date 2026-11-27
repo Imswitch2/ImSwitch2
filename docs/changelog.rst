@@ -5,6 +5,39 @@ Changelog
 Unreleased
 ==========
 
+**Changes**
+
+- **One Transform Calibration panel for every calibration between two
+  images; the Hardware → Camera → scan calibration… window is gone.** The
+  panel reads ImSwitch HDF5/Zarr recordings (what each holds, the warnings
+  about setups, saturation, detector kind and a camera grid that changed,
+  a fast-axis choice for scans) and, with a scan recording as Reference,
+  fits camera pixels to scan µm. Methods: the image strategies (Beads, Foci
+  grid, uLens grid) and **Manual point pairs**, a lightweight backup: click
+  the same features in both images side by side, clicks snap to the spot
+  centre, pairs can be deleted, reordered and undone, the fit follows every
+  click with each pair's residual and leave-one-out residual, and degenerate
+  sets (too few pairs, points on a line for an affine) are refused with the
+  reason. Every method gets a residual limit, the Auto model (similarity,
+  mirror allowed; affine only if clearly better), a result report, a QC
+  figure, verification on another pair of files and a one-pixel prediction,
+  and **Save** under an id: ``calibrations/transforms/<id>.json`` plus the
+  smart pipeline's ``calibrations/<id>.json`` (an existing id is replaced or
+  kept under a dated id). Localization runs in the background with Cancel.
+  The panel is in View → Add panel… on any setup, also without the Image
+  panel. Existing ``cam_to_scan`` records and earlier panel saves load as
+  before; the command line ``python -m imswitch.imcontrol.model.bead_calibration``
+  is unchanged. See :ref:`transform-calibration`.
+- **Bead detection no longer derives a PSF by default.** The spot scale is
+  estimated (Laplacian-of-Gaussian scale selection) and aggregates are judged
+  against the median bead width; measuring the PSF is an advanced option
+  (``measure_psf``). On the mock bead recordings both find the same beads and
+  give the same transform. The transform module gains the
+  ``similarity_or_affine`` model (the bead calibration's model choice) and
+  ``correspondence.manual`` (clicked pairs).
+- The smart pipeline's calibration loader skips a transform-module record
+  saved by hand into ``calibrations/`` itself instead of failing on it.
+
 **Fixes**
 
 - **The NI-DAQ can no longer stay "busy" until ImSwitch is restarted.**  A
@@ -132,7 +165,7 @@ Unreleased
   overview, finds the spots and runs the Scan panel's scan on every tile that
   has any. The Tiling controller gained ``isTilingRunning()`` and
   ``getLastTilingFolder()``, and its ``tiles.json`` names the XY stage.
-- **Camera → scan calibration from beads.** **Hardware → Camera → scan calibration…** (a window: two recordings picked with a file dialog, what each holds shown at once with warnings, Fit in the background, the result with its checks), ``python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5`` (or ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``) maps camera pixels to the Advanced scan's centre coordinates from one camera snap and one APD scan of the same sparse bead field, read as the Recording panel writes them (HDF5/Zarr, scan geometry and camera grid from the metadata). Beads are paired without an approximate transform (any rotation, mirror, scale, partial overlap; regular patterns refused), fitted as a similarity or, when justified, an affine, and saved as a shared transform-module record plus a ``spatial-transform`` pipeline calibration (default id ``cam_to_scan``), with a QC figure, a verification command and a one-pixel prediction. The shared image transform module and its Transform Calibration panel are merged in, with a ``Beads`` correspondence strategy and a ``Similarity, mirror allowed`` model. See :ref:`bead-calibration`.
+- **Camera → scan calibration from beads.** The Transform Calibration panel (two recordings, what each holds shown at once with warnings, Fit in the background, the result with its checks; it first had a window of its own, see above), ``python -m imswitch.imcontrol.model.bead_calibration CAMERA.h5 APD.hdf5`` (or ``scripts/workflows/smart/01_bead_calibration_camera_to_scan.py``) maps camera pixels to the Advanced scan's centre coordinates from one camera snap and one APD scan of the same sparse bead field, read as the Recording panel writes them (HDF5/Zarr, scan geometry and camera grid from the metadata). Beads are paired without an approximate transform (any rotation, mirror, scale, partial overlap; regular patterns refused), fitted as a similarity or, when justified, an affine, and saved as a shared transform-module record plus a ``spatial-transform`` pipeline calibration (default id ``cam_to_scan``), with a QC figure, a verification command and a one-pixel prediction. The shared image transform module and its Transform Calibration panel are merged in, with a ``Beads`` correspondence strategy and a ``Similarity, mirror allowed`` model. See :ref:`bead-calibration`.
 - **Script Runner panel: run a script with inputs from Hardware Control.** ``ScriptRunner`` in ``availableWidgets`` adds a panel that shows the chosen script, a **Choose script…** button, one text field per ``scriptInput(name, default, description)`` call in that script, and **Run** / **Stop**. ``scriptInput`` is a new scripting function that returns the value typed into the panel, or the default when the script runs from the editor. The panel finds the calls by parsing the file, never by running it; the default's type decides how the text is converted, a value that does not fit is marked before anything runs, and an empty field means the script's default. The form follows the file when it is saved, and typed values are kept per script across restarts. Runs go through the Scripting module (it must be enabled) with the script's real path, so ``importScript`` and ``getScriptDirPath`` work; the panel refuses to start while another script runs instead of stopping it, and its status line says how the run ended (the last error line, with the traceback in its tooltip). The module channel gains ``sigRunScriptFile`` / ``sigStopScriptRun`` and ``sigScriptRunStarted`` / ``sigScriptRunFinished``, which carry the ``ScriptRunResult``. New tutorial: ``tutorial/basic/12_inputs_for_the_script_runner.py``. See :ref:`scripting-inputs`.
 - **Timelapse widget: lasers on only for each timepoint.** A new *Timelapse* dock repeats one acquisition N times with a delay between the repetitions: camera frames (any number per timepoint), one scan of a scan panel, or -- when the setup has Tiling -- a whole tiling run. The ticked lasers are switched on only while a timepoint is acquired, so a long-interval timelapse lights the sample for a single frame per timepoint; every other laser stays off for the whole run, and all are left off at the end. Before a camera timepoint records, every camera must deliver two new frames after the lasers came on, so no saved frame is partly lit; a slow light source can declare an extra settle. For a scan the scan program decides which lasers fire (shown read-only); free-running tiling is lit around each tile's frames only. The interval is start-to-start or a delay after each timepoint. Camera and scan timelapses are written by the Recording panel in its ordinary timelapse format with ``timelapse:*`` attributes per timepoint (index, schedule, slip, lasers); a timelapse of tilings writes one tiling dataset per timepoint (``t0/``, ``t1/``...) and a ``timelapse.json`` manifest. Recording gains ``recordCameraSeries`` (a camera timelapse for the caller's detectors), frames per camera-timelapse point, externally paced series, a once-per-series end callback and ``stopSeries``; Tiling gains ``runTilingForWorkflow``. See :doc:`timelapse`.
 - **Live tiling overview: contrast you can set.** Every repaint used to fit the overview's levels to its own minimum and maximum, so a contrast could not be set, let alone kept while tiles arrived. The overview now has levels and a colour map beside it and an ``Auto contrast`` switch (on by default) that fits ImageJ's *Auto* levels, ignoring a few hot pixels and the empty canvas; dragging the levels turns it off and they hold, across updates and the timepoints of a tiling timelapse, until it is ticked again. Display only. ``bestLevels`` (ImageJ's *Auto*, also used by the FFT panel) now searches from the first histogram bin, as ImageJ does, and gives a uniform image its own range instead of inverted levels.

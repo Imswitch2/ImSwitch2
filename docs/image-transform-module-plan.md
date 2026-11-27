@@ -453,6 +453,39 @@ actions in the compact widget open the same workspace on the relevant tab.
 
 ---
 
+### 0.11 Methods, world-coordinate references, ids (2026-11-27)
+
+The panel became the one place for calibrations between two images; the
+separate camera -> scan bead window was folded into it.
+
+* **Manual point pairs** (`correspondence/manual.py`, Qt-free): a
+  `PointPairEditor` (clicks in either order, delete/reorder/clear, undo),
+  `snap_to_local_maximum`, `check_point_geometry` (too few pairs, coincident
+  clicks, collinear points for affine/polynomial), `fit_point_pairs`
+  (least squares over every pair, per-pair and leave-one-out residuals, the
+  pair the others agree without), and a `manual` strategy so the shared fit
+  and persistence path takes clicked pairs like any other correspondence.
+  The widget's point picker (`TransformCalibrationPointPicker.py`) only draws
+  and forwards clicks.
+* **`similarity_or_affine`** estimator: the bead registration's model choice
+  (similarity of either handedness unless a free affine is significantly
+  better), now shared; `ModelFit.selection` says what was chosen and why.
+* **Sources with a pixel -> world mapping** (`CalibrationSource`): a scan
+  recording's Reference points are mapped into scan µm before the fit, so a
+  calibration goes from Moving pixels to the Reference's world coordinates.
+  Hosts supply such sources, pair warnings, a store to save under an id and
+  background execution through widget seams; without a host the widget works
+  on image files as before.
+* **Bead detection does not derive a PSF by default**: the spot scale is
+  estimated by LoG scale selection, widths are judged against the median
+  bead; `measure_psf=True` restores the measurement.
+* `calibration_report.py`: report lines, QC figure, verification on new
+  points, acquisition-context checks.
+
+ImControl saves under an id through `imcontrol/model/transform_store.py`:
+`calibrations/transforms/<id>.json` (the record) plus the smart pipeline's
+`calibrations/<id>.json` entry when both frames are frame tags.
+
 ## Phase 1 — Frame registry and composition
 
 - `frames.py` — named frames, edge registry, shortest-path resolution with
