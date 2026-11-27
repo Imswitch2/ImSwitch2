@@ -32,6 +32,22 @@ def _description(plugin) -> str:
     return doc.splitlines()[0].strip() if doc else ""
 
 
+def _series_fields(cls, kind: str):
+    """The reserved series parameters of a reconstructor that supports them.
+
+    Separate from ``fields`` (which equals ``default_params()``): a step may set
+    them, a form shows them, but they are not parameters of the plugin.
+    """
+    if kind != RECONSTRUCTOR:
+        return ()
+    getter = getattr(cls, "series_param_spec", None)
+    try:
+        extra = tuple(getter()) if callable(getter) else ()
+    except Exception:  # noqa: BLE001 - a plugin's bug must not empty the catalogue
+        extra = ()
+    return extra
+
+
 def _entry(plugin, kind: str, origin: str) -> PluginEntry:
     from imswitch.improcess.model.plugin_contract import contract_problem
 
@@ -47,6 +63,7 @@ def _entry(plugin, kind: str, origin: str) -> PluginEntry:
         description=_description(plugin),
         origin=origin,
         fields=spec_for(cls),
+        series_fields=_series_fields(cls, kind),
         extra_keys=tuple(str(key) for key in (extra or ())),
         accepts_any_key=extra is None,
         min_inputs=int(getattr(plugin, "min_inputs", 1) or 1) if kind == PROCESSOR else 1,

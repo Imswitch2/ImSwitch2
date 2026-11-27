@@ -1804,6 +1804,17 @@ class PayloadAssemblyOptions:
     confirmed_over_budget: bool = field(
         default=False, compare=False, repr=False
     )
+    #: Assemble onto this canvas instead of the tiles' own bounding box, as
+    #: ``(row0, col0, height, width)`` in alignment-grid pixels. A timelapse
+    #: gives every timepoint the same one, so the stack needs no cropping or
+    #: shifting. Every tile must fit; none is clipped.
+    canvas: Optional[Tuple[int, int, int, int]] = field(
+        default=None, compare=False, repr=False
+    )
+    #: Write the mosaic into this array (``canvas`` shape, float32) instead of
+    #: allocating one: a timelapse hands out one timepoint's slice of its
+    #: output, so no timepoint is held twice. It is zeroed first.
+    out: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -2991,8 +3002,26 @@ def assemble_payload(
     col0 = min(item.bounds[1] for item in placed)
     row1 = max(item.bounds[2] for item in placed)
     col1 = max(item.bounds[3] for item in placed)
+    if options.canvas is not None:
+        c_row0, c_col0, c_height, c_width = (int(v) for v in options.canvas)
+        if (row0 < c_row0 or col0 < c_col0
+                or row1 > c_row0 + c_height or col1 > c_col0 + c_width):
+            raise ValueError(
+                f'The tiles span rows {row0}..{row1} and columns {col0}..{col1}, '
+                f'outside the requested canvas of origin ({c_row0}, {c_col0}) '
+                f'and size {c_height}x{c_width}; the canvas must be built '
+                'from the same layout.'
+            )
+        row0, col0, row1, col1 = (
+            c_row0, c_col0, c_row0 + c_height, c_col0 + c_width
+        )
     height, width = row1 - row0, col1 - col0
     output_shape = leading + (height, width)
+    if options.out is not None and tuple(options.out.shape) != tuple(output_shape):
+        raise ValueError(
+            f'The output array has shape {tuple(options.out.shape)}, but this '
+            f'mosaic is {tuple(output_shape)}'
+        )
 
     identity_path = bool(
         transform.is_identity
@@ -3006,11 +3035,14 @@ def assemble_payload(
     uniform = len(set(leading_shapes)) <= 1
     weight_shape = (height, width) if uniform else output_shape
     weight_dtype = np.uint16 if identity_path else np.float32
+    canvas_bytes = (
+        0 if options.out is not None
+        else np.float32().itemsize * int(np.prod(output_shape))
+    )
     footprint = (
-        np.float32().itemsize * int(np.prod(output_shape))
+        canvas_bytes
         + np.dtype(weight_dtype).itemsize * int(np.prod(weight_shape))
     )
-    canvas_bytes = np.float32().itemsize * int(np.prod(output_shape))
     weight_bytes = np.dtype(weight_dtype).itemsize * int(np.prod(weight_shape))
     budget = options.memory_budget_bytes
     if (
@@ -3039,7 +3071,11 @@ def assemble_payload(
         f'{placement_path} placement ({footprint / 1e9:.2f} GB)...'
     )
     _check_cancelled(options.check_cancelled)
-    canvas_sum = np.zeros(output_shape, dtype=np.float32)
+    if options.out is not None:
+        canvas_sum = options.out
+        canvas_sum[...] = 0
+    else:
+        canvas_sum = np.zeros(output_shape, dtype=np.float32)
     canvas_weight = np.zeros(weight_shape, dtype=weight_dtype)
     _phase_progress(
         options.phase_progress,

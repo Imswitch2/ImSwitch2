@@ -485,6 +485,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         self.sourceInspectionLabel.hide()
         parameterGrid.addWidget(self.sourceInspectionLabel, 2, 0)
+        # Which timepoints of a series to reconstruct: the same box for every
+        # reconstructor that supports series (shown only for a source that is
+        # one timepoint of one). Its values ride along with the plugin's own.
+        from imswitch.improcess.view.SeriesOptionsBox import SeriesOptionsBox
+
+        self.seriesBox = SeriesOptionsBox()
+        parameterGrid.addWidget(self.seriesBox, 3, 0)
         self.parameterGrid = parameterGrid
 
         # Single DockArea backs the central widget so every panel is a
@@ -2209,9 +2216,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.setParameterWidget(ReconParTree())
 
     def getReconstructionParams(self):
-        if hasattr(self.parTree, "get_values"):
-            return self.parTree.get_values()
-        return {}
+        params = dict(self.parTree.get_values()) if hasattr(self.parTree, "get_values") else {}
+        box = getattr(self, "seriesBox", None)
+        if box is not None:
+            # Empty while the box is hidden: a source that is not part of a
+            # series reconstructs exactly as before.
+            params.update(box.get_values())
+        return params
+
+    def setSeriesInfo(self, info, default: str = "this") -> None:
+        """Offer this timepoint / all / a range for ``info``, or hide the box."""
+        box = getattr(self, "seriesBox", None)
+        if box is not None:
+            box.set_series(info, default)
 
     def getMultiDatas(self):
         dataList = self.multiDataFrame.dataList

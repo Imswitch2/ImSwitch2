@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from imswitch.improcess.model.series import without_series_params
+from imswitch.improcess.reconstructors import series_run
 from imswitch.improcess.model.provenance import (
     describe_source,
     output_ref,
@@ -41,32 +43,15 @@ class InputContractError(ValueError):
     """The input does not fit what the reconstructor declared (``check_input``)."""
 
 
-def run_reconstruction(reconstructor, source, params: dict | None, context=None, *,
-                       progress=None, cancel=None) -> ReconstructionRun:
-    """Call ``reconstructor.process`` and record the reconstruct node.
+def _reconstruct_one(reconstructor, source, requested: dict, context, progress, cancel):
+    """One source through the plugin's contract, auto-indexing and ``process``.
 
-    ``context`` is passed only when given: reconstructors written before the
-    context existed (and test stubs) still take ``(data_obj, params)``.
-
-    ``source`` may be a result as well as a ``DataObj``: it is bridged
-    (:mod:`~imswitch.improcess.model.result_source`). A reconstructor that
-    declares ``core_dims_in`` is first asked whether it can take the input
-    (``check_input``; :class:`InputContractError` with every reason before a
-    pixel is processed) and, given more axes than its core dims, is
-    **auto-indexed** over the extra leading ones
-    (:mod:`~imswitch.improcess.model.iteration`): one call per index, the
-    outputs stacked, and one provenance node recording ``iterated_over``.
-    ``params["_iterate"] = False`` hands it the whole stack instead.
-    ``progress(done, total, "T=3/120")`` and ``cancel() -> bool`` are asked
-    once per index.
+    Returns ``(result, extra)``; the provenance node is recorded by the caller.
     """
     from imswitch.improcess.model import iteration
     from imswitch.improcess.model.core_dims import ITERATE_PARAM, CoreDimsError
-    from imswitch.improcess.model.result_source import as_reconstruction_input
 
-    source = as_reconstruction_input(source)
-    requested = dict(params or {})
-    params = iteration.without_reserved(requested)
+    params = without_series_params(iteration.without_reserved(requested))
     check = getattr(reconstructor, "check_input", None)
     if callable(check):
         problems = check(source, requested)
@@ -97,6 +82,51 @@ def run_reconstruction(reconstructor, source, params: dict | None, context=None,
             # Not a parameter of the plugin, so not in ``params``; a replay
             # must still hand it the whole stack.
             extra = {"iterate": False}
+    return result, extra
+
+
+def run_reconstruction(reconstructor, source, params: dict | None, context=None, *,
+                       progress=None, cancel=None) -> ReconstructionRun:
+    """Call ``reconstructor.process`` and record the reconstruct node.
+
+    ``context`` is passed only when given: reconstructors written before the
+    context existed (and test stubs) still take ``(data_obj, params)``.
+
+    ``source`` may be a result as well as a ``DataObj``: it is bridged
+    (:mod:`~imswitch.improcess.model.result_source`). A reconstructor that
+    declares ``core_dims_in`` is first asked whether it can take the input
+    (``check_input``; :class:`InputContractError` with every reason before a
+    pixel is processed) and, given more axes than its core dims, is
+    **auto-indexed** over the extra leading ones
+    (:mod:`~imswitch.improcess.model.iteration`): one call per index, the
+    outputs stacked, and one provenance node recording ``iterated_over``.
+    ``params["_iterate"] = False`` hands it the whole stack instead.
+    ``progress(done, total, "T=3/120")`` and ``cancel() -> bool`` are asked
+    once per index.
+    """
+    from imswitch.improcess.model import iteration
+    from imswitch.improcess.model.result_source import as_reconstruction_input
+
+    source = as_reconstruction_input(source)
+    requested = dict(params or {})
+    params = without_series_params(iteration.without_reserved(requested))
+    # A source that is one timepoint of a series may be asked for as a whole
+    # (see series_run). ``None`` -- not a series, or only this timepoint wanted --
+    # leaves everything below exactly as it was.
+    selection = series_run.plan_series(reconstructor, source, requested)
+    if selection is not None:
+        if getattr(reconstructor, "series_policy", "default") == "own":
+            result, extra = series_run.run_own(reconstructor, selection, source, params, context, progress, cancel)
+        else:
+            member_requested = without_series_params(requested)
+
+            def reconstruct_one(member, member_context):
+                return _reconstruct_one(reconstructor, member, member_requested, member_context, None, cancel)
+
+            result, extra = series_run.run_default(
+                reconstructor, selection, source, context, progress, cancel, reconstruct_one)
+    else:
+        result, extra = _reconstruct_one(reconstructor, source, requested, context, progress, cancel)
     record_reconstruction(result, reconstructor, params, source, extra=extra)
     return ReconstructionRun(
         result=result,

@@ -59,3 +59,20 @@ def write_side_by_side_snouty(path, *, timepoints: int = 2, planes: int = 8, siz
         dataset = handle.create_dataset("data", data=np.concatenate(volumes, axis=-1))
         dataset.attrs["axes"] = "ZYX"
     return path, volumes
+
+
+def write_tiling_timelapse(root, *, timepoints: int = 4, drift_px: float = 2.0, noise: float = 0.5, seed: int = 0):
+    """A timelapse of tilings, laid out as the Timelapse panel writes it.
+
+    ``timelapse.json`` plus ``t0/ t1/ ...``, each an ``imswitch-tiling/2``
+    dataset of a 3 x 3 grid over one textured scene that drifts ``drift_px``
+    pixels (rows) per timepoint. Returns the path of ``timelapse.json``.
+    """
+    from imswitch.improcess._test import _tiling_timelapse_fixtures as fx
+
+    scene = fx.smooth_scene((360, 360), seed=3)
+    drifts = {t: (drift_px * t, -drift_px * t / 2) for t in range(timepoints)}
+    return fx.write_timelapse(
+        root, scene, timepoints, nx=3, ny=3, tile=(96, 96), step_px=(72, 72),
+        jitter=fx.random_jitter(9, amplitude=4, seed=5), noise=noise, seed=seed, drifts=drifts,
+    )

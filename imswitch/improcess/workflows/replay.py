@@ -376,6 +376,10 @@ class _Builder:
             params = _decode(node, plugin, self.warnings, label)
             if node.get("iterate") is False:
                 params["_iterate"] = False
+            recorded_series = node.get("series")
+            if isinstance(recorded_series, dict) and isinstance(recorded_series.get("request"), dict):
+                # The run covered a series: ask for the same members again.
+                params.update(recorded_series["request"])
             sid = self.step_id_for(node_id, op)
             if op == "reconstruct":
                 if node.get("mode") == "streaming":

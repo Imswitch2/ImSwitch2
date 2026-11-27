@@ -3379,6 +3379,108 @@ Processors may declare ``core_dims_in``/``core_dims_out`` the same way and
 are auto-indexed by the same code (``processors/run.run_batch``); for them
 it stays optional, since most processors already work on any rank.
 
+.. _improcess-series:
+
+Series: a timelapse stored one source per timepoint
+---------------------------------------------------
+
+Auto-indexing loops an array that has a ``T`` axis in front of the plugin's
+core dims. A timelapse is often stored the other way: **one source per
+timepoint**. Three layouts exist today, and all of them are *series*:
+
+``recording-lapse``, one file per timepoint
+    The Recording controller's camera or scan lapse: ``<name>_time07_Camera.h5``,
+    ``<name>_scan0007_APD.zarr``. Each file says which lapse it is part of
+    (``recording:lapse_index``, ``recording:num_timepoints``).
+``recording-lapse``, one group per timepoint
+    A scan lapse in one file: ``scan0/Camera``, ``scan1/Camera``...
+``tiling-timelapse``
+    The Timelapse panel's tiling kind: ``timelapse_<date>/timelapse.json`` and
+    one tiling folder ``t0/ t1/ ...`` per timepoint (see :doc:`tiling`).
+
+(A timelapse in one array with a ``T`` axis is not a series: it is auto-indexed.)
+
+``imswitch.improcess.model.series.discover_series(source)`` -- Qt-free, for a
+path or an opened ``DataObj`` -- answers whether a source is one timepoint of a
+series and returns the members in order with their state (``complete``,
+``incomplete``, ``missing``), their time stamps (recorded start, else planned)
+and which one was opened; ``None`` for anything else. It reads the lapse
+attributes and directory listings the Time lapse reconstructor already reads
+(``model/lapse_source``) and the small tiling manifests; the Time lapse
+reconstructor and this layer share that one implementation. A result, a plain
+recording and a plain tiling are never series.
+
+**Every reconstructor takes it, by default.** For a source in a series the
+reconstruction panel shows a *Timepoints* box under the plugin's own
+parameters, and a workflow step takes the same options as reserved parameters
+(like ``_iterate``; they are *not* in ``default_params()``, so a plugin that
+has never heard of series keeps passing the parameter-contract tests, and
+``param_keys()`` lets a step set them):
+
+``_series``
+    ``auto`` (default), ``this``, ``all`` or ``range``. ``auto`` is the
+    reconstructor's ``series_default`` -- ``this`` for every built-in except the
+    tiling mosaic, which says ``all`` -- or ``all`` when the series itself (its
+    manifest) was opened. So nothing changes for an existing step or file
+    unless it asks.
+``_series_first`` / ``_series_last`` / ``_series_step``
+    The range, numbered as the acquisition numbered the timepoints (``last``
+    inclusive, empty for the last one).
+``_series_missing``
+    ``skip`` (default), ``zeros`` or ``nan``: what a missing or incomplete
+    timepoint becomes. It is reported either way; filling keeps ``T`` regular
+    so plane *n* stays timepoint *n*.
+``_series_shapes``
+    ``refuse`` (default), ``pad_origin`` or ``pad_center``: what to do when the
+    per-timepoint outputs differ in size.
+
+The default run opens each member as a source, runs the plugin's ordinary
+single-source path on it (``check_input``, auto-indexing over *its own*
+leading axes, ``process``), and stacks the outputs with a leading ``T`` axis
+(the same stacking auto-indexing uses; a member output that has its own ``T``
+makes the series axis ``T_loop``). The ``T`` scale is the typical step between
+recorded start times in seconds and every plane's real time is in
+``result.metadata["series"]["times_s"]`` (written as ``DeltaT`` in OME-TIFF and
+``t_seconds`` in HDF5/Zarr); ``t_regular`` says whether the steps agree to 5 %.
+Different sizes are **never cropped**. The default is *refuse*, with every size
+and the timepoints that have it named: padding invents where a smaller image
+sits on a larger canvas (its origin, its centre?), which is a choice about the
+data, so it is the user's, not a silent default. A reconstructor that can place
+every timepoint on one canvas itself -- the tiling mosaic -- does not need it.
+The memory for the stacked output is checked after the first timepoint.
+Progress reads ``T=3/12`` and Cancel is asked before each timepoint; a
+cancelled run leaves nothing. The provenance is **one node** with a ``series``
+record -- the series manifest and its fingerprint, every member used with its
+path, state, time and fingerprint, what was left out and why, and the request
+as the explicit parameters above -- and a replay asks for the same members.
+
+**Composition.** A series is the outermost loop and exists only across
+*sources*. Each member goes through the single-source path, so a member whose
+recording is ``(T, Z, Y, X)`` is auto-indexed over its own ``T`` and nothing is
+looped twice. A *result* (the input of a chained step, the item a ``map``
+binds) is never a series -- there is no file to find siblings of -- so a
+``map`` body does not expand one, and a ``map`` over the ``T`` axis of a
+series result iterates it like any other array.
+
+**Declaring it.** Three class attributes on a ``Reconstructor``:
+
+``series_policy = "default"``
+    The base class does it (above). Nothing to write.
+``series_policy = "own"``
+    The reconstructor handles the whole series itself: implement
+    ``process_series(selection, data_obj, params, context=None, *, progress=None,
+    cancel=None)``, which gets the members to process (a ``SeriesSelection``),
+    and return one result; the runner records the provenance node. The tiling
+    mosaic does, to give every timepoint one layout and one canvas.
+``series_policy = "none"``
+    A series is not meaningful (the plugin already takes a whole lapse, or
+    its results cannot be stacked): the series options are ignored, are not
+    offered, and the plugin behaves exactly as before. The Time lapse, MoNaLISA
+    (all three) and SMLM localizer reconstructors do; MoNaLISA's several
+    recordings of one lapse are still combined by *Consolidate*.
+``series_default = "this"`` or ``"all"``
+    What ``_series: auto`` means for a source that is one timepoint of a series.
+
 .. _improcess-provenance-loops:
 
 Loops and maps in the provenance

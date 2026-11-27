@@ -151,7 +151,7 @@ class ParamForm(QtWidgets.QWidget):
     def _children_for(self, entry, values) -> list:
         if entry is None:
             return []
-        fields = list(entry.fields)
+        fields = list(entry.fields) + list(getattr(entry, 'series_fields', ()) or ())
         for key in entry.extra_keys:
             fields.append(ParamField(
                 key, "json", None, nullable=True, group=_OTHER,

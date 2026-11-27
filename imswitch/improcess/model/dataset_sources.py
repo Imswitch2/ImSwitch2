@@ -207,6 +207,17 @@ def _tiling_manifest_for_path(path: Path) -> Path | None:
         direct = path / "tiles.json"
         if direct.is_file():
             return direct
+    # The manifest of a timelapse of tilings (or its folder) stands for the
+    # series: it opens on the first usable timepoint, and the series is found
+    # again from there (``improcess.model.series``).
+    if (path.name == "timelapse.json" and path.is_file()) or (
+        path.is_dir() and (path / "timelapse.json").is_file()
+    ):
+        from imswitch.imcommon.algorithms.tile_timelapse import first_member_manifest
+
+        member = first_member_manifest(path)
+        if member is not None:
+            return member
 
     folder = path if path.is_dir() else path.parent
     candidates = [

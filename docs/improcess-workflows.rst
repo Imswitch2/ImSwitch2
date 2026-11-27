@@ -222,6 +222,23 @@ as before. The parameters are prepared once, from the whole input, and are
 the same for every index. The stacked result keeps only the attributes
 every index agrees on.
 
+**A series: a timelapse stored one source per timepoint.** A source that is one
+timepoint of a lapse recorded one file (or one group, or one tiling folder)
+per timepoint can be reconstructed whole: ``params: {_series: all}`` on the
+reconstruct step stacks every timepoint along ``T``, ``_series: range`` with
+``_series_first`` / ``_series_last`` / ``_series_step`` takes some, and
+``_series_missing`` (``skip``, ``zeros``, ``nan``) and ``_series_shapes``
+(``refuse``, ``pad_origin``, ``pad_center``) say what a missing timepoint and
+outputs of different sizes become. They are reserved like ``_iterate`` -- not
+among the plugin's own parameters, but accepted on every step whose plugin
+supports series, shown in the editor's form under *Series*, and recorded and
+replayed with the step. Without ``_series`` a step reconstructs the source it
+is bound to, as always; a source that is not part of a series ignores them.
+A series is the outermost loop and only exists across sources, so it composes
+with auto-indexing (each timepoint is looped over its own axes) and a ``map``
+body, whose inputs are results, never expands one. See :ref:`improcess-series`.
+The tiling mosaic reads a timelapse of tilings itself, on one common canvas.
+
 **A Python step carries metadata on.** Its outputs inherit the first input's
 attributes (``make_result(..., inherit_attrs=False)`` to start empty) and
 may set their own (``attrs={"geometry": "skewed"}``), so a reshape keeps,

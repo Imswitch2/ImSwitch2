@@ -72,6 +72,11 @@ class MonalisaReconstructor(StreamingReconstructor):
         - bases: number of spatial frequency components
         - timepoints, slices, rows, cols: scan dimensions
     """
+
+    #: Several recordings of one lapse are combined by the multi-data
+    #: "Consolidate" action and this plugin's own result type, not by the
+    #: generic series stack (its results are not plain images).
+    series_policy = "none"
     
     name = "MoNaLISA"
     id = "monalisa"

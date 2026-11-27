@@ -97,6 +97,12 @@ def describe_registry(registry) -> dict[str, Any]:
             "name": plugin.name, "version": getattr(plugin, "version", ""),
             "params": type(plugin).default_params(),
             "fields": [field.to_dict() for field in spec_for(plugin)],
+            # Reserved step parameters (not in ``params``): what a series source accepts.
+            "series": {
+                "policy": getattr(plugin, "series_policy", "default"),
+                "default": getattr(plugin, "series_default", "this"),
+                "fields": [field.to_dict() for field in getattr(type(plugin), "series_param_spec", lambda: ())()],
+            },
             "output_kind": getattr(plugin, "output_kind", None) or "unknown",
             # ``None`` when the plugin can run in a workflow; otherwise why not.
             "gui_only": contract_problem(plugin),

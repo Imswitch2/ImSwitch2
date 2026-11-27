@@ -1,0 +1,32 @@
+# A timelapse of tilings (the Timelapse panel's "tiling" kind) reconstructed as
+# ONE stack: T, Y, X, every timepoint on the same canvas, so nothing has to be
+# cropped or shifted afterwards.
+#
+# Bind the source to the timelapse's manifest, or its folder, or any tiling
+# folder / tile inside it:
+#   python -m imswitch.improcess.workflows run tiling_timelapse_mosaic.yaml \
+#       --bind raw=/data/timelapse_20260923_120000/timelapse.json --out results/
+#
+# time_alignment:
+#   shared        one tile layout for every timepoint, estimated from all of them
+#                 together (a faint sample that no single timepoint can align is
+#                 aligned by the series)
+#   shared+drift  the shared layout plus one rigid XY shift per timepoint
+#   stage         the manifests' stage positions only, no registration
+#   independent   each timepoint registered on its own (tiles may jitter in time)
+# The _series* parameters are the ones every reconstructor takes for a source
+# that is part of a series: _series: this | all | range (first/last/step) and
+# what to do about a timepoint that is missing (_series_missing: skip | zeros | nan).
+name: tiling-timelapse-mosaic
+schema: 1
+steps:
+  - {step: source, id: raw, source_kind: tiling-manifest}
+  - step: reconstruct
+    id: mosaic
+    reconstructor: tiling-mosaic
+    params:
+      time_alignment: shared+drift
+      _series: all
+      _series_missing: zeros
+    inputs: [raw]
+  - {step: save, id: out, input: mosaic, fmt: tiff, path_template: "{out_dir}/{source_stem}_timelapse_mosaic{ext}"}

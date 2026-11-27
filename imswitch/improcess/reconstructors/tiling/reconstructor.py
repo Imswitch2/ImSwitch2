@@ -67,13 +67,42 @@ if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
 
+TIME_ALIGNMENTS = ('stage', 'shared', 'shared+drift', 'independent')
+TIME_ALIGNMENT_HELP = (
+    "How the tiles of a timelapse of tilings are placed across time.\n\n"
+    "Stage positions only: the positions the manifests record, no registration; every\n"
+    "timepoint has identical geometry.\n"
+    "One shared layout (default): tile-to-tile offsets are estimated from all timepoints\n"
+    "together (their correlations are added before the peak is found, so a faint sample\n"
+    "that no single timepoint can align is aligned by the series) and the same layout\n"
+    "is used for every timepoint.\n"
+    "Shared layout + drift: the shared layout plus one rigid XY shift per timepoint\n"
+    "(the sample moving between timepoints), measured against the reference timepoint.\n"
+    "Each timepoint on its own: today's registration for every timepoint separately;\n"
+    "tiles may jitter between timepoints. They are still placed on one common canvas.\n\n"
+    "Every mode gives all timepoints the same canvas: nothing needs cropping or shifting."
+)
+
+
 class TilingMosaicResult(ProcessingResult):
     """A stitched mosaic, 2-D or volumetric."""
 
+    #: A timelapse's per-timepoint drift is a small table in the Results list.
+    publishes_table_rows = True
+
     def __init__(self, *args, provenance: PayloadProvenance | None = None,
-                 output_origin_yx=(0, 0), manifest=None, **kwargs):
+                 output_origin_yx=(0, 0), manifest=None,
+                 timelapse: dict | None = None, drift_yx=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.provenance = provenance
+        #: For a timelapse: the record of what was used (manifests with
+        #: fingerprints, alignment mode, layout, drift), JSON-safe.
+        self.timelapse = timelapse
+        if timelapse is not None:
+            # A stack along T goes through the shared writer in every container.
+            self.supported_formats = ("tiff", "hdf5", "zarr")
+        #: ``(T, 2)`` drift correction (row, col pixels) per plane, or ``None``.
+        self.drift_yx = None if drift_yx is None else np.asarray(drift_yx, dtype=float)
         self.output_origin_yx = tuple(output_origin_yx)
         #: The run's ``tiles.json``, so a processor can go back to the tiles
         #: (and their stage positions) the mosaic was assembled from.
@@ -85,7 +114,7 @@ class TilingMosaicResult(ProcessingResult):
     supported_formats = ("tiff",)
 
     def write_files(self, plan, document) -> None:
-        if plan.fmt != "tiff":
+        if plan.fmt not in self.supported_formats:
             raise ValueError(
                 f'TilingMosaicResult only supports fmt="tiff", got "{plan.fmt}"'
             )
@@ -94,7 +123,47 @@ class TilingMosaicResult(ProcessingResult):
         # The mosaic's own provenance summary keeps its top-level keys in the
         # OME Description, as every mosaic written so far has had.
         extra = dict(self.provenance_summary() or {})
-        save_image_result(self, plan.primary, "tiff", extra=extra, document=document)
+        if self.timelapse is not None:
+            extra["timelapse"] = self.timelapse
+        save_image_result(self, plan.primary, plan.fmt, extra=extra, document=document)
+
+    def table_columns(self) -> list[str]:
+        if self.timelapse is None:
+            return []
+        return ["timepoint", "time_s", "drift_y_px", "drift_x_px", "note"]
+
+    def table_records(self) -> list[dict]:
+        """One row per plane: its time and the drift correction applied to it."""
+        if self.timelapse is None:
+            return []
+        planes = self.timelapse.get("planes", [])
+        rows = []
+        for number, plane in enumerate(planes):
+            drift = (self.drift_yx[number] if self.drift_yx is not None and number < len(self.drift_yx)
+                     else (None, None))
+            rows.append({
+                "timepoint": plane.get("index"), "time_s": plane.get("time_s"),
+                "drift_y_px": None if drift[0] is None else round(float(drift[0]), 3),
+                "drift_x_px": None if drift[1] is None else round(float(drift[1]), 3),
+                "note": plane.get("note") or "",
+            })
+        return rows
+
+    def plot_payloads(self) -> list:
+        """The drift trace, as drift correction's own result draws it."""
+        if self.drift_yx is None or not len(self.drift_yx):
+            return []
+        from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+
+        planes = self.timelapse.get("planes", []) if self.timelapse else []
+        x = np.asarray([p.get("index", n) for n, p in enumerate(planes)] or np.arange(len(self.drift_yx)))
+        return [PlotPayload(
+            title="Drift between timepoints", x_label="Timepoint", y_label="Correction (px)",
+            series=[
+                PlotSeries(name="Y shift", x=x, y=self.drift_yx[:, 0], kind="line"),
+                PlotSeries(name="X shift", x=x, y=self.drift_yx[:, 1], kind="line"),
+            ],
+        )]
 
     def provenance_summary(self) -> dict | None:
         """Return a serializable record suitable for save metadata and UI."""
@@ -117,7 +186,10 @@ class TilingMosaicResult(ProcessingResult):
 
         report = provenance.refinement_report
         return {
-            "kind": "imswitch-tiling-mosaic-provenance/1",
+            "kind": (
+                "imswitch-tiling-mosaic-provenance/1" if self.timelapse is None
+                else "imswitch-tiling-timelapse-provenance/1"
+            ),
             "manifest": str(provenance.manifest),
             "detector": provenance.detector,
             "channel": provenance.channel,
@@ -247,6 +319,52 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         )
         layout.addWidget(self.projectCheck)
 
+        # A timelapse of tilings. Which timepoints (this one, all, a range) is
+        # the panel's own Series box; what is specific to tiling is how the
+        # tiles are aligned across time.
+        self.timelapseBox = QtWidgets.QGroupBox("Timelapse")
+        form = QtWidgets.QFormLayout(self.timelapseBox)
+        self.alignmentCombo = QtWidgets.QComboBox()
+        for label, value in (
+            ("Stage positions only", "stage"), ("One shared layout", "shared"),
+            ("Shared layout + drift", "shared+drift"), ("Each timepoint on its own", "independent"),
+        ):
+            self.alignmentCombo.addItem(label, value)
+        self.alignmentCombo.setCurrentIndex(self.alignmentCombo.findData("shared"))
+        self.alignmentCombo.setToolTip(TIME_ALIGNMENT_HELP)
+        form.addRow("Align across time:", self.alignmentCombo)
+        self.layoutSourceCombo = QtWidgets.QComboBox()
+        self.layoutSourceCombo.addItem("All timepoints", "all")
+        self.layoutSourceCombo.addItem("Reference timepoint only", "reference")
+        self.layoutSourceCombo.setToolTip(
+            "Which timepoints the shared layout is estimated from. All adds their\n"
+            "correlations; the reference alone is a single-timepoint registration."
+        )
+        form.addRow("Layout from:", self.layoutSourceCombo)
+        self.referenceSpin = QtWidgets.QSpinBox()
+        self.referenceSpin.setRange(-1, 100000)
+        self.referenceSpin.setValue(-1)
+        self.referenceSpin.setSpecialValueText("first")
+        self.referenceSpin.setToolTip("The timepoint drift is measured against.")
+        form.addRow("Reference timepoint:", self.referenceSpin)
+        self.driftSmoothSpin = QtWidgets.QSpinBox()
+        self.driftSmoothSpin.setRange(0, 99)
+        self.driftSmoothSpin.setSpecialValueText("off")
+        self.driftSmoothSpin.setSuffix(" timepoints")
+        self.driftSmoothSpin.setToolTip("Running median over this many timepoints before drift is applied.")
+        form.addRow("Smooth drift:", self.driftSmoothSpin)
+        self.maxDriftSpin = QtWidgets.QDoubleSpinBox()
+        self.maxDriftSpin.setRange(0.0, 100000.0)
+        self.maxDriftSpin.setDecimals(0)
+        self.maxDriftSpin.setSpecialValueText("auto")
+        self.maxDriftSpin.setToolTip("Reject drift estimates larger than this (pixels).")
+        form.addRow("Max drift (px):", self.maxDriftSpin)
+        layout.addWidget(self.timelapseBox)
+        # Only meaningful for a source that is part of a series; set_source_inspection shows it.
+        self.timelapseBox.setVisible(False)
+        self.alignmentCombo.currentIndexChanged.connect(self._refreshTimelapseEnabled)
+        self._refreshTimelapseEnabled()
+
         self.sourceStatus = QtWidgets.QLabel()
         self.sourceStatus.setWordWrap(True)
         layout.addWidget(self.sourceStatus)
@@ -275,7 +393,24 @@ class _TilingParamsWidget(QtWidgets.QWidget):
             ),
             "channel": self.channelCombo.currentData(),
             "project_z": self.projectCheck.isChecked(),
+            "time_alignment": self.alignmentCombo.currentData(),
+            "layout_source": self.layoutSourceCombo.currentData(),
+            "reference_timepoint": (
+                self.referenceSpin.value() if self.referenceSpin.value() >= 0 else None
+            ),
+            "drift_smoothing": self.driftSmoothSpin.value(),
+            "max_drift_px": (
+                self.maxDriftSpin.value() if self.maxDriftSpin.value() > 0 else None
+            ),
         }
+
+    def _refreshTimelapseEnabled(self, *_args) -> None:
+        mode = self.alignmentCombo.currentData()
+        self.layoutSourceCombo.setEnabled(mode in ("shared", "shared+drift"))
+        drift = mode == "shared+drift"
+        for control in (self.driftSmoothSpin, self.maxDriftSpin):
+            control.setEnabled(drift)
+        self.referenceSpin.setEnabled(mode in ("shared", "shared+drift"))
 
     @staticmethod
     def _estimateKey(channel, projection) -> str:
@@ -320,6 +455,8 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         if reason:
             self.refineCheck.setToolTip(reason)
         self._sourceWarning = inspection.warning if inspection else None
+        self._series = metadata.get("series")
+        self.timelapseBox.setVisible(bool(self._series))
         self._refreshSelectionMetadata()
 
     def _refreshSelectionMetadata(self, *_args) -> None:
@@ -367,6 +504,9 @@ class _TilingParamsWidget(QtWidgets.QWidget):
                 f"Estimated output {estimate['axes']} {out_shape}; "
                 f"canvas + weights {self._formatBytes(footprint)}."
             )
+        series = getattr(self, "_series", None)
+        if series:
+            parts.append(f"Timelapse: {series['describe']}.")
         warning = metadata.get("warning") or getattr(self, '_sourceWarning', None)
         if warning:
             parts.append(str(warning))
@@ -388,6 +528,11 @@ class _TilingParamsWidget(QtWidgets.QWidget):
 
 class TilingReconstructor(Reconstructor):
     """Stitch a saved tiling dataset back into one image."""
+
+    #: A timelapse of tilings gets one layout and one canvas for every
+    #: timepoint (:meth:`process_series`), not a stack of independent mosaics.
+    series_policy = "own"
+    series_default = "all"
 
     name = "Tiling mosaic"
     id = "tiling-mosaic"
@@ -413,7 +558,12 @@ class TilingReconstructor(Reconstructor):
         'detector': None,
         'alignment_diagnostic': False,
         'channel': None,
-        'project_z': False}
+        'project_z': False,
+        'time_alignment': 'shared',
+        'layout_source': 'all',
+        'reference_timepoint': None,
+        'drift_smoothing': 0,
+        'max_drift_px': None}
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -461,6 +611,41 @@ class TilingReconstructor(Reconstructor):
                 'project_z', 'bool', False, label='Max-project Z (recorded spelling)',
                 help='The same switch under the name older runs recorded; either one turns it on',
                 advanced=True,
+            ),
+            ParamField(
+                'time_alignment', 'select', 'shared', label='Align across time',
+                group='Timelapse',
+                options=TIME_ALIGNMENTS,
+                option_labels=(
+                    'Stage positions only', 'One shared layout',
+                    'Shared layout + drift', 'Each timepoint on its own',
+                ),
+                help=TIME_ALIGNMENT_HELP,
+            ),
+            ParamField(
+                'layout_source', 'select', 'all', label='Layout from', group='Timelapse',
+                options=('all', 'reference'),
+                option_labels=('All timepoints', 'Reference timepoint only'),
+                help='Which timepoints the shared layout is estimated from. All adds their '
+                     'correlations (best signal); the reference alone is the single-timepoint '
+                     'registration applied to every timepoint.',
+            ),
+            ParamField(
+                'reference_timepoint', 'int', None, label='Reference timepoint', group='Timelapse',
+                min=-1, max=100000, nullable=True,
+                help='The timepoint drift is measured against, and the one used when the layout is '
+                     'taken from the reference alone. Empty (or -1): the first one processed.',
+            ),
+            ParamField(
+                'drift_smoothing', 'int', 0, label='Smooth drift over', group='Timelapse',
+                min=0, max=99, suffix='timepoints',
+                help='Running median over this many timepoints before the drift is applied; '
+                     '0 or 1 applies each timepoint\'s own estimate.',
+            ),
+            ParamField(
+                'max_drift_px', 'float', None, label='Max drift (px)', group='Timelapse',
+                min=0.0, max=100000.0, decimals=0, nullable=True,
+                help='Reject drift estimates larger than this; empty derives a limit from the tile size.',
             ),
         )
 
@@ -707,18 +892,66 @@ class TilingReconstructor(Reconstructor):
                 f"Refinement will use {alignment_present}/{total} alignment images; "
                 "the others retain nominal positions."
             )
+        metadata = {
+            "manifest": str(index.manifest),
+            "refinement_available": refinement_available,
+            "refinement_reason": refinement_reason,
+            "alignment_complete": int(alignment_present),
+            "total_tiles": total,
+        }
+        series = self._series_inspection(data_obj)
+        if series is not None:
+            metadata["series"] = series
+            if series["incompatible"]:
+                warnings.append(
+                    "Timepoint(s) " + ", ".join(str(t) for t in series["incompatible"][:8])
+                    + " have a different grid and are left out of a timelapse reconstruction."
+                )
         return SourceInspection(
             source_kind=getattr(data_obj, "sourceKind", "image"),
             choices={"output": tuple(choices)},
-            metadata={
-                "manifest": str(index.manifest),
-                "refinement_available": refinement_available,
-                "refinement_reason": refinement_reason,
-                "alignment_complete": int(alignment_present),
-                "total_tiles": total,
-            },
+            metadata=metadata,
             warning=" ".join(warnings) or None,
         )
+
+    @staticmethod
+    def _series_inspection(data_obj) -> dict | None:
+        """What the opened tiling says about being one timepoint of a timelapse.
+
+        Manifests only (no pixels). The grid check parses the first, the opened
+        and the last complete timepoint, not every one: that is what a form
+        needs, and a full check follows when the series is reconstructed.
+        """
+        from imswitch.imcommon.algorithms import tile_timelapse as ttl
+        from imswitch.improcess.model.series import KIND_TILING_TIMELAPSE, discover_series
+
+        info = discover_series(data_obj)
+        if info is None or info.kind != KIND_TILING_TIMELAPSE:
+            return None
+        counts = info.counts()
+        complete = [m.index for m in info.members if m.state == "complete"]
+        sample = sorted({*complete[:1], *complete[-1:], *([info.anchor] if info.anchor in complete else [])})
+        incompatible: list[int] = []
+        reasons: dict[int, list[str]] = {}
+        series = ttl.read_timelapse(info.manifest) if info.manifest else None
+        if series is not None and len(sample) > 1:
+            verdict, _parsed = ttl.compatibility(series, indices=sample)
+            incompatible = sorted(verdict.incompatible)
+            reasons = {t: list(r) for t, r in verdict.incompatible.items()}
+        return {
+            "manifest": info.manifest,
+            "planned": info.planned,
+            "counts": counts,
+            "times_s": info.times_s(),
+            "states": [m.state for m in info.members],
+            "anchor": info.anchor,
+            "opened_as_series": info.opened_as_series,
+            "compatible": not incompatible,
+            "incompatible": incompatible,
+            "reasons": reasons,
+            "sampled": sample,
+            "describe": info.describe(),
+        }
 
     @staticmethod
     def _indexForProcess(data_obj: "DataObj", source):
@@ -736,6 +969,38 @@ class TilingReconstructor(Reconstructor):
         return cached
 
     def estimate_resources(
+        self, data_obj: "DataObj", params: dict
+    ) -> ResourceEstimate | None:
+        """The mosaic's footprint; for a timelapse, T of them.
+
+        The T output planes are all held (the result is one array), so the
+        canvas bytes scale with the number of planes; the weight canvas is
+        reused from plane to plane and does not. Approximate for the modes that
+        move tiles between timepoints: the union canvas can be a little larger.
+        """
+        estimate = self._estimate_single(data_obj, params)
+        if estimate is None:
+            return None
+        from imswitch.improcess.model.series import SeriesError
+        from imswitch.improcess.reconstructors import series_run
+
+        try:
+            selection = series_run.plan_series(self, data_obj, params)
+        except SeriesError:
+            return estimate
+        if selection is None:
+            return estimate
+        planes = len(selection.positions)
+        suggestions = (*estimate.suggestions, "reconstruct a range or every n-th timepoint")
+        return ResourceEstimate(
+            output_shape=(planes, *estimate.output_shape),
+            canvas_bytes=int(estimate.canvas_bytes) * planes,
+            weight_bytes=int(estimate.weight_bytes),
+            description=f"{planes}-timepoint {estimate.description}",
+            suggestions=suggestions,
+        )
+
+    def _estimate_single(
         self, data_obj: "DataObj", params: dict
     ) -> ResourceEstimate | None:
         source = getattr(data_obj, "dataPath", None) or getattr(
@@ -805,6 +1070,324 @@ class TilingReconstructor(Reconstructor):
             description=f"{detector} payload mosaic",
             suggestions=tuple(suggestions),
         )
+
+    # ------------------------------------------------------------------
+    # A timelapse of tilings
+    # ------------------------------------------------------------------
+
+    def process_series(self, selection, data_obj, params, context=None, *,
+                       progress=None, cancel=None):
+        """Reconstruct a timelapse of tilings as one ``T, ..., Y, X`` result.
+
+        Every timepoint is drawn on the *same canvas* (one origin, one shape),
+        so the stack needs no cropping or shifting; the layout across time
+        follows ``time_alignment`` (see :data:`TIME_ALIGNMENT_HELP`). Planes
+        are assembled one timepoint at a time straight into the output, so only
+        one timepoint's tiles are in memory; the output itself is the memory
+        ceiling, checked against the budget before anything is read.
+        """
+        from dataclasses import replace
+
+        from imswitch.imcommon.algorithms import tile_timelapse as ttl
+        from imswitch.improcess.model import iteration
+        from imswitch.improcess.model import series as sm
+        from imswitch.improcess.reconstructors import series_run
+
+        info = selection.info
+        if info.kind != sm.KIND_TILING_TIMELAPSE:
+            raise ValueError(
+                f"The tiling mosaic reconstructs a timelapse of tilings; {info.name} is a "
+                f"{info.kind}. Open a tiling folder or the timelapse manifest."
+            )
+        if params.get("alignment_diagnostic") or params.get("detector") == "__alignment__":
+            raise ValueError(
+                "The alignment diagnostic mosaic is available for one timepoint at a time: "
+                "choose 'This timepoint only'."
+            )
+        mode = str(params.get("time_alignment", "shared"))
+        if mode not in TIME_ALIGNMENTS:
+            raise ValueError(f"time_alignment must be one of {list(TIME_ALIGNMENTS)}, got {mode!r}")
+        if mode == "shared+drift" and params.get("layout_source", "all") not in ("all", "reference"):
+            raise ValueError("layout_source must be 'all' or 'reference'")
+
+        def check_cancelled():
+            iteration.check_cancelled(cancel, context)
+
+        def phase_progress(phase, completed, total, message):
+            if context is not None:
+                context.report(phase, completed, total, message)
+
+        log = self._logger.info
+        phase_progress("inspect", 0, 1, "Reading the timepoints' manifests")
+        members = {info.members[p].index: p for p in selection.process}
+        parsed: dict[int, TilingDatasetIndex] = {}
+        for number, (timepoint, position) in enumerate(sorted(members.items()), start=1):
+            check_cancelled()
+            index, _completeness = inspect_dataset(Path(info.members[position].path))
+            if index.format != "imswitch-tiling/2":
+                raise ValueError(
+                    f"Timepoint {timepoint} is a {index.format or 'legacy'} tiling manifest; "
+                    "a timelapse reconstruction needs imswitch-tiling/2."
+                )
+            parsed[timepoint] = index
+            phase_progress("inspect", number, len(members), f"Read manifest of timepoint {timepoint}")
+        verdict = ttl.compare_grids(parsed)
+        if not verdict.compatible:
+            raise ValueError("No timepoint has a usable grid: " + "; ".join(
+                f"{t}: {', '.join(r)}" for t, r in verdict.incompatible.items()))
+        if verdict.incompatible:
+            process = tuple(p for p in selection.process if info.members[p].index in verdict.compatible)
+            dropped = {members_pos: "different grid: " + "; ".join(verdict.incompatible[tp])
+                       for tp, members_pos in members.items() if tp in verdict.incompatible}
+            filled = set(selection.filled)
+            if selection.request.missing != "skip":
+                filled |= set(dropped)
+            skipped = tuple(selection.skipped) + tuple(
+                (pos, why + (f" (filled with {selection.request.missing})"
+                             if selection.request.missing != "skip" else ""))
+                for pos, why in dropped.items())
+            selection = replace(selection, process=process, filled=tuple(sorted(filled)), skipped=skipped)
+            for tp in verdict.incompatible:
+                parsed.pop(tp, None)
+            log(f"Left out {len(dropped)} timepoint(s) with a different grid.")
+        use_all = sorted(parsed)
+        reference_tp = params.get("reference_timepoint")
+        if reference_tp is None or int(reference_tp) < 0:
+            reference_tp = use_all[0]
+        elif int(reference_tp) not in parsed:
+            raise ValueError(
+                f"Reference timepoint {reference_tp} is not among the timepoints reconstructed {use_all}"
+            )
+        reference_tp = int(reference_tp)
+        reference_index = parsed[reference_tp]
+
+        requested_detector = params.get("detector")
+        detector = requested_detector or (
+            reference_index.alignment_detector
+            if reference_index.alignment_detector in reference_index.detectors
+            else (reference_index.detectors[0] if reference_index.detectors else None)
+        )
+        if not detector or detector not in reference_index.detectors:
+            raise ValueError(f"No payload for detector {detector!r} in this timelapse")
+        raw_channel = params.get("channel")
+        channel = None if raw_channel in (None, "", "all", "All") else int(raw_channel)
+        projection = "max" if params.get("project_z", params.get("project", False)) else "keep"
+        payload_selection = PayloadSelection(detector=detector, channel=channel, z_projection=projection)
+
+        # -- one layout (or one per timepoint) ------------------------------
+        refine = bool(params.get("refine", True)) and mode != "stage"
+        if refine and not any(
+            tile.alignment.path.exists() for index in parsed.values() for tile in index.tiles
+        ):
+            raise ValueError(
+                "Alignment refinement was requested, but no alignment artifacts are present. "
+                "Choose 'Stage positions only' or disable refinement."
+            )
+        options = LayoutOptions(
+            stage_positions=params.get("stage_positions", True), refine=refine,
+            max_shift_px=params.get("max_shift_px"),
+        )
+        layouts: dict[int, MosaicLayout] = {}
+        shared_report = None
+        layout_timepoints: list[int] = []
+        if mode == "independent":
+            for number, timepoint in enumerate(use_all, start=1):
+                check_cancelled()
+                layouts[timepoint] = solve_layout(
+                    parsed[timepoint], options, progress=log, check_cancelled=check_cancelled,
+                    phase_progress=phase_progress,
+                )
+            layout_timepoints = list(use_all)
+        else:
+            layout_timepoints = (
+                [reference_tp] if params.get("layout_source", "all") == "reference" else list(use_all)
+            )
+            if params.get("layout_source", "all") == "reference":
+                # One timepoint's own registration, exactly as a single tiling
+                # gets it, applied to every timepoint.
+                shared_layout = solve_layout(
+                    parsed[reference_tp], options, progress=log, check_cancelled=check_cancelled,
+                    phase_progress=phase_progress,
+                )
+            else:
+                shared_layout, shared_report = ttl.solve_shared_layout(
+                    parsed, layout_timepoints, options, progress=log,
+                    check_cancelled=check_cancelled, phase_progress=phase_progress,
+                )
+            layouts = {timepoint: shared_layout for timepoint in use_all}
+        phase_progress("align", 1, 1, "Layout ready")
+        check_cancelled()
+
+        drift = None
+        shifts = {timepoint: (0.0, 0.0) for timepoint in use_all}
+        if mode == "shared+drift":
+            drift = ttl.estimate_drift(
+                parsed, use_all, reference_tp, max_drift_px=params.get("max_drift_px"),
+                smoothing=int(params.get("drift_smoothing") or 0),
+                check_cancelled=check_cancelled, phase_progress=phase_progress,
+            )
+            shifts = {t: tuple(shift) for t, shift in zip(drift.timepoints, drift.shift_yx)}
+            log("Drift (px, row/col): " + ", ".join(
+                f"t{t}: ({dy:+.1f}, {dx:+.1f})" for t, (dy, dx) in shifts.items()))
+
+        # -- one canvas -----------------------------------------------------
+        resolver = params.get("transform_resolver")
+        bounds = [
+            ttl.placement_bounds(
+                parsed[t], layouts[t].positions_yx, payload_selection,
+                shift_yx=shifts[t], transform_resolver=resolver,
+            )
+            for t in use_all
+        ]
+        canvas = ttl.common_canvas(bounds)
+        axes, leading = ttl.payload_axes_leading(list(parsed.values()), payload_selection)
+        plane_shape = tuple(leading) + (canvas[2], canvas[3])
+        positions = selection.positions
+        planes = len(positions)
+        plane_bytes = np.dtype(np.float32).itemsize * int(np.prod(plane_shape))
+        weight_bytes = np.dtype(np.float32).itemsize * int(canvas[2] * canvas[3])
+        required = plane_bytes * planes + weight_bytes
+        budget = context.memory_budget_bytes if context else None
+        if budget is not None and required > int(budget) and not (context and context.confirmed_over_budget):
+            raise MemoryError(
+                f"The timelapse mosaic is {planes} planes of {'x'.join(str(n) for n in plane_shape)} "
+                f"(float32, {axes}): {required} bytes, above the {int(budget)}-byte reconstruction "
+                "budget. Reconstruct a range or every n-th timepoint, select one channel, or "
+                "max-project Z."
+            )
+        out = np.zeros((planes, *plane_shape), dtype=np.float32)
+        if selection.request.missing == "nan":
+            for k, position in enumerate(positions):
+                if position in selection.filled:
+                    out[k] = np.nan
+
+        # -- timepoint by timepoint -----------------------------------------
+        payload_provenance = {}
+        scales = None
+        # Alignment is already reported on the outer context; the timepoints
+        # share what is left of the bar.
+        base = float(getattr(context, "_last_fraction", 0.0) or 0.0)
+        for k, position in enumerate(positions):
+            if position in selection.filled and position not in selection.process:
+                continue
+            check_cancelled()
+            timepoint = info.members[position].index
+            member_context = series_run._member_context(context, k, planes, base)
+
+            def member_phase(phase, completed, total, message, _ctx=member_context):
+                if _ctx is not None:
+                    _ctx.report(phase, completed, total, message)
+
+            layout = layouts[timepoint]
+            shift = shifts[timepoint]
+            if shift != (0.0, 0.0):
+                # Drift: the same layout, moved as a whole by this timepoint's correction.
+                layout = MosaicLayout(
+                    {i: (y + shift[0], x + shift[1]) for i, (y, x) in layout.positions_yx.items()},
+                    layout.source, layout.report,
+                )
+            result = assemble_payload(
+                parsed[timepoint], layout, payload_selection,
+                PayloadAssemblyOptions(
+                    blend=params.get("blend", True),
+                    shading_correction=params.get("shading_correction", False),
+                    transform_resolver=resolver,
+                    layout_cache_key=("timelapse", timepoint, mode, shift),
+                    progress=log, check_cancelled=check_cancelled,
+                    phase_progress=member_phase if member_context is not None else None,
+                    canvas=canvas, out=out[k],
+                ),
+            )
+            payload_provenance[timepoint] = result.provenance
+            scales = scales or result.scales
+            if progress is not None:
+                progress(k + 1, planes, f"T={k + 1}/{planes}")
+            series_run.report_timepoint(context, k, planes, f"Timepoint {timepoint} assembled", base)
+        check_cancelled()
+
+        # -- the result -----------------------------------------------------
+        stamps = selection.times_s()
+        axis = sm.time_axis(stamps, positions, info.interval_s)
+        first_tp = next(iter(payload_provenance))
+        first_provenance = payload_provenance[reference_tp if reference_tp in payload_provenance else first_tp]
+        drift_rows = np.zeros((planes, 2), dtype=float)
+        plane_records = []
+        for k, position in enumerate(positions):
+            member = info.members[position]
+            used = position in selection.process
+            note = None if used else dict(selection.skipped).get(position, member.state)
+            if used and member.index in shifts:
+                drift_rows[k] = shifts[member.index]
+            plane_records.append({"index": member.index, "time_s": member.time_s,
+                                  "used": used, "note": note})
+        manifests = []
+        for timepoint in use_all:
+            fingerprint = manifest_fingerprint(parsed[timepoint].manifest)
+            manifests.append({
+                "index": timepoint, "manifest": str(parsed[timepoint].manifest),
+                "fingerprint": list(fingerprint),
+                "skipped_tiles": [
+                    {"tile_id": item.tile_id, "reason": item.reason}
+                    for item in payload_provenance[timepoint].skipped
+                ] if timepoint in payload_provenance else [],
+            })
+        timelapse_manifest = Path(info.manifest) if info.manifest else None
+        shared_summary = None
+        if shared_report is not None:
+            shared_summary = {
+                "timepoints": list(shared_report.timepoints), "pairs": shared_report.pairs,
+                "pairs_measured": shared_report.pairs_measured, "passes": shared_report.passes,
+                "method": "correlation surfaces summed over timepoints, then robust global solve",
+            }
+        sample_layout = layouts[reference_tp]
+        record = {
+            "kind": "imswitch-tiling-timelapse/1",
+            "timelapse_manifest": str(timelapse_manifest) if timelapse_manifest else None,
+            "timelapse_manifest_fingerprint": sm._fingerprint(str(timelapse_manifest)) if timelapse_manifest else None,
+            "alignment_mode": mode,
+            "reference_timepoint": reference_tp,
+            "layout_source": params.get("layout_source", "all") if mode != "independent" else "own",
+            "layout_timepoints": layout_timepoints,
+            "refine": refine,
+            "canvas": {"origin_yx": [canvas[0], canvas[1]], "shape_yx": [canvas[2], canvas[3]]},
+            "manifests": manifests,
+            "layout": {
+                "source": sample_layout.source,
+                "positions_yx": (
+                    {str(tile_id): list(pos) for tile_id, pos in sample_layout.positions_yx.items()}
+                    if mode != "independent" else
+                    {str(t): {str(i): list(pos) for i, pos in layouts[t].positions_yx.items()}
+                     for t in use_all}
+                ),
+                "shared": shared_summary,
+                "refinement": sample_layout.report.summary(),
+            },
+            "drift": drift.as_dict() if drift is not None else None,
+            "planes": plane_records,
+            "left_out": [{"index": info.members[p].index, "why": why}
+                         for p, why in selection.skipped if p not in selection.filled],
+            "filled": [info.members[p].index for p in selection.filled],
+            "filled_with": selection.request.missing if selection.filled else None,
+            "memory": {"output_bytes": int(plane_bytes * planes), "budget_bytes": budget},
+        }
+        suffix = (" (all channels)" if channel is None and "C" in axes
+                  else (f" (channel {channel})" if channel is not None else ""))
+        name = f"{info.name} {detector}{suffix} timelapse mosaic ({planes} timepoints, {mode})"
+        phase_progress("finalize", 1, 1, "Timelapse mosaic complete")
+        ndim = len(axes) + 1
+        result = TilingMosaicResult(
+            name=name, data=out, axis_labels=["T", *axes],
+            view_modes=[ViewMode("Standard", tuple(range(ndim)))],
+            axis_scales=[axis["scale"], *scales], scale_unit="µm",
+            provenance=first_provenance, output_origin_yx=(canvas[0], canvas[1]),
+            manifest=reference_index.manifest, timelapse=record,
+            drift_yx=drift_rows if mode == "shared+drift" else None,
+        )
+        result.metadata = {**dict(getattr(result, "metadata", None) or {}),
+                           sm.METADATA_KEY: sm.series_record(selection, axis, extra={
+                               "alignment_mode": mode, "canvas_origin_yx": [canvas[0], canvas[1]],
+                               "canvas_shape_yx": [canvas[2], canvas[3]]})}
+        return result
 
     def process(
         self,

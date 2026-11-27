@@ -69,6 +69,11 @@ def extraction_sigmas(psf_fwhm_nm, bg_modelling: str, bg_gaussian_size_nm: float
 class LegacyMonalisaReconstructor(Reconstructor):
     """Classic MoNaLISA (signal extraction on a detected pattern)."""
 
+    #: Several recordings of one lapse are combined by the multi-data
+    #: "Consolidate" action and this plugin's own result type, not by the
+    #: generic series stack (its results are not plain images).
+    series_policy = "none"
+
     name = "MoNaLISA (classic)"
     id = "monalisa-legacy"
 

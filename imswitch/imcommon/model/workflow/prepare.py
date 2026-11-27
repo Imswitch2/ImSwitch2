@@ -323,7 +323,14 @@ def _param_keys(plugin) -> set | None:
 def _field(plugin, param):
     from imswitch.imcommon.model.param_spec import fields_by_key, spec_for
 
-    return fields_by_key(spec_for(plugin)).get(param)
+    found = fields_by_key(spec_for(plugin)).get(param)
+    if found is None and str(param).startswith("_series"):
+        getter = getattr(type(plugin), "series_param_spec", None)
+        try:
+            found = fields_by_key(getter()).get(param) if callable(getter) else None
+        except Exception:  # noqa: BLE001
+            found = None
+    return found
 
 
 def _step_fields(plugin, step) -> tuple[dict, str]:

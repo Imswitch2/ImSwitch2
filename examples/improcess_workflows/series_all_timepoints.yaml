@@ -1,0 +1,14 @@
+# Any reconstructor over a timelapse recorded one file per timepoint
+# (<name>_time07_Camera.h5, <name>_scan0007_APD.zarr, or scanN groups in one file).
+# Bind the source to ONE timepoint; the series is found from it. Without
+# `_series` the step reconstructs only that timepoint, as always.
+#   _series: all      every timepoint, stacked along a leading T axis
+#   _series: range    _series_first / _series_last / _series_step
+#   _series_missing:  skip (default) | zeros | nan  for a missing or incomplete timepoint
+#   _series_shapes:   refuse (default) | pad_origin | pad_center  when outputs differ in size
+name: series-all-timepoints
+schema: 1
+steps:
+  - {step: source, id: raw}
+  - {step: reconstruct, id: view, reconstructor: view-only, params: {_series: all}, inputs: [raw]}
+  - {step: save, id: out, input: view, fmt: tiff, path_template: "{out_dir}/{source_stem}_series{ext}"}

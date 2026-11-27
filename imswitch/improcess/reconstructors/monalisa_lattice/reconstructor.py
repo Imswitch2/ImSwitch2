@@ -261,6 +261,11 @@ class MonalisaLatticeReconstructor(Reconstructor):
     acquisition layout, or from its attributes, unless it is set.
     """
 
+    #: Several recordings of one lapse are combined by the multi-data
+    #: "Consolidate" action and this plugin's own result type, not by the
+    #: generic series stack (its results are not plain images).
+    series_policy = "none"
+
     name = "MoNaLISA lattice (experimental)"
     id = "monalisa-lattice"
     file_extensions = ["hdf5", "h5", "zarr", "tiff"]

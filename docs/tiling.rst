@@ -418,6 +418,89 @@ Options:
 ``Project volumes to 2D``
     Maximum-project a volumetric mosaic instead of keeping every plane.
 
+
+A timelapse of tilings
+----------------------
+
+The Timelapse panel's *tiling* kind runs a tiling at every timepoint. It
+writes one folder, ``timelapse_<YYYYMMDD_HHMMSS>``, holding ``timelapse.json``
+(the plan, the Tiling panel's settings, and one record per timepoint run so
+far: its folder, its scheduled start in seconds, whether it completed) and one
+tiling run per timepoint, ``t0/ t1/ ...`` (zero-padded to the width of the
+timepoint count), each exactly as above. The manifest is rewritten after every
+timepoint, so an interrupted run lists fewer records than planned: the others
+are *missing*; a timepoint whose tiling was stopped or failed is *incomplete*.
+
+The **Tiling mosaic** reconstructor recognises it. Open a tile of any
+timepoint, a timepoint folder, ``timelapse.json`` or the timelapse folder, and
+it reports how many timepoints there are, which are complete, incomplete or
+missing, their time stamps, and whether their grids agree (detector,
+alignment-tile and payload shape, grid, pixel size, orientation, stage
+positions); a timepoint whose grid differs is named and left out. The
+**Timepoints** box under the parameters chooses *This timepoint only*, *All
+timepoints* (the default for a timelapse) or a *Range*, with every n-th, and
+what to do about timepoints that are missing or incomplete: leave them out, or
+keep ``T`` regular with a plane of zeros or NaN. Either way they are listed.
+
+All timepoints give **one** result, ``T, [C, Z,] Y, X``. ``T`` is scaled from
+the recorded start times (their typical step, in seconds; the real time of every
+plane is in the metadata and, when saved, in each plane's ``DeltaT``). Every
+plane is drawn on the **same canvas** -- one origin, one shape, the union of
+what every timepoint occupies -- so nothing has to be cropped or shifted
+afterwards.
+
+``Align across time`` decides how the tiles are placed from one timepoint to
+the next (**Refine alignment** and **Max shift** still apply inside a mode):
+
+``Stage positions only``
+    The positions the manifests record, no registration. Identical geometry.
+``One shared layout`` (default)
+    One tile layout for every timepoint. For each overlapping pair of tiles the
+    cross-correlation surfaces of the overlaps are *added over the
+    timepoints*, and the peak of the sum is the pair's offset; the offsets go
+    through the same robust global solve as a single tiling. The sum is the
+    maximum-likelihood estimate of one common offset under independent noise
+    -- its peak grows with the number of timepoints while the noise floor grows
+    with its square root -- so a sample too faint for any single timepoint to
+    align is aligned by the series, where a median of per-timepoint offsets
+    would still need most of them to be right. A rigid drift moves both tiles
+    of a pair together and does not blur the sum. ``Layout from: Reference
+    timepoint only`` applies one timepoint's own registration to all.
+``Shared layout + drift``
+    The shared layout plus one rigid XY shift per timepoint against the
+    **reference timepoint** (the sample or stage moving between timepoints).
+    A few tiles spread over the grid are each correlated with the same tile at
+    the reference and combined by a confidence-weighted median; ``Smooth
+    drift`` takes a running median over timepoints. The canvas is padded once
+    for the whole drift range. The correction applied to every timepoint is a
+    column in the Results table, a trace in the Graph panel and in the
+    metadata.
+``Each timepoint on its own``
+    Today's registration, per timepoint. Tiles may jitter from one timepoint
+    to the next in this mode; they are still placed on the common canvas.
+
+The result is one array of ``T`` float32 planes, held in memory: its size is
+the ceiling. The memory estimate counts every plane; a run above the
+reconstruction budget is refused with the planes and bytes named (reconstruct a
+range, every n-th timepoint, one channel, or max-project Z) until the estimate
+is confirmed. Planes are assembled one timepoint at a time straight into the
+output, so only one timepoint's tiles are read at once, and Cancel stops
+between tiles. Correlation accumulators are held in batches of 256 MiB; more
+pairs than that cost one more read pass over the alignment images.
+
+The result's provenance (in the OME description, and the history of the result)
+names ``timelapse.json`` and every tiling manifest used with their
+fingerprints, the alignment mode, the layout that was applied (tile positions;
+the timepoints it was estimated from), the drift per timepoint, the canvas, and
+which timepoints were left out or filled and why, so the run can be replayed.
+It saves as OME-TIFF, HDF5 or Zarr. As a workflow step, bind the source to
+``timelapse.json`` (``source_kind: tiling-manifest``); the options are the
+step's ``time_alignment``, ``layout_source``, ``reference_timepoint``,
+``drift_smoothing``, ``max_drift_px`` and the series options ``_series``,
+``_series_first``, ``_series_last``, ``_series_step``, ``_series_missing``
+(see :doc:`improcess`). ``examples/improcess_workflows/tiling_timelapse_mosaic.yaml``
+is a worked example.
+
 Volumetric runs keep their Z planes; tiles are aligned on their projections and
 the whole stack moves together, since the tiles share a Z range.
 

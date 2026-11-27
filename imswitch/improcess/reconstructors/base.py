@@ -247,6 +247,60 @@ class Reconstructor(ABC):
     acquisition_requirements: AcquisitionRequirements | None = None
     """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
 
+    #: How this reconstructor treats a source that is one timepoint of a
+    #: series (a timelapse recorded one file / one tiling folder per timepoint;
+    #: see :mod:`imswitch.improcess.model.series`):
+    #:
+    #: * ``"default"`` -- the base class runs :meth:`process` once per timepoint
+    #:   and stacks the results along a leading ``T`` axis. Nothing to write.
+    #: * ``"own"`` -- the reconstructor handles the whole series itself:
+    #:   implement :meth:`process_series` (the tiling mosaic does, to give every
+    #:   timepoint one layout and one canvas).
+    #: * ``"none"`` -- a series is not meaningful for it (it already takes a
+    #:   whole lapse, or its result cannot be stacked); the series parameters are
+    #:   ignored and it behaves exactly as it always did.
+    series_policy: str = "default"
+    #: What the series parameter's ``auto`` means for a source that is one
+    #: timepoint of a series: ``"this"`` (the historic behaviour: process the
+    #: opened timepoint) or ``"all"``. Opening the series' own manifest means
+    #: ``all`` whatever this says.
+    series_default: str = "this"
+
+    @classmethod
+    def supports_series(cls) -> bool:
+        """Whether the series parameters apply to this reconstructor."""
+        return getattr(cls, "series_policy", "default") != "none"
+
+    @classmethod
+    def series_param_spec(cls) -> tuple:
+        """The reserved series parameters (``_series``...) as fields, or ``()``.
+
+        Kept apart from :meth:`param_spec` on purpose: a plugin that knows
+        nothing about series has a ``param_spec`` that must equal its
+        ``default_params``. Forms and the workflow editor append these.
+        """
+        if not cls.supports_series():
+            return ()
+        from imswitch.improcess.model.series import series_param_fields
+
+        return series_param_fields()
+
+    def process_series(self, selection, data_obj, params: dict, context=None, *,
+                       progress=None, cancel=None):
+        """Reconstruct a whole series (``series_policy == "own"`` only).
+
+        ``selection`` is a :class:`~imswitch.improcess.model.series.SeriesSelection`:
+        the members to process, the ones left out and why, and the request.
+        ``data_obj`` is the opened timepoint. Return one result; the runner
+        records the provenance node with every member listed. ``progress(done,
+        total, text)`` and ``cancel()`` are asked once per timepoint, and
+        ``context`` carries the worker's progress, cancellation and memory
+        budget as for :meth:`process`.
+        """
+        raise NotImplementedError(
+            f"{self.name} declares series_policy='own' but does not implement process_series"
+        )
+
     #: The kind of result a reconstruction produces, declared (see
     #: :attr:`~imswitch.improcess.processors.base.Processor.output_kind`).
     output_kind: str | None = None
@@ -285,7 +339,10 @@ class Reconstructor(ABC):
         """Every parameter key a workflow may set, or ``None`` for unchecked."""
         if cls.extra_param_keys is None:
             return None
-        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+        # The reserved series options are settable on any step that supports
+        # series, though they are not among its parameters.
+        series = frozenset(field.key for field in cls.series_param_spec())
+        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys) | series
 
     @classmethod
     def param_spec(cls) -> tuple:

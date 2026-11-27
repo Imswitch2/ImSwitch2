@@ -54,6 +54,9 @@ class PluginEntry:
     roi_modes: tuple[str, ...]
     gui_only: str | None
     plugin: Any = field(repr=False, compare=False, hash=False, default=None)
+    #: Reserved step parameters beyond ``fields`` (a reconstructor's series
+    #: options): settable and shown in the form, but not plugin parameters.
+    series_fields: tuple[ParamField, ...] = ()
 
     @property
     def label(self) -> str:
@@ -75,7 +78,7 @@ class PluginEntry:
         return {f.key: f.default for f in self.fields}
 
     def field(self, key: str) -> ParamField | None:
-        return fields_by_key(self.fields).get(key)
+        return fields_by_key(self.fields + self.series_fields).get(key)
 
     def step_fields(self, params: dict | None = None) -> tuple[ParamField, ...]:
         """The fields of the parameters a step takes beyond :attr:`fields`, given the step's own
@@ -94,7 +97,8 @@ class PluginEntry:
         """Keys a step may set, or ``None`` when any key is accepted."""
         if self.accepts_any_key:
             return None
-        return frozenset(f.key for f in self.fields) | frozenset(self.extra_keys)
+        return (frozenset(f.key for f in self.fields) | frozenset(self.extra_keys)
+                | frozenset(f.key for f in self.series_fields))
 
     def output_spec(self, params: dict | None = None):
         """The processor's ports for ``params`` (defaults filled in); ``None``

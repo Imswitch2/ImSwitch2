@@ -41,8 +41,23 @@ def open_source(spec: SourceSpec, *, source_root=None):
     path = Path(spec.path)
     if not path.exists():
         raise SourceError(f"source does not exist: {path}")
+    allowed = None
+    names = ("tiles.json", "timelapse.json")
+    if (
+        spec.source_kind == "tiling-manifest"
+        or path.name in names
+        or (path.is_dir() and any((path / name).is_file() for name in names))
+    ):
+        # A tiling run, its manifest, or a timelapse of tilings (its manifest
+        # or folder) is a manifest-backed source, not an image container.
+        from imswitch.improcess.model.dataset_sources import (
+            SOURCE_SPECS,
+            TILING_RUN_SPEC,
+        )
+
+        allowed = [*SOURCE_SPECS, TILING_MANIFEST_SPEC, TILING_RUN_SPEC]
     try:
-        resolved = resolve_dataset_source(str(path))
+        resolved = resolve_dataset_source(str(path), allowed_specs=allowed)
     except Exception as exc:
         raise SourceError(f"{path}: {exc}") from exc
 

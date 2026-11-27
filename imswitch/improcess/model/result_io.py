@@ -492,6 +492,12 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
     Zarr as a ``t_seconds`` list. The T scale still goes in as the increment.
     """
     path = Path(path)
+    if times_s is None:
+        # A series result (one source per timepoint, stacked along T) carries
+        # the real start time of every plane.
+        from imswitch.improcess.model.series import series_times_s
+
+        times_s = series_times_s(result)
     fmt = str(fmt or format_for_path(path)).lower()
     fmt = SUFFIX_FORMATS.get(fmt, fmt)
     writer = _WRITERS.get(fmt)

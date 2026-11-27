@@ -251,6 +251,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
             # and thrown away, and the recording opened looking ordinary.
             self._showSourceInspection(inspection)
             self._logSourceInspection(data_obj, reconstructor, inspection)
+            self._offerSeries(data_obj, reconstructor)
         except Exception as exc:
             self._logger.warning(
                 f"Could not inspect {getattr(data_obj, 'name', 'source')} "
@@ -290,6 +291,26 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     'Could not restore the reconstructor picker', exc_info=True
                 )
         return False
+
+    def _offerSeries(self, data_obj, reconstructor) -> None:
+        """Show the Series box when the source is one timepoint of a series.
+
+        The same box for every reconstructor that supports series
+        (``series_policy`` is not ``"none"``); listing the series reads only
+        directory listings, attributes and small manifests.
+        """
+        setter = getattr(self._widget, 'setSeriesInfo', None)
+        if not callable(setter):
+            return
+        info = None
+        if getattr(reconstructor, 'series_policy', 'default') != 'none':
+            try:
+                from imswitch.improcess.model.series import discover_series
+
+                info = discover_series(data_obj, deep=False)
+            except Exception as exc:  # noqa: BLE001 - a series is an extra, never a blocker
+                self._logger.debug(f"Series discovery failed: {exc}")
+        setter(info, getattr(reconstructor, 'series_default', 'this'))
 
     def _showSourceInspection(self, inspection) -> None:
         """Put the inspection's warnings in the Parameters dock."""

@@ -222,6 +222,10 @@ def localize_stack(
 class SmlmLocalizer(StreamingReconstructor):
     """Localize a blinking stack into a coordinate table."""
 
+    #: Its results are localization tables, which the generic series stack
+    #: (an image per timepoint along T) does not apply to.
+    series_policy = "none"
+
     name = "SMLM localizer"
     id = "smlm-localizer"
 

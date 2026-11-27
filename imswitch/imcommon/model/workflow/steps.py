@@ -987,7 +987,15 @@ def _unknown_params(step, plugin, contract_problem=None) -> list[Issue]:
     if allowed is None:
         return []
     # ``_iterate`` is the runner's, not the plugin's (auto-indexing on/off).
-    unknown = sorted(set(step.params) - set(allowed) - {"_iterate"})
+    reserved = {"_iterate"}
+    series_spec = getattr(type(plugin), "series_param_spec", None)
+    if callable(series_spec):
+        try:
+            # Only a plugin that supports series accepts the series keys.
+            reserved |= {field.key for field in series_spec()}
+        except Exception:  # noqa: BLE001
+            pass
+    unknown = sorted(set(step.params) - set(allowed) - reserved)
     if not unknown:
         return []
     plugin_id = getattr(plugin, "id", type(plugin).__name__)

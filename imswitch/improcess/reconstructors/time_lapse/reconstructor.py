@@ -242,6 +242,9 @@ class _TimeLapseParamsWidget(QtWidgets.QWidget):
 class TimeLapseReconstructor(Reconstructor):
     """Stack a saved camera or scan time lapse into one lazy T-stack."""
 
+    #: It already takes the whole lapse (that is what it is for).
+    series_policy = "none"
+
     name = "Time lapse"
     id = "time-lapse"
 

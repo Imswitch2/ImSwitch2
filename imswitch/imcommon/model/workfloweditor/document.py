@@ -255,7 +255,10 @@ class WorkflowDocument:
         entry = self.entry_for(step)
         if entry is not None:
             more = {f.key: f.default for f in entry.step_fields(getattr(step, "params", None))}
-            return {**more, **entry.defaults()}
+            # A reconstructor's series options are reserved step parameters:
+            # at their default they are not written, like any other.
+            series = {f.key: f.default for f in getattr(entry, "series_fields", ())}
+            return {**more, **entry.defaults(), **series}
         descriptor = self.descriptor_for(step)
         return descriptor.defaults(step) if descriptor is not None else {}
 
