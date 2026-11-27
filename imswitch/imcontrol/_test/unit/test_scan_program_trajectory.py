@@ -25,7 +25,7 @@ from imswitch.imcontrol.model.scan_program.trajectory import (
 )
 
 RATE = 100_000
-SETUP_FILE = 'imswitch/_data/user_defaults/imcontrol_setups/expert_mock_scan_setup.json'
+SETUP_FILE = 'imswitch/_data/user_defaults/imcontrol_setups/mock/point_scanning/expert_mock_scan_setup.json'
 SETUP_DICT = json.load(open(SETUP_FILE))
 SETUP = SetupInfo.from_json(json.dumps(SETUP_DICT), infer_missing=True)
 NIDAQ = NidaqScanEngine(None, nidaqManager=None, setupInfo=SETUP)

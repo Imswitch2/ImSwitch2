@@ -382,7 +382,7 @@ Run tests with the conda env python (bare `python` on PATH has no pytest):
 ## 8. How to run the live pipeline manually
 
 **Setup file (new):**
-`imswitch/_data/user_defaults/imcontrol_setups/mock_scan_monalisa_live.json` —
+`imswitch/_data/user_defaults/imcontrol_setups/mock/monalisa/mock_scan_monalisa_live.json` —
 merges `mock_scan_setup.json` (mock AVManager camera + MockPositionerManager +
 `nidaq.simulation=true` + MoNaLISA scan widget) with a `processing` block
 (`"reconstructors": ["monalisa", "view-only"]`). It auto-copies to

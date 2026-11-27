@@ -113,7 +113,7 @@ registered.
 
 **Sites:**
 
-- `imswitch/_data/user_defaults/imcontrol_setups/example_sted.json:233-244`
+- `imswitch/_data/user_defaults/imcontrol_setups/real/sted/example_sted.json:233-244`
 - `imswitch/imcontrol/_test/unit/test_example_setups_schema.py:14-21`
 - `imswitch/imcontrol/model/plugins/validation.py:215-264`
 

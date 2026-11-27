@@ -187,14 +187,21 @@ def test_each_menu_holds_one_kind_of_thing(mainView):
                               'Save Widget States…', 'Load Widget States…']
     assert menus['&Hardware'] == ['Pick hardware setup…', 'Edit hardware configuration…',
                                   'What this setup can scan…', 'Hardware status…']
-    assert menus['&View'] == ['Log', 'Reset panel layout']
-    assert menus['&Preferences'] == ['Recordings folder…', 'Memory limits…']
+    assert menus['&View'] == ['Add panel…', 'Log', 'Reset panel layout']
+    assert menus['&Preferences'] == ['Recordings folder…', 'Setup folder…', 'Memory limits…']
 
 
 def test_the_recordings_folder_entry_asks_the_controller(mainView):
     opened = []
     mainView.sigOpenRecordingFolder.connect(lambda: opened.append(True))
     mainView.recordingFolderAction.trigger()
+    assert opened == [True]
+
+
+def test_the_setup_folder_entry_asks_the_controller(mainView):
+    opened = []
+    mainView.sigOpenSetupFolder.connect(lambda: opened.append(True))
+    mainView.setupFolderAction.trigger()
     assert opened == [True]
 
 
@@ -209,7 +216,8 @@ def test_the_application_preferences_join_imcontrols_own(mainView):
         menus = _menus(mainView)
         assert list(menus) == ['&File', '&Hardware', '&View', '&Shortcuts',
                                '&Preferences', '&Help']
-        assert menus['&Preferences'] == ['Recordings folder…', 'Memory limits…',
-                                         'Set active modules…', 'Open user files folder']
+        assert menus['&Preferences'] == ['Recordings folder…', 'Setup folder…',
+                                         'Memory limits…', 'Set active modules…',
+                                         'Open user files folder']
     finally:
         window.deleteLater()

@@ -19,8 +19,8 @@ from imswitch.imcontrol.model.scan_program.split import Wire, drift, max_pulse_i
 from imswitch.imcontrol.view import ViewSetupInfo
 
 SETUPS = 'imswitch/_data/user_defaults/imcontrol_setups/'
-STEP_BOARDS = SETUPS + 'expert_step_boards_mock_setup.json'
-SIMPLE_MOCK = SETUPS + 'simple_mock_setup.json'
+STEP_BOARDS = SETUPS + 'mock/step_boards/expert_step_boards_mock_setup.json'
+SIMPLE_MOCK = SETUPS + 'mock/point_scanning/simple_mock_setup.json'
 
 
 class _FakeNidaq:

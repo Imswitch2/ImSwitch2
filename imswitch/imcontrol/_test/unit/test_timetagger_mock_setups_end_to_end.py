@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from qtpy import QtTest
 
+from imswitch.imcontrol.model.setupfolder import shippedSetupPath
 from imswitch.imcontrol._test import optionsBasic
 from imswitch.imcontrol._test.unit.test_scan_cloak_contract import _Main, _controllerClass
 from imswitch.imcontrol.controller.CommunicationChannel import CommunicationChannel
@@ -37,7 +38,7 @@ CASES = {
 
 @pytest.fixture(params=sorted(CASES))
 def rig(request, qtbot):
-    setup = ViewSetupInfo.from_json(open(SETUPS + request.param).read())
+    setup = ViewSetupInfo.from_json(shippedSetupPath(request.param).read_text())
     main = _Main()
     channel = CommunicationChannel(main, setup)
     master = MasterController(setup, channel, main._moduleCommChannel)

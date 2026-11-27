@@ -284,6 +284,9 @@ def validate_setup_data(
     # 3. Cross-reference checks, including role rules
     diagnostics.extend(_validate_cross_references(data, context))
     diagnostics.extend(_validate_roles(data))
+
+    # 4. Values ImControl's loader cannot read as their field's type
+    diagnostics.extend(_validate_setup_values(data))
     
     return ValidationReport(
         path=source_path,
@@ -482,6 +485,45 @@ def _validate_kind_fields(data: dict, jsonschema) -> list[SetupDiagnostic]:
                     message=error_msg,
                     path=path,
                 ))
+    return diagnostics
+
+
+def _validate_setup_values(data: dict) -> list[SetupDiagnostic]:
+    """Every value the loader would drop or read differently, before ImControl does.
+
+    The loader (``configfiletools.loadSetupInfo``) leaves out a value its
+    field's type cannot read -- a blank or a word in a number field, a null
+    written as the text ``"None"`` -- warns, and uses the default; it reads
+    the string ``"false"`` as false. Both are found here with the loader's own
+    rules (:func:`~imswitch.imcontrol.model.setup_file_values.findUnreadableSetupValues`),
+    so the editor reports exactly what ImControl will do and the two cannot
+    drift apart. A dropped value is an error: the file says something that
+    will not happen. A quoted boolean is a warning: it is read as meant.
+    """
+    try:
+        from imswitch.imcontrol.model.SetupInfo import SetupInfo
+        from imswitch.imcontrol.model.setup_file_values import findUnreadableSetupValues
+    except Exception:
+        return []
+    diagnostics: list[SetupDiagnostic] = []
+    for fix in findUnreadableSetupValues(data, SetupInfo):
+        if fix.dropped:
+            diagnostics.append(SetupDiagnostic(
+                severity="error",
+                code="value.unreadable",
+                message=(
+                    f"Unreadable value: {fix.message} Correct it, or remove "
+                    "the key to use the default on purpose."
+                ),
+                path=tuple(fix.path.split(".")),
+            ))
+        else:
+            diagnostics.append(SetupDiagnostic(
+                severity="warning",
+                code="value.quoted_bool",
+                message=f"{fix.message} Write it as true or false, without quotes.",
+                path=tuple(fix.path.split(".")),
+            ))
     return diagnostics
 
 
