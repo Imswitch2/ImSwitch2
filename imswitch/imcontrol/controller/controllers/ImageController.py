@@ -13,6 +13,7 @@ from imswitch.imcontrol.model.managers._scan_execution import (
     EXCLUDED_KEY, PARTICIPANTS_KEY, ScanExecutionCoordinator,
 )
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.contrast import filled_auto_levels
 import numpy as np
 import re
 from qtpy import QtCore
@@ -71,8 +72,10 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             self._commChannel.sigResultLayersRemoved.connect(self.resultLayersRemoved)
 
         # The scan lifecycle: which detectors a scan uses (a detector left out
-        # must not keep a stale stack and its slider), when a run starts (the
-        # view follows the planes being written again), when it ends.
+        # must not keep a stale stack and its slider), when a run starts (its
+        # scan-driven detectors are levelled on their first real frame, and
+        # the view follows the planes being written again), when it ends.
+        self._levelPending = set()
         nidaqBuilt = getattr(getattr(self._master, 'nidaqManager', None), 'sigScanBuilt', None)
         if nidaqBuilt is not None:
             nidaqBuilt.connect(self._onNidaqScanBuilt)
@@ -160,8 +163,10 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             plane = self._livePlaneOf(detectorName, published_shape, display_im)
             if hasattr(self._widget, 'followLivePlane'):
                 self._widget.followLivePlane(detectorName, plane)
+            if detectorName in self.__dict__.get('_levelPending', ()):
+                self._levelFirstRealFrame(detectorName, display_im, plane)
 
-    # -- scans: the plane being written ----------------------------------------
+    # -- scans: the plane being written, the first frame's levels --------------
 
     def _livePlaneOf(self, detectorName, publishedShape, shownImage):
         """Where the scan writes in the shown image's leading axes (the index
@@ -188,11 +193,41 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             return None
         return plane
 
+    def _levelFirstRealFrame(self, detectorName, image, plane):
+        """Level a scan-driven detector once per run, on the first frame with
+        pixels in it (the empty frame published at build has none), from the
+        filled pixels of the plane being written -- not from the unfilled
+        zeros, and not again during the run: the levels are the user's after
+        that (Auto levels, the levels box)."""
+        sample = image
+        if plane:
+            try:
+                sample = np.asarray(image)[tuple(plane)]
+            except IndexError:
+                sample = image
+        levels = filled_auto_levels(sample)
+        if levels is None and sample is not image:
+            levels = filled_auto_levels(image)      # the plane is still empty
+        if levels is None:
+            return
+        self._levelPending.discard(detectorName)
+        self._widget.setImageDisplayLevels(detectorName, *levels)
+
+    def _scanDrivenDetectorNames(self):
+        try:
+            return set(self._master.detectorsManager.getAllDeviceNames(
+                lambda c: c.forAcquisition and bool(getattr(c, 'isScanDriven', False))
+            ))
+        except Exception:
+            return set()
+
     def _onScanRunStarting(self):
+        self._levelPending = self._scanDrivenDetectorNames()
         if hasattr(self._widget, 'setScanActive'):
             self._widget.setScanActive(True)
 
     def _onScanRunEnded(self):
+        self._levelPending = set()
         if hasattr(self._widget, 'setScanActive'):
             self._widget.setScanActive(False)
 
