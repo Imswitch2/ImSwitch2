@@ -626,7 +626,11 @@ its second input), and ``pick`` accepts only ``points``.
        axis keeps its label and scale. *Keep labels in place* leaves the
        labels and scales where they are instead, so the data changes meaning
        (``X,Y`` then transposes the image). *Labels* renames axes without
-       touching the array: all of them (``X,Y,T``) or pairs (``Z=T``). An
+       touching the array: all of them (``X,Y,T``) or pairs (``Z=T``).
+       *Scales* sets axis spacing (pixel size) in the metadata only, after
+       the reordering and relabelling, so axes are named as they are then:
+       pairs (``Z=0.25, T=2``) or one value per axis; values must be finite
+       and greater than zero. An
        in-memory array is reordered as a view; a lazy source is read.
    * - ``projection``
      - Dimensions and channels

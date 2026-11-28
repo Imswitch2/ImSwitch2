@@ -5,7 +5,7 @@ import pytest
 
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.processors import available_processor_ids
-from imswitch.improcess.processors.axis_swap import AxisSwapProcessor, parse_labels, parse_order
+from imswitch.improcess.processors.axis_swap import AxisSwapProcessor, parse_labels, parse_order, parse_scales
 from imswitch.improcess.processors.axis_swap.processor import ProcessorInputError
 
 
@@ -94,6 +94,14 @@ def test_a_lazy_array_is_read_and_reordered():
     ({"labels": "A,B"}, "one label per axis"),
     ({"labels": "Z=T"}, "same label"),
     ({"labels": "Z=Q,Y"}, "not both"),
+    ({"scales": "Q=1"}, "no axis 'Q'"),
+    ({"scales": "Z=abc"}, "not a number"),
+    ({"scales": "Z=0"}, "greater than zero"),
+    ({"scales": "Z=-1"}, "greater than zero"),
+    ({"scales": "Z=nan"}, "greater than zero"),
+    ({"scales": "Z=1, Z=2"}, "set twice"),
+    ({"scales": "Z=1, 2"}, "not both"),
+    ({"scales": "1,2"}, "one value per axis"),
 ])
 def test_what_cannot_be_done_is_refused_with_the_reason(params, message):
     with pytest.raises(ProcessorInputError, match=message):
@@ -117,4 +125,39 @@ def test_the_form_hands_over_what_was_typed(qtbot):
     edits = widget.findChildren(QtWidgets.QLineEdit)
     edits[0].setText(" Z,T ")
     widget.findChild(QtWidgets.QCheckBox).setChecked(True)
-    assert widget.get_values() == {"order": "Z,T", "keep_labels": True, "labels": ""}
+    assert widget.get_values() == {"order": "Z,T", "keep_labels": True, "labels": "", "scales": ""}
+    edits[2].setText(" Z=0.25 ")
+    assert widget.get_values()["scales"] == "Z=0.25"
+    widget.set_values({"scales": "T=2"})
+    assert edits[2].text() == "T=2"
+
+
+def test_scales_set_the_spacing_by_pairs_or_full_list_and_leave_the_array_alone():
+    source = _result((2, 3, 4), "ZYX", [2.0, 0.5, 0.25])
+    one = _apply(source, scales="Z=0.25")
+    assert one.axis_scales == [0.25, 0.5, 0.25] and one.data is source.data
+    assert source.axis_scales == [2.0, 0.5, 0.25]                          # the source is not changed
+    assert _apply(source, scales="Z=0.25, x=0.1").axis_scales == [0.25, 0.5, 0.1]
+    assert _apply(source, scales="1, 2, 3").axis_scales == [1.0, 2.0, 3.0]
+    assert _apply(source, scales="0=9").axis_scales == [9.0, 0.5, 0.25]
+
+
+def test_scales_name_axes_after_reordering_and_relabelling():
+    source = _result((2, 3, 4), "ZYX", [2.0, 0.5, 0.25])
+    out = _apply(source, order="Y,X", labels="Z=T", scales="T=7, X=0.1")
+    assert out.axis_labels == ["T", "X", "Y"] and out.axis_scales == [7.0, 0.1, 0.5]  # X moved to the middle, with its scale
+    assert _apply(source, labels="Z=T", scales="T=7").axis_scales == [7.0, 0.5, 0.25]
+    with pytest.raises(ProcessorInputError, match="no axis 'Z'"):
+        _apply(source, labels="Z=T", scales="Z=7")                          # Z is called T by then
+
+
+def test_rescaling_the_image_plane_is_a_new_grid_but_rescaling_z_is_not():
+    source = _result((2, 3, 4), "ZYX", [2.0, 0.5, 0.25])
+    assert _apply(source, scales="Z=1").coordinate_space_uid == source.coordinate_space_uid
+    assert _apply(source, scales="X=1").coordinate_space_uid != source.coordinate_space_uid
+
+
+def test_parse_scales():
+    assert parse_scales("", "ZYX", [1, 2, 3]) == [1.0, 2.0, 3.0]
+    assert parse_scales("z=5", "ZYX", [1, 2, 3]) == [5.0, 2.0, 3.0]
+    assert parse_scales(["1", "2", "3"], "ZYX", [9, 9, 9]) == [1.0, 2.0, 3.0]
