@@ -30,10 +30,39 @@ class ImageWidget(QtWidgets.QWidget):
         # Under the levels tool: a Sum checkbox per dimension the live frames
         # have beyond their image (line steps, z, t), shown only then.
         self.sumAxesWidget = naparitools.NapariSumAxesWidget.addToViewer(self.napariViewer)
-        self.sigSumAxesChanged = self.sumAxesWidget.sigSumAxesChanged
         #LR: The next to widgets are etSTED specific and i.m.o. not needed --> at least for now commented
         #self.NapariResetViewWidget = naparitools.NapariResetViewWidget.addToViewer(self.napariViewer, 'right')
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
+        self._initViewerModel()
+
+        self.viewCtrlLayout = QtWidgets.QVBoxLayout()
+        self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
+
+        nw = self.napariViewer.get_widget()
+        # Napari's _qt_window is a QMainWindow that restores its own saved size
+        # from preferences and has a large minimumSizeHint() from its dock layout.
+        # setMinimumSize(0, 0) only clears an *explicit* minimum -- Qt still
+        # asks minimumSizeHint() afterwards -- so the hint itself has to go
+        # (see minimumSizeHint() below), or the viewer forces the ImSwitch
+        # window bigger than the screen.
+        nw.setMinimumSize(0, 0)
+        nw.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding,
+        )
+        self.viewCtrlLayout.addWidget(nw)
+        self.setLayout(self.viewCtrlLayout)
+
+    def _initViewerModel(self):
+        """Everything about the viewer that is not a Qt dock: the live and
+        result layer bookkeeping and the viewer events this widget follows.
+
+        Split from ``__init__`` so the headless tests can build the widget on
+        a canvas-less ``napari.components.ViewerModel`` (no OpenGL needed)
+        and run exactly this code; ``__init__`` sets ``napariViewer`` and the
+        docked ``sumAxesWidget`` first.
+        """
+        self.sigSumAxesChanged = self.sumAxesWidget.sigSumAxesChanged
         self.imgLayers = {}
         # Result layers other controllers keep in this viewer, updated in
         # place: {jobName: {layerName: layer}} -- see setResultLayers -- and
@@ -71,24 +100,6 @@ class ImageWidget(QtWidgets.QWidget):
             )
         except AttributeError:
             pass
-
-        self.viewCtrlLayout = QtWidgets.QVBoxLayout()
-        self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
-
-        nw = self.napariViewer.get_widget()
-        # Napari's _qt_window is a QMainWindow that restores its own saved size
-        # from preferences and has a large minimumSizeHint() from its dock layout.
-        # setMinimumSize(0, 0) only clears an *explicit* minimum -- Qt still
-        # asks minimumSizeHint() afterwards -- so the hint itself has to go
-        # (see minimumSizeHint() below), or the viewer forces the ImSwitch
-        # window bigger than the screen.
-        nw.setMinimumSize(0, 0)
-        nw.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding,
-        )
-        self.viewCtrlLayout.addWidget(nw)
-        self.setLayout(self.viewCtrlLayout)
 
     #: The smallest viewer worth showing. Napari's embedded window adds up the
     #: minimums of its own docks, which on a populated viewer is larger than

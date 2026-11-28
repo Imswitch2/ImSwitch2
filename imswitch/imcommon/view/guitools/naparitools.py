@@ -121,15 +121,17 @@ def removeUnprotectedLayers(layers):
             layers.remove(layer)
 
 
-class EmbeddedNapari(napari.Viewer):
-    """ Napari viewer to be embedded in non-napari windows. Also includes a
-    feature to protect certain layers from being removed when added using
-    the add_image method. """
+class ProtectedLayersMixin:
+    """Layers added with ``add_image(..., protected=True)`` cannot be removed
+    from the layer list by the user (napari's delete button, ``del``,
+    ``clear()``); ImSwitch removes them by clearing the flag first.
 
-    def __init__(self, *args, show=False, **kwargs):
-        super().__init__(*args, show=show, **kwargs)
+    A mixin rather than part of :class:`EmbeddedNapari` so that a canvas-less
+    ``napari.components.ViewerModel`` -- what the headless tests drive the
+    image viewer with -- protects layers exactly as the real viewer does.
+    """
 
-        # Monkeypatch layer removal methods
+    def _installLayerProtection(self):
         oldDelitemIndices = self.layers._delitem_indices
 
         def newDelitemIndices(key):
@@ -154,6 +156,29 @@ class EmbeddedNapari(napari.Viewer):
 
         self.layers.clear = newClear
 
+    def add_image(self, *args, protected=False, **kwargs):
+        result = super().add_image(*args, **kwargs)
+
+        if isinstance(result, list):
+            for layer in result:
+                layer.protected = protected
+        else:
+            result.protected = protected
+
+        return result
+
+
+class EmbeddedNapari(ProtectedLayersMixin, napari.Viewer):
+    """ Napari viewer to be embedded in non-napari windows. Also includes a
+    feature to protect certain layers from being removed when added using
+    the add_image method. """
+
+    def __init__(self, *args, show=False, **kwargs):
+        super().__init__(*args, show=show, **kwargs)
+
+        # Monkeypatch layer removal methods
+        self._installLayerProtection()
+
         # Make menu bar not native
         self.window._qt_window.menuBar().setNativeMenuBar(False)
 
@@ -168,17 +193,6 @@ class EmbeddedNapari(napari.Viewer):
         
         self.scale_bar.visible = True
         self.scale_bar.unit = 'µm'
-
-    def add_image(self, *args, protected=False, **kwargs):
-        result = super().add_image(*args, **kwargs)
-
-        if isinstance(result, list):
-            for layer in result:
-                layer.protected = protected
-        else:
-            result.protected = protected
-
-        return result
 
     def get_widget(self):
         return self.window._qt_window
