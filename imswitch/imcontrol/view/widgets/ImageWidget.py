@@ -1,3 +1,4 @@
+import contextlib
 import weakref
 
 import napari
@@ -223,11 +224,11 @@ class ImageWidget(QtWidgets.QWidget):
             handlers index the still-mismatched affine and raise
             IndexError on ``_world_to_layer_units_scale[displayed_axes]``.
 
-        Recreating preserves contrast limits, colormap, blending and
-        list-position; the cost is losing gamma/opacity/visibility tweaks
-        the user may have applied, and a brief flicker.  Both are
-        acceptable for an ndim transition (rare event — happens once when
-        the first 3D scan arrives after startup).
+        Recreating preserves contrast limits, colormap, blending, gamma,
+        opacity, visibility, list position and the layer selection (napari
+        selects every layer it adds, so a rebuild used to take the selection
+        from whatever the user was working on -- a markers layer in add mode
+        stopped receiving clicks). The cost is a brief flicker.
         """
         old = self.imgLayers[name]
         layers = self.napariViewer.layers
@@ -245,27 +246,76 @@ class ImageWidget(QtWidgets.QWidget):
             scale=scale,
             protected=True,
         )
+        for key in ('gamma', 'opacity'):
+            value = getattr(old, key, None)
+            if value is not None:
+                properties[key] = value
 
         self._suspendRegistrationTargetSignals += 1
+        replaced = {}
         try:
-            self._removeProtectedLayer(old)
-            new = self.napariViewer.add_image(im, **properties)
-            try:
-                new.visible = old.visible
-            except AttributeError:
-                pass
-            if index is not None:
+            with self._selectionKept(replaced):
+                self._removeProtectedLayer(old)
+                new = self.napariViewer.add_image(im, **properties)
+                replaced[id(old)] = new
                 try:
-                    new_index = layers.index(new)
-                    if new_index != index:
-                        layers.move(new_index, index)
-                except (ValueError, IndexError):
+                    new.visible = old.visible
+                except AttributeError:
                     pass
-            self.imgLayers[name] = new
-            self._applyLiveSourceRegistration(name)
+                if index is not None:
+                    try:
+                        new_index = layers.index(new)
+                        if new_index != index:
+                            layers.move(new_index, index)
+                    except (ValueError, IndexError):
+                        pass
+                self.imgLayers[name] = new
+                self._applyLiveSourceRegistration(name)
         finally:
             self._suspendRegistrationTargetSignals -= 1
         self._registrationTargetsChanged()
+
+    @contextlib.contextmanager
+    def _selectionKept(self, replaced):
+        """Give the layer selection back after layers are rebuilt in the block.
+
+        napari makes every layer it adds the selected, active one. A rebuild
+        is not the user choosing a layer, so whatever was selected and active
+        before stays so afterwards; a rebuilt layer is followed to its
+        replacement through ``replaced`` (``id(old) -> new``, filled by the
+        block). A layer in an add mode keeps its mode and, being active
+        again, keeps receiving the clicks.
+        """
+        selection = getattr(getattr(self.napariViewer, 'layers', None), 'selection', None)
+        if selection is None:
+            yield
+            return
+        before = list(selection)
+        active = selection.active
+        current = getattr(selection, '_current', None)
+        try:
+            yield
+        finally:
+            layers = self.napariViewer.layers
+
+            def follow(layer):
+                if layer is None:
+                    return None
+                layer = replaced.get(id(layer), layer)
+                return layer if any(item is layer for item in layers) else None
+
+            try:
+                if active is not None and follow(active) is not None:
+                    selection.active = follow(active)
+                else:
+                    selection.clear()
+                    selection.update(
+                        layer for layer in map(follow, before) if layer is not None
+                    )
+                    if follow(current) is not None:
+                        selection._current = follow(current)
+            except Exception:
+                pass      # a selection napari refuses is not worth a frame
 
     def addStaticLayer(self, name, im, scale=None):
         """Add one more image layer; every call adds a new one (a snap)."""
@@ -287,6 +337,20 @@ class ImageWidget(QtWidgets.QWidget):
 
     def upsertStaticLayer(self, name, im, scale=None, colormap=None, rgb=False,
                           contrast_limits=None):
+        """See :meth:`_upsertStaticLayer`; a product arriving in the
+        background (the Lifetime image, once a second) does not take the
+        layer selection."""
+        replaced = {}
+        old = self._findLayerByName(name)
+        with self._selectionKept(replaced):
+            layer = self._upsertStaticLayer(name, im, scale, colormap, rgb,
+                                            contrast_limits)
+            if old is not None:
+                replaced[id(old)] = layer
+        return layer
+
+    def _upsertStaticLayer(self, name, im, scale=None, colormap=None, rgb=False,
+                           contrast_limits=None):
         """Create the named layer, or update its data in place.
 
         ``addStaticLayer`` makes a *new* layer on every call (napari then
@@ -658,6 +722,19 @@ class ImageWidget(QtWidgets.QWidget):
             return 2
 
     def setResultLayers(self, jobName, layerData):
+        """See :meth:`_setResultLayers`; a result stream (live
+        reconstruction) creating or rebuilding its layers does not take the
+        layer selection."""
+        replaced = {}
+        before = dict(self.resultLayers.get(jobName, {}))
+        with self._selectionKept(replaced):
+            created = self._setResultLayers(jobName, layerData)
+            for name, layer in self.resultLayers.get(jobName, {}).items():
+                if name in before:
+                    replaced[id(before[name])] = layer
+        return created
+
+    def _setResultLayers(self, jobName, layerData):
         """Create or update the result layers of ``jobName`` in place.
 
         ``layerData`` is a list of napari ``(data, kwargs, layerType)`` tuples
@@ -722,6 +799,17 @@ class ImageWidget(QtWidgets.QWidget):
         return list(self.resultLayers.get(jobName, {}))
 
     def _padResultLayersToNdisplay(self, ndisplay):
+        replaced = {}
+        before = {(job, name): layer for job, layers in self.resultLayers.items()
+                  for name, layer in layers.items()}
+        with self._selectionKept(replaced):
+            self._padResultLayersToNdisplayImpl(ndisplay)
+            for job, layers in self.resultLayers.items():
+                for name, layer in layers.items():
+                    if (job, name) in before:
+                        replaced[id(before[(job, name)])] = layer
+
+    def _padResultLayersToNdisplayImpl(self, ndisplay):
         """Recreate image-like result layers with fewer than ``ndisplay`` dims.
 
         Napari cannot grow a layer's dims in place (:meth:`_recreateLiveLayer`

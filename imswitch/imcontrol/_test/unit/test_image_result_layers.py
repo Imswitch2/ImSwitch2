@@ -64,10 +64,13 @@ class _FakeViewer:
 
 class _WidgetStub:
     setResultLayers = ImageWidget.setResultLayers
+    _setResultLayers = ImageWidget._setResultLayers
+    _selectionKept = ImageWidget._selectionKept
     removeResultLayers = ImageWidget.removeResultLayers
     resultLayerNames = ImageWidget.resultLayerNames
     _on_ndisplay_changed = ImageWidget._on_ndisplay_changed
     _padResultLayersToNdisplay = ImageWidget._padResultLayersToNdisplay
+    _padResultLayersToNdisplayImpl = ImageWidget._padResultLayersToNdisplayImpl
     _carriedLayerProperties = staticmethod(ImageWidget._carriedLayerProperties)
     _padToNdisplay = staticmethod(ImageWidget._padToNdisplay)
     _ndisplay = ImageWidget._ndisplay
