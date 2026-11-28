@@ -281,7 +281,14 @@ ImSwitch2 uses `napari <https://napari.org/>`_ for live visualization
 of detector frames.  Both point detectors and cameras are supported,
 with good multi-channel rendering out of the box.  Multiple cameras
 and point detectors can run simultaneously.  During a scan, point-detector
-images are redrawn as lines arrive, at a limited rate.
+images are redrawn as lines arrive, at a limited rate (``liveUpdateIntervalMs``
+in the detector's ``managerProperties``, 50 ms by default) -- z stacks, time
+series and scans with line steps included.  The layer takes the new scan's
+shape when the scan is built, before the first pixel, so a scan with other
+dimensions than the last one is visible from its first line.  A scan-driven
+detector (APD, PMT, Time Tagger) is levelled once per run, on its first frame
+with data, from the pixels already filled (the empty rest is ignored); after
+that the levels are yours -- **Auto levels** (Ctrl+U) levels again.
 
 .. image:: ./images/auto/mock-View.png
    :align: center
@@ -336,6 +343,45 @@ the panel's state, so a line-step rig opens summed if that is how it was
 left.
 
 
+Following the acquisition
+-------------------------
+
+While a scan fills a z stack, a time series or line steps, the sliders follow
+the plane being written.  **Follow acquisition**, under the levels tool with
+the Sum boxes, is ticked by default.  Moving a slider during a scan unticks it,
+so the view stays where you put it; it is ticked again when the next scan run
+starts.  Untick it by hand to keep it off across runs.  A summed dimension has
+no slider and is not followed.
+
+A detector that does not take part in a scan keeps showing its last image,
+but only the plane it showed: when the scan is built, a stack it holds from an
+earlier scan is reduced to that 2-D plane (its colours and levels kept, a line
+in the log), so a 2-D scan after a 3-D one has no z slider left over.
+
+Markers and copies of the live image
+------------------------------------
+
+napari's **new points** and **new shapes** buttons make a layer fitted to the
+image it is drawn on: the pixel size of the image layer that was selected (or
+of the current detector), the dimensions of the displayed plane -- a marker
+drawn on a z stack is shown on every plane and does not keep a slider once the
+scan is 2-D again -- and points about 8 screen pixels across, whatever the
+zoom.  Name such a layer before napari's default name is replaced if a script
+needs to keep hold of it.
+
+napari's **Duplicate Layer** on a ``Live:`` layer makes a frozen copy named
+``<detector> (copy HH:MM:SS)``.  It is placed under its live layer, hidden and
+drawn translucent -- shown together with the live layer, the live image is
+added over it -- and the live layer stays selected, so the tools and **Auto
+levels** stay on the live image.  Show the copy with its eye (and hide the live
+layer) to compare; delete it like any layer.
+
+A live layer is rebuilt when its number of dimensions changes (a z stack after
+a 2-D scan, napari's 3D view, a Sum box).  It keeps its colours, levels,
+gamma, opacity and visibility, and the layer you had selected -- a markers
+layer in add mode, say -- stays selected.
+
+
 Viewer tools
 ------------
 
@@ -359,6 +405,10 @@ what the previous one drew:
   5/8 and 3/4 of the largest visible image, so the middle lines cross at its
   centre.  The grid is placed when the button is pressed and does not follow
   later changes of the image.
+
+The tools draw on a layer called *Viewer Tools*; choosing any tool but
+**Pan** selects it, since napari sends the mouse to the selected layer only.
+Deleting the layer is harmless: the next tool makes a new one.
 
 .. image:: ./images/auto/ViewerToolsWidget.png
    :align: center

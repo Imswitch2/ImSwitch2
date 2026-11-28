@@ -7,6 +7,23 @@ Unreleased
 
 **Changes**
 
+- **The image viewer during scans and with napari's own tools.** A z
+  stack, a time series and a scan with line steps are drawn line by line
+  like a 2-D scan (APD, PMT), and the layer takes the new scan's shape
+  when the scan is built, so a scan with other dimensions is visible from
+  its first line instead of after its first plane or at its end. The
+  sliders follow the plane being written (**Follow acquisition**, off while
+  you move a slider, back at the next run). A detector left out of a scan
+  is reduced to the plane it shows, so no slider from an earlier 3-D scan
+  stays. Scan-driven detectors are levelled on their first filled frame of
+  a run, ignoring unfilled pixels. A live-layer rebuild keeps the selected
+  layer, gamma and opacity; Viewer Tools selects its layer for every
+  drawing mode and survives the layer being deleted; napari's new
+  points/shapes layers get the image's pixel size, the displayed plane's
+  dimensions and screen-sized points; Duplicate Layer on a live layer makes
+  a hidden frozen copy under it. ``imswitch.improcess.model.contrast``
+  moves to ``imswitch.imcommon.model.contrast`` (the old name still works).
+  See :doc:`gui`.
 - **One Transform Calibration panel for every calibration between two
   images; the Hardware → Camera → scan calibration… window is gone.** The
   panel reads ImSwitch HDF5/Zarr recordings (what each holds, the warnings
