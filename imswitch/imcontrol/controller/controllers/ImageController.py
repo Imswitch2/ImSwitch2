@@ -214,12 +214,17 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._widget.setImageDisplayLevels(detectorName, *levels)
 
     def _scanDrivenDetectorNames(self):
-        try:
-            return set(self._master.detectorsManager.getAllDeviceNames(
-                lambda c: c.forAcquisition and bool(getattr(c, 'isScanDriven', False))
-            ))
-        except Exception:
-            return set()
+        """The detectors this viewer shows that a scan drives (APD, PMT,
+        Time Tagger), asked one by one so one odd detector cannot hide the
+        others."""
+        names = set()
+        for name in list(getattr(self._widget, 'imgLayers', {}) or {}):
+            try:
+                if getattr(self._master.detectorsManager[name], 'isScanDriven', False) is True:
+                    names.add(name)
+            except Exception:
+                continue
+        return names
 
     def _onScanRunStarting(self):
         self._levelPending = self._scanDrivenDetectorNames()
