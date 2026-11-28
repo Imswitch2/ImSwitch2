@@ -1,5 +1,6 @@
 import contextlib
 import re
+import time
 import weakref
 
 import napari
@@ -125,6 +126,79 @@ class ImageWidget(QtWidgets.QWidget):
             return
         if self._isNewMarkersLayer(layer):
             self._fitMarkersLayer(layer)
+            return
+        liveName = self._duplicatedLiveName(layer)
+        if liveName is not None:
+            self._freezeLiveCopy(layer, liveName)
+
+    # -- napari's Duplicate Layer on a live layer ------------------------
+
+    def _duplicatedLiveName(self, layer):
+        """The detector whose live layer ``layer`` is napari's duplicate of,
+        else None. napari's Duplicate Layer records the original as the new
+        layer's ``source.parent`` and names it ``<name> copy``."""
+        if not isinstance(layer, napari.layers.Image):
+            return None
+        parent = getattr(getattr(layer, 'source', None), 'parent', None)
+        if callable(parent):
+            parent = parent()
+        if parent is None:
+            return None
+        for name, live in self.imgLayers.items():
+            if live is parent:
+                if str(layer.name).startswith(f'{live.name} copy'):
+                    return name
+                return None
+        return None
+
+    def _freezeLiveCopy(self, layer, liveName):
+        """Make napari's duplicate of a live layer a frozen copy.
+
+        As napari makes it, the copy sits on top of the live layer with the
+        live layer's additive blending -- the frozen image is added onto the
+        live one -- is selected, so the levels button and the Line Profile's
+        *Active* layer move to it, and is named ``Live: <det> copy``. It is
+        renamed ``<det> (copy HH:MM:SS)``, drawn translucent, hidden, and put
+        just under its live layer, and the selection goes back to what it
+        was. Show it with its eye to compare (hide the live layer, or the live
+        image is added over it). It is an ordinary layer: not protected, not a
+        live source, kept until deleted.
+        """
+        selection = self.napariViewer.layers.selection
+        before = [item for item in selection if item is not layer]
+        active = selection.active if selection.active is not layer else None
+        try:
+            layer.name = f'{liveName} (copy {time.strftime("%H:%M:%S")})'
+            layer.protected = False
+            layer.blending = 'translucent'
+            layer.visible = False
+        except Exception:
+            pass
+        ref = weakref.ref(layer)
+        QtCore.QTimer.singleShot(
+            0, lambda: self._placeFrozenCopy(ref, liveName, before, active)
+        )
+
+    def _placeFrozenCopy(self, ref, liveName, before, active):
+        layer = ref()
+        layers = self.napariViewer.layers
+        live = self.imgLayers.get(liveName)
+        if layer is None or not any(item is layer for item in layers):
+            return
+        try:
+            if live is not None and any(item is live for item in layers):
+                index, liveIndex = layers.index(layer), layers.index(live)
+                if index > liveIndex:
+                    layers.move(index, liveIndex)
+            selection = layers.selection
+            if active is not None and any(item is active for item in layers):
+                selection.active = active
+            elif before:
+                selection.clear()
+                selection.update(item for item in before
+                                 if any(other is item for other in layers))
+        except Exception:
+            pass
 
     def _isNewMarkersLayer(self, layer):
         """An empty Points or Shapes layer under napari's default name, made
