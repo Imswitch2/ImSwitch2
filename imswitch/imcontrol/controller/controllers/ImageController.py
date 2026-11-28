@@ -71,11 +71,14 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             self._commChannel.sigResultLayersRemoved.connect(self.resultLayersRemoved)
 
         # The scan lifecycle: which detectors a scan uses (a detector left out
-        # must not keep a stale stack and its slider).
+        # must not keep a stale stack and its slider), when a run starts (the
+        # view follows the planes being written again), when it ends.
         nidaqBuilt = getattr(getattr(self._master, 'nidaqManager', None), 'sigScanBuilt', None)
         if nidaqBuilt is not None:
             nidaqBuilt.connect(self._onNidaqScanBuilt)
-        for signalName, slot in (('sigScanStarted', self._onScanIterationStarted),):
+        for signalName, slot in (('sigScanStarting', self._onScanRunStarting),
+                                 ('sigScanStarted', self._onScanIterationStarted),
+                                 ('sigScanEnded', self._onScanRunEnded)):
             signal = getattr(self._commChannel, signalName, None)
             if signal is not None:
                 signal.connect(slot)
@@ -154,8 +157,44 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             if not init or self._shouldResetView:
                 self.adjustFrame(shape=display_im.shape, instantResetView=True)
 
+            plane = self._livePlaneOf(detectorName, published_shape, display_im)
+            if hasattr(self._widget, 'followLivePlane'):
+                self._widget.followLivePlane(detectorName, plane)
 
-    # -- scans: detectors left out ---------------------------------------------
+    # -- scans: the plane being written ----------------------------------------
+
+    def _livePlaneOf(self, detectorName, publishedShape, shownImage):
+        """Where the scan writes in the shown image's leading axes (the index
+        a scan-driven detector files as ``livePlaneIndex`` for the frame it
+        just published), with the summed axes taken out; None when there is
+        nothing to follow."""
+        try:
+            plane = getattr(self._master.detectorsManager[detectorName], 'livePlaneIndex', None)
+        except Exception:
+            return None
+        if plane is None:
+            return None
+        try:
+            plane = tuple(int(v) for v in plane)
+        except (TypeError, ValueError):
+            return None
+        if len(plane) != max(0, len(publishedShape) - 2):
+            return None
+        told = self.__dict__.get('_toldAxes', {}).get(detectorName)
+        labels, summed = told if told is not None else ([], ())
+        if summed:
+            plane = tuple(i for i, label in zip(plane, labels) if label not in summed)
+        if len(plane) != max(0, np.ndim(shownImage) - 2):
+            return None
+        return plane
+
+    def _onScanRunStarting(self):
+        if hasattr(self._widget, 'setScanActive'):
+            self._widget.setScanActive(True)
+
+    def _onScanRunEnded(self):
+        if hasattr(self._widget, 'setScanActive'):
+            self._widget.setScanActive(False)
 
     def _onNidaqScanBuilt(self, scanInfoDict, *_args):
         """An NI-DAQ scan is built: its ``scanInfoDict`` names the detectors

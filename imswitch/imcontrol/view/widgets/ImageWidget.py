@@ -104,6 +104,23 @@ class ImageWidget(QtWidgets.QWidget):
         except AttributeError:
             pass
 
+        # Follow acquisition: during a scan the sliders follow the plane the
+        # scan writes (followLivePlane). Moving a slider yourself turns it off
+        # until the next run starts; unticking the box keeps it off.
+        self._followAcquisition = True
+        self._followOffByUser = False
+        self._scanActive = False
+        self._followingDims = 0
+        self._followedAxes = set()
+        self._lastDims = None
+        try:
+            self.napariViewer.dims.events.current_step.connect(self._onDimsStepChanged)
+        except AttributeError:
+            pass
+        followToggled = getattr(self.sumAxesWidget, 'sigFollowToggled', None)
+        if followToggled is not None:
+            followToggled.connect(self._onFollowToggled)
+
         # Layers napari's own buttons add (new points / new shapes) are fitted
         # to the image they are drawn on; see _onLayerInserted.
         self._currentLiveName = None
@@ -114,7 +131,87 @@ class ImageWidget(QtWidgets.QWidget):
         except AttributeError:
             pass
 
-    # -- stale stacks ------------------------------------------------------------
+    # -- following the scan; stale stacks ------------------------------------
+
+    @property
+    def followAcquisition(self):
+        return self._followAcquisition
+
+    def setFollowAcquisition(self, on, *, byUser=True):
+        """Follow the plane being written, or not. ``byUser`` False is the
+        automatic switch-off (a slider moved during a scan), which the next
+        run undoes; an untick by the user is kept across runs."""
+        self._followAcquisition = bool(on)
+        if byUser:
+            self._followOffByUser = not on
+        setter = getattr(self.sumAxesWidget, 'setFollowChecked', None)
+        if setter is not None:
+            setter(on)
+
+    def _onFollowToggled(self, on):
+        self.setFollowAcquisition(on, byUser=True)
+
+    def setScanActive(self, active):
+        """A scan run starts (True) or ends (False). At the start, following
+        comes back on unless the user unticked it."""
+        self._scanActive = bool(active)
+        self._followedAxes = set()
+        if active and not self._followOffByUser:
+            self.setFollowAcquisition(True, byUser=False)
+
+    def _dimsState(self):
+        dims = self.napariViewer.dims
+        return tuple(dims.nsteps), tuple(dims.current_step)
+
+    def _onDimsStepChanged(self, event=None):
+        """A slider the user moves during a scan turns following off.
+
+        Only a move counts: a change that comes with a change of the axes'
+        ranges (a layer added, rebuilt or reshaped) is napari placing the
+        sliders, and a change this widget makes is following."""
+        state = self._dimsState()
+        previous, self._lastDims = self._lastDims, state
+        if self._followingDims or previous is None:
+            return
+        if not (self._scanActive and self._followAcquisition):
+            return
+        if previous[0] != state[0]:
+            return
+        moved = {axis for axis, (a, b) in enumerate(zip(previous[1], state[1])) if a != b}
+        if moved & self._followedAxes:
+            self.setFollowAcquisition(False, byUser=False)
+
+    def followLivePlane(self, name, index):
+        """Put the sliders of live layer ``name``'s leading axes on ``index``
+        (the plane the scan is writing), while following is on."""
+        if index is None or not self._followAcquisition:
+            return
+        layer = self.imgLayers.get(name)
+        if layer is None or not any(item is layer for item in self.napariViewer.layers):
+            return
+        lead = int(layer.ndim) - 2
+        index = tuple(int(i) for i in index)
+        if len(index) > lead:
+            return
+        index = (0,) * (lead - len(index)) + index          # padded for 3D display
+        dims = self.napariViewer.dims
+        offset = int(dims.ndim) - int(layer.ndim)
+        scale = tuple(float(v) for v in layer.scale)
+        translate = tuple(float(v) for v in layer.translate)
+        displayed = set(dims.displayed)
+        self._followingDims += 1
+        try:
+            for k, i in enumerate(index):
+                axis = offset + k
+                if axis < 0 or axis in displayed:
+                    continue
+                self._followedAxes.add(axis)
+                world = translate[k] + i * scale[k]
+                if not np.isclose(dims.point[axis], world):
+                    dims.set_point(axis, world)
+        finally:
+            self._followingDims -= 1
+            self._lastDims = self._dimsState()
 
     def collapseLiveLayerToShownPlane(self, name):
         """Reduce live layer ``name`` to the 2-D plane it shows now.
@@ -1195,6 +1292,17 @@ class ImageWidget(QtWidgets.QWidget):
             metadata[SCAN_GEOMETRY_METADATA_KEY] = scanGeometry
 
     def setImage(self, name, im, scale, scanGeometry=None):
+        # napari moving the sliders while it takes a new frame (a rebuild, a
+        # new range) is not the user moving them; see _onDimsStepChanged.
+        self.__dict__['_followingDims'] = self.__dict__.get('_followingDims', 0) + 1
+        try:
+            self._setImage(name, im, scale, scanGeometry)
+        finally:
+            self._followingDims -= 1
+        if '_lastDims' in self.__dict__:
+            self._lastDims = self._dimsState()
+
+    def _setImage(self, name, im, scale, scanGeometry=None):
         layer = self.imgLayers[name]
         scale = tuple(scale)
         if isinstance(im, ScanFrame):

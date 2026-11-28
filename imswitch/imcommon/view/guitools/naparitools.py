@@ -473,6 +473,8 @@ class NapariSumAxesWidget(NapariBaseWidget):
     (``sigSumAxesChanged``)."""
 
     sigSumAxesChanged = QtCore.Signal(tuple)
+    #: The user ticked or unticked *Follow acquisition* (True: follow).
+    sigFollowToggled = QtCore.Signal(bool)
 
     @property
     def name(self):
@@ -503,6 +505,24 @@ class NapariSumAxesWidget(NapariBaseWidget):
         self.layout().setContentsMargins(4, 4, 4, 4)
         self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
                                                  QtWidgets.QSizePolicy.Maximum))
+        # Shown with the Sum boxes: it matters exactly when a live frame has
+        # a dimension beyond its image. The image widget owns the state.
+        self.followCheck = QtWidgets.QCheckBox('Follow acquisition')
+        self.followCheck.setChecked(True)
+        self.followCheck.setToolTip(
+            'During a scan, keep the sliders on the plane being written. Moving '
+            'a slider turns this off until the next scan starts; unticked by '
+            'hand, it stays off.'
+        )
+        self.followCheck.toggled.connect(self.sigFollowToggled)
+        self.layout().addWidget(self.followCheck)
+
+    def setFollowChecked(self, on):
+        """Show the follow state without reporting it as the user's choice."""
+        if self.followCheck.isChecked() != bool(on):
+            self.followCheck.blockSignals(True)
+            self.followCheck.setChecked(bool(on))
+            self.followCheck.blockSignals(False)
 
     def setAxes(self, source, labels, summed=None):
         """The dimensions ``source``'s frames have beyond their image,
