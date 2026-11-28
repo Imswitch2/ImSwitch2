@@ -43,7 +43,7 @@ from imswitch.imcontrol.view.widgets.ScanWidgetBase import ScanWidgetBase
 
 from .test_simple_point_scan_controller import SETUP, _Main
 
-BASE_SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/hamamatsu_mock_scan_setup.json'
+BASE_SETUP = 'imswitch/_data/user_defaults/imcontrol_setups/mock/monalisa/hamamatsu_mock_scan_setup.json'
 
 _sim = importlib.import_module(
     'imswitch.imcontrol.model.managers.mockscan.ScanSimulationCoordinator')
