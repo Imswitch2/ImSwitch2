@@ -26,6 +26,7 @@
       "x-imswitch-widget": "ref"
     },
     "useMockOnFailure": {
+      "description": "Defaults to ``false``: when the serial port did not open the",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",
