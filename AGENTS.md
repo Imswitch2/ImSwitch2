@@ -5,6 +5,8 @@ name below is checked to exist by `imswitch/imcommon/_test/test_agents_md.py`.
 Humans: start at `docs/index.rst` (built at imswitch2.readthedocs.io).
 Package detail: `imswitch/imcontrol/AGENTS.md`, `imswitch/improcess/AGENTS.md`,
 `imswitch/imscripting/AGENTS.md`.
+Read `BIG_PICTURE.md` first: one page on the shape of the system and how to
+work on it. This file is the map and the checklists that page refers to.
 
 ## What this is
 
