@@ -1,6 +1,49 @@
+import threading
+
 import numpy as np
 
 from .ScanManagerBase import SuperScanManager
+
+# Per-thread capture of the commands a scan handler would send, so the same
+# handlers serve both the synchronous ``runScan`` and ``runScanAsync``.
+_capture = threading.local()
+
+
+class ScanStartHandle:
+    """One asynchronous scan start: parameter upload, boundary, scan command.
+
+    ``onFinished(ok, message)`` is called exactly once, on the manager's
+    thread, when the scan command has been written (``ok``) or the start
+    failed or was cancelled. :meth:`cancel` stops the upload and, if the
+    parameters are not yet complete, keeps the boundary and the scan command
+    from being sent at all.
+    """
+
+    def __init__(self, onFinished):
+        self._onFinished = onFinished
+        self._job = None
+        self._cancelled = False
+        self._finished = False
+
+    @property
+    def cancelled(self):
+        return self._cancelled
+
+    def cancel(self):
+        self._cancelled = True
+        if self._job is not None:
+            self._job.cancel()
+
+    def _setJob(self, job):
+        self._job = job
+        if self._cancelled:
+            job.cancel()
+
+    def _finish(self, ok, message=''):
+        if self._finished:
+            return
+        self._finished = True
+        self._onFinished(ok, message)
 
 
 class ScanManagerTriggerScope(SuperScanManager):
@@ -64,7 +107,70 @@ class ScanManagerTriggerScope(SuperScanManager):
             ``'scanParameters'`` sub-dicts (format depends on scan type).
         :param scan_type: one of the supported firmware scan type strings.
         """
-        dispatch = {
+        handler = self._dispatch().get(scan_type)
+        if handler is None:
+            self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
+            return False
+        handler(parameterDict)
+        return True
+
+    def runScanAsync(self, parameterDict, scan_type, onFinished):
+        """ Like :meth:`runScan`, but nothing blocks the calling (GUI) thread.
+
+        Everything that can be checked without the board -- unknown scan type,
+        a device without a TriggerScope line -- is checked here, synchronously,
+        and raises as ``runScan`` does. The PARAMETER lines are then written in
+        order on the uploader thread; when they are all out, back on this
+        thread the scan boundary is announced and only then is the scan
+        command written, so the boundary still precedes the command exactly as
+        in ``runScan``. Returns a :class:`ScanStartHandle`, or ``False`` for an
+        unknown scan type.
+        """
+        dispatch = self._dispatch()
+        handler = dispatch.get(scan_type)
+        if handler is None:
+            self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
+            return False
+
+        _capture.parameters = []
+        _capture.start = None
+        try:
+            handler(parameterDict)
+            parameters, startCommand = _capture.parameters, _capture.start
+        finally:
+            _capture.parameters = None
+        if startCommand is None:
+            raise RuntimeError(f'Scan type "{scan_type}" has no scan command.')
+
+        handle = ScanStartHandle(onFinished)
+
+        def sendScanCommand():
+            self._ts.sigScanStarted.emit()
+            handle._setJob(self._ts.uploadCommands(
+                [(startCommand, 0)],
+                lambda ok, message: handle._finish(ok, message),
+                label=f'{scan_type} start'))
+
+        def afterParameters(ok, message):
+            if not ok:
+                handle._finish(False, message)
+            elif handle.cancelled:
+                handle._finish(False, 'cancelled before the scan command')
+            else:
+                try:
+                    sendScanCommand()
+                except Exception as error:
+                    handle._finish(False, f'{type(error).__name__}: {error}')
+
+        if parameters:
+            handle._setJob(self._ts.uploadCommands(
+                parameters, afterParameters, label=f'{scan_type} parameters'))
+        else:
+            sendScanCommand()
+        return handle
+
+    def _dispatch(self):
+        return {
             'rasterScan':                    self._runRasterScan,
             'pLS-RESOLFTScan':               self._runpLSRESOLFTScan,
             'GalvoDetectionScan':            self._runpLSRESOLFTGalvoScan,
@@ -72,19 +178,17 @@ class ScanManagerTriggerScope(SuperScanManager):
             'pLS-RESOLFT_multicolor_Scan':   self._runpLSRESOLFTMulticolorScan,
             'LSXYRScan':                     self._runLSXYRScan,
         }
-        handler = dispatch.get(scan_type)
-        if handler is None:
-            self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
-            return False
-        handler(parameterDict)
-        return True
 
     # ------------------------------------------------------------------
     # Private scan sequence methods
     # ------------------------------------------------------------------
 
     def _setParam(self, name, value):
-        self._ts.setParameter(name, value)
+        captured = getattr(_capture, 'parameters', None)
+        if captured is not None:
+            captured.append(self._ts.parameterCommand(name, value))
+        else:
+            self._ts.setParameter(name, value)
 
     def _send(self, cmd):
         self._ts.send(cmd)
@@ -108,6 +212,9 @@ class ScanManagerTriggerScope(SuperScanManager):
         leaves only the slot dispatch itself, during which the firmware is
         provably still idle because it has not been told to scan yet.
         """
+        if getattr(_capture, 'parameters', None) is not None:
+            _capture.start = command  # runScanAsync sends it after the upload
+            return
         self._ts.sigScanStarted.emit()
         self._send(command)
 

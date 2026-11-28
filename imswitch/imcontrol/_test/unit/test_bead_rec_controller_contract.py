@@ -98,7 +98,8 @@ def test_bead_rec_controller_uses_acquisition_config_and_worker_updates():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
     assert 'def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:' in source
-    assert 'return BeadAcquisitionConfig.from_scan_dims(self.dims, frames_per_pixel=self.framesPerPixel)' in source
+    # a scan is exactly dims[0]*dims[1] frames: no wrap onto pixel 0
+    assert 'self.dims, frames_per_pixel=self.framesPerPixel, wrap=False' in source
     assert 'config = self._createAcquisitionConfig()' in source
     assert 'self.beadWorker.start(config)' in source
     assert 'self._widget.updateProgress(0, config.total_pixels)' in source
@@ -159,7 +160,7 @@ def test_bead_rec_controller_updates_widget_status_and_progress():
     assert 'self.beadWorker.sigWarning.connect(self._widget.setStatusText)' in source
     assert 'self._widget.setStatusText("Bead reconstruction running")' in source
     assert 'self._widget.setStatusText("Bead reconstruction stopped")' in source
-    assert 'self._widget.setStatusText("Bead reconstruction scan complete")' in source
+    assert "text = 'Bead reconstruction scan complete'" in source
 
 
 def test_bead_rec_controller_uses_result_records_and_passive_state():

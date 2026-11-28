@@ -1,3 +1,4 @@
+import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets, QtGui
 from datetime import datetime
@@ -5,6 +6,87 @@ from imswitch.imcommon.view.guitools import naparitools
 from imswitch.imcommon.view.guitools.JsonEditorDialog import JsonEditorDialog
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
+
+
+#: Lower display level: this percentile of the filled pixels, so a few dark
+#: outliers do not stretch the range. The upper level is the brightest filled
+#: pixel: a reconstruction pixel is an ROI mean, so a lone hot pixel is rare,
+#: while a percentile there would clip every bead's peak -- and the greyclip
+#: LUT draws clipped pixels red, which reads as detector saturation.
+DISPLAY_LOW_PERCENTILE = 0.5
+#: Fraction of the range the upper level sits above the brightest pixel.
+DISPLAY_HIGH_PAD = 0.01
+
+
+def displayLevels(image):
+    """``(low, high)`` display levels for a BeadRec image, from its filled pixels.
+
+    A running reconstruction is a zero-initialised buffer
+    (``create_reconstruction_buffer``) filled pixel by pixel, so exact zeros
+    are the pixels no frame has reached yet. They are left out: levelled with
+    them, the range starts at 0 and the data (ROI means sitting on the camera
+    offset) is squeezed into the top few grey values. A genuine zero in a
+    loaded image is then simply drawn black, which it would be anyway.
+    Non-finite pixels are ignored; an image with nothing to level from (all
+    zero: a scan that has not filled a pixel yet) gets ``(0, 1)``, and a flat
+    one a range of 1 around its value.
+    """
+    data = np.asarray(image, dtype=float)
+    values = data[np.isfinite(data)]
+    values = values[values != 0]
+    if values.size == 0:
+        return 0.0, 1.0
+    low = float(np.percentile(values, DISPLAY_LOW_PERCENTILE))
+    high = float(values.max())
+    if high <= low:
+        return low - 0.5, low + 0.5
+    # A hair above the brightest pixel, which greyclip would otherwise
+    # draw red as clipped.
+    return low, high + DISPLAY_HIGH_PAD * (high - low)
+
+
+class _StatusLabel(QtWidgets.QLabel):
+    """A word-wrapped label that does not make the panel height-for-width.
+
+    ``QLabel.setWordWrap(True)`` marks the label height-for-width, and one such
+    item makes the whole panel layout height-for-width. The scroll area the
+    panel lives in (``Widget.makeScrollable``) then sizes its contents at
+    their *preferred* height for the width rather than shrinking them to the
+    dock, so the image canvas stayed at its ~450 px size hint and the panel
+    scrolled instead of the image getting smaller. This label still wraps, and
+    asks for the height its text needs at its current width instead.
+    """
+
+    def __init__(self, text=''):
+        super().__init__(text)
+        self.setWordWrap(True)
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(False)
+        self.setSizePolicy(policy)
+
+    def hasHeightForWidth(self):  # noqa: N802 - Qt naming
+        return False
+
+    def _wrappedHeight(self):
+        width = self.width() if self.width() > 50 else super().sizeHint().width()
+        return self.heightForWidth(width)
+
+    def sizeHint(self):  # noqa: N802 - Qt naming
+        hint = super().sizeHint()
+        return QtCore.QSize(hint.width(), max(self._wrappedHeight(), 0))
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt naming
+        hint = super().minimumSizeHint()
+        return QtCore.QSize(hint.width(), max(self._wrappedHeight(), 0))
+
+    def setText(self, text):  # noqa: N802 - Qt naming
+        super().setText(text)
+        self.updateGeometry()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self.updateGeometry()     # the text wraps differently now
 
 
 class BeadRecWidget(Widget):
@@ -22,6 +104,9 @@ class BeadRecWidget(Widget):
     sigFitRequested = QtCore.Signal(str)  # (model_key)
     sigOrientationChanged = QtCore.Signal()  # rotate/flip controls changed
 
+    #: The least height the image canvas is given, in pixels.
+    MINIMUM_CANVAS_HEIGHT = 160
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -35,7 +120,10 @@ class BeadRecWidget(Widget):
 
         #Main panel: Viewbox + buttons
         self.cwidget = pg.GraphicsLayoutWidget()
-        self.cwidget.setMinimumSize(0, 0)
+        # Inside the panel's scroll area, so this floor never pins the window:
+        # a dock shorter than the controls plus this scrolls, rather than
+        # squeezing the image to a sliver.
+        self.cwidget.setMinimumSize(0, self.MINIMUM_CANVAS_HEIGHT)
         self.cwidget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.vb = self.cwidget.addViewBox(row=1, col=1)
         self.vb.setMouseMode(pg.ViewBox.RectMode)
@@ -60,6 +148,14 @@ class BeadRecWidget(Widget):
         self.roiButton.setCheckable(True)
         self.runButton = QtWidgets.QCheckBox('Run')
         self.scaleButton = QtWidgets.QCheckBox('Scale')
+        # Every new image is levelled from its filled pixels (displayLevels)
+        # unless this is checked: then the levels set in the histogram stay.
+        self.holdLevelsCheck = QtWidgets.QCheckBox('Hold levels')
+        self.holdLevelsCheck.setToolTip(
+            'Keep the display levels set in the histogram instead of '
+            'levelling every new image from its filled pixels'
+        )
+        self._shownShape = None
 
         # Orientation controls: correct the reconstruction for the physical scan
         # direction (which corner is the origin / which axis is fast). For a
@@ -80,8 +176,7 @@ class BeadRecWidget(Widget):
         self.fitModelCombo.addItem("Legacy donut", "legacy_donut")
         self.runFitBtn = guitools.BetterPushButton('Run fit')
         self.prmBtn = guitools.BetterPushButton("Analysis Parameters")
-        self.statusLabel = QtWidgets.QLabel("Idle")
-        self.statusLabel.setWordWrap(True)
+        self.statusLabel = _StatusLabel("Idle")
         self.progressBar = QtWidgets.QProgressBar()
         self.progressBar.setRange(0, 1)
         self.progressBar.setValue(0)
@@ -117,6 +212,7 @@ class BeadRecWidget(Widget):
         mainLayout.addWidget(self.rotateButton, 2, 0, 1, 2)
         mainLayout.addWidget(self.flipHButton, 2, 2, 1, 1)
         mainLayout.addWidget(self.flipVButton, 2, 3, 1, 1)
+        mainLayout.addWidget(self.holdLevelsCheck, 2, 4, 1, 2)
         mainLayout.addWidget(self.fitModelCombo, 5, 0, 1, 2)
         mainLayout.addWidget(self.runFitBtn, 5, 2, 1, 1)
         mainLayout.addWidget(self.prmBtn, 5, 3, 1, 3)
@@ -189,8 +285,33 @@ class BeadRecWidget(Widget):
     def hideROI(self):
         self.ROI.hide()
 
-    def updateImage(self, image, autoLevels=False):
-        self.img.setImage(image, autoLevels=autoLevels)
+    def updateImage(self, image, autoLevels=None):
+        """Show ``image``.
+
+        ``autoLevels`` None (what the reconstruction, a loaded image and a
+        list selection pass) levels it from its filled pixels unless *Hold
+        levels* is checked; True always does (the live ROI crop preview, whose
+        camera counts share no scale with a reconstruction); False keeps the
+        current levels. Levelling used to happen only for the crop preview, so
+        a reconstruction was drawn with whatever levels were left over -- the
+        histogram's initial (0, 1), which the greyclip LUT shows as all red, or
+        the camera counts of the last crop.
+
+        A new shape fits the view again: after a zoom the view box stops
+        following its content, and the next image of another size (an XZ
+        follow-up, a crop, a loaded file) was shown through the old window.
+        """
+        if autoLevels is None:
+            autoLevels = not self.holdLevelsCheck.isChecked()
+        shape = tuple(np.shape(image))
+        if autoLevels:
+            self.img.setImage(image, autoLevels=False, levels=displayLevels(image))
+        else:
+            self.img.setImage(image, autoLevels=False)
+        if shape != self._shownShape:
+            self._shownShape = shape
+            self.vb.enableAutoRange()
+            self.vb.autoRange()
         # self.removeCenterCoord()
 
     def _onRotateClicked(self):
