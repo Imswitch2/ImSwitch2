@@ -5,7 +5,10 @@ Processors operate on ProcessingResults and are stackable. They are registered
 in the global registry alongside reconstructors.
 """
 
+import inspect
+
 from .base import Processor
+from .axis_swap import AxisSwapProcessor
 from .background import SubtractBackgroundProcessor
 from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
@@ -23,24 +26,31 @@ from .make_rgb import MakeRGBProcessor
 from .math_ops import MathProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
+from .pick import PickProcessor
 from .projection import ProjectionProcessor
 from .psf_bead_select import PSFBeadSelectProcessor
 from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .bead_fwhm import BeadFwhmProcessor
+from .regionprops import RegionPropsProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
+from .threshold import ThresholdProcessor
 from .transform import TransformProcessor
 from .smlm_drift import SmlmDriftProcessor
 from .smlm_drift_comet import SmlmCometDriftProcessor
 from .smlm_filter import SmlmFilterProcessor
 from .smlm_group import SmlmGroupProcessor
 from .smlm_render import SmlmRenderProcessor
+from .spot_count import SpotCountProcessor
 from .stack_split import StackSplitProcessor
 from .stack_subset import StackSubsetProcessor
 from .table_to_localizations import TableToLocalizationsProcessor
+from .tile_spots import TileSpotsProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
+    'axis-swap': AxisSwapProcessor,
     'channel-merge': ChannelMergeProcessor,
     'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
@@ -57,19 +67,25 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'deconvolve-rl': RichardsonLucyProcessor,
+    'pick': PickProcessor,
     'projection': ProjectionProcessor,
     'psf-bead-select': PSFBeadSelectProcessor,
     'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'bead-fwhm': BeadFwhmProcessor,
+    'regionprops': RegionPropsProcessor,
     'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
+    'threshold': ThresholdProcessor,
+    'tile-spots': TileSpotsProcessor,
     'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
     'smlm-drift-comet': SmlmCometDriftProcessor,
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
     'smlm-render': SmlmRenderProcessor,
+    'spot-count': SpotCountProcessor,
     'stack-combine': StackCombineProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
@@ -182,6 +198,25 @@ def available_processor_specs(origin: str = "all") -> list[tuple[str, str, str]]
     )
 
 
+def processor_summary(processor_id: str) -> str:
+    """One line saying what a processor does: its ``description`` attribute if
+    it declares one, else the first line of its class docstring, with the
+    reST/Markdown emphasis and code marks a tooltip would show literally
+    removed. ``""`` for an unknown id or an undocumented class."""
+    plugin_cls = _all_processor_classes().get(processor_id)
+    if plugin_cls is None:
+        return ""
+    text = str(getattr(plugin_cls, "description", "") or "").strip()
+    if not text:
+        doc = inspect.getdoc(plugin_cls) or ""
+        if inspect.getdoc(Processor) == doc:
+            return ""  # inherited from the base class, says nothing
+        text = doc.strip().split("\n\n", 1)[0].replace("\n", " ")
+    for mark in ("**", "``", "`"):
+        text = text.replace(mark, "")
+    return " ".join(text.split())
+
+
 def register_processor_by_id(registry, processor_id: str) -> Processor:
     """Instantiate and register one processor (built-in or user plugin) by id."""
     try:
@@ -244,6 +279,7 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 
 
 __all__ = [
+    "AxisSwapProcessor",
     "Processor",
     "ChannelMergeProcessor",
     "ChannelSplitProcessor",
@@ -261,13 +297,16 @@ __all__ = [
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "RichardsonLucyProcessor",
+    "PickProcessor",
     "ProjectionProcessor",
     "PSFBeadSelectProcessor",
     "PythonStepProcessor",
     "PSFResolutionProcessor",
+    "RegionPropsProcessor",
     "ResizeProcessor",
     "SegmentationProcessor",
     "SubtractBackgroundProcessor",
+    "ThresholdProcessor",
     "TransformProcessor",
     "SmlmDriftProcessor",
     "SmlmFilterProcessor",
@@ -279,6 +318,7 @@ __all__ = [
     "available_processor_choices",
     "available_processor_ids",
     "available_processor_specs",
+    "processor_summary",
     "register_processor_by_id",
     "register_default_processors",
     "load_user_plugins",

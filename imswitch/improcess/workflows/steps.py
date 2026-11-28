@@ -11,6 +11,14 @@ split has one port per channel, a background subtraction can have
 order. Ports that depend on the data (``C0, C1, …``) are validated against
 the processor's declared pattern before the run and against the ports
 actually produced after it.
+
+Schema 2 adds two things a file may use (``docs/design/plans/
+improcess-workflow-schema-2.md``): **controls**, parameters a run may set by
+name (the value stays in the step), and **bypass** on a processing or Save
+step. A file is written at the lowest schema that holds it, and read
+strictly: a schema-1 file with either key is refused. Such a file (the
+*recipe*) is never run as it is: :func:`~imswitch.improcess.workflows.prepare.prepare_run`
+turns it into the plain workflow a run executes.
 """
 
 from __future__ import annotations
@@ -20,15 +28,22 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from imswitch.improcess.workflows.sources import SourceSpec
 
-SCHEMA_VERSION = 1
+#: The newest schema this ImSwitch reads and writes.
+SCHEMA_VERSION = 2
+#: What a file that names no schema is read as.
+DEFAULT_SCHEMA = 1
 
 _ID = r"[A-Za-z0-9_\-]+"
 _ID_PATTERN = re.compile(rf"^{_ID}$")
 _REF_PATTERN = re.compile(rf"^(?P<step>{_ID})(?:\.(?P<port>{_ID}))?$")
+_TARGET_PATTERN = re.compile(rf"^(?P<step>{_ID})\.(?P<param>{_ID})$")
+#: A control's name: what ``--set name=…`` and a manifest column use.
+CONTROL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SOURCE_PORT = "data"
 DEFAULT_PORT = "out"
@@ -56,6 +71,19 @@ def parse_ref(text) -> Ref:
     if not match:
         raise WorkflowError(f"bad step reference {text!r}; expected 'step' or 'step.port'")
     return Ref(match.group("step"), match.group("port"))
+
+
+def parse_target(text) -> tuple[str, str] | None:
+    """``(step, param)`` of a control target ``"step.param"``, or ``None``."""
+    match = _TARGET_PATTERN.match(str(text))
+    return (match.group("step"), match.group("param")) if match else None
+
+
+def _check_bypass(step_id: str, value) -> bool:
+    # Never truthiness: the string "false" must not become a bypass.
+    if not isinstance(value, bool):
+        raise WorkflowError(f"step {step_id!r}: bypass must be true or false, got {value!r}")
+    return value
 
 
 def _check_id(step_id) -> str:
@@ -87,10 +115,16 @@ class Source:
     def to_dict(self) -> dict:
         return {"step": "source", "id": self.id, **self.source.to_dict()}
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Source":
+        source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
+        return cls(data.get("id"), source)
+
 
 @dataclass
 class Reconstruct:
-    """Run a reconstructor over one source. Its single port is ``out``."""
+    """Run a reconstructor over one input -- a source, or any step that
+    produces an image. Its single port is ``out``."""
 
     id: str
     reconstructor: str
@@ -143,6 +177,8 @@ class Process:
     params: dict = field(default_factory=dict)
     inputs: list[Ref] = field(default_factory=list)
     restriction: dict | None = None
+    #: Schema 2: taken out of the run, whatever read it reads its input.
+    bypass: bool = False
 
     kind = "process"
 
@@ -151,12 +187,15 @@ class Process:
         self.inputs = [parse_ref(r) for r in (self.inputs or [])]
         if self.restriction is not None and not isinstance(self.restriction, dict):
             raise WorkflowError(f"{self.id}: restriction must be an object")
+        self.bypass = _check_bypass(self.id, self.bypass)
 
     def to_dict(self) -> dict:
         payload = {"step": "process", "id": self.id, "processor": self.processor,
                    "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
         if self.restriction:
             payload["restriction"] = dict(self.restriction)
+        if self.bypass:
+            payload["bypass"] = True
         return payload
 
 
@@ -168,39 +207,410 @@ class Save:
     input: Ref
     fmt: str = "tiff"
     path_template: str = DEFAULT_SAVE_TEMPLATE
+    #: Schema 2: writes nothing.
+    bypass: bool = False
 
     kind = "save"
 
     def __post_init__(self):
         self.id = _check_id(self.id)
         self.input = parse_ref(self.input)
+        self.bypass = _check_bypass(self.id, self.bypass)
 
     def to_dict(self) -> dict:
-        return {"step": "save", "id": self.id, "input": str(self.input), "fmt": self.fmt,
-                "path_template": self.path_template}
+        payload = {"step": "save", "id": self.id, "input": str(self.input), "fmt": self.fmt,
+                   "path_template": self.path_template}
+        if self.bypass:
+            payload["bypass"] = True
+        return payload
 
 
-Step = Source | Reconstruct | Consolidate | Process | Save
+@dataclass
+class Control:
+    """A parameter a run may set by name (schema 2).
 
-_STEP_TYPES = {"source": Source, "reconstruct": Reconstruct, "consolidate": Consolidate,
-               "process": Process, "save": Save}
+    The value lives in the target steps' ``params``; a control only names it
+    (``name`` for ``--set name=…`` and manifest columns), says which
+    parameters it sets (``targets``, each ``"step.param"``), and how to show
+    it (``label``, ``help``). Whether the targets exist and fit together is
+    for :func:`validate` to say, so the editor can show it.
+    """
+
+    name: str
+    targets: list[str] = field(default_factory=list)
+    label: str = ""
+    help: str = ""
+
+    _KEYS = ("name", "targets", "label", "help")
+
+    def to_dict(self) -> dict:
+        payload = {"name": self.name, "targets": list(self.targets)}
+        if self.label:
+            payload["label"] = self.label
+        if self.help:
+            payload["help"] = self.help
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "Control":
+        if not isinstance(payload, dict):
+            raise WorkflowError(f"a control must be an object, got {payload!r}")
+        unknown = sorted(str(key) for key in payload if key not in cls._KEYS)
+        if unknown:
+            raise WorkflowError(
+                f"control {payload.get('name')!r}: unknown key(s) {unknown} (a control has {list(cls._KEYS)})"
+            )
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise WorkflowError(f"a control needs a name, got {name!r}")
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets or not all(isinstance(t, str) for t in targets):
+            raise WorkflowError(f"control {name!r}: targets must be a non-empty list of 'step.param'")
+        texts = {}
+        for key in ("label", "help"):
+            value = payload.get(key, "")
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise WorkflowError(f"control {name!r}: {key} must be text")
+            texts[key] = value
+        return cls(name=name, targets=list(targets), **texts)
 
 
-def step_from_dict(payload: dict) -> Step:
+#: How a ``map``/``fold`` body names the slice of the current index (and, in
+#: a fold, the carried value). Written ``$item`` in a file; held as a
+#: reference to a reserved step id inside, so every reference check works on
+#: it unchanged.
+ITEM_REF = "$item"
+CARRY_REF = "$carry"
+ITEM_STEP = "_item"
+CARRY_STEP = "_carry"
+_RESERVED_BODY_IDS = (ITEM_STEP, CARRY_STEP)
+
+
+def _body_ref_in(text):
+    text = str(text)
+    if text == ITEM_REF or text.startswith(ITEM_REF + "."):
+        return ITEM_STEP + text[len(ITEM_REF):]
+    if text == CARRY_REF or text.startswith(CARRY_REF + "."):
+        return CARRY_STEP + text[len(CARRY_REF):]
+    return text
+
+
+def _body_ref_out(ref: Ref) -> str:
+    if ref.step == ITEM_STEP:
+        return ITEM_REF + (f".{ref.port}" if ref.port else "")
+    if ref.step == CARRY_STEP:
+        return CARRY_REF + (f".{ref.port}" if ref.port else "")
+    return str(ref)
+
+
+def _body_refs(step) -> list[Ref]:
+    if isinstance(step, Save):
+        return [step.input]
+    return list(getattr(step, "inputs", None) or [])
+
+
+def _parse_body(owner: str, body) -> list:
+    if not isinstance(body, list) or not body:
+        raise WorkflowError(f"step {owner!r}: a body must be a non-empty list of steps")
+    steps = []
+    for item in body:
+        if isinstance(item, dict):
+            item = dict(item)
+            if "bypass" in item:
+                raise WorkflowError(
+                    f"step {owner!r}: body step {item.get('id')!r} cannot be bypassed; bypass is for "
+                    "top-level processing and save steps (a map or fold itself cannot be bypassed either)"
+                )
+            if "inputs" in item and isinstance(item["inputs"], list):
+                item["inputs"] = [_body_ref_in(ref) for ref in item["inputs"]]
+            if "input" in item:
+                item["input"] = _body_ref_in(item["input"])
+            step = step_from_dict(item)
+        else:
+            step = item
+        if step.id in _RESERVED_BODY_IDS:
+            raise WorkflowError(f"step {owner!r}: {step.id!r} is reserved inside a body")
+        steps.append(step)
+    seen = set()
+    for step in steps:
+        if step.id in seen:
+            raise WorkflowError(f"step {owner!r}: duplicate body step id {step.id!r}")
+        seen.add(step.id)
+    return steps
+
+
+def _body_to_dicts(body) -> list[dict]:
+    out = []
+    for step in body:
+        payload = step.to_dict()
+        if "inputs" in payload:
+            payload["inputs"] = [_body_ref_out(ref) for ref in _body_refs(step)]
+        if "input" in payload and isinstance(step, Save):
+            payload["input"] = _body_ref_out(step.input)
+        out.append(payload)
+    return out
+
+
+@dataclass
+class Map:
+    """Run a sub-workflow (``body``) once per index of the ``over`` axis of
+    ``input``, and stack its ``output`` along that axis. Port ``out``.
+
+    For what auto-indexing cannot express: a *group* of steps per index
+    (deskew, crop, reconstruct, frame by frame), where only the stacked end
+    result is wanted. The body names the slice of the current index
+    ``$item``; it may also read any earlier step of the workflow (that result
+    is handed unchanged to every index). Save is not allowed inside a body.
+    The provenance records the body once, with ``iterated_over``.
+    """
+
+    id: str
+    input: Ref
+    over: str
+    body: list = field(default_factory=list)
+    output: Ref | None = None
+
+    kind = "map"
+    ports = (DEFAULT_PORT,)
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        # An editor may leave a map without its input for a moment (its
+        # input step deleted); that loads, and validate() reports it.
+        self.input = parse_ref(self.input) if self.input not in (None, "") else None
+        self.over = str(self.over or "")
+        self.body = _parse_body(self.id, self.body)
+        if self.output is None:
+            self.output = Ref(self.body[-1].id)
+        self.output = parse_ref(self.output)
+
+    @property
+    def body_ids(self) -> set[str]:
+        return {step.id for step in self.body}
+
+    def outer_refs(self) -> list[Ref]:
+        """References from the body to steps of the enclosing workflow, in order, once each."""
+        inner = self.body_ids | set(_RESERVED_BODY_IDS)
+        seen, found = set(), []
+        for step in self.body:
+            for ref in _body_refs(step):
+                if ref.step not in inner and str(ref) not in seen:
+                    seen.add(str(ref))
+                    found.append(ref)
+        return found
+
+    @property
+    def inputs(self) -> list[Ref]:
+        """What this step reads from the enclosing workflow: ``input`` first,
+        then whatever the body broadcasts. Read by every graph walk."""
+        head = [self.input] if self.input is not None else []
+        return [*head, *[ref for ref in self.outer_refs() if self.input is None or str(ref) != str(self.input)]]
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        # The editor rewires the cable into the step; the body's own
+        # references to the enclosing workflow are the body's, except that
+        # a broadcast read the editor dropped is dropped from the body too.
+        refs = [parse_ref(ref) for ref in (refs or [])]
+        kept = {str(ref) for ref in refs}
+        gone = {ref.step for ref in self.outer_refs() if str(ref) not in kept}
+        if self.input is not None and str(self.input) not in kept:
+            gone.discard(self.input.step)
+        if gone:
+            self.drop_outer(gone)
+        self.input = refs[0] if refs else None
+
+    def drop_outer(self, step_ids) -> None:
+        """Forget the body's reads of the outer steps ``step_ids`` (deleted ones)."""
+        step_ids = set(step_ids)
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            refs = _body_refs(step)
+            kept = [ref for ref in refs if ref.step not in step_ids]
+            if len(kept) != len(refs):
+                step.inputs = kept
+
+    def rename_outer(self, mapping: dict[str, Ref]) -> None:
+        """Point the body's references to outer steps at new ids (``old id -> Ref``)."""
+        for step in self.body:
+            if isinstance(step, Save):
+                continue
+            step.inputs = [
+                (Ref(mapping[ref.step].step, ref.port if ref.port is not None else mapping[ref.step].port)
+                 if ref.step in mapping else ref)
+                for ref in _body_refs(step)
+            ]
+
+    def _payload(self) -> dict:
+        return {"step": self.kind, "id": self.id, "input": str(self.input) if self.input is not None else None,
+                "over": self.over,
+                "body": _body_to_dicts(self.body), "output": str(self.output)}
+
+    def to_dict(self) -> dict:
+        return self._payload()
+
+
+@dataclass
+class Fold(Map):
+    """Like :class:`Map`, with state carried from one index to the next
+    (LabVIEW's shift register): a drift reference, a crop box chosen on the
+    first frame.
+
+    ``carry`` is ``{"init": ref or null, "next": "body_step.port"}``: the
+    body reads the carried value as ``$carry`` (``init`` at the first index,
+    or nothing when ``init`` is null) and its ``next`` port is what the next
+    index finds there. **Designed, not implemented yet**: a fold validates,
+    loads, saves and round-trips; running one is refused with a clear error.
+    """
+
+    carry: dict = field(default_factory=dict)
+
+    kind = "fold"
+
+    def __init__(self, id, input, over, body=None, output=None, carry=None):
+        self.id = id
+        self.input = input
+        self.over = over
+        self.body = body or []
+        self.output = output
+        self.carry = dict(carry or {})
+        self.__post_init__()
+        if set(self.carry) - {"init", "next"}:
+            raise WorkflowError(f"step {self.id!r}: carry has only 'init' and 'next'")
+        if not self.carry.get("next"):
+            raise WorkflowError(f"step {self.id!r}: carry needs 'next', the body port that is carried on")
+        self.carry["next"] = str(parse_ref(self.carry["next"]))
+        if self.carry.get("init") is not None:
+            self.carry["init"] = str(parse_ref(self.carry["init"]))
+        else:
+            self.carry["init"] = None
+
+    @property
+    def inputs(self) -> list[Ref]:
+        refs = Map.inputs.fget(self)
+        init = self.carry.get("init")
+        if init and init not in {str(ref) for ref in refs}:
+            refs.append(parse_ref(init))
+        return refs
+
+    @inputs.setter
+    def inputs(self, refs) -> None:
+        Map.inputs.fset(self, refs)
+
+    def to_dict(self) -> dict:
+        payload = self._payload()
+        payload["carry"] = {"init": self.carry.get("init"), "next": self.carry["next"]}
+        return payload
+
+
+Step = Source | Reconstruct | Consolidate | Process | Save | Map | Fold
+
+
+# --------------------------------------------------------------------------
+# step-type registry
+# --------------------------------------------------------------------------
+#
+# The kinds a workflow file may name (``step: process``) are an open set: a
+# package that adds a kind registers its class here, and ``step_from_dict``,
+# the runner and the editor find it by its ``kind``. The seven built-ins are
+# registered at import, so a file written before this registry existed loads
+# exactly as it did.
+
+_STEP_REGISTRY: dict[str, type] = {}
+_STEP_RUNNERS: dict[str, Any] = {}
+_BUILTIN_KINDS: tuple[str, ...] = ()
+
+#: Read-only view of the registered kinds (kind -> class), kept for callers
+#: that read the former closed dict.
+_STEP_TYPES = MappingProxyType(_STEP_REGISTRY)
+
+
+def register_step_type(kind: str, cls, *, run=None):
+    """Make ``kind`` a step kind a workflow may contain; returns ``cls``.
+
+    ``cls`` is built from a step's dict by ``cls.from_dict(data)`` when it
+    has one, else ``cls(**data)`` (``data`` is the step's mapping without its
+    ``step``/``kind`` key). It must have an ``id`` and, for the editor's sake,
+    inputs as ``inputs`` (a list of refs) if it consumes anything. The class
+    is told its ``kind`` if it does not name one; one that names another is
+    refused. ``run``, for a kind the runner does not know, is
+    ``run(step, *, report, registry, logger) -> {port: result}``: what the
+    step produced, which the runner records as ``"<id>.<port>"``.
+    """
+    kind = str(kind or "").lower()
+    if not _ID_PATTERN.match(kind):
+        raise WorkflowError(f"bad step kind {kind!r}; use letters, digits, '_' and '-'")
+    if not isinstance(cls, type):
+        raise TypeError(f"a step type must be a class, got {cls!r}")
+    declared = getattr(cls, "kind", None)
+    if declared is None:
+        cls.kind = kind
+    elif str(declared) != kind:
+        raise WorkflowError(f"{cls.__name__} says its kind is {declared!r}, not {kind!r}")
+    _STEP_REGISTRY[kind] = cls
+    if run is not None:
+        _STEP_RUNNERS[kind] = run
+    else:
+        _STEP_RUNNERS.pop(kind, None)
+    return cls
+
+
+def unregister_step_type(kind: str) -> None:
+    """Forget a registered kind; the built-ins cannot be forgotten."""
+    kind = str(kind or "").lower()
+    if kind in _BUILTIN_KINDS:
+        raise WorkflowError(f"{kind!r} is a built-in step kind")
+    _STEP_REGISTRY.pop(kind, None)
+    _STEP_RUNNERS.pop(kind, None)
+
+
+def step_type(kind: str) -> type:
+    """The class registered for ``kind``; :class:`WorkflowError` if none is."""
+    try:
+        return _STEP_REGISTRY[str(kind or "").lower()]
+    except KeyError:
+        raise WorkflowError(f"unknown step kind {kind!r} (known: {', '.join(step_kinds())})") from None
+
+
+def step_kinds() -> tuple[str, ...]:
+    """Every registered kind, built-ins first, in registration order."""
+    return tuple(_STEP_REGISTRY)
+
+
+def step_runner(kind: str):
+    """The ``run`` callable registered with ``kind``, or ``None``."""
+    return _STEP_RUNNERS.get(str(kind or "").lower())
+
+
+def step_from_dict(payload: dict):
     if not isinstance(payload, dict):
         raise WorkflowError(f"a step must be an object, got {type(payload).__name__}")
     kind = str(payload.get("step") or payload.get("kind") or "").lower()
-    if kind not in _STEP_TYPES:
+    if kind not in _STEP_REGISTRY:
         raise WorkflowError(f"unknown step kind {kind!r} (id {payload.get('id')!r})")
     data = {k: v for k, v in payload.items() if k not in ("step", "kind")}
-    if kind == "source":
-        source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
-        return Source(data.get("id"), source)
-    cls = _STEP_TYPES[kind]
+    cls = _STEP_REGISTRY[kind]
+    if "bypass" in data and kind not in ("process", "save"):
+        raise WorkflowError(
+            f"step {data.get('id')!r}: only process and save steps can be bypassed; a {kind} step "
+            "has nothing to pass through"
+        )
+    builder = getattr(cls, "from_dict", None)
     try:
+        if callable(builder):
+            return builder(data)
         return cls(**data)
     except TypeError as exc:
         raise WorkflowError(f"step {data.get('id')!r}: {exc}") from exc
+
+
+for _cls in (Source, Reconstruct, Consolidate, Process, Save, Map, Fold):
+    register_step_type(_cls.kind, _cls)
+_BUILTIN_KINDS = step_kinds()
+del _cls
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +626,8 @@ class Workflow:
     #: Free-form, carried through serialisation: replay records here which
     #: provenance node each step came from and what the recorded run was.
     metadata: dict = field(default_factory=dict)
+    #: Schema 2: parameters a run may set by name.
+    controls: list = field(default_factory=list)
 
     def __post_init__(self):
         seen = set()
@@ -233,14 +645,31 @@ class Workflow:
     def sources(self) -> list[Source]:
         return [s for s in self.steps if isinstance(s, Source)]
 
+    def control(self, name: str) -> Control:
+        for control in self.controls:
+            if control.name == name:
+                return control
+        raise KeyError(name)
+
+    @property
+    def required_schema(self) -> int:
+        """The lowest schema that holds this workflow: 2 when it has a
+        control or a bypassed step, else 1, so a file needs a newer ImSwitch
+        only when its content does."""
+        if self.controls or any(getattr(step, "bypass", False) for step in self.steps):
+            return 2
+        return 1
+
     # -- serialisation ------------------------------------------------------
 
     def to_dict(self) -> dict:
-        payload = {"name": self.name, "schema": self.schema}
+        payload = {"name": self.name, "schema": self.required_schema}
         if self.description:
             payload["description"] = self.description
         if self.metadata:
             payload["metadata"] = dict(self.metadata)
+        if self.controls:
+            payload["controls"] = [control.to_dict() for control in self.controls]
         payload["steps"] = [step.to_dict() for step in self.steps]
         return payload
 
@@ -248,13 +677,26 @@ class Workflow:
     def from_dict(cls, payload: Any) -> "Workflow":
         if not isinstance(payload, dict):
             raise WorkflowError("a workflow must be an object")
-        schema = int(payload.get("schema", SCHEMA_VERSION) or SCHEMA_VERSION)
-        if schema > SCHEMA_VERSION:
-            raise WorkflowError(f"workflow schema {schema} is newer than this ImSwitch understands")
-        steps = [step_from_dict(item) for item in (payload.get("steps") or [])]
+        schema = _read_schema(payload.get("schema"))
+        raw_steps = payload.get("steps") or []
+        if schema < 2:
+            # Read strictly: a hand edit must not make a file that an older
+            # ImSwitch would run differently (it would ignore a bypass).
+            if "controls" in payload:
+                raise WorkflowError("'controls' needs schema: 2")
+            for item in raw_steps:
+                if isinstance(item, dict) and "bypass" in item:
+                    raise WorkflowError(f"step {item.get('id')!r}: 'bypass' needs schema: 2")
+        raw_controls = payload.get("controls")
+        if raw_controls is None:
+            raw_controls = []
+        if not isinstance(raw_controls, list):
+            raise WorkflowError("'controls' must be a list")
+        controls = [Control.from_dict(item) for item in raw_controls]
+        steps = [step_from_dict(item) for item in raw_steps]
         return cls(name=str(payload.get("name") or "workflow"), steps=steps, schema=schema,
                    description=str(payload.get("description") or ""),
-                   metadata=dict(payload.get("metadata") or {}))
+                   metadata=dict(payload.get("metadata") or {}), controls=controls)
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, default=str)
@@ -291,6 +733,20 @@ class Workflow:
         if path.suffix.lower() in (".yaml", ".yml"):
             return cls.from_yaml(text)
         return cls.from_json(text)
+
+
+def _read_schema(raw) -> int:
+    """The schema a file declares: omitted (or empty) is 1; otherwise a whole
+    number of at least 1, never a boolean (Python reads ``true`` as 1)."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_SCHEMA
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw.strip())
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise WorkflowError(f"schema must be a whole number of at least 1, got {raw!r}")
+    if raw > SCHEMA_VERSION:
+        raise WorkflowError(f"workflow schema {raw} is newer than this ImSwitch understands")
+    return raw
 
 
 @functools.lru_cache(maxsize=1)
@@ -334,7 +790,7 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
     """Whether ``port`` is one ``step`` can produce (statically)."""
     if isinstance(step, Source):
         return (port in (None, SOURCE_PORT)), SOURCE_PORT
-    if isinstance(step, (Reconstruct, Consolidate)):
+    if isinstance(step, (Reconstruct, Consolidate, Map)):
         return (port in (None, DEFAULT_PORT)), DEFAULT_PORT
     if isinstance(step, Process):
         processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
@@ -357,7 +813,15 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
             if match and spec.matches(match.group(1)) and 0 < int(match.group(2)) < len(step.inputs):
                 return True, spec.describe()
         return False, spec.describe()
-    return False, "(no ports)"
+    ports = getattr(step, "ports", None)
+    if ports is None:
+        # A registered kind that does not declare its ports: nothing to check
+        # against, so any reference to it stands (the run says otherwise).
+        return True, "?"
+    ports = tuple(str(p) for p in ports)
+    if not ports:
+        return False, "(no ports)"
+    return (port in ports or (port is None and len(ports) >= 1)), ", ".join(ports)
 
 
 def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
@@ -391,8 +855,29 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
                     kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
                 except Exception:
                     kind = UNKNOWN_KIND
+        elif registry is not None and isinstance(step, Map):
+            kind = _map_output_kind(workflow, step, registry)
         kinds[step.id] = str(kind or UNKNOWN_KIND)
     return kinds
+
+
+def _map_output_kind(workflow: Workflow, step: "Map", registry) -> str:
+    """What a map produces: what its body's output step declares, the body
+    read as the workflow it runs as. ``unknown`` when that cannot be said."""
+    from imswitch.improcess.model.result import UNKNOWN_KIND
+
+    before = []
+    for item in workflow.steps:
+        if item is step:
+            break
+        if not isinstance(item, Save):
+            before.append(item)
+    placeholders = [Source(ITEM_STEP)] + ([Source(CARRY_STEP)] if isinstance(step, Fold) else [])
+    try:
+        sub = Workflow(f"{step.id}-body", [*before, *placeholders, *step.body])
+        return declared_kinds(sub, registry).get(step.output.step, UNKNOWN_KIND)
+    except Exception:
+        return UNKNOWN_KIND
 
 
 def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
@@ -415,6 +900,47 @@ def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
                 f"(it takes {', '.join(accepted)})",
             ))
     return issues
+
+
+#: What a reconstruction may read: a recording, an image, or a step whose
+#: kind is not declared (a Python step, a plugin that says nothing) -- the run
+#: checks the data itself, so a workflow that may work is not refused on a guess.
+RECONSTRUCTION_INPUT_KINDS = ("recording", "image", "labels", "any", "unknown")
+
+
+def _reconstruction_input_issues(step, by_id: dict, kinds: dict[str, str]) -> list[Issue]:
+    """Whether a reconstruction's one input can be read as image data.
+
+    Decided by what the input *carries*, never by where it came from: a
+    Source, a view-only reconstruction, a Python step's reshape and a deskew
+    are all images to the next reconstructor. Without a registry the kinds are
+    unknown and only the structure is checked.
+    """
+    ref = step.inputs[0]
+    target = by_id.get(ref.step)
+    if target is None or isinstance(target, Source):
+        return []
+    kind = kinds.get(ref.step)
+    if kind is None or kind in RECONSTRUCTION_INPUT_KINDS:
+        return []
+    return [Issue(
+        step.id,
+        f"a reconstruction's input must be a source or produce an image; {ref.step!r} produces {kind} results",
+    )]
+
+
+def _input_contract_issues(step, plugin) -> list[Issue]:
+    """What the plugin's ``check_input`` can say from the parameters alone
+    (``data_obj=None``): the data is not known before the run, which checks
+    it again with the data before any pixel is processed."""
+    check = getattr(plugin, "check_input", None)
+    if not callable(check):
+        return []
+    try:
+        problems = check(None, {**_defaults(plugin), **step.params})
+    except Exception:
+        return []
+    return [Issue(step.id, str(problem)) for problem in problems or []]
 
 
 def _defaults(plugin) -> dict:
@@ -447,19 +973,69 @@ def _unknown_params(step, plugin) -> list[Issue]:
         allowed = None
     if allowed is None:
         return []
-    unknown = sorted(set(step.params) - set(allowed))
+    # ``_iterate`` is the runner's, not the plugin's (auto-indexing on/off).
+    unknown = sorted(set(step.params) - set(allowed) - {"_iterate"})
     if not unknown:
         return []
     plugin_id = getattr(plugin, "id", type(plugin).__name__)
     return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
 
 
+def _body_issues(step: "Map", outer: list, registry) -> list[Issue]:
+    """A map/fold body checked as the workflow it runs as: the enclosing
+    steps before it, ``$item`` (and ``$carry``) as inputs, then the body."""
+    issues: list[Issue] = []
+    what = f"{step.kind} {step.id!r}"
+    if step.input is None:
+        issues.append(Issue(step.id, f"{what} needs an input to iterate over"))
+    if not step.over:
+        issues.append(Issue(step.id, f"{what}: 'over' must name the axis to iterate over"))
+    for inner in step.body:
+        if isinstance(inner, (Save, Map)):
+            issues.append(Issue(step.id, f"{what}: a {inner.kind} step ({inner.id!r}) is not allowed in a body"))
+    outer_ids = {item.id for item in outer}
+    for inner in step.body:
+        if inner.id in outer_ids:
+            issues.append(Issue(step.id, f"{what}: body step {inner.id!r} has the id of a step outside it"))
+    if step.output.step not in step.body_ids:
+        issues.append(Issue(step.id, f"{what}: output {str(step.output)!r} is not a step of its body"))
+    if isinstance(step, Fold):
+        nxt = parse_ref(step.carry["next"])
+        if nxt.step not in step.body_ids:
+            issues.append(Issue(step.id, f"{what}: carry.next {str(nxt)!r} is not a step of its body"))
+    if issues:
+        return issues
+    placeholders = [Source(ITEM_STEP)]
+    if isinstance(step, Fold):
+        placeholders.append(Source(CARRY_STEP))
+    try:
+        sub = Workflow(f"{step.id}-body", [*outer, *placeholders, *step.body])
+    except WorkflowError as exc:
+        return [Issue(step.id, f"{what}: {exc}")]
+    body_ids = step.body_ids
+    for issue in validate(sub, registry):
+        if issue.step in body_ids:
+            text = issue.message.replace(repr(ITEM_STEP), repr(ITEM_REF)).replace(repr(CARRY_STEP), repr(CARRY_REF))
+            issues.append(Issue(step.id, f"in the body, {issue.step}: {text}"))
+    return issues
+
+
 def validate(workflow: Workflow, registry=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
     With a registry: plugin ids, arity and ports are checked too. Without,
-    only structure (ids, references, order).
+    only structure (ids, references, order). A schema-2 recipe is checked as
+    a recipe (its controls and bypasses), then as the plain workflow it
+    prepares to (see :func:`~imswitch.improcess.workflows.prepare.check_recipe`).
     """
+    from imswitch.improcess.workflows.prepare import check_recipe
+
+    return check_recipe(workflow, registry)
+
+
+def validate_plain(workflow: Workflow, registry=None) -> list[Issue]:
+    """:func:`validate` for a workflow with no controls and no bypass: what
+    a prepared (execution) workflow is checked with."""
     issues: list[Issue] = []
     by_id: dict[str, Any] = {}
     kinds = declared_kinds(workflow, registry) if registry else {}
@@ -467,7 +1043,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
         if isinstance(step, Source):
             by_id[step.id] = step
             continue
-        refs = [step.input] if isinstance(step, Save) else list(step.inputs)
+        refs = [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", None) or [])
         for ref in refs:
             target = by_id.get(ref.step)
             if target is None:
@@ -482,15 +1058,23 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 
         if isinstance(step, Reconstruct):
             if len(step.inputs) != 1:
-                issues.append(Issue(step.id, "a reconstruction takes exactly one source"))
-            elif not isinstance(by_id.get(step.inputs[0].step), Source):
-                issues.append(Issue(step.id, "a reconstruction's input must be a source step"))
+                issues.append(Issue(step.id, "a reconstruction takes exactly one input"))
+            else:
+                issues.extend(_reconstruction_input_issues(step, by_id, kinds))
             if registry:
                 plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
                 if plugin is None:
                     issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
                 else:
                     issues.extend(_unknown_params(step, plugin))
+                    issues.extend(_input_contract_issues(step, plugin))
+                    # A map's ``$item`` is a slice of a result, never a recording.
+                    fed = step.inputs[0].step if len(step.inputs) == 1 else None
+                    if (fed is not None and getattr(plugin, "reads_recording_file", False)
+                            and (fed in _RESERVED_BODY_IDS or not isinstance(by_id.get(fed), Source))):
+                        from imswitch.improcess.reconstructors.base import recording_file_refusal
+
+                        issues.append(Issue(step.id, recording_file_refusal(plugin)))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))
@@ -525,6 +1109,8 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
                     issues.extend(_unknown_params(step, processor))
                     issues.extend(_kind_issues(step, processor, kinds))
+        elif isinstance(step, Map):
+            issues.extend(_body_issues(step, list(by_id.values()), registry))
         elif isinstance(step, Save):
             from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 
@@ -537,11 +1123,19 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 
 
 __all__ = [
+    "CONTROL_NAME_PATTERN",
     "DEFAULT_PORT",
     "DEFAULT_SAVE_TEMPLATE",
+    "CARRY_REF",
     "Consolidate",
+    "Control",
+    "DEFAULT_SCHEMA",
+    "Fold",
+    "ITEM_REF",
     "Issue",
+    "Map",
     "Process",
+    "RECONSTRUCTION_INPUT_KINDS",
     "Reconstruct",
     "Ref",
     "SCHEMA_VERSION",
@@ -552,8 +1146,15 @@ __all__ = [
     "Workflow",
     "WorkflowError",
     "parse_ref",
+    "parse_target",
+    "register_step_type",
     "step_from_dict",
+    "step_kinds",
+    "step_runner",
+    "step_type",
+    "unregister_step_type",
     "validate",
+    "validate_plain",
 ]
 
 

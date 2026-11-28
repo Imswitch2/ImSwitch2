@@ -19,6 +19,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
+from imswitch.improcess.model.core_dims import WHOLE_INPUT
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
@@ -30,6 +31,14 @@ if TYPE_CHECKING:
 
 # Default axis labels for trailing dims. Truncated to data.ndim.
 _DEFAULT_AXIS_LABELS = ["T", "Z", "C", "Y", "X"]
+
+
+def _source_attrs(data_obj) -> dict:
+    """The source's attributes as a dict, or ``{}`` when it cannot say."""
+    try:
+        return dict(getattr(data_obj, "attrs", None) or {})
+    except Exception:
+        return {}
 
 
 def _source_identity(data_obj) -> str | None:
@@ -87,6 +96,9 @@ class ViewOnlyReconstructor(StreamingReconstructor):
 
     name = "View only"
     id = "view-only"
+
+    #: Shows the input as it is: one call with the whole input, never looped.
+    core_dims_in = WHOLE_INPUT
     output_kind = "image"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Display raw frames without any reconstruction"
@@ -218,6 +230,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
             source_axis_labels = data_obj.axis_labels
             source_axis_scales = data_obj.axis_scales
             source_scale_unit = data_obj.scale_unit
+            source_attrs = _source_attrs(data_obj)
         else:
             preloaded = data_obj.dataLoaded
             try:
@@ -226,6 +239,9 @@ class ViewOnlyReconstructor(StreamingReconstructor):
                 source_axis_labels = data_obj.axis_labels
                 source_axis_scales = data_obj.axis_scales
                 source_scale_unit = data_obj.scale_unit
+                # Read before the source is unloaded: asking afterwards would
+                # open the file again and leave it open.
+                source_attrs = _source_attrs(data_obj)
             finally:
                 if not preloaded:
                     data_obj.checkAndUnloadData()
@@ -247,7 +263,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
         # come out unrelated rather than accidentally equal.
         dataset_uid = _source_identity(data_obj)
         if dataset_uid is None:
-            return ViewOnlyResult(
+            result = ViewOnlyResult(
                 name=data_obj.name,
                 data=data,
                 axis_labels=axis_labels,
@@ -257,16 +273,22 @@ class ViewOnlyReconstructor(StreamingReconstructor):
                 scale_unit=source_scale_unit or "px",
                 identity_kind="derived",
             )
-        return ViewOnlyResult(
-            name=data_obj.name,
-            data=data,
-            axis_labels=axis_labels,
-            view_modes=view_modes,
-            display_levels=None,
-            axis_scales=axis_scales,
-            scale_unit=source_scale_unit or "px",
-            dataset_uid=dataset_uid,
-            result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
-            coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),
-            identity_kind="derived",
-        )
+        else:
+            result = ViewOnlyResult(
+                name=data_obj.name,
+                data=data,
+                axis_labels=axis_labels,
+                view_modes=view_modes,
+                display_levels=None,
+                axis_scales=axis_scales,
+                scale_unit=source_scale_unit or "px",
+                dataset_uid=dataset_uid,
+                result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
+                coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),
+                identity_kind="derived",
+            )
+        # The recording's attributes travel with the pixels, so a step further
+        # down (a reshape, then a deskew) still finds the geometry the file
+        # recorded. In memory only; see ProcessingResult.attrs.
+        result.attrs = source_attrs
+        return result

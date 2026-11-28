@@ -95,8 +95,9 @@ Plugin architecture
 ImProcess defines two plugin shapes:
 
 * ``Reconstructor`` (``imswitch.improcess.reconstructors.base``)
-  Turns a raw ``DataObj`` into a ``ProcessingResult``.  One per
-  dataset.  Examples: ``monalisa``, ``view-only`` (the no-op
+  Turns a ``DataObj`` into a ``ProcessingResult``: a recording, or any image
+  result of another step handed over as one (a reshape, a crop, another
+  reconstruction -- see :ref:`improcess-input-contract`).  Examples: ``monalisa``, ``view-only`` (the no-op
   pass-through), ``widefield-starss`` and the SNOUTY reconstructors.
 * ``Processor`` (``imswitch.improcess.processors.base``)
   Operates on a ``ProcessingResult`` and returns one or more new results.
@@ -180,16 +181,44 @@ new results:
   channels of one multi-layer result can be merged among themselves; the
   planes of a plain stack are not listed individually — split it first with
   *Split stack*, which the dialog says when a single stack is checked.
-* *Stack/Combine...* — stack same-shaped selected results along a new axis, or
-  concatenate compatible results along an existing axis. Axis labels, pixel
-  scales and scale units must agree. Two differences are forgiven because
-  they are not differences in the pixels: singleton axes one input has and
-  another lacks (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a
-  ``(Y, X)`` image; the combined result keeps only the axes they share, the
-  join axis included), and a length unit stated differently (``nm`` against
-  ``um``, converted before the scales are compared; the output takes the
-  first input's unit). The same applies to *Merge channels* and to the
+* *Stack/Combine...* — combine the selected results into one: stack them
+  along a new axis, concatenate them along an existing axis, or (the dialog's
+  default, *Automatic*) do whichever fits. Axis labels, pixel scales and scale
+  units must agree, so physically different arrays never silently become one
+  calibrated stack. Two differences are forgiven because they are not
+  differences in the pixels: singleton axes one input has and another lacks
+  (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a ``(Y, X)`` image;
+  the combined result keeps only the axes they share, the join axis
+  included), and a length unit stated differently (``nm`` against ``um``,
+  converted before the scales are compared; the output takes the first
+  input's unit). The same applies to *Merge channels* and to the
   compatibility check of the *Image calculator*.
+
+  The dialog offers, rather than only refuses. It says in words what the
+  current settings will do and the shape and axes of the result, and it
+  updates as the options change. *Automatic* stacks equal-rank inputs on a new
+  axis and appends lower-rank data to the axis it lacks: a ``Y, X`` plane to
+  a ``Z, Y, X`` stack, a stack to a ``T, Z, Y, X`` series, several planes and
+  a stack in any order. The planes come in the order listed and the result's
+  axis labels and scales are the higher-rank input's. When the labels do not
+  say which axis is missing, an *Append along* chooser appears, filled in with
+  the likeliest axis. *Pad to a common size* handles inputs that agree in
+  everything but the size of the Y/X plane: each is padded to the largest
+  size, centred or at the origin (top-left corner), with zeros, NaN (float
+  data) or the edge pixels. Only the plane is padded, never the number of Z,
+  T or C planes, and never to more than 2 times an input's size along an axis
+  unless *Allow padding beyond 2x* is ticked, so a 64 px image is not buried
+  in a 4096 px one by mistake; the share of padding is shown, with a warning
+  from a quarter of the result. What was padded, per input and axis, is kept
+  in the result's ``metadata["padding"]``. Padding is not resampling: inputs
+  whose pixel scales differ are still refused, with a pointer to
+  *Scale/Resize*, and mismatched axis labels or order point to *Swap /
+  Relabel Axes*. When the inputs differ only by size, rank, or both, the
+  dialog shows the one-click option (*Pad to common size*, *Append to axis
+  Z*, or both) together with the resulting shape. The result always has a
+  pixel grid of its own, as before. Workflows and scripts that give
+  ``mode: stack`` or ``concatenate`` and no padding parameters behave exactly
+  as they always did.
 * *Image calculator...* — combine exactly two loaded results with pixel-wise
   add, subtract, multiply, divide, minimum, maximum, average or absolute
   difference operations.  A label mask published by the ROI manager's
@@ -211,17 +240,29 @@ make the final split result current.
 
 The *Tools* toolbar and **Tools** menu hold Fiji-like panel buttons for
 Graph, Profile, ROI manager, ROI stats, Projection, Segmentation, Metadata
-and Results.  The toolbar's *Load tool* list offers every built-in analysis
-tool that is not open yet — FRC, PSF resolution, Colocalization,
-Multicolor, Drift correction, Denoise and a generic parameter panel for each
-remaining processor — and *Loaded processors* shows what is registered.
-Opening a panel registers its processor when needed, raises the dock when it
-already exists and keeps the panel in the saved dock layout.  **Every
-analysis panel described on this page can be opened this way at any time**
-(the SMLM render controls excepted); the ``…Panel`` keys of the setup file
-(see `Config schema`_) only decide which ones are open at startup.
+and Results.  The toolbar's **Tools ▾** button (also **Tools → Analysis
+tools**) lists every built-in analysis tool the way Fiji's menus do: clicking
+it shows the categories, hovering a category shows its tools — FRC, PSF
+resolution, Colocalization, Multicolor, Drift correction, Denoise and a
+generic parameter panel for each remaining processor.  A tool whose panel is
+open is ticked.  Picking a tool registers its processor when needed, opens its
+panel — or raises it when it is already open — and keeps the panel in the
+saved dock layout; hovering one shows what it does.  **Every analysis panel
+described on this page can be opened this way at any time** (the SMLM render
+controls excepted); the ``…Panel`` keys of the setup file (see `Config
+schema`_) only decide which ones are open at startup.
 
-Each *Load tool* entry runs one processor at a time and publishes its output
+The categories, in menu order, are *Dimensions and channels*, *Transform*,
+*Filters*, *Math*, *Restoration*, *Registration*, *Segmentation*,
+*Measurement*, *Resolution and PSF*, *Spots and points*, *SMLM*,
+*Visualization*, *ROI*, *Exploration* and *Scripting*
+(``imswitch/improcess/processors/categories.py``); the workflow editor's
+palette uses the same order.  A built-in processor must name one of them in
+its ``category`` attribute (a test checks it).  A drop-in plugin may name its
+own category: it is shown after the listed ones, and *Other* always comes
+last.
+
+Each analysis tool runs one processor at a time and publishes its output
 back to the reconstruction list.  To keep a sequence of steps and run it
 again — on the same data or on other files — export it with *File → Export
 workflow of current result…* and run it from the File menu or with
@@ -239,8 +280,10 @@ the picker and makes it active.  Nothing is written to the setup file: to
 keep a reconstructor across sessions, add it to ``processing.reconstructors``
 (the config editor offers every known id, drop-ins included).
 
-The *Plugins* toolbar's *Load plugin* list does for drop-in processors what
-*Load tool* does for built-ins (see `Drop-in analysis plugins`_).  The
+The *Plugins* toolbar's **Plugins ▾** button (also **Plugins → Analysis
+plugins**) does for drop-in processors what **Tools ▾** does for built-ins,
+grouped by the categories the plugins declare, with *Browse online
+plugins...* at the bottom (see `Drop-in analysis plugins`_).  The
 **Plugins** menu has *Browse online plugins...*, *Open plugins folder...*,
 *Add plugin file...*, *Reload plugins* and a *napari plugins* submenu, which
 sends the current result to installed napari plugins and takes their layers
@@ -331,7 +374,9 @@ in the attributes of an HDF5 file or Zarr group, and in a
 as CSV.  The Metadata panel shows it for the selected result, including the
 step list recorded as ``processing_history``, and ``python -m
 imswitch.improcess.workflows replay`` turns a saved file's record back into
-a workflow (see :doc:`improcess-workflows`).
+a workflow (see :doc:`improcess-workflows`).  A step that ran once per
+timepoint is still one step in the record, with ``iterated_over`` saying
+over what (:ref:`improcess-provenance-loops`).
 
 Results list vs. napari layers
 ===============================
@@ -476,9 +521,11 @@ smlm-localizer          Reconstructor  SMLM localization table from camera frame
 beadrec                 Reconstructor  Raster bead reconstruction from a camera frame stream
 tiling-mosaic           Reconstructor  Offline assembly and refinement of saved tiling datasets
 time-lapse              Reconstructor  A saved camera or scan time lapse as one lazy T-stack
+linestep-sum            Reconstructor  Advanced Scan line steps summed per laser combination (e.g. two-colour STED)
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
 stack-subset            Processor      Crop/substack by labeled axis ranges
+axis-swap               Processor      Swap or reorder axes, and rename them
 stack-split             Processor      Split a stack axis into one result per plane
 stack-combine           Processor      Stack results on a new axis or concatenate an existing axis
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
@@ -494,8 +541,14 @@ math                    Processor      Constant arithmetic and unary transforms 
 image-calculator        Processor      Pixel-wise arithmetic between two compatible results
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
+threshold               Processor      Otsu or absolute threshold to connected-component labels, per plane
+regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
+pick                    Processor      One point out of many: largest, brightest, first or nearest
+spot-count              Processor      Diffraction-limited spots per frame (SMLM net-gradient detection): ``points`` with an image overlay and a count graph
+tile-spots              Processor      Spots per tile of a tiling run; tiles ranked by count with their stage targets
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
 psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
+bead-fwhm               Processor      Threshold-found beads fitted with 2D Gaussians; FWHM and SNR per stack plane
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -518,7 +571,8 @@ instead.
 Processor categories and compatibility
 ======================================
 
-Built-in processors carry a category label used by the runtime tool loader,
+Built-in processors carry a category label that places them in the **Tools ▾**
+menu (see above for the list and its order),
 and compatibility is decided by ``Processor.accepts(result)``, which checks
 two things in order:
 
@@ -547,7 +601,9 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
 ``image`` and ``labels``, ``python`` (the :ref:`Python step
 <improcess-python-step>`) accepts ``image``, ``labels`` and ``composite``, and
-``table-to-localizations`` accepts only ``table``.
+``table-to-localizations`` accepts only ``table``. ``threshold`` accepts
+``image``, ``regionprops`` accepts ``labels`` (and an optional ``image`` as
+its second input), and ``pick`` accepts only ``points``.
 
 .. list-table::
    :header-rows: 1
@@ -562,6 +618,20 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Any rank >= 2 result; ranges are addressed by axis label or index.
      - ``ArrayProcessingResult`` with the same rank and sliced data.  Lazy
        sources stay lazy when possible; stepped axes get scaled axis spacing.
+   * - ``axis-swap``
+     - Dimensions and channels
+     - Any rank >= 2 image.
+     - *Order* moves the array's axes, by label or 0-based index: two axes
+       to swap (``Z,T``) or every axis in its new order (``Z,X,Y``); each
+       axis keeps its label and scale. *Keep labels in place* leaves the
+       labels and scales where they are instead, so the data changes meaning
+       (``X,Y`` then transposes the image). *Labels* renames axes without
+       touching the array: all of them (``X,Y,T``) or pairs (``Z=T``).
+       *Scales* sets axis spacing (pixel size) in the metadata only, after
+       the reordering and relabelling, so axes are named as they are then:
+       pairs (``Z=0.25, T=2``) or one value per axis; values must be finite
+       and greater than zero. An
+       in-memory array is reordered as a view; a lazy source is read.
    * - ``projection``
      - Dimensions and channels
      - A stack: rank >= 3, as ImageJ's *Z Project* requires.  Auto prefers
@@ -589,11 +659,17 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        label ``C``.
    * - ``stack-combine``
      - Dimensions and channels
-     - Two or more rank >= 2 results. Stacking requires identical shape;
-       concatenation permits different lengths only on the chosen join axis.
-       Axis labels, pixel scales and scale units must agree.
+     - Two or more rank >= 2 results. By default stacking requires identical
+       shape; concatenation permits different lengths only on the chosen join
+       axis. ``mode: auto`` also appends lower-rank data to the one axis it
+       lacks, and ``pad: pad`` (with ``pad_anchor`` ``centre``/``origin``,
+       ``pad_value`` ``0``/``nan``/``edge``, ``pad_max_ratio`` default 2, 0 =
+       no limit) pads the Y/X plane to the largest size; ``append_axis``
+       settles an ambiguous append. Axis labels, pixel scales and scale units
+       must always agree.
      - ``ArrayProcessingResult`` with either a new leading axis or an enlarged
        existing axis. A new axis label may not duplicate an existing label.
+       What was padded is recorded in ``metadata["padding"]``.
    * - ``make-composite``
      - Visualization
      - Rank >= 3 result with a multi-plane ``C``, ``Channel``, ``Channels``
@@ -629,7 +705,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``ArrayProcessingResult`` after Gaussian, median, mean or unsharp
        filtering in each Y/X plane; leading stack axes are not blurred.
    * - ``subtract-background``
-     - Restoration
+     - Filters
      - Any rank >= 2 image-like result.
      - One background-subtracted ``ArrayProcessingResult`` and, optionally, a
        second result containing the rolling-ball background estimate.
@@ -653,7 +729,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - One result per output port the step declares (``out`` by default),
        named in ``ports``; see :ref:`improcess-python-step`.
    * - ``drift-correct``
-     - Restoration
+     - Registration
      - Any result whose ``axis_labels`` contain ``T``.
      - ``DriftCorrectedResult`` with the same shape and axes plus drift trace
        plots.  Shift estimation uses a 2D ``Y, X`` plane and first index of
@@ -685,8 +761,30 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - A 2D ``labels``-kind result.
      - Relabelled ``LabelsResult`` after fill holes, erosion, dilation,
        opening, closing or watershed splitting.
-   * - ``psf-resolution``
+   * - ``threshold``
+     - Segmentation
+     - A ``Y, X`` or ``T, Y, X`` image-like result; each plane is thresholded
+       on its own (Otsu or ``value``), 8-connected components below
+       ``min_area`` are dropped.
+     - ``LabelsResult`` with labels ``1..N`` per plane; the input's
+       ``frame_index`` metadata is carried.
+   * - ``regionprops``
      - Measurement
+     - A ``labels`` result (2D or ``T, Y, X``), optionally the intensity image
+       of the same shape as a second input.
+     - ``PointsResult`` (kind ``points``): the ``(y, x)`` centroid of every
+       region with ``label``, ``area`` and, with an image, ``mean_intensity``
+       / ``max_intensity`` columns (``t`` on a stack); tagged with the
+       ``frame`` parameter, e.g. ``detector:Camera``, and the source frame
+       index.
+   * - ``pick``
+     - Measurement
+     - A ``points`` result.
+     - The same kind of result with at most one row: the ``largest`` (area),
+       ``brightest`` (mean then max intensity), ``first`` or ``nearest`` to
+       ``x, y``; zero rows in when nothing was found, zero out.
+   * - ``psf-resolution``
+     - Resolution and PSF
      - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
        plane makes it a 3-D analysis; every other extra axis collapses to
        index ``0``.
@@ -696,11 +794,18 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        the averaged bead as an ordinary image, when averaging is on and a
        bead qualifies.
    * - ``psf-bead-select``
-     - Measurement
+     - Resolution and PSF
      - A measurement from ``psf-resolution``.
      - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
        (the average and the aberrations are recomputed).  A preset that lists
        ``psf-resolution`` gets this one with it.
+   * - ``bead-fwhm``
+     - Resolution and PSF
+     - Any rank >= 2 image-like result.  Every leading axis is analysed plane
+       by plane.
+     - ``BeadFwhmResult`` points table, one row per kept bead (FWHM x/y/mean,
+       SNR, fit R²), the image with kept and rejected beads marked, and for a
+       stack two graphs: mean FWHM and mean SNR per plane.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
@@ -708,7 +813,7 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``ColocalizationResult`` table with axes ``ROI, Metric`` and intensity
        scatter plot payload.
    * - ``frc``
-     - Measurement
+     - Resolution and PSF
      - Rank >= 2 image-like result for single-image FRC; two-image mode also
        needs a compare axis with at least two planes.
      - ``FRCResult`` curve data with axes ``C, Frequency`` and graph payload.
@@ -1753,17 +1858,27 @@ at startup; if you list ``["view-only", "widefield-starss"]`` under
 Drop-in reconstructors from the plugins folder are always registered, and
 *Tools → Load reconstructor* adds any other built-in for the session.
 
+.. _improcess-beadrec:
+
 Bead-scan reconstruction
 ========================
 
-The ``beadrec`` reconstructor turns a recorded camera frame stream into a 2D
-raster image. Each input frame represents one scan position; the reconstructed
-pixel value is the mean intensity inside the selected camera ROI. It accepts
-HDF5, TIFF/OME-TIFF and Zarr input.
+The ``beadrec`` reconstructor turns a recorded camera frame stream into a
+raster image or volume. Each input frame represents one scan position; the
+reconstructed pixel value is the mean intensity inside the selected camera
+ROI. It accepts HDF5, TIFF/OME-TIFF and Zarr input.
 
 A recording that carries its acquisition layout (see `Data ingest`_)
 defines the raster: its scan size and step sizes are used, and a scan with
 condition loops (line steps, for example) gives one image per condition.
+Any two scan axes give an image -- ``Y, X`` for an XY scan, ``Z, X`` for XZ,
+``Z, Y`` for YZ, with the higher axis down the rows -- and all three a
+``Z, Y, X`` volume. Frames are placed by their recorded coordinates, so the
+order the axes were stepped in does not matter. A scan axis with a single
+step (one Z plane in an XY scan) is dropped rather than kept as a third
+dimension. The Z loop, like X and Y, must record its step: it is the axial
+pixel size, and a coarser Z step is resampled to the lateral pixel size as
+an anisotropic XY scan is.
 Leave **Scan X pixels (0=auto)** and **Scan Y pixels (0=auto)** at ``0`` for
 such a file; a manual size that disagrees with the recorded one is refused
 rather than applied.  For a source without a recorded layout, enter the
@@ -1779,7 +1894,12 @@ the reconstructed image to equal pixel spacing.
 decay), ``sine1d`` (a one-dimensional sine with fitted wavelength, phase and
 angle) and ``sine2d``. A successful fit is stored in the result metadata with
 the model, centre, fitted parameters and :math:`R^2`; a fit failure is
-reported in the metadata without discarding the reconstructed image.
+reported in the metadata without discarding the reconstructed image. The
+fit's ``axes`` name the image's rows and columns: ``x0`` and ``sigma_x``
+follow the columns, ``y0`` and ``sigma_y`` the rows, so an XZ image reports
+its axial width as ``sigma_y``. The models are 2D, so a volume is fitted as
+its XY, XZ and YZ sections through the bead's intensity centroid, stored
+under ``fit_sections`` with the plane each was cut at.
 
 For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
 described in :doc:`tiling`.
@@ -2582,7 +2702,7 @@ Ready-to-use minimal configs ship under
    * - ``widefieldstarss_processor.json``
      - WidefieldSTARSS H/V-pair analysis
    * - ``general_image_processing.json``
-     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from *Load tool*)
+     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from **Tools ▾ → Registration**)
 
 The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
 registered processors, then lets the *Image operations* and *Tools* toolbars register
@@ -2888,6 +3008,193 @@ To publish plots in the graph panel, implement ``plot_payloads()`` on the
 returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 ``imswitch.improcess.model``.
 
+.. _improcess-input-contract:
+
+The input contract: what one call consumes
+------------------------------------------
+
+Every reconstructor states how it takes its input, and **every reconstructor
+is treated the same way** on that basis -- in the GUI, a workflow, a map, a
+replay.  Two class attributes say it; ``test_reconstructor_contract`` runs
+over the whole registry, so a reconstructor added later is held to the same
+rules without a test of its own.
+
+``core_dims_in`` (required for new reconstructors)
+    What one call of ``process`` consumes, as one of:
+
+    * **a tuple of axes** -- the trailing axes of the input, in order.  An
+      entry is a label (``"Y"``), alternatives (``"Z|Frame|Plane"``: the
+      plane axis has several names) or ``"*"`` (any axis).  Given an input
+      with *more* axes than these, ``process`` is called once per index of
+      the extra leading axes -- T, C, a position -- and the outputs are
+      stacked with those axes in front: **auto-indexing**.  An input of
+      exactly this rank is passed as it is.
+    * ``WHOLE_INPUT`` (from ``imswitch.improcess.model.core_dims``) -- one
+      call with the whole input, never looped.  For a plugin whose leading
+      axes are not independent repeats (BeadRec folds scan axes into a frame
+      list), or whose output cannot be stacked (the SMLM localizer makes one
+      table), or that reads a file.
+    * ``None`` -- not declared.  Only third-party plugins written before
+      this contract should still have it; they are treated as
+      ``WHOLE_INPUT`` and keep working.
+
+``reads_recording_file`` (default ``False``)
+    ``True`` when ``process`` needs the recording *file* itself -- a path,
+    sibling files, a manifest, a measurement-run file -- rather than the
+    pixels (``data``, ``data_handle``), ``axis_labels`` and ``attrs``.  Such
+    a reconstructor takes only a source.  Handed a result, it is refused
+    with one message, in the same words everywhere: ``check_input`` before a
+    run, workflow validation (a map's ``$item`` included), the editor's
+    cables and its quick-add list.  Leave it ``False`` and the plugin takes a
+    recording and any image result alike.
+
+The built-ins:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 30 44
+
+   * - Reconstructor
+     - ``core_dims_in``
+     - Takes a result of another step?
+   * - ``snouty``
+     - ``(Z|Frame|Plane, Y, X)``
+     - yes; loops over T, C, …
+   * - ``snouty-projections``
+     - ``(Z|Frame|Plane, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa-lattice``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``monalisa-legacy``
+     - ``(*, Y, X)``
+     - yes; loops over T, C, …
+   * - ``beadrec``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``view-only``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``smlm-localizer``
+     - ``WHOLE_INPUT``
+     - yes; never loops
+   * - ``tiling-mosaic``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``time-lapse``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``polarisation-map``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+   * - ``widefield-starss``
+     - ``WHOLE_INPUT``
+     - no -- reads its file
+
+Rules that hold for all of them:
+
+* **Only declared axes are looped.**  A raw file that names no axes gets
+  labels from its rank alone (``T, Z, C, Y, X`` from the right); such a guess
+  never decides which axis is time and which a scan axis, so that input is
+  handed over whole, exactly as before auto-indexing existed.  Results, and
+  files that name their axes (an ``axes`` attribute, OME metadata), are
+  looped.
+* **The axes a plugin needs must be last.**  Otherwise the input is refused
+  before any pixel is processed, with the axes it has and the ones it
+  needs; reorder or relabel them in a Python step.
+* ``_iterate: false`` in a step's parameters hands the plugin the whole
+  stack instead (recorded as ``iterate: false``, replayed the same way).
+* **Parameters are prepared once.**  ``prepare_params`` sees the whole
+  input; every index runs with the same parameters, and those are the ones
+  recorded.  (A ``map`` prepares them per index -- see
+  :doc:`improcess-workflows`.)
+* **One run path.**  Every reconstruction, looped or not, goes through
+  ``run_reconstruction`` (``imswitch.improcess.reconstructors.run``), which
+  checks the input, loops, and records one provenance node.  Nothing in the
+  source calls ``process`` around it; a test fails if something does.
+
+Optional, for what the declaration cannot say:
+
+``check_input(data_obj, params) -> list[str]``
+    Every reason the input cannot be reconstructed, as messages, before any
+    pixel is processed.  The default checks ``core_dims_in``,
+    ``required_attrs`` and ``reads_recording_file``; extend it with
+    ``super().check_input(...) + [...]``.  SNOUTY adds that ``n_timepoints``
+    must be 1 when the runner already loops over time.
+``required_attrs``
+    Attribute keys the input must carry unless a parameter of that name
+    gives the value.
+``stack_results(results, match, *, loop_scales=None)``
+    Builds the stacked result of a loop.  The default makes a generic image
+    (or labels) result; override it to keep your own result class (SNOUTY
+    returns a 4D ``SnoutyResult``).  Keep only attributes every index agrees
+    on (``iteration.common_attrs``) -- one that differs describes one index,
+    not the stack.
+``core_dims_out``
+    The axes one call produces, for documentation; the stacked result takes
+    its axes from what the calls returned.
+
+A minimal looping reconstructor::
+
+    from imswitch.improcess.reconstructors.base import Reconstructor
+
+    class MyDeconvolution(Reconstructor):
+        name = "My deconvolution"
+        id = "my-deconv"
+        core_dims_in = ("Z", "Y", "X")        # one volume per call
+        core_dims_out = ("Z", "Y", "X")
+        ...
+
+        def process(self, data_obj, params, context=None):
+            volume = data_obj.data              # always (Z, Y, X) here
+            ...
+
+Handed ``(T, Z, Y, X)``, it is called once per timepoint and the result is
+``(T, Z, Y, X)``; the provenance has one node with ``iterated_over: {T: n}``.
+
+Processors may declare ``core_dims_in``/``core_dims_out`` the same way and
+are auto-indexed by the same code (``processors/run.run_batch``); for them
+it stays optional, since most processors already work on any rank.
+
+.. _improcess-provenance-loops:
+
+Loops and maps in the provenance
+--------------------------------
+
+A looped step is **one node**, never one per index:
+
+``iterated_over: {"T": 120}``
+    On a reconstruct or process node that was auto-indexed: the loop axes and
+    their lengths.  Replay does not copy it; it loops again from the data's
+    axes, and in replay mode the source fingerprint (shape included) is
+    checked first, so the same loop is found.
+``iterate: false``
+    The step was asked for the whole stack (``_iterate: false``); replay asks
+    the same.
+A reconstruct node whose input is a result
+    Its input reference points at that result's output node, and the
+    result's whole graph is carried along: the chain from the recording
+    through every step is unbroken (the bridge is
+    ``model/result_source.data_obj_from_result``).
+``op: map``
+    One node for a whole map: ``body`` (the steps as written, ``$item``
+    included), ``body_steps`` (each body step's own node as it would be
+    recorded standalone -- plugin, plugin version, parameter version, its
+    parameters encoded by the plugin's own codec, ``replayable``),
+    ``iterated_over``, ``broadcast`` (where the body's reads of outer steps
+    sit in the node's inputs), and ``body_params_by_index`` when a body step's
+    parameters differed between indices.  If any body step is not
+    replayable, the map is not either, with that step's reason.
+
+A stacked result is named after its input (not the first slice's
+``[T=1/n]``), and keeps only the attributes every index agrees on.
+``test_provenance_chaining_integrity`` checks all of this end to end,
+including that the graph read back from an OME-TIFF or HDF5 file equals the
+one in memory and that a replay reproduces the pixels bit for bit.
+
 Drop-in analysis plugins
 ========================
 
@@ -2924,8 +3231,9 @@ Using a plugin
    `LISAI restoration`_).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
-#. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
-   load it, select a compatible result and run it.  A reconstructor appears in
+#. A processor appears under the Plugins toolbar's **Plugins ▾** button, in
+   the submenu of its ``category``; open it, select a compatible result and
+   run it.  A reconstructor appears in
    the reconstructor picker at the top of the Parameters dock; pick it and use
    *Reconstruct current* (or the multidata actions) as with any built-in.
 

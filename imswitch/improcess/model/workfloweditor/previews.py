@@ -50,7 +50,7 @@ class Preview:
 
     def describe(self) -> str:
         """``2 × 96 × 96 · C Y X · float32`` (or the row count of a table)."""
-        if self.kind in ("table", "localization") and self.row_count:
+        if self.kind in ("table", "localization", "points", "value", "event") and self.row_count:
             text = f"{self.row_count} row{'s' if self.row_count != 1 else ''}"
             return text + (f" · {', '.join(self.columns[:4])}" if self.columns else "")
         parts = []
@@ -186,7 +186,7 @@ def _make(result, kind: str, size: int, plane: int | None) -> Preview:
             pairs = [(y[a:b].min(), y[a:b].max()) for a, b in zip(edges[:-1], edges[1:]) if b > a]
             y = np.asarray([v for pair in pairs for v in pair], dtype=float)
         return Preview(kind=kind, curve=y, shape=(int(np.asarray(_array(result)).size),), dtype="float64")
-    if kind == "table":
+    if kind in ("table", "points", "value", "event") and hasattr(result, "table_records"):
         columns = tuple(str(c) for c in (result.table_columns() or ()))
         records = list(result.table_records() or [])
         rows = tuple(tuple(_cell(record.get(column)) for column in columns) for record in records[:8])

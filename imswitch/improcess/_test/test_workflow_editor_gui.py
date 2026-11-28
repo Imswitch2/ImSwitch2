@@ -223,7 +223,12 @@ def test_a_cable_dropped_in_empty_space_offers_only_steps_that_take_it(editor, q
     popup = editor._quick_add
     assert popup.isVisible()
     shown = popup.shown_candidates()
-    assert all(c.step_kind in ("process", "save") for c in shown)
+    # Processing steps and Save first; an image result may also feed a
+    # reconstruction (chaining), offered after them.
+    kinds = [c.step_kind for c in shown]
+    assert set(kinds) <= {"process", "save", "reconstruct"}
+    first_reconstruct = kinds.index("reconstruct") if "reconstruct" in kinds else len(kinds)
+    assert all(kind == "reconstruct" for kind in kinds[first_reconstruct:])
     assert {"filter", "subtract-background"} <= {c.plugin_id for c in shown}
     assert "table-to-localizations" not in {c.plugin_id for c in shown}
     popup.search.setText("classic spatial filter")

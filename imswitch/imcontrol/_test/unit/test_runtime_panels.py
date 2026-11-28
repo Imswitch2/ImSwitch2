@@ -224,7 +224,12 @@ def test_the_save_question_says_when_the_api_appears(imcontrolApp):
 
     [save] = [q for q in app.ui.asked if q[0] == 'save']
     assert 'only after ImSwitch restarts' in save[3]
-    assert '<code>startTiling</code>' in save[3]
+    # The panel's exported functions are named (the first few, alphabetically:
+    # with more tiling calls exported, startTiling is among the "more").
+    from imswitch.imcontrol.controller.runtime_panels import apiFunctionNames
+    names = apiFunctionNames(type(app.controller.controllers['Tiling']))
+    assert 'startTiling' in names
+    assert f'<code>{names[0]}</code>' in save[3]
     assert not hasattr(app.controller.api, 'startTiling')
     # The API object built at startup is left as it was.
     assert app.controller.api is not None

@@ -1,23 +1,43 @@
 """Stack/Combine processor."""
 
 from .processor import (
+    COMBINE_MODES,
+    DEFAULT_PAD_MAX_RATIO,
+    PAD_ANCHORS,
+    PAD_MODES,
+    PAD_VALUES,
     STACK_AXIS_LABELS,
+    CombineAlignment,
+    CombineMismatch,
     StackCombineProcessor,
     align_results,
     combine_compatibility,
+    combine_options,
+    combine_results,
     elementwise_compatibility,
     concatenate_results,
     default_stack_axis_label,
+    preferred_candidate,
     stack_results,
 )
 
 __all__ = [
+    "COMBINE_MODES",
+    "DEFAULT_PAD_MAX_RATIO",
+    "PAD_ANCHORS",
+    "PAD_MODES",
+    "PAD_VALUES",
     "STACK_AXIS_LABELS",
+    "CombineAlignment",
+    "CombineMismatch",
     "StackCombineProcessor",
     "align_results",
     "combine_compatibility",
+    "combine_options",
+    "combine_results",
     "elementwise_compatibility",
     "concatenate_results",
     "default_stack_axis_label",
+    "preferred_candidate",
     "stack_results",
 ]

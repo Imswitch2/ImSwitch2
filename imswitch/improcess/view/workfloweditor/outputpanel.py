@@ -23,6 +23,7 @@ _STATUS_WORDS = {
     "waiting": "Waiting for the steps before it.",
     "failed": "Failed.",
     "would-write": "Write files is off: this step only says what it would write.",
+    "bypassed": "Bypassed: it does not run; shown is what it passes on, as the step before it made it.",
 }
 
 
@@ -142,8 +143,8 @@ class OutputPanel(QtWidgets.QWidget):
         self.port.blockSignals(False)
         self.port.setVisible(len(self._ports) > 1)
         held = entry is not None and entry.held
-        self.view_button.setEnabled(held and status in ("done", "outdated"))
-        self.pin_button.setEnabled(held and status == "done")
+        self.view_button.setEnabled(held and status in ("done", "outdated", "bypassed"))
+        self.pin_button.setEnabled(held and status in ("done", "bypassed"))
         self.run_button.setEnabled(status not in ("running", "waiting"))
         if error:
             from html import escape
@@ -158,7 +159,7 @@ class OutputPanel(QtWidgets.QWidget):
         else:
             self.error.hide()
             self.printed.hide()
-        self._show_port(dim=status == "outdated")
+        self._show_port(dim=status in ("outdated", "bypassed"))
 
     def _port_changed(self, _index: int) -> None:
         self._show_port()

@@ -15,6 +15,7 @@ drift unless told to allow it.
 
 from __future__ import annotations
 
+import copy
 import re
 import time
 from collections.abc import Mapping
@@ -37,6 +38,7 @@ from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
+    Map,
     Process,
     Reconstruct,
     Ref,
@@ -44,10 +46,15 @@ from imswitch.improcess.workflows.steps import (
     Source,
     Workflow,
     WorkflowError,
-    validate,
+    step_runner,
 )
 
 MODES = ("run", "replay")
+
+#: The params key under which a Process step's processor is handed the
+#: step's state dict when the run keeps one (``run(step_state=...)``). Never
+#: part of the step's own params, never recorded.
+STATE_PARAM = "_state"
 
 _SUFFIX = {"tiff": ".ome.tif", "hdf5": ".h5", "zarr": ".ome.zarr", "csv": ".csv",
            "picasso": ".hdf5", "imagej": ".tif", "json": ".json"}
@@ -87,6 +94,10 @@ class RunReport:
     #: exception has them ``line``, ``traceback`` and ``stdout`` (a Python step's
     #: line in the user's code, its trimmed traceback, what it printed).
     failure: dict | None = None
+    #: Schema 2: steps taken out of the run because they are bypassed.
+    bypassed: list[str] = field(default_factory=list)
+    #: Schema 2: every active control's canonical value in this run.
+    controls: dict[str, Any] = field(default_factory=dict)
     _sources: list = field(default_factory=list, repr=False)
     _closed: bool = field(default=False, repr=False)
 
@@ -229,6 +240,8 @@ def run(
     on_step_done: Callable[[str, dict, float, bool], None] | None = None,
     write_saves: bool = True,
     source_stem: str | None = None,
+    step_state: dict[str, dict] | None = None,
+    controls: Mapping[str, Any] | None = None,
 ) -> RunReport:
     """Execute ``workflow`` and return its :class:`RunReport`.
 
@@ -260,15 +273,32 @@ def run(
     (``{source_stem}``); without it the stem comes from the first source the
     run opens, else from the first bound result's name. A failure is described
     as data in ``report.failure``.
+
+    ``step_state`` keeps state per step across runs: when given, a Process
+    step's processor finds ``step_state.setdefault(step.id, {})`` -- the very
+    dict, not a copy -- under ``params["_state"]`` (:data:`STATE_PARAM`), so
+    what it stores there is what it finds on the next run. The key is handed
+    to ``apply`` only: the step's params, the provenance the results carry
+    and the report never contain it. Without ``step_state`` no such key exists.
+
+    ``workflow`` may be a schema-2 recipe: it is prepared first
+    (:func:`~imswitch.improcess.workflows.prepare.prepare_run`), with
+    ``controls`` as this run's control values (raw ``ControlText`` from a
+    command line, or typed); bypassed steps are taken out and listed in
+    ``report.bypassed``, the values used in ``report.controls``.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
-    issues = validate(workflow, registry)
-    if issues:
-        raise WorkflowError("workflow is invalid:\n  " + "\n  ".join(str(i) for i in issues))
+    from imswitch.improcess.workflows.prepare import prepare_run
+
+    # Validates the recipe and the plain workflow it prepares to; raises
+    # before anything runs.
+    prepared = prepare_run(workflow, registry=registry, values=controls, bindings=bindings)
+    workflow = prepared.workflow
     logger = logger or _log()
     out_dir = (Path(out_dir) if out_dir is not None else Path.cwd()).resolve()
-    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir)
+    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir,
+                       bypassed=list(prepared.bypassed), controls=dict(prepared.values))
     bindings = dict(bindings or {})
     explicit_stem = bool(source_stem)
     source_stem = str(source_stem) if explicit_stem else "result"
@@ -292,6 +322,7 @@ def run(
     from imswitch.improcess.processors.run import run_processor
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
     from imswitch.improcess.model.provenance import graph_of, output_of
+    from imswitch.improcess.model.result_source import as_reconstruction_input
 
     def report_done(step_id, keys_before, started, cached=False):
         if on_step_done is None:
@@ -379,10 +410,18 @@ def run(
 
             elif isinstance(step, Reconstruct):
                 plugin = registry.get_reconstructor(step.reconstructor)
-                data_obj = report.result(step.inputs[0])
+                # A source's DataObj as it is; any other image result is
+                # bridged, keeping its axes, attributes and provenance.
+                data_obj = as_reconstruction_input(report.result(step.inputs[0]))
                 params = {**type(plugin).default_params(), **step.params}
                 params = plugin.prepare_params(data_obj, params)
-                run_result = run_reconstruction(plugin, data_obj, params)
+                # Checks the input against the plugin's declared contract
+                # before any pixel is processed, and auto-indexes over the
+                # axes in front of its core dims (model.iteration).
+                run_result = run_reconstruction(
+                    plugin, data_obj, params,
+                    progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                )
                 report.results[f"{step.id}.{DEFAULT_PORT}"] = run_result.result
 
             elif isinstance(step, Consolidate):
@@ -409,7 +448,27 @@ def run(
                             "(its geometry was too large to store); it cannot be replayed"
                         )
                     params[ROI_PARAM] = ROIRestriction.from_provenance(step.restriction)
-                for item in inputs:
+                from imswitch.improcess.model.core_dims import ITERATE_PARAM, CoreDimsError
+                from imswitch.improcess.processors.run import iteration_plan
+
+                requested = dict(params)
+                params.pop(ITERATE_PARAM, None)      # the runner's, never the processor's
+                loops = {}
+                for position, item in enumerate(inputs):
+                    if step.restriction or (len(inputs) > 1 and getattr(plugin, "max_inputs", 1) != 1):
+                        break
+                    try:
+                        match = iteration_plan(plugin, item, requested)
+                    except CoreDimsError as exc:
+                        raise WorkflowError(f"{step.id}: {step.processor!r} {exc}") from exc
+                    if match is not None:
+                        loops[position] = match
+                for position, item in enumerate(inputs):
+                    if position in loops:
+                        from imswitch.improcess.model.iteration import slice_result
+
+                        # Judged on what one call gets: a slice.
+                        item = slice_result(item, loops[position], (0,) * len(loops[position].loop_shape))
                     if not plugin.accepts(item):
                         shape = tuple(getattr(getattr(item, "data", None), "shape", ()) or ())
                         raise WorkflowError(
@@ -426,8 +485,14 @@ def run(
                 # input, and each run's ports are suffixed with *that input's*
                 # index (signal, background, signal1, background1, ...).
                 groups = [[item] for item in inputs] if fan_out else [inputs]
+                runnable = plugin if step_state is None else _with_state(plugin, step_state.setdefault(step.id, {}))
                 for input_index, group in enumerate(groups):
-                    results, failures = run_processor(plugin, group, params, logger)
+                    # Auto-indexed inside (processors.run.run_batch) when the
+                    # processor declares core dims and the input has more axes.
+                    results, failures = run_processor(
+                        runnable, group, requested, logger,
+                        progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                    )
                     if failures:
                         who, why = failures[0]
                         message = f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}"
@@ -452,6 +517,16 @@ def run(
                             raise RunError(f"{step.id}: {step.processor!r} produced port {port!r} twice")
                         report.results[key] = result
 
+            elif isinstance(step, Map):
+                # A map (or fold) runs its body once per index through this
+                # same function; see workflows.mapping.
+                from imswitch.improcess.workflows.mapping import run_map
+
+                report.results[f"{step.id}.{DEFAULT_PORT}"] = run_map(
+                    step, report, registry, logger=logger,
+                    progress=_index_progress(progress, index, total, step.id), cancel=cancel,
+                )
+
             elif isinstance(step, Save):
                 result = report.result(step.input)
                 path = render_save_path(
@@ -465,8 +540,20 @@ def run(
                     continue
                 receipt = result.save(path, step.fmt, overwrite=overwrite)
                 report.receipts.append(receipt)
-            else:  # pragma: no cover - the step types are closed
-                raise WorkflowError(f"unknown step type {type(step).__name__}")
+            else:
+                kind = str(getattr(step, "kind", "") or "")
+                custom = step_runner(kind)
+                if custom is None:
+                    raise WorkflowError(
+                        f"unknown step kind {kind or type(step).__name__!r} (step {step.id!r}): "
+                        "nothing registered to run it"
+                    )
+                produced = custom(step, report=report, registry=registry, logger=logger)
+                for port, result in dict(produced or {}).items():
+                    key = f"{step.id}.{port}"
+                    if key in report.results:
+                        raise RunError(f"{step.id}: produced port {port!r} twice")
+                    report.results[key] = result
         except (Exception, OperationCancelled) as exc:
             # A cancellation raised *inside* a step (a processor that called
             # checkpoint(), or the worker interrupting one) is reported like the
@@ -495,6 +582,35 @@ def run(
     return report
 
 
+_STATEFUL_CLASSES: dict[type, type] = {}
+
+
+def _with_state(plugin, state: dict):
+    """``plugin`` as one stateful Process step sees it.
+
+    Its ``apply`` is handed ``state`` under :data:`STATE_PARAM` beside the
+    params; everything else -- id, contract, codec, declared ports -- is the
+    plugin's own, so the provenance is recorded as it would be without state.
+    Done as a view rather than by putting the key into the params because the
+    run path records the params it passes to ``apply``, and the state must
+    not be written down: it is live, mutable and not a parameter of the step.
+    """
+    cls = type(plugin)
+    stateful = _STATEFUL_CLASSES.get(cls)
+    if stateful is None:
+        def apply(self, result, params):
+            return super(stateful, self).apply(result, {**(params or {}), STATE_PARAM: self._workflow_step_state})
+
+        stateful = type(cls.__name__, (cls,), {
+            "apply": apply, "__module__": cls.__module__, "__qualname__": cls.__qualname__, "__doc__": cls.__doc__,
+        })
+        _STATEFUL_CLASSES[cls] = stateful
+    view = copy.copy(plugin)
+    view.__class__ = stateful
+    view._workflow_step_state = state
+    return view
+
+
 def _is_result(value) -> bool:
     return (
         not isinstance(value, (str, SourceSpec))
@@ -509,6 +625,17 @@ def is_result_binding(value) -> bool:
     if isinstance(value, Mapping):
         return bool(value) and all(isinstance(port, str) and _is_result(item) for port, item in value.items())
     return _is_result(value)
+
+
+def _index_progress(progress, index: int, total: int, step_id: str):
+    """Per-index progress of an auto-indexed step, as ``step [T=3/120]``."""
+    if progress is None:
+        return None
+
+    def report(_done, _count, where):
+        progress(index, total, f"{step_id} [{where}]")
+
+    return report
 
 
 def _bound_ports(value) -> dict:
@@ -565,8 +692,8 @@ def _log():
     return initLogger("ImProcessWorkflows", tryInheritParent=False)
 
 
-__all__ = ["MODES", "RunError", "RunReport", "failure_details", "is_result_binding", "render_save_path", "run",
-           "source_stem_of", "steps_replaced_by_bindings"]
+__all__ = ["MODES", "STATE_PARAM", "RunError", "RunReport", "failure_details", "is_result_binding",
+           "render_save_path", "run", "source_stem_of", "steps_replaced_by_bindings"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -34,6 +34,16 @@ class SnoutyProjectionsReconstructor(Reconstructor):
     
     name = "SNOUTY projections"
     id = "snouty-projections"
+
+    #: As SNOUTY deskew: one skewed stack per call; a (T, Z, Y, X) input is
+    #: auto-indexed over T.
+    core_dims_in = ("Z|Frame|Plane", "Y", "X")
+    core_dims_out = ("View", "Y", "X")
+
+    def check_input(self, data_obj, params: dict | None) -> list[str]:
+        from imswitch.improcess.reconstructors.snouty.reconstructor import double_time_split
+
+        return super().check_input(data_obj, params) + double_time_split(self, data_obj, params)
     output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Fast projection-only preview for SNOUTY/OPM/MS-RESOLFT data"

@@ -3,7 +3,8 @@
 Locks in the split introduced by docs/improcess-image-ops-plan.md Phase 2:
 Image (display-only) vs Image operations (result-producing), Tools (built-in
 panels) vs Plugins (drop-in plugins), with origin-aware enumeration so a
-hot-reloaded plugin lands in the Plugins combo and never leaks into Tools.
+hot-reloaded plugin lands in the Plugins menu and never leaks into Tools.
+Both menus group tools by category (Fiji style) and tick the open ones.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from imswitch.improcess.model.runtime_tools import (
     runtime_analysis_tool_specs,
 )
 from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
+from imswitch.improcess.view.tool_menu import ToolMenuEntry
 
 
 _PLUGIN_SOURCE = """
@@ -151,6 +153,7 @@ def test_image_ops_toolbar_holds_result_producing_actions(qapp):
 
     assert view.added == [
         "duplicate",
+        "use-as-data",
         "crop-substack",
         "max-projection",
         "split-stack",
@@ -196,7 +199,7 @@ def test_ops_actions_land_on_the_ops_toolbar_and_menu(qapp):
     assert view._imageActions["duplicate"] is action
 
 
-# -- plugins combo ---------------------------------------------------------------
+# -- category menus ---------------------------------------------------------------
 
 class _Signal:
     def __init__(self):
@@ -206,49 +209,95 @@ class _Signal:
         self.emitted.append(args)
 
 
-def test_plugin_combo_populates_and_emits_load_request(qapp):
+def _menu_view(qapp):
+    """Just enough of the main view for the two menu setters."""
     view = QtWidgets.QMainWindow()
-    view._loadPluginCombo = QtWidgets.QComboBox()
+    view._toolsMenu = QtWidgets.QMenu(view)
+    view._pluginToolsMenu = QtWidgets.QMenu(view)
+    view._pluginMenuActions = {}
     view.sigLoadProcessorRequested = _Signal()
+    view._onAnalysisToolPicked = lambda tool_id: ImProcessMainView._onAnalysisToolPicked(view, tool_id)
+    return view
+
+
+def _submenus(menu):
+    return [action.menu() for action in menu.actions() if action.menu() is not None]
+
+
+def test_plugin_menu_groups_by_category_and_emits_load_request(qapp):
+    view = _menu_view(qapp)
 
     ImProcessMainView.setAvailablePluginTools(
-        view, [("user.reorg-test", "Reorg test plugin")]
+        view, [ToolMenuEntry("user.reorg-test", "Reorg test plugin", "Photophysics")]
     )
-    assert view._loadPluginCombo.isEnabled()
-    assert view._loadPluginCombo.count() == 2  # placeholder + plugin
+    (category,) = _submenus(view._pluginToolsMenu)
+    assert category.title() == "Photophysics"
+    (action,) = category.actions()
+    assert action.text() == "Reorg test plugin"
 
-    ImProcessMainView._on_load_plugin_combo_activated(view, 1)
+    action.trigger()
     assert view.sigLoadProcessorRequested.emitted == [("user.reorg-test",)]
-    # Selecting the placeholder emits nothing.
-    ImProcessMainView._on_load_plugin_combo_activated(view, 0)
-    assert view.sigLoadProcessorRequested.emitted == [("user.reorg-test",)]
 
 
-def test_plugin_combo_disabled_with_placeholder_when_empty(qapp):
-    view = QtWidgets.QMainWindow()
-    view._loadPluginCombo = QtWidgets.QComboBox()
+def test_plugin_menu_shows_a_disabled_placeholder_when_empty(qapp):
+    view = _menu_view(qapp)
+    store = QtWidgets.QAction("Browse online plugins...", view)
+    view._pluginMenuActions = {"browse-online": store}
 
     ImProcessMainView.setAvailablePluginTools(view, [], placeholder="No plugins installed")
 
-    assert not view._loadPluginCombo.isEnabled()
-    assert view._loadPluginCombo.itemText(0) == "No plugins installed"
+    placeholder, separator, footer = view._pluginToolsMenu.actions()
+    assert placeholder.text() == "No plugins installed" and not placeholder.isEnabled()
+    assert separator.isSeparator()
+    assert footer is store  # the store stays one click away
 
 
-# -- controller refresh feeds both combos ------------------------------------------
+def test_tool_menu_lists_every_tool_in_category_order_and_ticks_open_ones(qapp):
+    view = _menu_view(qapp)
+    entries = [
+        ToolMenuEntry("frc", "FRC", "Resolution and PSF", "Fourier ring correlation."),
+        ToolMenuEntry("filter", "Filter", "Filters"),
+        ToolMenuEntry("subtract-background", "Subtract background", "Filters", open=True),
+        ToolMenuEntry("odd", "Odd one", "Zebra"),
+        ToolMenuEntry("misc", "Misc", "Other"),
+        ToolMenuEntry("stack-split", "Split stack", "Dimensions and channels"),
+    ]
+    ImProcessMainView.setAvailableRuntimeProcessors(view, entries)
 
-def _refresh_capturing_controller():
+    titles = [menu.title() for menu in _submenus(view._toolsMenu)]
+    # Listed categories in their order, then unknown ones, "Other" last.
+    assert titles == ["Dimensions and channels", "Filters", "Resolution and PSF", "Zebra", "Other"]
+    filters = _submenus(view._toolsMenu)[1]
+    assert [a.text() for a in filters.actions()] == ["Filter", "Subtract background"]
+    filter_action, background = filters.actions()
+    assert not filter_action.isChecked()
+    assert background.isCheckable() and background.isChecked()
+    frc = _submenus(view._toolsMenu)[2].actions()[0]
+    assert frc.toolTip() == "Fourier ring correlation."
+
+    background.trigger()  # an open tool is still pickable: it raises its panel
+    assert view.sigLoadProcessorRequested.emitted == [("subtract-background",)]
+
+
+def test_refilling_a_menu_replaces_its_submenus(qapp):
+    view = _menu_view(qapp)
+    ImProcessMainView.setAvailableRuntimeProcessors(view, [("a", "A", "Math"), ("b", "B", "SMLM")])
+    ImProcessMainView.setAvailableRuntimeProcessors(view, [("a", "A", "Math")])
+    assert [menu.title() for menu in _submenus(view._toolsMenu)] == ["Math"]
+
+
+# -- controller refresh feeds both menus -------------------------------------------
+
+def _refresh_capturing_controller(open_tools=()):
     controller = ImProcessMainController.__new__(ImProcessMainController)
     captured = {}
     view = SimpleNamespace(
-        isRuntimeAnalysisToolLoaded=lambda _tool_id: False,
-        setAvailableRuntimeProcessors=lambda choices: captured.__setitem__(
-            "builtin", choices
+        isRuntimeAnalysisToolLoaded=lambda tool_id: tool_id in open_tools,
+        setAvailableRuntimeProcessors=lambda entries: captured.__setitem__(
+            "builtin", entries
         ),
-        setAvailablePluginTools=lambda choices, placeholder=None: captured.update(
-            plugins=choices, plugin_placeholder=placeholder
-        ),
-        setLoadedRuntimeProcessors=lambda choices: captured.__setitem__(
-            "loaded", choices
+        setAvailablePluginTools=lambda entries, placeholder=None: captured.update(
+            plugins=entries, plugin_placeholder=placeholder
         ),
     )
     controller._ImProcessMainController__mainView = view
@@ -260,12 +309,26 @@ def test_controller_refresh_splits_builtin_and_plugin_choices(user_plugin):
 
     controller._refresh_runtime_processor_choices()
 
-    builtin_ids = [tool_id for tool_id, _t in captured["builtin"]]
-    plugin_ids = [tool_id for tool_id, _t in captured["plugins"]]
-    assert user_plugin in plugin_ids
+    builtin_ids = [entry.id for entry in captured["builtin"]]
+    plugin_ids = [entry.id for entry in captured["plugins"]]
+    assert plugin_ids == [user_plugin]
     assert user_plugin not in builtin_ids
     assert "stack-combine" in builtin_ids
-    assert captured["plugin_placeholder"] == "All plugins loaded"
+    (plugin,) = captured["plugins"]
+    assert (plugin.title, plugin.category) == ("Reorg test plugin", "Plugins")
+
+
+def test_controller_refresh_keeps_open_tools_and_ticks_them():
+    controller, captured = _refresh_capturing_controller(open_tools={"frc"})
+
+    controller._refresh_runtime_processor_choices()
+
+    entries = {entry.id: entry for entry in captured["builtin"]}
+    assert entries["frc"].open and not entries["filter"].open
+    assert entries["frc"].category == "Resolution and PSF"
+    assert entries["frc"].description  # the tooltip has something to say
+    # Multicolor registration + apply share one panel: listed once.
+    assert sum(entry.title == "Multicolor" for entry in captured["builtin"]) == 1
 
 
 def test_controller_refresh_reports_no_plugins_installed():

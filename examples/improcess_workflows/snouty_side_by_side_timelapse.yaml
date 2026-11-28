@@ -1,0 +1,79 @@
+# A SNOUTY time-lapse recorded as ONE 3D array, the timepoints' skewed stacks
+# placed next to each other along X: reshape it into a (T, Z, Y, X) skewed
+# stack, deskew every timepoint, crop off the skewed edge, then a MoNaLISA
+# reconstruction of every cropped timepoint.
+#
+# No step here loops: SNOUTY declares that it works on one (Z, Y, X) stack and
+# MoNaLISA on one (frames, Y, X) scan, so the runner runs each of them once per
+# T and stacks the results (auto-indexing; the provenance says
+# "iterated_over: {T: n}"). snouty_side_by_side_timelapse_map.yaml does the
+# same with an explicit map.
+#
+# Adapt to a real recording: the timepoint count in `reshape`, the SNOUTY
+# geometry in `deskew`, the crop in `crop`, and MoNaLISA's scan and lattice
+# (the values below only make the synthetic data run).
+#   python -m imswitch.improcess.workflows run snouty_side_by_side_timelapse.yaml \
+#       --input lapse.h5 --out results/
+# Synthetic data: python examples/improcess_workflows/snouty_side_by_side_timelapse.py
+name: snouty-side-by-side-timelapse
+schema: 1
+steps:
+  - {step: source, id: raw}
+  - step: reconstruct
+    id: view
+    reconstructor: view-only
+    inputs: [raw]
+  - step: process
+    id: reshape
+    processor: python
+    params:
+      code: |
+        # The timepoints sit side by side along X: cut X into `t` pieces and
+        # put them in front as T. The output keeps the input's attributes
+        # (the SNOUTY geometry, if the file has it) and says it is still skewed.
+        t = 2
+        z, y, x = data.shape
+        stack = data.reshape(z, y, t, x // t).transpose(2, 0, 1, 3)
+        out = make_result(stack, axes=["T", "Z", "Y", "X"], attrs={"geometry": "skewed"})
+    inputs: [view]
+  - step: reconstruct
+    id: deskew
+    reconstructor: snouty
+    params: {device: CPU, c_px: 100.0, alpha_deg: 30.0, dy: 210.0, sample_vx_size: 200.0,
+             camera_offset: 100.0, n_timepoints: 1}
+    inputs: [reshape]
+  - step: process
+    id: crop
+    processor: python
+    params:
+      code: |
+        # Keep the upper-left part of every plane: the deskewed volume's
+        # edges are the sheared, partly empty region.
+        ny, nx = data.shape[-2:]
+        out = make_result(data[..., : ny // 2, : nx // 2], axes=axes)
+    inputs: [deskew]
+  - step: reconstruct
+    id: mona
+    reconstructor: monalisa
+    params:
+      device: CPU
+      preset: Fast
+      pixel_size_nm: 77.0
+      scan_steps_fast: 4
+      scan_steps_slow: 4
+      scan_step_nm: 35.0
+      localization_mode: Manual
+      manual_offset_x_px: 3.0
+      manual_offset_y_px: 3.0
+      manual_period_x_px: 8.0
+      manual_period_y_px: 8.0
+      scan_params:
+        dimensions: [Up/Down, Right/Left, Back/Forth, Timepoints]
+        directions: [pos, pos, pos]
+        steps: ['4', '4', '1', '1']
+        step_sizes: ['35', '35', '35', '1']
+        n_linesteps: 1
+        unidirectional: true
+    inputs: [crop]
+  - {step: save, id: deskewed, input: deskew, fmt: tiff, path_template: "{out_dir}/{source_stem}_deskewed{ext}"}
+  - {step: save, id: out, input: mona, fmt: tiff, path_template: "{out_dir}/{source_stem}_monalisa{ext}"}

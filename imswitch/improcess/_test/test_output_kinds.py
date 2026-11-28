@@ -79,6 +79,7 @@ _RECONSTRUCTOR_RESULTS = {
     "monalisa": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
     "monalisa-legacy": ("imswitch.improcess.reconstructors.monalisa.result", "MonalisaProcessingResult"),
     "monalisa-lattice": ("imswitch.improcess.reconstructors.monalisa_lattice.result", "MonalisaLatticeResult"),
+    "linestep-sum": ("imswitch.improcess.reconstructors.linestep_sum.reconstructor", "LineStepSumResult"),
     "polarisation-map": ("imswitch.improcess.reconstructors.polarisation_map.reconstructor", "PolarisationMapResult"),
     "smlm-localizer": ("imswitch.improcess.model.localization_result", "LocalizationResult"),
     "snouty": ("imswitch.improcess.reconstructors.snouty.result", "SnoutyResult"),
@@ -155,6 +156,15 @@ def _fixture(pid, processor, tmp_path, monkeypatch):
         return [LocalizationResult("storm", _drifting_cloud(), pixel_size_nm=100.0)], {
             **params, "segments": 8, "render_pixel_size_nm": 10.0,
         }
+    if pid == "pick":
+        from imswitch.improcess.model import PointsResult
+
+        points = PointsResult("pts", np.array([[1.0, 2.0], [3.0, 4.0]]),
+                              frame="detector:Camera", properties={"area": np.array([5, 9])})
+        return [points], params
+    if pid == "regionprops":
+        # Labels first; the image is the optional second input.
+        return [_representative_results()["labels"], _image_2d()], params
     if pid == "table-to-localizations":
         from imswitch.improcess.model.points_table_result import PointsTableResult
 
@@ -180,6 +190,15 @@ def _fixture(pid, processor, tmp_path, monkeypatch):
             lambda *args, **kwargs: _identity_alignment(),
         )
         return [volume], {**params, "x_bounds": "0,2,4,6"}
+    if pid == "tile-spots":
+        # It counts on the tiles behind a mosaic, so it needs a saved run.
+        from test_spot_count import _write_tiling_run
+
+        from imswitch.improcess.reconstructors.tiling.reconstructor import TilingMosaicResult
+
+        manifest, _layout, _spots = _write_tiling_run(tmp_path / "run")
+        return [TilingMosaicResult(name="mosaic", data=np.zeros((8, 8)), axis_labels=["Y", "X"],
+                                   manifest=manifest)], params
     candidates = list(_representative_results().values()) + [_image_t_stack(), _image_c_stack()]
     for candidate in candidates:
         if processor.accepts(candidate):

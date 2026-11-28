@@ -24,7 +24,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
+from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor, params_from_attrs
 
 from ..monalisa.calibration import PatternLocalization
 from ..monalisa.calibration_frames import modulation_score
@@ -272,6 +272,14 @@ class MonalisaLatticeReconstructor(Reconstructor):
     execution_policy = "worker"
     output_kind = "image"
     requires_frame_stacks = True
+    #: As MoNaLISA's: one scan ``(frames, rows, cols)`` per call, extra
+    #: leading axes auto-indexed by the runner.
+    core_dims_in = ("*", "Y", "X")
+
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """A default ``pixel_size_nm`` is taken from the input's attributes
+        when they declare one (a deskewed volume's voxel size)."""
+        return params_from_attrs(self, data_obj, params, ("pixel_size_nm",))
     supports_consolidation = True
 
     def __init__(self):

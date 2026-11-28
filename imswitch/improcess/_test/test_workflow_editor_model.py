@@ -230,7 +230,8 @@ def test_port_options_come_from_the_upstream_declarations(catalog):
     assert options["raw"].port is None and options["rec"].port is None
     assert options["blur"].port is None
     assert "split" in options and options["split"].pattern
-    assert options["split"].port == catalog.processor("stack-split").output_spec().pattern
+    split_params = document.effective_params("split")
+    assert options["split"].port == catalog.processor("stack-split").output_spec(split_params).pattern
     document.add_step("process", "subtract-background", after="rec", step_id="bg")
     document.set_param("bg", "output_background", True)
     refs = [option.ref for option in document.port_options(None)]

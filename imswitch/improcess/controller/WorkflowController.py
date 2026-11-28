@@ -55,6 +55,9 @@ class _RunWorker(QtCore.QObject):
         #: an attribute rather than a required argument so a subclass that
         #: pins the constructor keeps working.
         self.source_root = source_root
+        #: Control values for every run (schema 2), from the run dialog; an
+        #: attribute for the same reason.
+        self.controls = None
         self._cancelled = False
         self._token = CancelToken(cleanupBudgetS=_CANCEL_CLEANUP_BUDGET_S)
         self._ident = None
@@ -122,7 +125,7 @@ class _RunWorker(QtCore.QObject):
                 report = run(
                     self._workflow, registry=self._registry, out_dir=self._out_dir,
                     bindings=bindings, overwrite=self._overwrite, cancel=self._should_stop,
-                    source_root=self.source_root, progress=self._progress,
+                    source_root=self.source_root, progress=self._progress, controls=self.controls,
                 )
             except RunError as exc:
                 failed += 1
@@ -538,6 +541,43 @@ class WorkflowController(QtCore.QObject):
         self._status(f"Not run: {name} contains Python code (in {listed}) and was not confirmed.")
         return False
 
+    def _askControlValues(self, workflow, registry, bindings_list):
+        """The values a file's controls take in this run (schema 2): ``{}``
+        for a file without controls or without a window to ask in (the file's
+        values apply), ``None`` when the dialog was cancelled.
+
+        Which controls can take a value is worked out for this run: on
+        selected results the reconstruction they replace (and what only fed
+        it) is not run, so a control on it is shown disabled, with the reason.
+        """
+        if not getattr(workflow, "controls", None) or not isinstance(self._mainView, QtWidgets.QWidget):
+            return {}
+        from imswitch.improcess.view.WorkflowControlsDialog import WorkflowControlsDialog
+        from imswitch.improcess.workflows.prepare import describe_controls, prepare_run
+        from imswitch.improcess.workflows.runner import is_result_binding
+        from imswitch.improcess.workflows.steps import WorkflowError
+
+        first = next((b for b in bindings_list if b), None) or {}
+        bound = {sid for sid, value in first.items() if is_result_binding(value)}
+        described = describe_controls(workflow, registry, bound=bound)
+
+        def validate(values):
+            try:
+                prepare_run(workflow, registry=registry, values=values, bound=bound)
+            except WorkflowError as exc:
+                return str(exc)
+            return None
+
+        dialog = WorkflowControlsDialog(workflow.name, described, validate=validate, runs=len(bindings_list),
+                                        parent=self._mainView)
+        if self._execDialog(dialog) != QtWidgets.QDialog.Accepted:
+            return None
+        return dialog.values()
+
+    def _execDialog(self, dialog) -> int:
+        """Show a modal dialog (a seam for tests, which answer it themselves)."""
+        return dialog.exec_()
+
     def runWorkflow(self, path=None, out_dir=None, overwrite=None):
         """Run a workflow file on a worker thread; results are published."""
         return self._runBatch(path, [None], out_dir=out_dir, overwrite=overwrite)
@@ -663,6 +703,13 @@ class WorkflowController(QtCore.QObject):
             return False
         if not self._confirmPythonSteps(workflow, path):
             return False
+        # A file's controls are asked for after the file is accepted; runs
+        # from the editor (no path) take no values: there the value is in
+        # the steps.
+        controls = self._askControlValues(workflow, registry, bindings_list) if path else {}
+        if controls is None:
+            self._status(f"Not run: {workflow.name} was cancelled.")
+            return False
         if out_dir is None:
             out_dir = QtWidgets.QFileDialog.getExistingDirectory(self._mainView, "Output directory for saves")
             if not out_dir:
@@ -678,6 +725,7 @@ class WorkflowController(QtCore.QObject):
             workflow, registry, Path(out_dir), overwrite=overwrite, bindings_list=bindings_list,
         )
         self._worker.source_root = source_root
+        self._worker.controls = dict(controls) or None
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.sigProgress.connect(self._onProgress)
@@ -687,7 +735,12 @@ class WorkflowController(QtCore.QObject):
         self._worker.sigDone.connect(self._thread.quit)
         self._thread.finished.connect(self._clear)
         count = len(bindings_list)
-        self._status(f"Running workflow {workflow.name}" + (f" ({count} runs)…" if count > 1 else "…"))
+        given = ""
+        if controls:
+            from imswitch.improcess.workflows.prepare import format_value
+
+            given = " with " + ", ".join(f"{name} = {format_value(value)}" for name, value in controls.items())
+        self._status(f"Running workflow {workflow.name}{given}" + (f" ({count} runs)…" if count > 1 else "…"))
         self._thread.start()
         if self._editor is not None:
             self._editor.set_running(True)
@@ -717,9 +770,11 @@ class WorkflowController(QtCore.QObject):
             return
         published = self._publish(report)
         files = [str(f) for receipt in report.receipts for f in receipt.files]
+        bypassed = list(getattr(report, "bypassed", []) or [])
         self._status(
             f"Workflow {report.workflow} done: {published} result(s) added"
             + (f", wrote {len(files)} file(s)" if files else "")
+            + (f"; bypassed: {', '.join(bypassed)}" if bypassed else "")
         )
         self._retain(report)
 

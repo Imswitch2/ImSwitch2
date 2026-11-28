@@ -334,6 +334,7 @@ def _load_section_schemas() -> dict:
 #: ``test_config_editor_plugin_fallback.py`` fails when they drift apart.
 IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "beadrec",
+    "linestep-sum",
     "monalisa",
     "monalisa-lattice",
     "monalisa-legacy",
@@ -348,6 +349,8 @@ IMPROCESS_RECONSTRUCTOR_FALLBACK = [
 ]
 
 IMPROCESS_PROCESSOR_FALLBACK = [
+    "axis-swap",
+    "bead-fwhm",
     "channel-merge",
     "channel-split",
     "colocalization",
@@ -364,10 +367,12 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "math",
     "multicolor-apply",
     "multicolor-registration",
+    "pick",
     "projection",
     "psf-bead-select",
     "psf-resolution",
     "python",
+    "regionprops",
     "resize",
     "segmentation",
     "smlm-drift",
@@ -375,11 +380,14 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "smlm-filter",
     "smlm-group",
     "smlm-render",
+    "spot-count",
     "stack-combine",
     "stack-split",
     "stack-subset",
     "subtract-background",
     "table-to-localizations",
+    "threshold",
+    "tile-spots",
     "transform",
 ]
 

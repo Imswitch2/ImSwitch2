@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.model.result_source import is_image_result
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
 from imswitch.improcess.model.result import result_kind
 from imswitch.improcess.controller.processor_runner import ProcessorRunner
@@ -49,6 +50,7 @@ def _projection_applies(result) -> bool:
 #: drift apart.
 _SINGLE_RESULT_ACTIONS = {
     "duplicate": lambda result: True,
+    "use-as-data": lambda result: is_image_result(result),
     "max-projection": _projection_applies,
     "crop-substack": lambda result: StackSubsetProcessor().accepts(result),
     "split-stack": lambda result: StackSplitProcessor().accepts(result),
@@ -84,6 +86,9 @@ class ImageToolbarController:
         mainView.sigImageLutChanged.connect(self.setLut)
         mainView.sigImageResetViewRequested.connect(self.resetView)
         mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
+        useAsData = getattr(mainView, "sigImageUseAsDataRequested", None)
+        if useAsData is not None:
+            useAsData.connect(self.useAsReconstructionInput)
         mainView.sigImageCropSubstackRequested.connect(self.cropSubstack)
         mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
         mainView.sigImageSplitStackRequested.connect(self.splitStack)
@@ -242,6 +247,15 @@ class ImageToolbarController:
                 self._showMessage(f"Could not duplicate: {exc}")
         if duplicates:
             self._publishResults(duplicates)
+
+    def useAsReconstructionInput(self) -> None:
+        """Hand the selected image results to the data list (see
+        ``CommunicationChannel.sigUseResultsAsData``)."""
+        results = [result for result in self._selectedProcessingResults() if is_image_result(result)]
+        if not results:
+            self._showMessage("Select an image result to use it as a reconstruction input.")
+            return
+        self._commChannel.sigUseResultsAsData.emit(results)
 
     def cropSubstack(self) -> None:
         result = self._reconstructionController.getActiveResult()
