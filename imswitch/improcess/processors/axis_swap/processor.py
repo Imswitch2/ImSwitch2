@@ -7,6 +7,9 @@ Two separate things, either or both:
   ``Z, T, Y, X``).
 * **Labels** renames axes without touching the array, for data whose labels
   are wrong (a stack read as ``Z, Y, X`` that is a time series: ``T, Y, X``).
+* **Scales** sets the spacing of axes, for data whose pixel size is wrong in
+  the metadata (``Z=0.25``). Metadata only; it is applied last, so it names
+  axes by their labels after the reordering and relabelling.
 
 Swapping the *meaning* of two axes -- what was along X is now along Y -- is
 the first with *Keep labels in place*: the array is transposed and the labels
@@ -42,6 +45,9 @@ _KEEP_HELP = ("The labels and scales stay where they are while the array is reor
               "the data changes meaning (what was along X is now along Y).")
 _LABELS_HELP = ("Rename axes after reordering: every label in order (X,Y,T), or pairs (Z=T). "
                 "The array is not touched. Empty: labels unchanged.")
+_SCALES_HELP = ("Set the spacing of axes, in the result's unit, after reordering and relabelling: "
+                "pairs (Z=0.25, T=2) or one value per axis (2,0.5,0.25). "
+                "The array is not touched. Empty: scales unchanged.")
 
 
 def _items(text) -> list[str]:
@@ -114,6 +120,44 @@ def parse_labels(labels_text, labels: Sequence[str]) -> list[str]:
     return renamed
 
 
+def parse_scales(scales_text, labels: Sequence[str], scales: Sequence[float]) -> list[float]:
+    """``scales`` as ``scales_text`` sets them: a full list, or ``axis=value`` pairs.
+
+    ``labels`` are the axis labels as they stand after reordering and relabelling.
+    Values must be finite and greater than zero."""
+    items = _items(scales_text)
+    current = [float(value) for value in scales]
+    if not items:
+        return current
+
+    def number(text: str, what: str) -> float:
+        try:
+            value = float(text)
+        except ValueError:
+            raise ProcessorInputError(f"scales: {what} is not a number") from None
+        if not np.isfinite(value) or value <= 0:
+            raise ProcessorInputError(f"scales: {what} must be a finite number greater than zero")
+        return value
+
+    if any("=" in item for item in items):
+        if not all("=" in item for item in items):
+            raise ProcessorInputError(f"scales {items}: use either pairs (Z=0.25) or the full list, not both")
+        result = list(current)
+        seen: set[int] = set()
+        for item in items:
+            axis, value = (part.strip() for part in item.split("=", 1))
+            index = _axis_index(axis, labels)
+            if index in seen:
+                raise ProcessorInputError(f"scales {items}: axis {labels[index]!r} is set twice")
+            seen.add(index)
+            result[index] = number(value, f"{item!r}")
+        return result
+    if len(items) != len(current):
+        raise ProcessorInputError(
+            f"scales {items}: give one value per axis ({len(current)}: {list(labels)}), or pairs like Z=0.25")
+    return [number(item, repr(item)) for item in items]
+
+
 class AxisSwapProcessor(Processor):
     """Swap or reorder the axes of an image, and rename them."""
 
@@ -125,7 +169,7 @@ class AxisSwapProcessor(Processor):
 
     @classmethod
     def default_params(cls) -> dict:
-        return {"order": "", "keep_labels": False, "labels": ""}
+        return {"order": "", "keep_labels": False, "labels": "", "scales": ""}
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -133,6 +177,7 @@ class AxisSwapProcessor(Processor):
             ParamField("order", "text", "", label="Order", help=_ORDER_HELP),
             ParamField("keep_labels", "bool", False, label="Keep labels in place", help=_KEEP_HELP),
             ParamField("labels", "text", "", label="Labels", help=_LABELS_HELP),
+            ParamField("scales", "text", "", label="Scales", help=_SCALES_HELP),
         )
 
     @property
@@ -150,18 +195,23 @@ class AxisSwapProcessor(Processor):
         labels = QtWidgets.QLineEdit()
         labels.setPlaceholderText("X,Y,T   or   Z=T")
         labels.setToolTip(_LABELS_HELP)
+        scales = QtWidgets.QLineEdit()
+        scales.setPlaceholderText("Z=0.25   or   Z=0.25, T=2")
+        scales.setToolTip(_SCALES_HELP)
         layout.addRow("Order:", order)
         layout.addRow("", keep)
         layout.addRow("Labels:", labels)
+        layout.addRow("Scales:", scales)
 
         def get_values():
             return {"order": order.text().strip(), "keep_labels": keep.isChecked(),
-                    "labels": labels.text().strip()}
+                    "labels": labels.text().strip(), "scales": scales.text().strip()}
 
         def set_values(values):
             order.setText(str(values.get("order", "") or ""))
             keep.setChecked(bool(values.get("keep_labels", False)))
             labels.setText(str(values.get("labels", "") or ""))
+            scales.setText(str(values.get("scales", "") or ""))
 
         widget.get_values = get_values
         widget.set_values = set_values
@@ -177,6 +227,7 @@ class AxisSwapProcessor(Processor):
             labels = [labels[index] for index in permutation]
             scales = [scales[index] for index in permutation]
         new_labels = parse_labels(params.get("labels", ""), labels)
+        new_scales = parse_scales(params.get("scales", ""), new_labels, scales)
 
         data = result.data
         if moved:
@@ -185,14 +236,15 @@ class AxisSwapProcessor(Processor):
 
         # Pixels stay where they were only while the last two (displayed) axes do.
         tail = tuple(range(len(shape)))[-2:]
-        same_grid = permutation[-2:] == tail
+        # Changing the spacing of those two axes changes the physical grid.
+        same_grid = permutation[-2:] == tail and list(new_scales[-2:]) == [float(v) for v in scales[-2:]]
         out = ArrayProcessingResult(
             name=f"{result.name} (axes)",
             data=data,
             axis_labels=new_labels,
             view_modes=list(getattr(result, "view_modes", [])),
             display_levels=getattr(result, "display_levels", None),
-            axis_scales=scales,
+            axis_scales=new_scales,
             scale_unit=getattr(result, "scale_unit", "px"),
             metadata={
                 "source_result": result.name,
@@ -200,9 +252,10 @@ class AxisSwapProcessor(Processor):
                 "source_axis_labels": axis_labels_for_result(result),
                 "permutation": list(permutation),
                 "axis_labels": list(new_labels),
+                "axis_scales": list(new_scales),
             },
         )
         return out.adopt_identity_from(result, same_grid=same_grid)
 
 
-__all__ = ["AxisSwapProcessor", "ProcessorInputError", "parse_labels", "parse_order"]
+__all__ = ["AxisSwapProcessor", "ProcessorInputError", "parse_labels", "parse_order", "parse_scales"]
