@@ -1469,6 +1469,31 @@ class ViewerToolManager(QtCore.QObject):
             self._viewer.camera.events.zoom.connect(self._on_zoom_changed)
         except Exception:
             pass
+        # A tools layer the user deletes is forgotten at once, so the next
+        # tool adopts or creates a layer in the viewer instead of drawing
+        # into the deleted one (see _ensure_shapes_layer).
+        try:
+            self._viewer.layers.events.removed.connect(self._on_layer_removed)
+        except Exception:
+            pass
+
+    def _on_layer_removed(self, event):
+        layer = getattr(event, 'value', None)
+        if layer is None:
+            return
+        if layer is self._shapes_layer:
+            self._release_layer(layer, (
+                ('data', self._on_shapes_data_changed),
+                ('mode', self._on_mode_changed),
+            ))
+            self._shapes_layer = None
+            self.sigShapesChanged.emit()
+        elif layer is getattr(self, '_points_layer', None):
+            self._release_layer(layer, (
+                ('data', getattr(self, '_points_data_slot', None)),
+            ))
+            self._points_layer = None
+            self.sigShapesChanged.emit()
 
     def _get_edge_width(self):
         """Edge width in world units that renders to ~PIXEL_WIDTH screen pixels."""
@@ -1506,7 +1531,16 @@ class ViewerToolManager(QtCore.QObject):
         the layer this viewer already has keeps them on one.
         """
         if self._shapes_layer is not None:
-            return
+            if self._inViewer(self._shapes_layer):
+                return
+            # Deleted from the layer list by the user: drawing into the
+            # orphan showed nothing and reported nothing. Let it go and
+            # adopt or create one again.
+            self._release_layer(self._shapes_layer, (
+                ('data', self._on_shapes_data_changed),
+                ('mode', self._on_mode_changed),
+            ))
+            self._shapes_layer = None
 
         adopted = None
         try:
@@ -1605,7 +1639,12 @@ class ViewerToolManager(QtCore.QObject):
         each of them its own duplicate.
         """
         if getattr(self, '_points_layer', None) is not None:
-            return
+            if self._inViewer(self._points_layer):
+                return
+            self._release_layer(self._points_layer, (
+                ('data', getattr(self, '_points_data_slot', None)),
+            ))
+            self._points_layer = None
 
         adopted = None
         try:
@@ -1632,10 +1671,35 @@ class ViewerToolManager(QtCore.QObject):
                 'border_color' if self._supports_border_color() else 'edge_color'
             ] = 'black'
             self._points_layer = self._viewer.add_points(**options)
+        self._points_data_slot = lambda _event=None: self.sigShapesChanged.emit()
         try:
-            self._points_layer.events.data.connect(
-                lambda _event=None: self.sigShapesChanged.emit()
-            )
+            self._points_layer.events.data.connect(self._points_data_slot)
+        except Exception:
+            pass
+
+    def _inViewer(self, layer):
+        try:
+            return any(item is layer for item in self._viewer.layers)
+        except Exception:
+            return True       # cannot tell: keep using it, as before
+
+    @staticmethod
+    def _release_layer(layer, connections):
+        for event_name, slot in connections:
+            if slot is None:
+                continue
+            try:
+                getattr(layer.events, event_name).disconnect(slot)
+            except Exception:
+                pass
+
+    def _select(self, layer):
+        """Make ``layer`` napari's active layer: napari sends mouse events to
+        the active layer only, so a layer in an add mode that is not active
+        draws nothing -- what switching rectangle -> line on an existing tools
+        layer did while another layer was selected."""
+        try:
+            self._viewer.layers.selection.active = layer
         except Exception:
             pass
 
@@ -1691,10 +1755,7 @@ class ViewerToolManager(QtCore.QObject):
             if self._shapes_layer is not None:
                 self._shapes_layer.mode = 'pan_zoom'
             self._points_layer.mode = 'add'
-            try:
-                self._viewer.layers.selection.active = self._points_layer
-            except Exception:
-                pass
+            self._select(self._points_layer)
             self._current_mode = mode
             self.sigModeChanged.emit(mode)
             return
@@ -1717,6 +1778,11 @@ class ViewerToolManager(QtCore.QObject):
         
         napari_mode = mode_map.get(mode, mode)
         self._shapes_layer.mode = napari_mode
+        if mode != 'pan':
+            # Every drawing (and the select) mode acts on this layer only
+            # while it is the active one. Pan leaves the selection alone:
+            # it is how the user goes back to working on an image layer.
+            self._select(self._shapes_layer)
         self._current_mode = mode
         self.sigModeChanged.emit(mode)
     
