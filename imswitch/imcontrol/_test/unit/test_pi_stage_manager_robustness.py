@@ -130,10 +130,14 @@ def fake_pi(monkeypatch):
     return _FakeGCSDevice
 
 
-def _info(runtime_timeout_ms=None):
+def _info(runtime_timeout_ms=None, useMockOnFailure=False):
     props = {'device': 'C-663.11'}
     if runtime_timeout_ms is not None:
         props['runtime_timeout_ms'] = runtime_timeout_ms
+    if useMockOnFailure:
+        # The mock is an explicit opt-in (device-failure policy); the tests
+        # that pin a mock use it, the *_absent_* tests pin the default.
+        props['useMockOnFailure'] = True
     return SimpleNamespace(
         managerProperties=props,
         axes=['X', 'Y'],
@@ -194,7 +198,7 @@ def test_movement_status_communication_error_propagates(fake_pi):
 
 
 def test_button_polling_communication_loss_falls_back_to_mock(fake_pi):
-    manager = PIStageManager(_info(), 'PI')
+    manager = PIStageManager(_info(useMockOnFailure=True), 'PI')
     manager.buttonTimer.started.clear()
     manager.X.fail_qjbs = True
 
@@ -208,7 +212,7 @@ def test_button_polling_communication_loss_falls_back_to_mock(fake_pi):
 def test_runtime_communication_failure_switches_to_stateful_mock(fake_pi):
     from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
 
-    manager = PIStageManager(_info(), 'PI')
+    manager = PIStageManager(_info(useMockOnFailure=True), 'PI')
     manager._position.update({'X': 10.0, 'Y': 20.0})
     manager.Y.fail_qpos = True
 
@@ -249,7 +253,7 @@ def test_pi_send_error_triggers_mock_fallback(fake_pi):
     from imswitch.imcontrol.model.devices import DeviceRuntimeMode
     from imswitch.imcontrol.model.interfaces.pipython.pidevice import GCSError, gcserror
 
-    manager = PIStageManager(_info(), 'PI')
+    manager = PIStageManager(_info(useMockOnFailure=True), 'PI')
     manager.X.qpos_exception = GCSError(gcserror.E_2_SEND_ERROR)
 
     with pytest.raises(GCSError):
@@ -266,7 +270,7 @@ def test_startup_failure_keeps_configured_pi_as_mock(fake_pi, monkeypatch):
         raise OSError('PI USB unavailable')
 
     monkeypatch.setattr(pi_module.gcs2pitools, 'startup', failing_startup)
-    manager = PIStageManager(_info(), 'PI')
+    manager = PIStageManager(_info(useMockOnFailure=True), 'PI')
 
     assert manager.isAvailable is True
     assert manager.isMock is True
@@ -276,6 +280,45 @@ def test_startup_failure_keeps_configured_pi_as_mock(fake_pi, monkeypatch):
 
     manager.move(100.0, 'X')
     assert manager.position['X'] == pytest.approx(100.0)
+
+
+def test_a_pi_stage_that_is_not_there_is_absent_and_refuses_moves_not_a_mock(fake_pi, monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+    from imswitch.imcontrol.model.managers.positioners.PIStageManager import (
+        PIStageUnavailableError,
+    )
+
+    def failing_startup(device):
+        raise OSError('PI USB unavailable')
+
+    monkeypatch.setattr(pi_module.gcs2pitools, 'startup', failing_startup)
+    manager = PIStageManager(_info(), 'PI')
+
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL            # not a mock
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert not manager.isUsable
+    assert manager.connectionStatusSummary == 'PI stage not connected'
+    with pytest.raises(PIStageUnavailableError, match='PI stage PI is not connected.*Hardware status'):
+        manager.move(100.0, 'X')
+    assert manager.position['X'] == pytest.approx(0.0)              # nothing "moved"
+    assert _FakeGCSDevice.events.count(('mov', 'D0', 0.1)) == 0
+
+    # The reconnect from Hardware status brings the real stage back, unmoved.
+    monkeypatch.setattr(pi_module.gcs2pitools, 'startup', lambda device: None)
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is True and manager.isUsable
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert not any(event[0] == 'mov' for event in _FakeGCSDevice.events)
+
+
+def test_a_failed_pi_reconnect_stays_absent_and_says_so(fake_pi, monkeypatch):
+    manager = PIStageManager(_info(), 'PI')
+    monkeypatch.setattr(
+        pi_module.gcs2pitools, 'startup',
+        lambda device: (_ for _ in ()).throw(OSError('reconnect USB failure')))
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is False and 'stage not connected' in result.summary
+    assert manager.runtimeMode.value == 'real' and not manager.isUsable
 
 
 def test_lifecycle_reconnects_startup_mock_to_real(fake_pi, monkeypatch):
@@ -328,7 +371,7 @@ def test_real_to_real_reconnect_exposes_mock_before_reopening_usb(fake_pi):
 def test_failed_reconnect_keeps_mock_at_last_known_position(fake_pi, monkeypatch):
     from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
 
-    manager = PIStageManager(_info(), 'PI')
+    manager = PIStageManager(_info(useMockOnFailure=True), 'PI')
     manager._position.update({'X': 123.0, 'Y': 456.0})
 
     monkeypatch.setattr(

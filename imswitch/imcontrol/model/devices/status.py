@@ -50,27 +50,39 @@ class DeviceManagerStatusMixin:
     REAL until a concrete manager records stronger evidence.
     """
 
+    def _statusValue(self, name, default):
+        # A Qt-based manager that records status before QObject.__init__ has
+        # run raises RuntimeError (not AttributeError) on attribute lookup.
+        try:
+            return self.__dict__[name]
+        except KeyError:
+            pass
+        try:
+            return getattr(self, name, default)
+        except RuntimeError:
+            return default
+
     @property
     def connectionState(self) -> DeviceConnectionState:
-        return getattr(
-            self, "_deviceConnectionState", DeviceConnectionState.UNKNOWN
+        return self._statusValue(
+            "_deviceConnectionState", DeviceConnectionState.UNKNOWN
         )
 
     @property
     def runtimeMode(self) -> DeviceRuntimeMode:
-        return getattr(self, "_deviceRuntimeMode", DeviceRuntimeMode.REAL)
+        return self._statusValue("_deviceRuntimeMode", DeviceRuntimeMode.REAL)
 
     @property
     def connectionStatusSummary(self) -> str | None:
-        return getattr(self, "_deviceStatusSummary", None)
+        return self._statusValue("_deviceStatusSummary", None)
 
     @property
     def connectionStatusDetails(self) -> str | None:
-        return getattr(self, "_deviceStatusDetails", None)
+        return self._statusValue("_deviceStatusDetails", None)
 
     @property
     def connectionFailureKind(self) -> DeviceFailureKind | None:
-        return getattr(self, "_deviceFailureKind", None)
+        return self._statusValue("_deviceFailureKind", None)
 
     def _setConnectionState(
         self,
@@ -101,14 +113,36 @@ class DeviceManagerStatusMixin:
         mode = self.runtimeMode
         if mode is DeviceRuntimeMode.MOCK:
             return True
+        if self._failedTransport() is not None:
+            return False
         return self.connectionState not in (
             DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED)
+
+    def _failedTransport(self):
+        """The serial transport this device talks through, when that
+        transport is down (it failed to open, or its I/O failed). A transport
+        that could not open puts a mock port in place so dependents can still
+        be built; the device on it must not look connected because of that."""
+        for value in list(self.__dict__.values()):
+            if value is self or not isinstance(value, DeviceManagerStatusMixin):
+                continue
+            if not callable(getattr(type(value), "reconnectTransport", None)):
+                continue
+            if value.connectionState in (
+                    DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+                return value
+        return None
 
     def _requireConnected(self, what: str = "command") -> None:
         """Refuse a command on a real device that is not connected."""
         if self.isUsable:
             return
-        summary = self.connectionStatusSummary or "not connected"
+        summary = self.connectionStatusSummary
+        transport = self._failedTransport()
+        if transport is not None and self.connectionState not in (
+                DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+            summary = f"transport: {transport.connectionStatusSummary}"
+        summary = summary or "not connected"
         raise DeviceNotConnectedError(
             f"{getattr(self, 'name', type(self).__name__)}: {what} refused, {summary}")
 
@@ -131,6 +165,21 @@ class DeviceManagerStatusMixin:
                                make_mock=make_mock, **rules)
         self.__dict__["_backendHolder"] = holder
         return holder.open()
+
+    def _requireBackend(self) -> None:
+        """For a manager that cannot finish construction without its backend
+        (a detector reads its sensor size from the camera): raise a clear,
+        device-named error instead of the opaque one the first use of an
+        absent backend would give. The caller that builds managers records it
+        as that device's failure."""
+        holder = self.backendHolder
+        if holder is not None and isinstance(holder.backend, _AbsentBackend):
+            details = self.connectionStatusDetails
+            raise DeviceNotConnectedError(
+                f"{holder.label} could not be started: "
+                f"{self.connectionStatusSummary or 'not connected'}"
+                f"{f' ({details})' if details else ''}. Connect the device, or "
+                f"set useMockOnFailure to run on a mock instead.")
 
     @property
     def backendHolder(self):
@@ -402,6 +451,29 @@ class BackendHolder:
         return self.make_mock()
 
 
+class FailedDeviceManager(DeviceManagerStatusMixin):
+    """Status stand-in for a device whose manager could not be constructed.
+
+    It is never put where controllers look for working devices. It exists so
+    the device supervisor can report the failure (ERROR, with the reason)
+    instead of the device silently vanishing. It has no backend holder, so it
+    offers no reconnect: the manager itself never existed.
+    """
+
+    def __init__(self, name: str, error, *, managerName: str | None = None) -> None:
+        self.name = name
+        self.managerName = managerName
+        kind = (DeviceFailureKind.MISSING_DEPENDENCY
+                if isinstance(error, ImportError)
+                else DeviceFailureKind.INITIALIZATION_ERROR)
+        what = f"{name} ({managerName})" if managerName else name
+        text = (f"{type(error).__name__}: {error}"
+                if isinstance(error, BaseException) else str(error))
+        self._setConnectionError(
+            text, summary=f"{what} failed to start; restart after fixing it",
+            failure_kind=kind)
+
+
 def device_usable(manager) -> bool:
     """Whether a panel may send commands to ``manager``: its ``isUsable``,
     or True for a manager that records no status."""
@@ -412,6 +484,13 @@ def not_connected_reason(manager) -> str:
     """What to show on a greyed-out row."""
     summary = getattr(manager, "connectionStatusSummary", None)
     details = getattr(manager, "connectionStatusDetails", None)
+    failed = getattr(manager, "_failedTransport", None)
+    transport = failed() if callable(failed) else None
+    if transport is not None and getattr(manager, "connectionState", None) not in (
+            DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED):
+        # The device itself recorded nothing wrong; its serial port is down.
+        summary = f"Transport: {transport.connectionStatusSummary or 'not connected'}"
+        details = transport.connectionStatusDetails
     text = summary or "Not connected"
     if details and details not in text:
         text = f"{text}: {details}"

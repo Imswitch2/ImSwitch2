@@ -20,6 +20,7 @@
   ],
   "imcontrol_setups/example_mock.json": [
    "12efe5299bc4a8d2a3c67baf426d201680022da8a87b35aa393233700220fca8",
+   "53b4ceeab87d396cf4d0ad17caf422e150ef0c018a5607d5be6ad87b12ffd194",
    "5771cf8e7e604d0cb7147199a8a1757634888bff6fb0ce86cbdce53c0277650a",
    "59bdbe19f2d1321b92132d682bcb0ba2c31de944852cd8faad6d17f58331936f",
    "59cc88bd6661eafc81159d49f8a06997505d9a8028fe2dfcf454e4b04427f13e",
@@ -107,20 +108,16 @@
    "e3385e22358b59d10510e3f05b1010255af97c1e556a0dd287af84b571eac6ad"
   ],
   "imcontrol_setups/mock/lightsheet/example_snouty_smart_modes.json": [
-   "3707adf3ee280bad4258b48e7e409e61f7a27d6a27df4e87454552d4cd60e641",
-   "c903149922b096197a1b1e88afdb150b2ea2750e1e39ba68dfd9774a990eca37"
+   "3707adf3ee280bad4258b48e7e409e61f7a27d6a27df4e87454552d4cd60e641"
   ],
   "imcontrol_setups/mock/monalisa/hamamatsu_mock_scan_setup.json": [
-   "7a3e6d25876dc58c84709807627f6f98e73318d5a016723844a23d66a641dfee",
-   "a195d52e370c5b6f9aa7f963ac8b2507f42b0c7cdc88cf5b031f81653e056d2c"
+   "7a3e6d25876dc58c84709807627f6f98e73318d5a016723844a23d66a641dfee"
   ],
   "imcontrol_setups/mock/monalisa/mock_scan_monalisa_live.json": [
-   "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
    "fd54508e5df694480ddbd3ff6c1da66fe1f3aa638730d99f849862b873e2c177"
   ],
   "imcontrol_setups/mock/monalisa/mock_scan_setup.json": [
-   "533400cd22f41f275f9e7e3fb2c25aefdb4bbedd52156760aeca8e200e7e6b20",
-   "89d279b13fe6cde4beaf0f547194e111bfc9b97aadaa57553197f9256e9a7241"
+   "533400cd22f41f275f9e7e3fb2c25aefdb4bbedd52156760aeca8e200e7e6b20"
   ],
   "imcontrol_setups/mock/monalisa/simple_monalisa_mock_scan_setup.json": [
    "dca3a4500cf569310c5461d9817afae0e20f3221f0e24a20e6a6f0641d1a8179"
@@ -132,14 +129,13 @@
    "0dac8316cc82676f091b3f11296d700c3bd97c8dc377aa22dcac81730b3e0ce3"
   ],
   "imcontrol_setups/mock/point_scanning/mixed_hamamatsu_apd_mock_scan_setup.json": [
-   "6d89817110c58bcb4a80039cd2711f102ea600716500d21ee26baa58bd1f3a70",
    "e188a32a0445d6e483b8ef51aef46a0920902e33c71f3d24d44951821499736e"
   ],
   "imcontrol_setups/mock/point_scanning/simple_mock_setup.json": [
    "648d0141c316e3421faed896ef3861717571573368a395d83514402270febece"
   ],
   "imcontrol_setups/mock/widefield/example_mock.json": [
-   "5771cf8e7e604d0cb7147199a8a1757634888bff6fb0ce86cbdce53c0277650a"
+   "53b4ceeab87d396cf4d0ad17caf422e150ef0c018a5607d5be6ad87b12ffd194"
   ],
   "imcontrol_setups/mock_scan_monalisa_live.json": [
    "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
@@ -171,15 +167,13 @@
    "afe6b83b9e40c1c59b48c13aeae139a3d11cc809f1dcae57ad7ce2e4a60a865f"
   ],
   "imcontrol_setups/real/monalisa/example_monalisa.json": [
-   "422527f3b8494a2bb46f68c61ad0b195daacdab4f4661d99551bb7c5669d6516",
-   "bad464d960a72602739ca52f3e481a39e223e5f6c230632afa76d561fe39db12"
+   "422527f3b8494a2bb46f68c61ad0b195daacdab4f4661d99551bb7c5669d6516"
   ],
   "imcontrol_setups/real/sted/example_sted.json": [
    "1dae5ce50373fcf42c5c9c2d34ef88110d47ce51a55429cfb769ba4c023f7ca6"
   ],
   "imcontrol_setups/real/widefield/example_coolLED.json": [
-   "2c09bd28d3eabf74f43ec4aeef8fb1102219263dfcd9ecfb8786c65b25a66256",
-   "70d0ad1db5a278ce18c07ead262c74f5fb4a4ad6335c49cd4c007b5f2ef1f7e3"
+   "2c09bd28d3eabf74f43ec4aeef8fb1102219263dfcd9ecfb8786c65b25a66256"
   ],
   "imcontrol_setups/real/widefieldstarss/example_kiralux_teensy.json": [
    "dcbc440cebe532c901dbeb7128b4e89685e564b9519fa3dd5d6b570dd39da35e"

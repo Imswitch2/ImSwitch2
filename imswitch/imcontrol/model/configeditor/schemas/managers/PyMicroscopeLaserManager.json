@@ -22,6 +22,14 @@
         "code:default:string",
         "code:optional(get)"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "A laser that cannot be opened is left **not connected** (reported,",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "PyMicroscopeLaserManager managerProperties",

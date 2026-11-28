@@ -1,7 +1,39 @@
 """Positioner manager for Thorlabs KDC101 single-axis motor controllers."""
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .PositionerManager import PositionerManager
+
+
+class _MockKDC101:
+    """The configured mock for a ``MOCK_`` port: remembers where it was told to go."""
+
+    def __init__(self):
+        self.status = {'position': 0}
+        self.jogparams = {'step_size': 0, 'acceleration': 0, 'max_velocity': 0}
+        self.velparams = {'acceleration': 0, 'max_velocity': 0}
+
+    def move_absolute(self, position):
+        self.status['position'] = position
+
+    def move_velocity(self, forward):
+        pass
+
+    def stop(self):
+        pass
+
+    def home(self):
+        self.status['position'] = 0
+
+    def close(self):
+        pass
+
+    def set_jog_params(self, step_size, acceleration, max_velocity):
+        self.jogparams.update(step_size=step_size, acceleration=acceleration,
+                              max_velocity=max_velocity)
+
+    def set_velocity_params(self, acceleration, max_velocity):
+        self.velparams.update(acceleration=acceleration, max_velocity=max_velocity)
 
 
 class KDC101PositionerManager(PositionerManager):
@@ -13,7 +45,12 @@ class KDC101PositionerManager(PositionerManager):
         - velConvFac (float, required): Encoder velocity conversion factor.
         - accConvFac (float, required): Encoder acceleration conversion factor.
         - positionUnit (str, default "um"): Unit label shown in the positioner UI.
-        - homeOnInit (bool, default False): If true, home during construction.
+        - homeOnInit (bool, default False): If true, home during construction
+          (only when the stage is connected then; a reconnect never homes).
+
+    A stage that cannot be opened (``thorlabs_apt_device`` missing, the port
+    held by another program) is left absent: reported not connected, every
+    command refused with its name, reconnectable from Hardware status.
     """
 
     def __init__(self, positionerInfo, name: str, **lowLevelManagers):
@@ -42,21 +79,31 @@ class KDC101PositionerManager(PositionerManager):
         if self._posConvFac == 0:
             raise ValueError('posConvFac must be non-zero.')
 
-        self._device = self._getDeviceObj(self._port)
-        self.device = self._device
+        self._installBackend(
+            lambda: self._getDeviceObj(self._port), _MockKDC101,
+            label=f'KDC101 positioner {name} on {self._port}',
+            configured_mock=str(self._port).upper().startswith('MOCK'),
+            close=lambda device: device.close() if hasattr(device, 'close') else None,
+        )
 
-        if self.device is None:
-            self.__logger.error(
-                'KDC101 positioner "%s" disabled; hardware driver is unavailable.',
-                name,
-            )
-            return
+        if not self.backendHolder.backend:
+            return                      # not connected: nothing to home or read
 
         if properties.get('homeOnInit', False):
             self.__logger.info('Homing KDC101 positioner %s on %s', name, self._port)
             self.device.home()
 
         self.updatePosition()
+
+    #: The vendor device, read from the backend holder: a reconnect replaces it.
+    device = backend_attribute()
+
+    @property
+    def _device(self):
+        return self.device
+
+    def _lifecycleReinitialise(self) -> None:
+        self.updatePosition()           # a fresh read; a reconnect never moves
 
     def move(self, dist: float, axis: str) -> None:
         """Move by a relative displacement in ImSwitch position units."""
@@ -73,8 +120,6 @@ class KDC101PositionerManager(PositionerManager):
 
     def updatePosition(self) -> None:
         """Refresh cached position from the KDC101 status packet."""
-        if self.device is None:
-            return
         self._position[self._axis] = self._toPositionInUnits(
             self.device.status['position']
         )
@@ -82,20 +127,16 @@ class KDC101PositionerManager(PositionerManager):
     def jog_start(self, axis: str, sign: int) -> None:
         """Start continuous jogging when a consumer supports continuous motion."""
         self._validate_axis(axis)
-        if self.device is not None:
-            self.device.move_velocity(sign >= 0)
+        self.device.move_velocity(sign >= 0)
 
     def jog_stop(self, axis: str) -> None:
         """Stop continuous jogging and refresh the cached position."""
         self._validate_axis(axis)
-        if self.device is not None:
-            self.device.stop()
-            self.updatePosition()
+        self.device.stop()
+        self.updatePosition()
 
     def setJogDistanceInUnits(self, distInUnits: float) -> None:
         """Compatibility helper matching the legacy RS232 KDC101 manager."""
-        if self.device is None:
-            return
         self.device.set_jog_params(
             self._toEncPosition(distInUnits),
             self.device.jogparams['acceleration'],
@@ -103,8 +144,6 @@ class KDC101PositionerManager(PositionerManager):
         )
 
     def setJogAccelerationInUnits(self, accInUnits: float) -> None:
-        if self.device is None:
-            return
         self.device.set_jog_params(
             self.device.jogparams['step_size'],
             self._toEncAcceleration(accInUnits),
@@ -112,8 +151,6 @@ class KDC101PositionerManager(PositionerManager):
         )
 
     def setJogVelocityInUnits(self, velInUnits: float) -> None:
-        if self.device is None:
-            return
         self.device.set_jog_params(
             self.device.jogparams['step_size'],
             self.device.jogparams['acceleration'],
@@ -121,29 +158,22 @@ class KDC101PositionerManager(PositionerManager):
         )
 
     def setMoveVelocityInUnits(self, velInUnits: float) -> None:
-        if self.device is None:
-            return
         self.device.set_velocity_params(
             self.device.velparams['acceleration'],
             self._toEncVelocity(velInUnits),
         )
 
     def setMoveAccelerationInUnits(self, accInUnits: float) -> None:
-        if self.device is None:
-            return
         self.device.set_velocity_params(
             self._toEncAcceleration(accInUnits),
             self.device.velparams['max_velocity'],
         )
 
     def finalize(self) -> None:
-        if self.device is not None and hasattr(self.device, 'close'):
-            self.device.close()
+        self.backendHolder.close(suppress_errors=True)
         self._setFinalizedStatus()
 
     def _move_to_units(self, position: float) -> None:
-        if self.device is None:
-            return
         self.device.move_absolute(self._toEncPosition(position))
 
     def _validate_axis(self, axis: str) -> None:
@@ -169,30 +199,33 @@ class KDC101PositionerManager(PositionerManager):
         return encAcceleration / self._accConvFac
 
     def _getDeviceObj(self, port: str):
+        """Open the vendor device; raises when it cannot be opened (the
+        backend holder records that as the device not being connected).
+        A ``MOCK_`` port is a configured mock (the shipped no-hardware
+        setups): a stateful in-process stand-in, reported as a mock."""
+        if str(port).upper().startswith('MOCK'):
+            return _MockKDC101()
         try:
             from thorlabs_apt_device.devices.kdc101 import KDC101
-        except ImportError as e:
+        except ImportError:
             self.__logger.error(
                 'thorlabs_apt_device is not installed. Install it with: '
                 'pip install thorlabs-apt-device'
             )
-            self._setConnectionError(e, summary="KDC101 dependency unavailable")
-            return None
+            raise
 
         try:
             device = KDC101(serial_port=port)
-            self.__logger.info('Initialized KDC101 positioner on %s', port)
-            self._setConnected("KDC101 positioner initialized")
-            return device
-        except Exception as e:
+        except Exception:
             self.__logger.error(
                 'Failed to initialize KDC101 positioner on %s. If the port is '
                 'denied, check that no other manager in the setup file (or a '
                 'second ImSwitch instance, or Kinesis) already holds it.', port,
                 exc_info=True
             )
-            self._setConnectionError(e, summary="KDC101 positioner initialization failed")
-            return None
+            raise
+        self.__logger.info('Initialized KDC101 positioner on %s', port)
+        return device
 
 
 # Copyright (C) 2026 ImSwitch developers

@@ -6,7 +6,8 @@
       "address": 1,
       "homeOnInit": true,
       "port": "example",
-      "scale": "example"
+      "scale": "example",
+      "useMockOnFailure": true
     }
   }
 }

@@ -5,21 +5,37 @@ from .LaserManager import LaserManager
 class PulseStreamerLaserManager(LaserManager):
     """ LaserManager for controlling Pulse Streamer 8/2 from Swabian Instruments.
 
+    Needs ``lowLevelManagers['pulseStreamerManager']``, which ImSwitch2's
+    ``MasterController`` does not build; use ``PulseGeneratorLaserManager``
+    for a pulse generator. Without that manager the laser is reported as not
+    available (an error naming it) instead of silently becoming a mock.
+
     Manager properties:
 
     - ``digitalChannel`` -- streamer digital output (0 to 7)
     - ``analogChannel`` -- streamer analog output (0 to 1)
+    - ``useMockOnFailure`` -- default ``false``; ``true`` runs a reported mock
+      that drops commands when no pulse streamer manager is available.
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self._logger = initLogger(self, instanceName=name)
         self._isMock = False
+        useMock = laserInfo.managerProperties.get('useMockOnFailure', False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ('1', 'true', 'yes', 'on')
 
         try:
             self._pulseStreamerManager = lowLevelManagers["pulseStreamerManager"]
             self._digitalChannels = laserInfo.digitalLine
             self._analogChannels = laserInfo.analogChannel
         except Exception as e:
+            if not useMock:
+                raise RuntimeError(
+                    f"Pulse Streamer laser {name!r} is not available: no "
+                    f"pulseStreamerManager is built by this ImSwitch2 ({e!r}). Use "
+                    f"PulseGeneratorLaserManager, or set useMockOnFailure to true "
+                    f"for a mock.") from e
             self._isMock = True
             self._logger.warning(
                 f'Failed to initialize PulseStreamer hardware, running in mock mode: {e}'
@@ -41,7 +57,7 @@ class PulseStreamerLaserManager(LaserManager):
         if self._isMock:
             self._logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
             return
-        
+
         self._pulseStreamerManager.setDigital(self._digitalChannels, enabled)
 
     def setValue(self, voltage):
@@ -50,7 +66,7 @@ class PulseStreamerLaserManager(LaserManager):
         if self._isMock:
             self._logger.debug(f'Mock mode: setValue({voltage}) ignored')
             return
-        
+
         self._pulseStreamerManager.setAnalog(
             channel=self._analogChannels, voltage=voltage,
             min_val=self.valueRangeMin, max_val=self.valueRangeMax

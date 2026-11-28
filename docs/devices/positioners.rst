@@ -370,8 +370,10 @@ cached position.
 **Vendor library**
 
 ``thorlabs_apt_device.devices.kdc101.KDC101`` from
-``thorlabs-apt-device``.  If the package or device is unavailable,
-the manager logs an error and leaves the device disabled.
+``thorlabs-apt-device``.  If the package or device is unavailable the stage
+is left absent: reported not connected, every command refused with its name
+(nothing is silently ignored), and reconnectable from Hardware status. A
+reconnect re-reads the position and never homes or moves.
 
 **Source**
 
@@ -615,6 +617,12 @@ Marzhauser XY stage driven over RS-232.
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required (subscripted, no default).
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -633,9 +641,10 @@ Not supported.
 
 **Low-level dependencies**
 
-* ``rs232sManager[<rs232device>]`` — used for all stage I/O.  On
-  any exception during lookup the manager falls back to
-  ``MockRS232Driver`` and logs a warning.
+* ``rs232sManager[<rs232device>]`` — used for all stage I/O.  If the
+  lookup fails the stage raises an error naming the device, unless
+  ``useMockOnFailure`` is true (then ``MockRS232Driver`` stands in and
+  the status is a reported mock).
 
 **Vendor library**
 
@@ -831,6 +840,14 @@ optional analog joystick (e.g. C-819.20).
      - ``500``
      - Positive runtime command timeout in milliseconds, applied to both
        daisy-chain axes after PI startup completes.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - A stage that cannot be opened (or loses its USB link) is reported
+       **not connected**: it keeps its last known position, moves are refused
+       with the stage's name, and a reconnect from Hardware status brings the
+       real stage back without moving it. ``true`` runs a reported mock that
+       does move.
 
 **PositionerInfo fields used**
 
@@ -857,10 +874,10 @@ None.
 
 ``imswitch.imcontrol.model.interfaces.pipython.pidevice.GCSDevice``
 and ``pidevice.gcs2.gcs2pitools`` (PI Python wrapper bundled with
-ImSwitch2), imported at module top.  No mock fallback — if USB
-enumeration or connection fails the manager logs a warning and sets
-``self.device = None``; subsequent ``move`` / ``setPosition`` calls
-return without doing anything.
+ImSwitch2), imported at module top.  If USB enumeration or connection fails the stage
+is reported not connected: ``move`` / ``setPosition`` raise
+``PIStageUnavailableError`` naming the stage until it is reconnected in
+Hardware status (a reported mock only with ``useMockOnFailure``).
 
 **Source**
 
@@ -901,6 +918,12 @@ Piezoconcept Z-piezo over RS-232 (original firmware).
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -918,8 +941,9 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.  If the lookup fails, the manager logs a warning and
-  continues on a ``MockRS232Driver``.
+  ``query()``.  If the lookup fails the manager raises an error naming
+  the device, unless ``useMockOnFailure`` is true (then it continues on a
+  ``MockRS232Driver``, reported as a mock).
 
 **Vendor library**
 
@@ -968,6 +992,12 @@ Piezoconcept Z-piezo over RS-232 (variant the docstring describes as
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
    * - ``range_um``
      - number
      - Total travel range in µm.  Required for the auto-centering
@@ -991,8 +1021,9 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.  If the lookup fails, the manager logs a warning and
-  continues on a ``MockRS232Driver``.
+  ``query()``.  If the lookup fails the manager raises an error naming
+  the device, unless ``useMockOnFailure`` is true (then it continues on a
+  ``MockRS232Driver``, reported as a mock).
 
 **Vendor library**
 
@@ -1039,6 +1070,12 @@ that exposes a ``_squid`` attribute with ``move_x_usteps`` /
      - str
      - Name of the RS-232 channel registered in ``rs232sManager``.
        Required.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``. When the ``rs232device`` cannot be looked
+       up, ``false`` makes that an error that names it (the stage is
+       reported as failed in Hardware status); ``true`` runs the stage on a
+       simulated serial driver instead (a reported mock).
 
 **PositionerInfo fields used**
 
@@ -1057,10 +1094,10 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — must expose a ``_squid``
-  attribute providing the microstep-move API.  On any exception the
-  manager falls back to ``MockRS232Driver`` and logs a warning (note
-  that the mock does not provide ``_squid``, so moves on the
-  fallback will fail).
+  attribute providing the microstep-move API.  If the lookup fails the
+  manager raises an error naming the device, unless ``useMockOnFailure``
+  is true (then a ``MockRS232Driver`` carrying a small mock board stands
+  in; moves are accepted and logged, and the status is a reported mock).
 
 **Vendor library**
 

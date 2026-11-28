@@ -8,6 +8,7 @@ from imswitch.imcontrol.model.devices import (
     DeviceLifecycleNotSupportedError,
     DeviceLifecycleResult,
     DeviceManagerStatusMixin,
+    DeviceNotConnectedError,
     HardwareDeviceId,
 )
 from imswitch.imcontrol.model.interfaces.elliptecbus import (
@@ -64,7 +65,8 @@ class _ElliptecRotatorLifecycle:
         else:
             summary = (
                 f"Elliptec rotator {manager.name} reconnect failed; "
-                "mock fallback active"
+                + ("mock fallback active" if manager._useMockOnFailure
+                   else "rotator not connected")
             )
 
         return DeviceLifecycleResult(
@@ -89,7 +91,13 @@ class ElliptecRotatorManager(RotatorManager):
         - port (str, required): Serial port name (e.g. "COM20").
         - address (int, required): Elliptec multidrop address.
         - scale (str or float, default "stage"): pylablib scale parameter.
-        - homeOnInit (bool, default False): home during initial startup only.
+        - homeOnInit (bool, default False): home during initial startup only
+          (and only when the mount answers; a reconnect never homes).
+        - useMockOnFailure (bool, default False): a mount that does not answer
+          is reported not connected and refuses moves with its name
+          (reconnect from Hardware status; the bus then re-reads positions
+          and moves nothing). ``true`` runs a reported mock that moves
+          virtually.
     """
 
     def __init__(self, rotatorInfo, name: str, *args, **kwargs):
@@ -97,9 +105,21 @@ class ElliptecRotatorManager(RotatorManager):
         self.__logger = initLogger(self)
         self._bus = None
         self._lifecycle = None
+        self._useMockOnFailure = False
+        self._configuredMock = False
 
         if rotatorInfo is None:
             return
+        useMock = rotatorInfo.managerProperties.get("useMockOnFailure", False)
+        if isinstance(useMock, str):
+            useMock = useMock.strip().lower() in ("1", "true", "yes", "on")
+        self._useMockOnFailure = bool(useMock)
+        # A ``MOCK_`` port is a configured mock (the shipped no-hardware
+        # setups), not a failure: it runs on virtual positions, as a mock.
+        self._configuredMock = str(
+            rotatorInfo.managerProperties["port"]).upper().startswith("MOCK")
+        if self._configuredMock:
+            self._useMockOnFailure = True
 
         self._port = str(rotatorInfo.managerProperties["port"])
         self._addr = int(rotatorInfo.managerProperties["address"])
@@ -118,7 +138,12 @@ class ElliptecRotatorManager(RotatorManager):
         self._position = self._bus.initialize_address(self._addr)
         self._syncStatusFromBus()
 
-        if home_on_init:
+        if home_on_init and not self._bus.is_real(self._addr) and not self._useMockOnFailure:
+            self.__logger.warning(
+                f"Not homing Elliptec rotator {name}: it does not answer on "
+                f"{self._port} (reconnect it from Hardware status)"
+            )
+        elif home_on_init:
             self.__logger.info(
                 f"Homing Elliptec rotator {name} "
                 f"(port={self._port} addr={self._addr})"
@@ -143,11 +168,22 @@ class ElliptecRotatorManager(RotatorManager):
     def getDeviceLifecycle(self):
         return self._lifecycle
 
+    def _requireMount(self, what: str) -> None:
+        """A mount that does not answer refuses, by name, instead of moving a
+        virtual position the user could mistake for the real one."""
+        if (not self._useMockOnFailure and self._bus is not None
+                and not self._bus.is_real(self._addr)):
+            raise DeviceNotConnectedError(
+                f"{self.name}: {what} refused, "
+                f"{self.connectionStatusSummary or 'Elliptec mount not connected'}")
+
     def move_abs(self, pos_deg: float) -> None:
+        self._requireMount('move')
         self._move_with_retry(float(pos_deg))
         self._update_position()
 
     def move_rel(self, d_deg: float) -> None:
+        self._requireMount('move')
         target = self._position + float(d_deg)
         self._move_with_retry(target)
         self._update_position()
@@ -215,13 +251,19 @@ class ElliptecRotatorManager(RotatorManager):
             )
             return
 
+        if self._configuredMock:
+            self._setMockActive(f"Elliptec mock configured on {self._port}")
+            return
+
         error = self._bus.error_for(self._addr)
         self._setConnectionError(
             error or f"Elliptec address {self._addr} unavailable",
             summary=(
                 f"Elliptec address {self._addr} unavailable; mock fallback active"
+                if self._useMockOnFailure
+                else f"Elliptec address {self._addr} not connected on {self._port}"
             ),
-            mock_active=True,
+            mock_active=self._useMockOnFailure,
         )
 
     def _onElliptecBusStateChanged(self) -> None:

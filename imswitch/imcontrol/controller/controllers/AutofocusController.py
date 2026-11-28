@@ -5,7 +5,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model.managers import LeasePurpose
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, _missingDevices
 from .._fresh_frame import FRESH_FRAME_TIMEOUT_S, grab_fresh_frame
 
 _Z_AXIS = 'Z'
@@ -40,6 +40,17 @@ class AutofocusController(ImConWidgetController):
         self._yieldActuator = False
 
         if self._setupInfo.autofocus is None:
+            return
+
+        missing = _missingDevices(
+            self._master, detector=self._setupInfo.autofocus.camera,
+            positioner=self._setupInfo.autofocus.positioner)
+        if missing:
+            # A device autofocus needs did not start: the panel stays inert (as
+            # for a setup without autofocus) instead of ending startup.
+            self._logger.warning('Autofocus disabled: ' + '; '.join(missing))
+            self._widget.setEnabled(False)
+            self._widget.setToolTip('Autofocus disabled: ' + '; '.join(missing))
             return
 
         self.camera = self._setupInfo.autofocus.camera

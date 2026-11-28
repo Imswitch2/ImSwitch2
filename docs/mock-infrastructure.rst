@@ -35,6 +35,34 @@ under Limitations.
 Mock inventory by device family
 --------------------------------
 
+The policy (``docs/design/plans/device-reconnect-2.0.md``, section 4.0):
+
+* **Startup never crashes, and what did not start is reported.** A device that
+  fails is listed in the log at startup, in a notice in the main window, and
+  in Hardware status. A device whose manager cannot even be constructed (a
+  vendor library that does not load, a setup error) is logged with its
+  traceback, left out of its group, and reported as an error; the other
+  devices still start.
+* **Detectors fall back to a reported mock.** An acquisition needs a
+  detector, so a camera that cannot be opened is replaced by a mock whose
+  model name starts with ``MOCK (real camera not connected)``, whose
+  recordings carry ``recording:detector_simulated`` and the reason, and which
+  the camera's reconnect replaces by the real one. ``useMockOnFailure: false``
+  opts out (the detector is left out and reported).
+* **Everything else is absent, not mocked.** A laser, stage, rotator, flip
+  mirror, pulse generator, SLM or stand that cannot be opened is not
+  connected: its panel is greyed with the reason, commands are refused, and
+  Hardware status reconnects it without a restart. A mock is used only where
+  the setup configures one (a ``Mock*Manager``, a ``MOCK_`` serial,
+  ``simulation: true``) or opts in with ``useMockOnFailure: true``. A device
+  on a serial transport that failed to open is not usable either.
+
+Every device kind above takes ``useMockOnFailure: true`` as the explicit
+opt-in for a reported mock; a ``MOCK_`` serial or port and ``simulation: true``
+are configured mocks and are not failures. A device that is not there never
+becomes a mock on its own (lasers, stages, rotators, SLMs, stands, flip
+mirrors); a reconnect from Hardware status brings it back OFF / unmoved.
+
 Detectors
 ~~~~~~~~~
 
@@ -48,8 +76,16 @@ Detectors
      - Trigger-aware?
    * - ``AVManager``
      - ``MockCameraTIS`` (``imswitch.imcontrol.model.interfaces.tiscamera_mock``)
-     - Always: no video driver is bundled, so every ``cameraListIndex``
-       loads the mock. This is the camera the shipped no-hardware setups use.
+     - A ``cameraListIndex`` starting with ``mock`` configures the mock (the
+       camera the shipped no-hardware setups use). A real camera that fails
+       to open falls back to the mock unless ``useMockOnFailure`` is
+       ``false``; then startup reports a device-named error and the camera is
+       left out.
+     - No (free-runs).
+   * - ``PiCamManager``
+     - ``MockCameraTIS``
+     - Same rule as ``AVManager``: a ``cameraHost`` starting with ``mock``, or
+       a failed real camera with ``useMockOnFailure`` true (the default).
      - No (free-runs).
    * - ``TISManager``
      - ``MockCameraTIS``
@@ -64,7 +100,9 @@ Detectors
        free-runs on wall-clock in internal-trigger mode. Emits ``uint16``.
    * - ``PhotometricsManager``
      - ``MockPhotometrics`` (``imswitch.imcontrol.model.interfaces.photometrics_mock``)
-     - Same fallback pattern; ``"cameraListIndex": "mock"``.
+     - ``"cameraListIndex": "mock"`` configures it; a real camera that fails
+       to open falls back to it unless ``useMockOnFailure`` is ``false`` (then
+       a device-named startup error, camera left out).
      - Not in a simulated scan. The mock itself queues frames with
        ``mockTrigger(n)`` in either external trigger mode and free-runs on
        wall-clock at the exposure cadence with the internal trigger, but
@@ -72,8 +110,9 @@ Detectors
        frame triggers, so nothing calls ``mockTrigger``. Emits ``uint16``.
    * - ``ThorCamTSIManager``
      - ``MockThorTSICamera``
-     - Automatic when ``cameraSerial`` starts with ``MOCK_``, or when the
-       real SDK/serial fails to open.
+     - A ``cameraSerial`` starting with ``MOCK_`` configures it; a real
+       camera that fails to open falls back to it unless ``useMockOnFailure``
+       is ``false`` (then a device-named startup error, camera left out).
      - Partial — the repository note
        ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
        published documentation) audits this manager's mock/real
@@ -112,46 +151,84 @@ full 2048 rows).
 Positioners / stages
 ~~~~~~~~~~~~~~~~~~~~~
 
+A stage that is not there is reported not connected and refuses moves with its
+name; ``useMockOnFailure: true`` is the opt-in for a reported mock. The mocks
+that exist:
+
 * ``MockPositionerManager`` — a standalone one-axis manager (no serial/DAQ
   backing at all) used directly in setup JSON for repeat/timelapse-style
   mock stages. Correctly tracks position in ``self._position``.
 * ``NidaqPositionerManager`` — runs against a simulated NI-DAQ
   (``nidaq.simulation: true``); no physical AO/DO channels are opened.
-* ``MHXYStageManager`` (Marzhauser XY over RS232) — falls back to
-  ``MockRS232Driver`` when the configured ``rs232device`` fails to
-  initialize. Position bookkeeping happens in the manager's own
-  ``self._position``, independent of the driver, so this path tracks
-  position correctly even though the RS232 calls are no-ops.
-* ``PiezoconceptZManager`` / ``PiezoconceptZManager2`` (Z-piezo over RS232)
-  — same ``MockRS232Driver`` fallback as ``MHXYStageManager`` when the
-  configured ``rs232device`` is missing or fails to initialize.
-* Rotators (``StandaRotatorManager``, ``ElliptecRotatorManager``,
-  ``KinesisRotatorManager``) each implement their own real-then-mock
-  fallback (``MockElliptecBus``/``MockElliptecMotor``, mock Kinesis motor,
-  Standa mocker) triggered when the real driver import/connect fails.
+* ``MHXYStageManager`` (Marzhauser XY), ``PiezoconceptZManager`` /
+  ``PiezoconceptZManager2`` and ``SQUIDStageManager``: a ``rs232device`` that
+  cannot be looked up is an error naming it; with ``useMockOnFailure`` a
+  ``MockRS232Driver`` stands in (for SQUID it carries a small mock board that
+  accepts and logs moves). A serial port that fails to open is the transport's
+  failure: the stage reports itself not connected (the Marzhauser stage by
+  refusing to sync a position from a placeholder port) and reconnects with
+  the port.
+* ``KinesisStageManager``, ``PIStageManager`` and ``KDC101PositionerManager``:
+  a ``MOCK_`` serial / port is a configured mock; a stage that fails to open
+  is not connected (PI keeps its last known position and refuses moves), and a
+  reconnect re-reads the position and moves nothing.
+* ``GRBLStageManager``: no mock. After a reconnect the board's position is
+  unknown: moves are refused until the user references the stage (the
+  Positioner panel's Reference action homes the board).
+* ``SmarACTPositionerManager`` — no mock. A missing MCSControl library makes
+  the module unavailable, and a stage that is not found fails the manager's
+  construction; either way the stage is left out and reported as an error.
+* Rotators: ``KinesisRotatorManager``, ``StandaRotatorManager`` and
+  ``ElliptecRotatorManager`` use a mock only for a ``MOCK_`` serial / port, or
+  with ``useMockOnFailure: true``; otherwise they are not connected, refuse
+  moves, and reconnect from Hardware status (the Elliptec bus re-reads every
+  address once and never homes or moves).
 
 Lasers
 ~~~~~~
 
 There is no dedicated mock laser manager and no ``laser.simulation`` flag
-analogous to ``nidaq.simulation``. Headless-safe laser operation happens
-incidentally through two other fallbacks:
+analogous to ``nidaq.simulation`` (the Cobolt managers have their own
+``simulation``). A laser that is not there is never a mock unless the setup
+says so: it is reported not connected, its commands are refused with its name,
+and a reconnect brings it back OFF (its cached setpoint is kept but not
+applied, so a later power change cannot light it).
 
-* Lasers driven over RS232 fall back to ``MockRS232Driver`` the same way
-  ``MHXYStageManager`` does, if their serial device is missing.
+* ``Cobolt0601LaserManager`` (and its ``LantzLaserManager`` base),
+  ``Cobolt0601NewLaserManager``, ``CoolLEDLaserManager``,
+  ``ESP32LEDLaserManager`` and ``PyMicroscopeLaserManager``: absent by
+  default; ``useMockOnFailure: true`` runs a reported mock. ``simulation:
+  true`` (Cobolt) is a configured mock.
+* ``PulseStreamerLaserManager``: ImSwitch2 never builds a
+  ``pulseStreamerManager``, so this laser is reported as not available (use
+  ``PulseGeneratorLaserManager``); a mock only with the opt-in.
+* Lasers driven over RS232 depend on the RS232 manager they are bound to,
+  which leaves a placeholder ``MockRS232Driver`` port if it cannot be opened
+  so that they can still be built; a device on a failed transport is not
+  usable (its refusal names the transport) and recovers when the transport
+  reconnects.
+* ``GRBLLaserManager`` is bound to a ``GRBLManager`` board, which has no mock:
+  a port that cannot be opened leaves the board not connected and the laser
+  refusing commands until the board is reconnected (then OFF).
 * ``PulseGeneratorLaserManager`` (and any manager built against
-  ``lowLevelManagers['pulseGeneratorManager']``) follows the mock-mode
-  fallback pattern documented in :doc:`adding-device-support`: when the
-  pulse generator low-level manager is unavailable, ``self._isMock =
-  self._pulseGen is None`` and the manager degrades to a no-op.
+  ``lowLevelManagers['pulseGeneratorManager']``) degrades to a no-op mock
+  only when the setup has no pulse generator at all. When a Teensy is
+  configured but its port cannot be opened (and ``useMockOnFailure`` is
+  false) the Teensy is not connected and reported, the laser is still built,
+  and its commands raise ``DeviceNotConnectedError`` until the Teensy is
+  reconnected. A Teensy with no port, or with ``useMockOnFailure`` true, runs
+  on the mock driver.
 
 SLMs
 ~~~~
 
 ``HamamatsuSLMdviManager`` / ``HamamatsuSLMusbManager`` expose an explicit
-``mockermode`` manager property (also auto-enabled if the real device fails
-to open), independent from the ``cameraListIndex: "mock"`` and RS232
-fallback conventions used elsewhere.
+``mockermode`` manager property. ``HamamatsuSLMusbManager`` whose DLL cannot
+be loaded (or lacks the expected functions) is reported not connected:
+``upload_pattern`` refuses with the SLM's name and the SLM panel's Connect
+retries the DLL and the USB device (it never uploads by itself). With
+``useMockOnFailure: true`` it switches to a reported mock instead. The DVI
+manager mocks only when ``mockermode`` is set.
 
 Flip mirrors / stands / serial
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -159,12 +236,18 @@ Flip mirrors / stands / serial
 * ``ThorlabsMFFMockManager`` (→ ``MockThorlabsMFFManager``) is a dedicated
   mock flip-mirror manager, selected explicitly via ``managerName`` rather
   than a hardware-failure fallback.
-* ``LeicaDMIStandMockManager`` (→ ``MockLeicaDMIStandManager``) falls back
-  to ``MockRS232Driver`` when its configured RS232 device can't be reached.
-* ``MockRS232Driver`` is the shared fallback serial driver used by several
-  of the families above. It logs writes/queries and always returns ``None``
-  from ``read()`` (matching a real timeout), rather than modeling any device
-  protocol.
+* ``LeicaDMIStandMockManager`` (→ ``MockLeicaDMIStandManager``) is the
+  configured mock stand. The real ``LeicaDMIStandManager`` and
+  ``LeicaDMIZPositionerManager`` have no mock: a stand whose serial port did
+  not open is reported not connected and refuses commands by name.
+* A stand manager class that cannot be loaded is reported as failed (a stand
+  that does nothing stands in so stand controllers keep working); its
+  ``<managerName>_mock`` twin is loaded only with ``useMockOnFailure: true``.
+* ``MockRS232Driver`` is the placeholder serial driver ``RS232Manager``
+  leaves in place when a port cannot be opened (so that devices on it can be
+  built) and the opt-in driver of the stages above. It logs writes/queries and
+  always returns ``None`` from ``read()`` (matching a real timeout), rather
+  than modeling any device protocol; devices on it do not look connected.
 
 NI-DAQ / scan simulation
 ~~~~~~~~~~~~~~~~~~~~~~~~~

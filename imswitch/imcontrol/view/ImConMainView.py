@@ -622,6 +622,42 @@ class ImConMainView(QtWidgets.QMainWindow):
                 # Action is disabled or has no binding
                 qAction.setText(baseText)
 
+    def setHardwareNotice(self, text, tooltip=''):
+        """Show (or clear) the non-blocking notice that devices did not start.
+
+        It lives in the status bar, which stays hidden while all is well. The
+        user can dismiss it; it comes back only when the set of problems
+        changes.
+        """
+        bar = self.statusBar()
+        if self.__dict__.get('_hardwareNoticeLabel') is None:
+            self._hardwareNoticeLabel = QtWidgets.QLabel()
+            self._hardwareNoticeLabel.setStyleSheet('font-weight: bold;')
+            self._hardwareNoticeButton = QtWidgets.QPushButton('Hardware status\u2026')
+            self._hardwareNoticeButton.clicked.connect(self.showHardwareStatus)
+            self._hardwareNoticeDismiss = QtWidgets.QPushButton('Dismiss')
+            self._hardwareNoticeDismiss.clicked.connect(self._dismissHardwareNotice)
+            bar.addWidget(self._hardwareNoticeLabel, 1)
+            bar.addPermanentWidget(self._hardwareNoticeButton)
+            bar.addPermanentWidget(self._hardwareNoticeDismiss)
+            self._hardwareNoticeKey = None
+            self._hardwareNoticeDismissedKey = None
+        if not text:
+            self._hardwareNoticeKey = None
+            self._hardwareNoticeDismissedKey = None
+            bar.hide()
+            return
+        key = (text, tooltip)
+        self._hardwareNoticeKey = key
+        self._hardwareNoticeLabel.setText('\u26a0 ' + text)
+        self._hardwareNoticeLabel.setToolTip(tooltip)
+        if key != self._hardwareNoticeDismissedKey:
+            bar.show()
+
+    def _dismissHardwareNotice(self):
+        self._hardwareNoticeDismissedKey = self._hardwareNoticeKey
+        self.statusBar().hide()
+
     def showHardwareStatus(self):
         """Show and raise the global read-only hardware status window."""
         self.hardwareStatusWidget.show()

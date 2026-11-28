@@ -1329,15 +1329,37 @@ def test_simulation_explicit_legacy_pause_remains_invalid():
         Cobolt0601NewLaserManager(info, 'invalid-simulated-pause')
 
 
-def test_absent_simulation_key_falls_back_to_mock_when_port_is_unavailable():
-    """Existing setups recover from a missing COM port without an extra key."""
+def test_unavailable_port_leaves_the_laser_absent_by_default():
+    """A laser that is not there is absent and reported, never a mock that
+    would let the user believe light is on (device-failure policy)."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
     info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'])
+    m = Cobolt0601NewLaserManager(info, 'absent')
+
+    assert m._simulation is False
+    assert m._mock_fallback is False and m._real_hw is False and m._absent is True
+    assert m.runtimeMode is DeviceRuntimeMode.REAL
+    assert m.connectionState is DeviceConnectionState.ERROR
+    assert not m.isUsable
+    assert 'COM_DOES_NOT_EXIST' in m.connectionStatusSummary
+    for command in (lambda: m.setEnabled(True), lambda: m.setValue(5),
+                    lambda: m.setScanModeActive(True)):
+        with pytest.raises(DeviceNotConnectedError, match='absent.*refused'):
+            command()
+    assert m.getDeviceLifecycle() is not None        # Hardware status can reconnect it
+    m.finalize()                                      # and closing sends nothing
+
+
+def test_use_mock_on_failure_true_is_the_explicit_opt_in_for_a_mock():
+    info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'], useMockOnFailure=True)
     m = Cobolt0601NewLaserManager(info, 'fallback')
 
     assert m._simulation is False
     assert m._mock_fallback is True
     assert m._real_hw is False
     assert m._laser.cmds[-1] == 'l0'
+    assert m.runtimeMode is DeviceRuntimeMode.MOCK and m.connectionState is DeviceConnectionState.ERROR
 
 
 def test_connection_failure_pause_mode_falls_back_to_scpi_capable_mock(
@@ -1354,6 +1376,7 @@ def test_connection_failure_pause_mode_falls_back_to_scpi_capable_mock(
         FakeLaserInfo(
             digitalPorts=['COM24'],
             emissionControl='pause',
+            useMockOnFailure=True,
         ),
         'unavailable-pause-cobolt',
     )
@@ -1376,7 +1399,8 @@ def test_connection_open_error_falls_back_to_mock(monkeypatch):
     monkeypatch.setattr(PyCoboltManager, 'Cobolt06', UnavailableCobolt)
 
     m = Cobolt0601NewLaserManager(
-        FakeLaserInfo(digitalPorts=['COM24']), 'unavailable-cobolt'
+        FakeLaserInfo(digitalPorts=['COM24'], useMockOnFailure=True),
+        'unavailable-cobolt'
     )
 
     assert m._mock_fallback is True
@@ -1384,14 +1408,14 @@ def test_connection_open_error_falls_back_to_mock(monkeypatch):
     assert m._laser.cmds[-1] == 'l0'
 
 
-def test_mock_on_failure_false_raises_for_an_unavailable_port():
+def test_mock_on_failure_false_is_absent_not_a_startup_error():
     info = FakeLaserInfo(
         digitalPorts=['COM_DOES_NOT_EXIST'],
         simulation=False,
         useMockOnFailure=False,
     )
-    with pytest.raises(DeviceInitializationError, match='COM_DOES_NOT_EXIST'):
-        Cobolt0601NewLaserManager(info, 'real')
+    m = Cobolt0601NewLaserManager(info, 'real')      # no longer aborts startup
+    assert m._absent and 'COM_DOES_NOT_EXIST' in m.connectionStatusSummary
 
 
 def test_shipped_example_setup_declares_simulation():
@@ -1470,9 +1494,37 @@ def test_lifecycle_reconnect_reopens_preserves_setpoint_and_forces_off(monkeypat
     assert second.cmds[-1] == 'l0'
 
 
-def test_lifecycle_promotes_startup_mock_fallback_to_real(monkeypatch):
+def test_lifecycle_brings_an_absent_laser_back_dark_with_its_setpoint_unapplied(monkeypatch):
     factory = FakeCoboltFactory(OSError('port unavailable'))
     m = _manager_with_factory(monkeypatch, factory, name='561')
+    assert m._absent is True and not m.isUsable
+
+    real = FakeLaser(firmware='legacy')
+    m._Cobolt06 = FakeCoboltFactory(real)
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert m._laser is real and m._real_hw is True and m._absent is False
+    assert m.isUsable and m.connectionState is DeviceConnectionState.CONNECTED
+    assert m.runtimeMode is DeviceRuntimeMode.REAL
+    assert real.cmds[-1] == 'l0'                       # dark, master off
+    assert 'l1' not in real.cmds                       # nothing switched on
+
+
+def test_lifecycle_failed_reconnect_leaves_the_laser_absent_not_mocked(monkeypatch):
+    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(OSError('first')), name='561')
+    m._Cobolt06 = FakeCoboltFactory(OSError('still gone'))
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is False
+    assert 'laser not connected' in result.summary
+    assert m._absent is True and m._mock_fallback is False
+    assert m.runtimeMode is DeviceRuntimeMode.REAL and not m.isUsable
+
+
+def test_lifecycle_promotes_startup_mock_fallback_to_real(monkeypatch):
+    factory = FakeCoboltFactory(OSError('port unavailable'))
+    m = _manager_with_factory(monkeypatch, factory, name='561', useMockOnFailure=True)
     assert m._mock_fallback is True
     assert m.runtimeMode is DeviceRuntimeMode.MOCK
 
@@ -1499,7 +1551,7 @@ def test_intentional_simulation_does_not_advertise_reconnect():
 
 def test_lifecycle_failed_reconnect_installs_safe_mock_and_reports_unknown_beam(monkeypatch):
     first = FakeLaser(firmware='legacy')
-    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(first))
+    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(first), useMockOnFailure=True)
     m.setValue(33)
     m._Cobolt06 = FakeCoboltFactory(OSError('port disappeared'))
 
@@ -1561,7 +1613,8 @@ def test_lifecycle_rejects_different_known_serial_before_mutating_commands(monke
     assert second.disconnected is True
     assert '@cobas 0' not in second.cmds
     assert 'l0' not in second.cmds
-    assert m.runtimeMode is DeviceRuntimeMode.MOCK
+    # The wrong laser is refused and the device is absent, not a mock (policy).
+    assert m.runtimeMode is DeviceRuntimeMode.REAL and m._absent is True
 
 
 def test_runtime_protocol_failure_marks_real_connection_error():

@@ -16,7 +16,7 @@
       ]
     },
     "homeOnInit": {
-      "description": "If true, home this rotator at startup (uses the bus lock; safe to set on multiple devices).",
+      "description": "If true, home this rotator at startup when it answers (uses the bus lock; safe to set on multiple devices). A reconnect never homes.",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",
@@ -36,6 +36,14 @@
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "A mount that does not answer is reported **not connected**: moves are refused with its name and a reconnect from Hardware status re-reads the positions without moving anything. ``true`` runs a reported mock that moves virtually.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
         "code:optional(get)"
       ]
     }

@@ -38,7 +38,7 @@
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "Cobolt0601LaserManager",
       "refs": 0,
       "required": 1,
@@ -56,7 +56,7 @@
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "CoboltLaserManager",
       "refs": 0,
       "required": 1,
@@ -65,7 +65,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "CoolLEDLaserManager",
       "refs": 1,
       "required": 1,
@@ -74,7 +74,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "ESP32LEDLaserManager",
       "refs": 1,
       "required": 0,
@@ -128,7 +128,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 5,
       "name": "ElliptecRotatorManager",
       "refs": 0,
       "required": 2,
@@ -182,7 +182,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "HamamatsuSLMusbManager",
       "refs": 0,
       "required": 0,
@@ -245,7 +245,7 @@
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "LantzLaserManager",
       "refs": 0,
       "required": 1,
@@ -281,7 +281,7 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "MHXYStageManager",
       "refs": 1,
       "required": 0,
@@ -362,7 +362,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "PIStageManager",
       "refs": 0,
       "required": 0,
@@ -398,7 +398,7 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "PiezoconceptZManager",
       "refs": 1,
       "required": 0,
@@ -416,7 +416,7 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "PulseStreamerLaserManager",
       "refs": 0,
       "required": 0,
@@ -443,7 +443,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "PyMicroscopeLaserManager",
       "refs": 0,
       "required": 0,
@@ -470,7 +470,7 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "SQUIDStageManager",
       "refs": 1,
       "required": 0,
@@ -598,19 +598,19 @@
   "totals": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 164,
-    "docs_documented": 164,
-    "keys": 244,
+    "docs_agree": 176,
+    "docs_documented": 176,
+    "keys": 257,
     "managers": 66,
     "none_default_only": 39,
     "none_only": 16,
-    "optional": 178,
+    "optional": 191,
     "reads_any": 60,
     "refs": 14,
     "required": 66,
-    "typed_by_code": 121,
-    "typed_with_docs": 188,
-    "typed_with_examples": 158,
+    "typed_by_code": 134,
+    "typed_with_docs": 201,
+    "typed_with_examples": 171,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 60,

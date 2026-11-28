@@ -20,6 +20,13 @@
         "code:default:boolean",
         "code:optional(get)"
       ]
+    },
+    "useMockOnFailure": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "HamamatsuSLMusbManager managerProperties",

@@ -907,7 +907,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _getUnreferencedScanAxes(self):
         unreferenced = []
         for positionerName in self.positioners:
-            manager = self._master.positionersManager[positionerName]
+            manager = _positionerNamed(self._master, positionerName)
             if not manager.isReferenceActionable:
                 continue
             
@@ -1305,7 +1305,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if not positionerName or positionerName == 'None':
                 positionsBeforeScan.append([])
                 continue
-            manager = self._master.positionersManager[positionerName]
+            manager = _positionerNamed(self._master, positionerName)
             info = self._setupInfo.positioners[positionerName]
             axes = list(getattr(info, 'axes', None) or manager.axes)
             positionsBeforeScan.append([manager.position[axis]for axis in axes])
@@ -2670,3 +2670,32 @@ _attrCategoryTTL = 'ScanTTL'
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def _positionerNamed(master, name):
+    """The positioner manager called ``name``. One that failed to start is
+    named with its reason (``getDevice``) instead of a bare KeyError."""
+    positioners = master.positionersManager
+    getDevice = getattr(positioners, 'getDevice', None)
+    return getDevice(name) if callable(getDevice) else positioners[name]
+
+
+def _missingDevices(master, *, detector=None, positioner=None):
+    """Reasons for the devices a controller's setup section names that did not
+    start (or do not exist); an empty list when all are there. The reason of a
+    device that failed at startup is its failure."""
+    reasons = []
+    for label, group, name in (('detector', 'detectorsManager', detector),
+                               ('positioner', 'positionersManager', positioner)):
+        if not name:
+            continue
+        devices = getattr(master, group, None)
+        getDevice = getattr(devices, 'getDevice', None)
+        try:
+            if callable(getDevice):
+                getDevice(name)
+            else:
+                devices[name]
+        except Exception as error:
+            reasons.append(f'{label} {name!r}: {error}')
+    return reasons

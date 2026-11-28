@@ -31,11 +31,17 @@ manager; manager-specific fields stay under ``managerProperties``.
 ``managerName`` is resolved like the other device kinds: first through the
 device plugin registry (see :doc:`plugins`), then as a module of the same
 name in ``imswitch.imcontrol.model.managers.stands``.  When neither finds
-it, the loader tries a mock counterpart before giving up: the registry
-name ``<managerName>_mock``, then a module ``<managerName>_mock`` with a
-class ``Mock<managerName>``.  It logs a warning when it loads one.  In
+it, the stand is reported as failed (an error naming the manager) and the
+application starts without it; stand controllers get a stand that does
+nothing and is not usable.  With ``"useMockOnFailure": true`` in
+``managerProperties`` the loader instead tries a mock counterpart: the
+registry name ``<managerName>_mock``, then a module ``<managerName>_mock``
+with a class ``Mock<managerName>``, and logs a warning when it loads one.  In
 the current tree only the legacy name ``LeicaDMIManager`` has such a
-counterpart, so a setup naming it loads the mock stand described below.
+counterpart, so a setup naming it needs that opt-in to load the mock stand
+described below.  A Leica stand whose serial port did not open is
+reported not connected and refuses commands by name; reconnect it from
+Hardware status.
 
 
 Mock stand

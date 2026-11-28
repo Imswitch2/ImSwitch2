@@ -412,9 +412,12 @@ class _ReconnectableCoolLedTransport(DeviceManagerStatusMixin):
         return "OK"
 
 
-def _coolled_info(channel):
+def _coolled_info(channel, useMockOnFailure=True):
+    # The mock is an explicit opt-in (device-failure policy); the tests below
+    # that pin a mock transport opt in, test_coolled_*_default_* pin the default.
     return SimpleNamespace(
-        managerProperties={"rs232device": "coolLED", "channel_index": channel},
+        managerProperties={"rs232device": "coolLED", "channel_index": channel,
+                           "useMockOnFailure": useMockOnFailure},
         wavelength=405,
         valueRangeMin=0,
         valueRangeMax=100,
@@ -463,6 +466,44 @@ def test_coolled_shared_lifecycle_reconnects_once_and_dynamic_mock_state_recover
 
     first.setEnabled(True)
     assert transport.commands[-1] == "CAN"
+
+
+def test_coolled_default_is_not_connected_and_refuses_commands_not_a_silent_mock():
+    from imswitch.imcontrol.model.managers.lasers.CoolLEDLaserManager import (
+        CoolLEDLaserManager,
+    )
+
+    transport = _ReconnectableCoolLedTransport()
+    manager = CoolLEDLaserManager(
+        _coolled_info("A", useMockOnFailure=False), "405 LED",
+        rs232sManager={"coolLED": transport})
+
+    assert manager._isMock is False
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert not manager.isUsable
+    with pytest.raises(Exception, match="405 LED.*not connected"):
+        manager.setEnabled(True)
+    with pytest.raises(Exception, match="not connected"):
+        manager.setValue(10)
+    assert transport.commands == []                      # nothing reached a device
+
+    # Reconnect: all channels come back OFF, none switched on.
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is True and manager.isUsable
+    assert "CAF" in transport.commands and "CAN" not in transport.commands
+
+
+def test_coolled_missing_rs232_device_is_an_error_unless_opted_in():
+    from imswitch.imcontrol.model.managers.lasers.CoolLEDLaserManager import (
+        CoolLEDLaserManager,
+    )
+
+    with pytest.raises(RuntimeError, match="'coolLED' is not available"):
+        CoolLEDLaserManager(_coolled_info("A", useMockOnFailure=False), "405 LED",
+                            rs232sManager={})
+    mocked = CoolLEDLaserManager(_coolled_info("A"), "405 LED", rs232sManager={})
+    assert mocked._isMock is True and mocked.runtimeMode is DeviceRuntimeMode.MOCK
 
 
 def test_failed_coolled_reconnect_keeps_mock_fallback_visible():

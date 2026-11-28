@@ -28,7 +28,7 @@ try:
     import TimeTagger
     from TimeTagger import Flim, createTimeTagger
     _TIMETAGGER_AVAILABLE = True
-except ImportError:
+except Exception:  # ImportError, or the vendor library failing to load (OSError)
     TimeTagger = None
     Flim = None
     createTimeTagger = None

@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 166,
-    "docs_documented": 166,
-    "keys": 246,
+    "docs_agree": 179,
+    "docs_documented": 179,
+    "keys": 260,
     "managers": 66,
     "none_default_only": 40,
     "none_only": 16,
-    "optional": 180,
+    "optional": 194,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 121,
-    "typed_with_docs": 190,
-    "typed_with_examples": 158,
+    "typed_by_code": 135,
+    "typed_with_docs": 204,
+    "typed_with_examples": 172,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -118,7 +118,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "Cobolt0601NewLaserManager": {
@@ -140,7 +140,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "CoolLEDLaserManager": {
@@ -150,7 +150,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 1
     },
     "ESP32LEDLaserManager": {
@@ -160,7 +160,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "ESP32LEDMatrixManager": {
@@ -218,7 +218,7 @@
         "RotatorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 5,
       "required": 2
     },
     "GRBLLaserManager": {
@@ -275,7 +275,7 @@
         "HamamatsuSLMusbManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "JenaPiezoZManager": {
@@ -343,7 +343,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 1
     },
     "LeicaDMIStandManager": {
@@ -381,7 +381,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "MPBLaserManager": {
@@ -471,7 +471,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "PMTManager": {
@@ -511,7 +511,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "PiezoconceptZManager2": {
@@ -521,7 +521,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 0
     },
     "PulseGeneratorLaserManager": {
@@ -541,7 +541,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "PulseStreamerManager": {
@@ -561,7 +561,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 0
     },
     "RS232Manager": {
@@ -589,7 +589,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "SerialDacZManager": {

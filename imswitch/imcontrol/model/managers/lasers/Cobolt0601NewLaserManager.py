@@ -123,11 +123,12 @@ class _Cobolt0601Lifecycle:
     def reconnect(self):
         device_id = DeviceId("laser", self._manager.name)
         success, details = self._manager._reconnectHardware()
-        summary = (
-            "Cobolt reconnected; emission forced OFF"
-            if success
-            else "Cobolt reconnect failed; mock fallback active"
-        )
+        if success:
+            summary = "Cobolt reconnected; emission forced OFF"
+        elif self._manager._mock_fallback:
+            summary = "Cobolt reconnect failed; mock fallback active"
+        else:
+            summary = "Cobolt reconnect failed; laser not connected"
         return DeviceLifecycleResult(
             hardware_id=self.hardware_id,
             action=DeviceLifecycleAction.RECONNECT,
@@ -168,9 +169,10 @@ class Cobolt0601NewLaserManager(LaserManager):
     - ``simulation`` -- ``true`` to use the mock driver instead of opening the
       port. Defaults to ``false``.
     - ``useMockOnFailure`` -- when a real connection cannot be opened, use the
-      in-process mock instead of aborting startup. Defaults to ``true`` for
-      compatibility with existing hardware-less setups. Set to ``false`` when
-      a missing laser must be a hard startup error.
+      in-process mock (reported as a mock). Defaults to ``false``: a laser
+      that is not there is left absent -- reported, its commands refused --
+      and Hardware status reconnects it without a restart. A mock laser on a
+      real rig would let the user believe light is on.
     """
 
     def __init__(self, laserInfo, name, **_lowLevelManagers):
@@ -211,8 +213,10 @@ class Cobolt0601NewLaserManager(LaserManager):
             laserInfo.managerProperties.get('simulation', False)
         )
         self._use_mock_on_failure = _as_bool(
-            laserInfo.managerProperties.get('useMockOnFailure', True)
+            laserInfo.managerProperties.get('useMockOnFailure', False)
         )
+        self._absent = False
+        self._label = f'Cobolt laser {name!r} on {self._port}'
         self._protocol_profile = laserInfo.managerProperties.get('protocolProfile')
         if self._protocol_profile is not None:
             self._protocol_profile = str(self._protocol_profile).strip()
@@ -296,26 +300,27 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'{traceback.format_exc()}'
                 )
                 if not self._use_mock_on_failure:
-                    raise DeviceInitializationError(
+                    self.__logger.warning(
                         f'Cobolt laser {name!r} could not be opened on '
-                        f'{self._port}: {exc}. Check the configured port and '
-                        f'device power. To run without hardware, set '
-                        f'managerProperties.simulation to true, or set '
-                        f'useMockOnFailure to true.'
-                    ) from exc
-                self.__logger.warning(
-                    f'Cobolt laser {name!r} could not be opened on '
-                    f'{self._port}: {exc}. Falling back to MockCobolt06. '
-                    f'Set managerProperties.useMockOnFailure to false to '
-                    f'make this a hard startup error.'
-                )
-                self._start_mock()
-                self._mock_fallback = True
-                self._setConnectionError(
-                    exc,
-                    summary="Cobolt connection failed; mock fallback active",
-                    mock_active=True,
-                )
+                        f'{self._port}: {exc}. The laser is left absent; '
+                        f'reconnect it from Hardware status. Set '
+                        f'managerProperties.useMockOnFailure to true for a '
+                        f'mock instead.'
+                    )
+                    self._installAbsent(exc)
+                else:
+                    self.__logger.warning(
+                        f'Cobolt laser {name!r} could not be opened on '
+                        f'{self._port}: {exc}. Falling back to MockCobolt06 '
+                        f'(useMockOnFailure is true).'
+                    )
+                    self._start_mock()
+                    self._mock_fallback = True
+                    self._setConnectionError(
+                        exc,
+                        summary="Cobolt connection failed; mock fallback active",
+                        mock_active=True,
+                    )
             else:
                 self._real_hw = True
                 self._setConnected("Cobolt laser connected")
@@ -324,8 +329,9 @@ class Cobolt0601NewLaserManager(LaserManager):
         # either fails we must not hand back a manager that looks usable. The
         # port is closed again so a failed startup does not leak it.
         try:
-            self._detect_firmware()
-            self._init_safe_state()
+            if not self._absent:
+                self._detect_firmware()
+                self._init_safe_state()
         except Exception:
             self._close_connection()
             raise
@@ -336,6 +342,26 @@ class Cobolt0601NewLaserManager(LaserManager):
         # failed connection to recover. Startup mock fallback remains
         # reconnectable so hardware can be promoted in-place later.
         self._lifecycle = None if self._simulation else _Cobolt0601Lifecycle(self)
+
+    def _installAbsent(self, exc) -> None:
+        """No laser: every command is refused, with the reason, until a
+        reconnect finds it. Nothing is sent to hardware."""
+        from imswitch.imcontrol.model.devices.status import _AbsentBackend
+
+        self._laser = _AbsentBackend(self, self._label)
+        self._absent = True
+        self._real_hw = False
+        self._mock_fallback = False
+        self._enabled = False
+        self._setConnectionError(
+            exc, summary=f"{self._label} not connected")
+
+    def _requireNotAbsent(self, what: str) -> None:
+        if self.__dict__.get('_absent', False):
+            from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError
+            raise DeviceNotConnectedError(
+                f"{getattr(self, 'name', 'Cobolt laser')}: {what} refused, "
+                f"{self.connectionStatusSummary or 'not connected'}")
 
     def _start_mock(self) -> None:
         """Create the local Cobolt mock without attempting a serial port."""
@@ -841,6 +867,12 @@ class Cobolt0601NewLaserManager(LaserManager):
                 self.__logger.warning(
                     f'Cobolt {self._port} reconnect failed: {exc}'
                 )
+                if not self._use_mock_on_failure:
+                    self._close_connection()
+                    self._resetProtocolState()
+                    self._installAbsent(exc)
+                    self._setpoint_mw = requested_setpoint
+                    return False, str(exc)
                 try:
                     details = self._installReconnectMockFallback(exc)
                 except Exception as fallback_exc:
@@ -861,6 +893,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                 return False, details
 
             self._real_hw = True
+            self._absent = False
             self._mock_fallback = False
             self._enabled = False
             self._setpoint_mw = requested_setpoint
@@ -879,6 +912,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         :meth:`_set_enabled_pause`, which pauses/resumes the beam without
         sending ``l0`` (see ``__init__``).
         """
+        self._requireNotAbsent('switching emission')
         if self._pause_mode:
             return self._set_enabled_pause(enabled)
         if enabled:
@@ -987,6 +1021,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         say what power is actually emitting, so it drives the defined safe-off
         recovery rather than leaving an unverified beam live.
         """
+        self._requireNotAbsent('setting power')
         try:
             value = int(power)
         except (TypeError, ValueError):
@@ -1025,6 +1060,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         power setpoint and emission is gated by external TTL. Outside scan
         mode the laser returns to whatever ``_enabled`` says.
         """
+        self._requireNotAbsent('scan mode')
         if active:
             # The GUI setpoint is the sole authority for the scan power —
             # including 0, which must arm the laser DARK. Falling back to
@@ -1073,10 +1109,12 @@ class Cobolt0601NewLaserManager(LaserManager):
 
     @_synchronized_io
     def setModulationEnabled(self, enabled: bool) -> None:
+        self._requireNotAbsent('modulation')
         self._run('set_digital_modulation_enabled', enabled)
 
     @_synchronized_io
     def setModulationPower(self, power) -> None:
+        self._requireNotAbsent('modulation power')
         try:
             value = float(power)
         except (TypeError, ValueError):
@@ -1123,6 +1161,9 @@ class Cobolt0601NewLaserManager(LaserManager):
         stays open until the process exits and the next session cannot
         reconnect.
         """
+        if self.__dict__.get('_absent', False):
+            self._close_connection()
+            return
         try:
             if self._pause_mode:
                 # Pause the beam without sending l0. Sending l0 here

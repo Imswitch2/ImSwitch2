@@ -3,7 +3,8 @@
   "device": {
     "managerName": "PulseStreamerLaserManager",
     "managerProperties": {
-      "calibCsvPath": "example"
+      "calibCsvPath": "example",
+      "useMockOnFailure": true
     }
   }
 }

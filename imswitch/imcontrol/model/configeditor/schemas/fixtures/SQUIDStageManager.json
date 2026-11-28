@@ -3,7 +3,8 @@
   "device": {
     "managerName": "SQUIDStageManager",
     "managerProperties": {
-      "rs232device": "example"
+      "rs232device": "example",
+      "useMockOnFailure": true
     }
   }
 }

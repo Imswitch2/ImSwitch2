@@ -112,6 +112,11 @@ class ImConMainController(MainController):
             controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
         )
 
+        # Devices that did not start: a non-blocking notice in the window,
+        # kept in step with every reconnect.
+        self.hardwareStatusController.addRefreshListener(self._updateHardwareNotice)
+        self._updateHardwareNotice(self.__masterController.deviceSupervisor.getHardwareStatuses())
+
         self.controllers = {}
 
         # One controller per panel the view built -- through the same code
@@ -123,6 +128,15 @@ class ImConMainController(MainController):
             activeSetupPath=self.__activeSetupPath,
         )
         self.__panels.buildStartupControllers()
+        #: Panels that could not be built (widgetKey -> error: their widget or
+        #: their controller). One mechanism: PanelService left them out; they
+        #: are named in the startup message (reportStartupProblems, below) and
+        #: in the hardware notice, which the device startup report feeds and
+        #: every Hardware status refresh (reconnects) updates.
+        self.failedPanels = dict(self.__panels.startupProblems())
+        if self.failedPanels:
+            self._updateHardwareNotice(
+                self.__masterController.deviceSupervisor.getHardwareStatuses())
 
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
         if 'SetupModes' in self.controllers:
@@ -394,6 +408,21 @@ class ImConMainController(MainController):
     @property
     def shortcutManager(self):
         return self.__shortcutManager
+
+    def _updateHardwareNotice(self, statuses):
+        from imswitch.imcontrol.model.devices import (
+            formatStartupReport, startupIssues, startupNoticeText,
+        )
+        issues = startupIssues(statuses)
+        text, detail = startupNoticeText(issues), formatStartupReport(issues)
+        panels = sorted(self.__dict__.get('failedPanels', {}))
+        if panels:
+            text = (text.rstrip('.') + '. ' if text else 'Hardware: ') + (
+                f"{len(panels)} panel{'s' if len(panels) != 1 else ''} could not start "
+                f"({', '.join(panels)}); see the log.")
+            detail = '\n'.join(filter(None, [detail] + [
+                f'{key} panel: {self.failedPanels[key]}' for key in panels]))
+        self.__mainView.setHardwareNotice(text, detail)
 
     @property
     def panelService(self):

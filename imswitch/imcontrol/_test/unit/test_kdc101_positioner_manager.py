@@ -158,3 +158,108 @@ def test_kdc101_positioner_exposes_legacy_velocity_helpers(monkeypatch):
     assert device.velocity_calls == [False]
     assert device.stop_calls == 1
     assert device.closed is True
+
+
+# ---------------------------------------------------------------- failure policy
+def _failing_then_working(monkeypatch, device):
+    """_getDeviceObj raises until ``state['works']`` is set, then returns ``device``."""
+    state = {'works': False}
+
+    def getDeviceObj(self, port):
+        if not state['works']:
+            raise OSError(f'{port} could not be opened')
+        return device
+
+    monkeypatch.setattr(KDC101PositionerManager, '_getDeviceObj', getDeviceObj)
+    return state
+
+
+def test_kdc101_positioner_that_cannot_open_is_absent_refuses_commands_and_reconnects(monkeypatch):
+    from imswitch.imcontrol.model.devices import (
+        DeviceConnectionState, DeviceNotConnectedError, DeviceRuntimeMode,
+    )
+
+    device = _FakeKDC101(initial_position=100)
+    homed = []
+    device.home = lambda: homed.append(True)
+    state = _failing_then_working(monkeypatch, device)
+
+    manager = KDC101PositionerManager(
+        _positioner_info({'port': 'COM15', 'posConvFac': 10, 'velConvFac': 2,
+                          'accConvFac': 4, 'homeOnInit': True}),
+        'Rotation stage',
+    )
+
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.connectionState is DeviceConnectionState.ERROR and not manager.isUsable
+    assert 'COM15' in manager.connectionStatusDetails
+    with pytest.raises(DeviceNotConnectedError):
+        manager.move(1.0, 'R')
+    with pytest.raises(DeviceNotConnectedError):
+        manager.setPosition(1.0, 'R')
+    with pytest.raises(DeviceNotConnectedError):
+        manager.jog_start('R', 1)
+    assert device.move_absolute_calls == [] and homed == []     # nothing reached hardware
+
+    state['works'] = True
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success, result.summary
+    assert manager.isUsable and manager.position['R'] == 10.0   # a fresh read
+    assert device.move_absolute_calls == []                    # a reconnect moves nothing
+    assert homed == []                                         # and never homes
+    manager.move(1.0, 'R')
+    assert device.move_absolute_calls == [110]
+
+
+def test_kdc101_rs232_manager_that_cannot_open_is_absent_not_silent(monkeypatch):
+    from types import SimpleNamespace
+
+    import imswitch.imcontrol.model.managers.rs232.KDC101Manager as module
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError, DeviceRuntimeMode
+
+    class Device:
+        works = False
+
+        def __init__(self, serial_port):
+            if not Device.works:
+                raise OSError(f'{serial_port} busy')
+            self.calls = []
+
+        def home(self):
+            self.calls.append('home')
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, 'KDC101', Device, raising=False)
+    monkeypatch.setattr(module, '_KDC101_AVAILABLE', True)
+    info = SimpleNamespace(managerProperties={'port': 'COM3', 'posConvFac': 1,
+                                              'velConvFac': 1, 'accConvFac': 1})
+    manager = module.KDC101Manager(info)
+
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL and not manager.isUsable
+    assert manager.device_active is False
+    with pytest.raises(DeviceNotConnectedError, match='KDC101 on COM3'):
+        manager.home()                              # was a silent return
+    with pytest.raises(DeviceNotConnectedError):
+        manager.getPositionInUnits()                # was a silent 0.0
+
+    Device.works = True
+    assert manager.reconnectTransport() is True
+    assert manager.device_active is True
+    manager.home()
+    assert manager._device.calls == ['home']        # only the user's own command
+
+
+def test_kdc101_mock_port_is_a_configured_mock_not_a_failure():
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    manager = KDC101PositionerManager(
+        _positioner_info({'port': 'MOCK_COM15', 'posConvFac': 10, 'velConvFac': 2,
+                          'accConvFac': 4}),
+        'Rotation stage',
+    )
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.NOT_APPLICABLE and manager.isUsable
+    manager.setPosition(12.5, 'R')
+    assert manager.position['R'] == 12.5

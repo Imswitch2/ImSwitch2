@@ -34,6 +34,10 @@ class MultiManager(ABC):
     def __init__(self, managedDeviceInfos, subManagersPackage, **lowLevelManagers):
         #self.__logger = initLogger(self, instanceName='MultiManager')
         self._subManagers = {}
+        # Devices whose manager could not be built: name -> FailedDeviceManager.
+        # They are not in ``_subManagers``, so every loop over the working
+        # devices simply does not see them; the device supervisor reports them.
+        self._failedSubManagers = {}
         # Keep successful sub-manager objects alive for the remainder of the
         # shutdown sequence. Identity-scoped bookkeeping lets a failed device
         # retry without finalizing already-closed peers again, while a device
@@ -43,13 +47,37 @@ class MultiManager(ABC):
         kind = SUBMANAGERS_PACKAGE_TO_KIND.get(subManagersPackage)
         if managedDeviceInfos:
             for managedDeviceName, managedDeviceInfo in managedDeviceInfos.items():
-                # Create sub-manager
-                managerClass = self._resolveManagerClass(
-                    currentPackage, subManagersPackage, kind,
-                    managedDeviceInfo.managerName,
-                )
-                self._subManagers[managedDeviceName] = managerClass(
-                    managedDeviceInfo, managedDeviceName, **lowLevelManagers)
+                # Create sub-manager. One device that cannot be built must not
+                # take the rest of the setup down with it.
+                try:
+                    managerClass = self._resolveManagerClass(
+                        currentPackage, subManagersPackage, kind,
+                        managedDeviceInfo.managerName,
+                    )
+                    self._subManagers[managedDeviceName] = managerClass(
+                        managedDeviceInfo, managedDeviceName, **lowLevelManagers)
+                except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                    raise
+                except BaseException as error:
+                    # BaseException: some vendor SDKs raise outside Exception.
+                    self._recordSubManagerFailure(
+                        subManagersPackage, managedDeviceName,
+                        getattr(managedDeviceInfo, 'managerName', None), error)
+
+    def _recordSubManagerFailure(self, subManagersPackage, managedDeviceName,
+                                 managerName, error):
+        from imswitch.imcontrol.model.devices.status import FailedDeviceManager
+
+        logging.getLogger('imswitch.imcontrol.MultiManager').error(
+            'Device "%s" (%s, manager "%s") failed to start and is left out: '
+            '%s: %s', managedDeviceName, subManagersPackage, managerName,
+            type(error).__name__, error, exc_info=error)
+        self._failedSubManagers[managedDeviceName] = FailedDeviceManager(
+            managedDeviceName, error, managerName=managerName)
+
+    def getFailedDevices(self):
+        """ Devices that failed to start, as ``{name: FailedDeviceManager}``. """
+        return dict(self.__dict__.get('_failedSubManagers', {}))
 
     @staticmethod
     def _resolveManagerClass(currentPackage, subManagersPackage, kind, managerName):
@@ -77,7 +105,7 @@ class MultiManager(ABC):
                     kind, managerName)
                 
                 # Check if legacy path would also resolve (shadowing detection).
-                if MultiManager._importLegacyManagerClass(
+                if MultiManager._legacyClassOrNone(
                     currentPackage, subManagersPackage, managerName
                 ) is not None:
                     # Warn about shadowing: registry is hiding an in-tree manager.
@@ -110,8 +138,21 @@ class MultiManager(ABC):
         )
 
     @staticmethod
+    def _legacyClassOrNone(currentPackage, subManagersPackage, managerName):
+        """ Like :meth:`_importLegacyManagerClass`, but an in-tree manager
+        that fails to import counts as absent (it cannot shadow anything). """
+        try:
+            return MultiManager._importLegacyManagerClass(
+                currentPackage, subManagersPackage, managerName)
+        except ManagerImportError:
+            return None
+
+    @staticmethod
     def _importLegacyManagerClass(currentPackage, subManagersPackage, managerName):
         """Return the in-tree manager class of that name, or None.
+
+        Raises :class:`ManagerImportError` when the module exists but fails to
+        import, so that reads differently from "no such manager".
 
         None covers every way there can fail to be one, including a name that
         could never be a module in the first place. Plugin contribution ids are
@@ -126,12 +167,21 @@ class MultiManager(ABC):
           ids the external-plugin hints in ``external.py`` are keyed by.
         """
         try:
-            package = importlib.import_module(
-                pythontools.joinModulePath(
-                    f'{currentPackage}.{subManagersPackage}', managerName)
-            )
-        except (ImportError, ValueError):
+            modulePath = pythontools.joinModulePath(
+                f'{currentPackage}.{subManagersPackage}', managerName)
+        except ValueError:
             return None
+        try:
+            package = importlib.import_module(modulePath)
+        except ModuleNotFoundError as error:
+            missing = error.name or ''
+            if modulePath == missing or modulePath.startswith(missing + '.'):
+                return None  # there is no such manager module
+            raise ManagerImportError(managerName, modulePath, error) from error
+        except Exception as error:
+            # The module exists, but loading it failed: a vendor library
+            # missing (ImportError) or failing to load (OSError for a DLL).
+            raise ManagerImportError(managerName, modulePath, error) from error
         return getattr(package, managerName, None)
 
     def hasDevices(self):
@@ -217,6 +267,11 @@ class MultiManager(ABC):
         """ Raises an error if the specified device is not managed by this
         manager. """
         if managedDeviceName not in self._subManagers:
+            failed = self.__dict__.get('_failedSubManagers', {}).get(managedDeviceName)
+            if failed is not None:
+                raise NoSuchSubManagerError(
+                    f'Device "{managedDeviceName}" failed to start in this '
+                    f'{self.__class__.__name__}: {failed.connectionStatusDetails}')
             raise NoSuchSubManagerError(f'Device "{managedDeviceName}" does not exist or is not'
                                         f' managed by this {self.__class__.__name__}.')
 
@@ -225,6 +280,17 @@ class MultiManager(ABC):
 
     def __iter__(self):
         yield from self._subManagers.items()
+
+
+class ManagerImportError(ImportError):
+    """ A device manager module exists but could not be imported (a vendor
+    library missing, or failing to load). Not the same as an unknown
+    manager name. """
+
+    def __init__(self, managerName, modulePath, cause):
+        super().__init__(
+            f'Device manager "{managerName}" was found ({modulePath}) but '
+            f'failed to import: {type(cause).__name__}: {cause}')
 
 
 class NoSuchSubManagerError(RuntimeError):

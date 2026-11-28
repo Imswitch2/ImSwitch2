@@ -57,6 +57,10 @@ class HardwareStatusController(ImConWidgetController):
         self.refresh()
         QtCore.QTimer.singleShot(0, self.refresh)
 
+    def addRefreshListener(self, listener):
+        """Call ``listener(statuses)`` on every refresh (controller thread)."""
+        self.__dict__.setdefault('_refreshListeners', []).append(listener)
+
     def refresh(self):
         if self.__dict__.get('_closing'):
             return
@@ -66,8 +70,14 @@ class HardwareStatusController(ImConWidgetController):
             action: getIds(action) if callable(getIds) else ()
             for action in DeviceLifecycleAction
         }
+        statuses = self._master.deviceSupervisor.getHardwareStatuses()
+        for listener in list(self.__dict__.get('_refreshListeners', ())):
+            try:
+                listener(statuses)
+            except Exception:
+                pass
         self._widget.setStatuses(
-            self._master.deviceSupervisor.getHardwareStatuses(),
+            statuses,
             reconnectableHardwareIds=actionable[DeviceLifecycleAction.RECONNECT],
             connectableHardwareIds=actionable[DeviceLifecycleAction.CONNECT],
             disconnectableHardwareIds=actionable[DeviceLifecycleAction.DISCONNECT],
