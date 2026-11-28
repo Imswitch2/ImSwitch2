@@ -198,9 +198,12 @@ def test_bead_rec_widget_has_responsive_list_and_status_controls():
 
     assert 'listPanel.setMaximumWidth(100)' not in source
     assert 'listPanel.setMinimumWidth(140)' in source
-    assert 'self.cwidget.setMinimumSize(0, 0)' in source
+    # The canvas keeps a floor inside the panel's scroll area (it never pins
+    # the window), and the status label wraps without making the panel
+    # height-for-width -- see test_beadrec_display.
+    assert 'self.cwidget.setMinimumSize(0, self.MINIMUM_CANVAS_HEIGHT)' in source
     assert 'self.imageListWidget.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)' in source
-    assert 'self.statusLabel = QtWidgets.QLabel("Idle")' in source
+    assert 'self.statusLabel = _StatusLabel("Idle")' in source
     assert 'self.progressBar = QtWidgets.QProgressBar()' in source
     assert 'def setStatusText(self, text):' in source
     assert 'def updateProgress(self, current, total):' in source
