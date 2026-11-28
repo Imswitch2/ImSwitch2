@@ -231,3 +231,33 @@ def test_the_reviewers_shape_is_within_its_allowance():
     values = contrast_module.finite_values(np.zeros((2, 1_000_000, 1, 1), np.uint16))
     assert values.size <= allowed           # was 166 667 against 61 680
     assert values.size > allowed // 2
+
+
+# -- filled_auto_levels: levels for an image that is still being acquired ------
+
+def test_filled_auto_levels_ignores_the_unfilled_zeros():
+    from imswitch.imcommon.model.contrast import filled_auto_levels
+    image = np.zeros((64, 64), np.uint16)
+    image[:3] = np.arange(100, 100 + 3 * 64).reshape(3, 64)
+    low, high = filled_auto_levels(image)
+    assert 100 <= low < 110 and 280 < high <= 291
+
+
+def test_filled_auto_levels_says_when_nothing_is_filled():
+    from imswitch.imcommon.model.contrast import filled_auto_levels
+    assert filled_auto_levels(np.zeros((8, 8))) is None
+    assert filled_auto_levels(np.full((8, 8), np.nan)) is None
+    assert filled_auto_levels(np.zeros((0, 4))) is None
+
+
+def test_filled_auto_levels_reads_a_bounded_sample_of_a_large_volume():
+    from imswitch.imcommon.model.contrast import filled_auto_levels
+    volume = np.random.default_rng(0).integers(1, 1000, (32, 256, 256)).astype(np.uint16)
+    low, high = filled_auto_levels(volume[:, ::-1, :], max_samples=10_000)   # non-contiguous view
+    assert 0 < low < 50 and 950 < high < 1000
+
+
+def test_the_improcess_name_is_the_imcommon_module():
+    import imswitch.imcommon.model.contrast as common
+    import imswitch.improcess.model.contrast as legacy
+    assert legacy is common
