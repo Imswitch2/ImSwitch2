@@ -114,6 +114,42 @@ class ImageWidget(QtWidgets.QWidget):
         except AttributeError:
             pass
 
+    # -- stale stacks ------------------------------------------------------------
+
+    def collapseLiveLayerToShownPlane(self, name):
+        """Reduce live layer ``name`` to the 2-D plane it shows now.
+
+        For a detector that does not take part in a scan: its stack from an
+        earlier scan otherwise stays, and keeps the viewer's slider. The
+        plane's pixels are copied (the detector may reuse its buffer), the
+        layer is rebuilt at 2-D with its display settings, and its scan
+        geometry is cleared. Returns ``(old shape, plane index)``, or None
+        when the layer has no stack to reduce.
+        """
+        layer = self.imgLayers.get(name)
+        if layer is None or not any(item is layer for item in self.napariViewer.layers):
+            return None
+        data = layer.data
+        shape = tuple(np.shape(data))
+        lead = len(shape) - 2
+        if lead <= 0 or all(size == 1 for size in shape[:lead]):
+            return None
+        dims = self.napariViewer.dims
+        offset = int(dims.ndim) - len(shape)
+        scale = tuple(float(v) for v in layer.scale)
+        translate = tuple(float(v) for v in layer.translate)
+        index = []
+        for k in range(lead):
+            axis = offset + k
+            try:
+                position = (float(dims.point[axis]) - translate[k]) / (scale[k] or 1.0)
+            except (IndexError, TypeError):
+                position = 0.0
+            index.append(int(min(max(round(position), 0), shape[k] - 1)))
+        plane = np.array(np.asarray(data)[tuple(index)], copy=True)
+        self.setImage(name, plane, scale[-2:], scanGeometry=None)
+        return shape, tuple(index)
+
     # -- layers napari's own buttons add ---------------------------------
 
     #: Names napari gives the layers of its "new points" / "new shapes"

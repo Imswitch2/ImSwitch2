@@ -9,6 +9,9 @@ from ..display_transform import (
     apply_display_transform, display_transform_from_properties, sum_axes_for_display,
 )
 from imswitch.imcontrol.model.scan_frame import DisplayedScanGeometry, frame_geometry_of
+from imswitch.imcontrol.model.managers._scan_execution import (
+    EXCLUDED_KEY, PARTICIPANTS_KEY, ScanExecutionCoordinator,
+)
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
@@ -66,6 +69,16 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         if hasattr(self._commChannel, 'sigResultLayersUpdated'):
             self._commChannel.sigResultLayersUpdated.connect(self.resultLayersUpdated)
             self._commChannel.sigResultLayersRemoved.connect(self.resultLayersRemoved)
+
+        # The scan lifecycle: which detectors a scan uses (a detector left out
+        # must not keep a stale stack and its slider).
+        nidaqBuilt = getattr(getattr(self._master, 'nidaqManager', None), 'sigScanBuilt', None)
+        if nidaqBuilt is not None:
+            nidaqBuilt.connect(self._onNidaqScanBuilt)
+        for signalName, slot in (('sigScanStarted', self._onScanIterationStarted),):
+            signal = getattr(self._commChannel, signalName, None)
+            if signal is not None:
+                signal.connect(slot)
 
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
@@ -140,6 +153,68 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
 
             if not init or self._shouldResetView:
                 self.adjustFrame(shape=display_im.shape, instantResetView=True)
+
+
+    # -- scans: detectors left out ---------------------------------------------
+
+    def _onNidaqScanBuilt(self, scanInfoDict, *_args):
+        """An NI-DAQ scan is built: its ``scanInfoDict`` names the detectors
+        taking part (or, failing that, the scan-driven ones left out)."""
+        if not isinstance(scanInfoDict, dict):
+            return
+        participants = scanInfoDict.get(PARTICIPANTS_KEY)
+        if participants is not None:
+            self._retireNonParticipants(set(map(str, participants)))
+            return
+        excluded = scanInfoDict.get(EXCLUDED_KEY)
+        if excluded:
+            live = set(getattr(self._widget, 'imgLayers', {}) or {})
+            self._retireNonParticipants(live - set(map(str, excluded)))
+
+    def _onScanIterationStarted(self):
+        """Any scan backend: the coordinator's active iteration knows its
+        participants by now. TriggerScope publishes ``sigScanBuilt`` before
+        it arms the coordinator (and without a scanInfoDict), so for it this
+        is the first moment they are known; for NI-DAQ it repeats the build's
+        answer and changes nothing."""
+        coordinator = getattr(self._master, 'scanExecutionCoordinator', None)
+        if not isinstance(coordinator, ScanExecutionCoordinator):
+            return
+        token = coordinator.activeToken
+        participants = getattr(token, 'participants', None)
+        if participants is None:
+            return
+        self._retireNonParticipants(set(map(str, participants)))
+
+    def _retireNonParticipants(self, participants):
+        """Reduce the live layer of every detector not in this scan to the
+        plane it shows, so a stack left from an earlier scan no longer keeps
+        the viewer's slider. Its display settings are kept; one log line per
+        reduced layer says what was dropped."""
+        collapse = getattr(self._widget, 'collapseLiveLayerToShownPlane', None)
+        if collapse is None:
+            return
+        for detectorName in list(getattr(self._widget, 'imgLayers', {}) or {}):
+            if detectorName in participants:
+                continue
+            result = collapse(detectorName)
+            if result is None:
+                continue
+            oldShape, index = result
+            self.__logger.info(
+                f'{detectorName} is not in this scan: its live layer {tuple(oldShape)} '
+                f'now shows only the plane it was showing, index {tuple(index)}, as 2-D '
+                f'(the rest of that stack is no longer in the viewer)'
+            )
+            # Its last stack must not come back through a Sum box, and the
+            # pixels shown no longer carry that scan's geometry.
+            self.__dict__.get('_lastFrames', {}).pop(detectorName, None)
+            self.__dict__.get('_toldAxes', {}).pop(detectorName, None)
+            if hasattr(self._widget, 'setSummableAxes'):
+                self._widget.setSummableAxes(detectorName, [], None)
+            if self._shownScanGeometry.get(detectorName) is not None:
+                self._shownScanGeometry[detectorName] = None
+                self._commChannel.sigScanGeometryShown.emit(detectorName, None)
 
     def _axisLabels(self, detectorName, im):
         """What to call each dimension of a frame beyond its image, outermost

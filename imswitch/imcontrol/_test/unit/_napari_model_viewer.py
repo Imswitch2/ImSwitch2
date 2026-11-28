@@ -13,6 +13,10 @@ one; only the docks and the canvas are missing.
 What this cannot show: rendering, mouse interaction on the canvas, the vispy
 overlays, and napari's Qt layer controls.
 """
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import numpy as np
 from napari.components import ViewerModel
 from qtpy import QtWidgets
 
@@ -59,3 +63,64 @@ def layerNames(viewer):
 def activeName(viewer):
     active = viewer.layers.selection.active
     return None if active is None else active.name
+
+
+# -- the image controller on the headless widget ----------------------------------
+
+class FakeDetectors:
+    """The few DetectorsManager calls ImageController makes."""
+
+    def __init__(self, detectors):
+        self._detectors = detectors
+
+    def __getitem__(self, name):
+        return self._detectors[name]
+
+    def hasDevices(self):
+        return True
+
+    def execOnCurrent(self, fn):
+        return (64, 64)
+
+    def getAllDeviceNames(self, condition=None):
+        return [name for name, d in self._detectors.items()
+                if condition is None or condition(d)]
+
+
+def fakeDetector(scanDriven):
+    return SimpleNamespace(forAcquisition=True, isScanDriven=scanDriven,
+                           livePlaneIndex=None, displayAxisNames=None)
+
+
+def imageControllerRig():
+    """A real ImageController on a HeadlessImageWidget, with two scan-driven
+    detectors (APDred, APDgreen) and a camera. ``publish`` delivers a frame
+    as a detector does, with the plane it is writing."""
+    from imswitch.imcontrol.controller.controllers.ImageController import ImageController
+
+    widget = HeadlessImageWidget()
+    detectors = {'APDred': fakeDetector(True), 'APDgreen': fakeDetector(True),
+                 'Camera': fakeDetector(False)}
+    master = SimpleNamespace(detectorsManager=FakeDetectors(detectors),
+                             nidaqManager=Mock(), scanExecutionCoordinator=None)
+    with patch('imswitch.imcontrol.controller.controllers.ImageController.'
+               'getWidgetStatePersistence', return_value=Mock()):
+        controller = ImageController(Mock(), Mock(), master, widget=widget,
+                                     factory=Mock(), moduleCommChannel=Mock())
+    controller._setupInfo = SimpleNamespace(detectors={})
+    rig = SimpleNamespace(widget=widget, controller=controller, detectors=detectors,
+                          master=master, viewer=widget.napariViewer)
+
+    def publish(name, frame, plane=None, scale=(0.5, 0.1, 0.1)):
+        detectors[name].livePlaneIndex = plane
+        controller.update(name, frame, True, list(scale[-np.ndim(frame):]),
+                          name == 'APDred')
+
+    rig.publish = publish
+    return rig
+
+
+def stack(planes=8, filled_planes=0, value=50):
+    frames = np.zeros((planes, 32, 32), np.uint16)
+    frames[:filled_planes] = value
+    return frames
