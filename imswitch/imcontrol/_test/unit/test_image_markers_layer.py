@@ -107,3 +107,15 @@ def test_the_tools_points_are_a_few_screen_pixels_across(widget):
     assert tuple(layer.scale) == (1.0, 1.0)                     # world coordinates
     assert _screenPixels(viewer, layer, layer.current_size) == pytest.approx(
         naparitools.MARKER_SCREEN_PIXELS, rel=0.05)
+
+
+def test_napari_s_button_works_with_a_two_d_layer_selected_beside_a_stack(widget):
+    """napari 0.7's button passed the viewer's three units to a 2-D layer and
+    raised; the viewer trims them to the layer's axes."""
+    viewer = widget.napariViewer
+    widget.setImage('APD', np.zeros((6, 64, 64), np.uint16), (0.5, 0.1, 0.1))
+    viewer.layers.selection.active = widget.imgLayers['Camera']
+    add_new_points(viewer)
+    add_new_shapes(viewer)
+    _settle()
+    assert {'Points', 'Shapes'} <= set(layerNames(viewer))

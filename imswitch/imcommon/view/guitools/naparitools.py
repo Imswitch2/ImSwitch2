@@ -221,6 +221,29 @@ class ProtectedLayersMixin:
 
         self.layers.clear = newClear
 
+    # napari 0.7's new points/shapes buttons pass the viewer's units (one
+    # per viewer dimension) with the *selected* layer's ndim; with a 2-D layer
+    # selected beside a 3-D one the layer refuses them and the button fails
+    # (ValueError: units must have length ndim). The trailing units are the
+    # selected layer's own axes.
+    @staticmethod
+    def _fitUnits(kwargs):
+        units, ndim = kwargs.get('units'), kwargs.get('ndim')
+        if units is None or ndim is None or isinstance(units, str):
+            return kwargs
+        try:
+            if len(units) > int(ndim):
+                kwargs = dict(kwargs, units=tuple(units)[-int(ndim):])
+        except TypeError:
+            pass
+        return kwargs
+
+    def add_points(self, *args, **kwargs):
+        return super().add_points(*args, **self._fitUnits(kwargs))
+
+    def add_shapes(self, *args, **kwargs):
+        return super().add_shapes(*args, **self._fitUnits(kwargs))
+
     def add_image(self, *args, protected=False, **kwargs):
         result = super().add_image(*args, **kwargs)
 
