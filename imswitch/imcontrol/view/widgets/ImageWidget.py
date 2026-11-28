@@ -1,4 +1,5 @@
 import contextlib
+import re
 import weakref
 
 import napari
@@ -101,6 +102,163 @@ class ImageWidget(QtWidgets.QWidget):
             )
         except AttributeError:
             pass
+
+        # Layers napari's own buttons add (new points / new shapes) are fitted
+        # to the image they are drawn on; see _onLayerInserted.
+        self._currentLiveName = None
+        self._adoptingMarkers = 0
+        self._markerSizes = naparitools.ScreenSizedPoints(self.napariViewer)
+        try:
+            self.napariViewer.layers.events.inserted.connect(self._onLayerInserted)
+        except AttributeError:
+            pass
+
+    # -- layers napari's own buttons add ---------------------------------
+
+    #: Names napari gives the layers of its "new points" / "new shapes"
+    #: buttons (``Points``, ``Shapes [1]``, ...).
+    _NAPARI_NEW_LAYER_NAME = re.compile(r'(Points|Shapes)( \[\d+\])?')
+
+    def _onLayerInserted(self, event):
+        layer = getattr(event, 'value', None)
+        if layer is None or self._adoptingMarkers:
+            return
+        if self._isNewMarkersLayer(layer):
+            self._fitMarkersLayer(layer)
+
+    def _isNewMarkersLayer(self, layer):
+        """An empty Points or Shapes layer under napari's default name, made
+        from nothing (a duplicate or a conversion has a source parent)."""
+        if not isinstance(layer, (napari.layers.Points, napari.layers.Shapes)):
+            return False
+        if not self._NAPARI_NEW_LAYER_NAME.fullmatch(str(getattr(layer, 'name', ''))):
+            return False
+        try:
+            if len(layer.data):
+                return False
+        except TypeError:
+            return False
+        parent = getattr(getattr(layer, 'source', None), 'parent', None)
+        return parent is None
+
+    def _markersReference(self):
+        """The image a new markers layer is drawn on: the image layer that was
+        active when it was added (what napari's button took its scale from),
+        else the current detector's live layer, else the first visible live
+        layer with an image in it."""
+        layers = self.napariViewer.layers
+
+        def present(layer):
+            return layer is not None and any(item is layer for item in layers)
+
+        def hasImage(layer):
+            return int(np.prod(np.shape(getattr(layer, 'data', ())))) > 1
+
+        active = getattr(layers.selection, 'active', None)
+        if isinstance(active, napari.layers.Image) and present(active):
+            return active
+        current = self.imgLayers.get(self._currentLiveName)
+        if present(current) and hasImage(current):
+            return current
+        for layer in self.imgLayers.values():
+            if present(layer) and getattr(layer, 'visible', True) and hasImage(layer):
+                return layer
+        return None
+
+    def _markersPlacement(self):
+        """``(ndim, scale, translate)`` for a new markers layer: the displayed
+        plane's dimensionality (2, or 3 in 3D display), at the reference
+        image's scale and offset on those axes."""
+        ndim = max(2, self._ndisplay())
+        reference = self._markersReference()
+        scale, translate = [1.0] * ndim, [0.0] * ndim
+        if reference is not None:
+            refScale = [float(v) for v in tuple(reference.scale)]
+            refTranslate = [float(v) for v in tuple(reference.translate)]
+            for k in range(1, min(ndim, len(refScale)) + 1):
+                scale[-k] = refScale[-k]
+                translate[-k] = refTranslate[-k]
+        return ndim, tuple(scale), tuple(translate)
+
+    def _fitMarkersLayer(self, layer):
+        """Fit an empty layer from napari's new points/shapes button to the
+        image it is drawn on.
+
+        napari makes it as many-dimensional as the selected layer (a z-stack
+        gives a 3-D markers layer that keeps the viewer 3-D, with a slider,
+        after the scan returns to 2-D), at scale 1 when nothing is selected
+        (napari's default point size 10 is then 10 µm). Here it
+        gets the displayed plane's dimensionality -- a 2-D marker is shown on
+        every plane -- the image's scale, and points a few screen pixels
+        across (kept so on zoom).
+
+        Scale and size are set in place. A layer of the wrong dimensionality
+        cannot be changed in place (napari fixes ``ndim`` at creation), so it
+        is replaced by an equal empty layer under the same name at the same
+        place, once napari has finished adding it (next event-loop turn).
+        Nothing has been drawn in it by then; a script holding the original
+        object (``viewer.add_points()`` with no data and napari's default
+        name) would be left with a removed layer -- name the layer to opt out.
+        """
+        ndim, scale, translate = self._markersPlacement()
+        if int(layer.ndim) == ndim:
+            self._styleMarkersLayer(layer, scale, translate)
+            return
+        ref = weakref.ref(layer)
+        placement = (ndim, scale, translate)
+        QtCore.QTimer.singleShot(0, lambda: self._replaceMarkersLayer(ref, placement))
+
+    def _styleMarkersLayer(self, layer, scale, translate):
+        try:
+            layer.scale = scale
+            layer.translate = translate
+        except Exception:
+            pass
+        if isinstance(layer, napari.layers.Points):
+            self._markerSizes.add(layer)
+        else:
+            try:
+                layer.current_edge_width = naparitools.screenPointSize(
+                    self.napariViewer, layer, 2
+                )
+            except Exception:
+                pass
+
+    def _replaceMarkersLayer(self, ref, placement):
+        layer = ref()
+        layers = self.napariViewer.layers
+        if layer is None or not any(item is layer for item in layers):
+            return
+        try:
+            if len(layer.data):
+                return             # something was drawn already: leave it
+        except TypeError:
+            return
+        ndim, scale, translate = placement
+        selection = layers.selection
+        wasActive = selection.active is layer
+        index = layers.index(layer)
+        mode = getattr(layer, 'mode', None)
+        add = (self.napariViewer.add_points
+               if isinstance(layer, napari.layers.Points)
+               else self.napariViewer.add_shapes)
+        self._adoptingMarkers += 1
+        try:
+            layers.remove(layer)
+            new = add(ndim=ndim, scale=scale, translate=translate, name=layer.name)
+            newIndex = layers.index(new)
+            if newIndex != index:
+                layers.move(newIndex, index)
+        finally:
+            self._adoptingMarkers -= 1
+        self._styleMarkersLayer(new, scale, translate)
+        if mode is not None:
+            try:
+                new.mode = mode
+            except Exception:
+                pass
+        if wasActive:
+            selection.active = new
 
     #: The smallest viewer worth showing. Napari's embedded window adds up the
     #: minimums of its own docks, which on a populated viewer is larger than
@@ -998,13 +1156,15 @@ class ImageWidget(QtWidgets.QWidget):
         sx, sy = getattr(self, '_lastOverlayScale', (1.0, 1.0))
         return (center[2] / sx, center[1] / sy)
 
-    def setOverlayPixelScale(self, scale):
+    def setOverlayPixelScale(self, scale, detectorName=None):
         """ Push the current image layer's pixel scale to overlay ROIs so they
         render in data-pixel units aligned to the (scaled) image.
 
         ``scale`` is the layer scale in (..., row/Y, col/X) order; ROI axes are
         (x=col, y=row). Stored so a ROI added later (overlays attach on demand)
         picks up the right scale immediately. """
+        if detectorName is not None:
+            self._currentLiveName = str(detectorName)
         if scale is None or len(scale) < 2:
             return
         sx, sy = float(scale[-1]), float(scale[-2])

@@ -136,7 +136,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             # apply_display_transform). Without this an ROI drawn in pixel units
             # is mis-sized/shifted on cameras whose pixel size isn't 1 µm.
             if isCurrentDetector:
-                self._widget.setOverlayPixelScale(display_scale)
+                self._widget.setOverlayPixelScale(display_scale, detectorName)
 
             if not init or self._shouldResetView:
                 self.adjustFrame(shape=display_im.shape, instantResetView=True)

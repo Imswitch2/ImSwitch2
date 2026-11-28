@@ -1,5 +1,6 @@
 import dataclasses
 import warnings
+import weakref
 from abc import abstractmethod
 
 import napari
@@ -80,6 +81,70 @@ def worldEdgeWidth(viewer, screenPixels: float) -> float:
         width = float(screenPixels)
     floor = _MIN_EDGE_WIDTH_DATA_PIXELS * dataPixelWorldSize(viewer)
     return max(floor, width)
+
+
+#: On-screen diameter of a marker point, in screen pixels.
+MARKER_SCREEN_PIXELS = 8
+
+
+def screenPointSize(viewer, layer, screenPixels=MARKER_SCREEN_PIXELS) -> float:
+    """The ``size`` (in ``layer``'s data units) that draws a point about
+    ``screenPixels`` across at the viewer's current zoom.
+
+    napari sizes points in data units, so a layer at scale 1 in a µm world
+    drew napari's default size 10 as 10 µm -- a third of a typical field of
+    view -- and a layer at the camera's 0.065 µm/px drew it as 0.65 µm.
+    """
+    world = worldEdgeWidth(viewer, screenPixels)
+    try:
+        scale = abs(float(tuple(layer.scale)[-1])) or 1.0
+    except (AttributeError, IndexError, TypeError, ValueError):
+        scale = 1.0
+    return world / scale
+
+
+class _UnitScale:
+    scale = (1.0, 1.0)
+
+
+class ScreenSizedPoints:
+    """Keeps the points of registered Points layers a fixed number of screen
+    pixels across, whatever the zoom: markers are pointers, not objects of a
+    physical size. Holds the layers weakly; a layer removed from the viewer
+    is simply no longer resized."""
+
+    def __init__(self, viewer, screenPixels=MARKER_SCREEN_PIXELS):
+        self._viewer = viewer
+        self._screenPixels = screenPixels
+        self._layers = []
+        try:
+            viewer.camera.events.zoom.connect(self._resize)
+        except Exception:
+            pass
+
+    def add(self, layer):
+        if not any(ref() is layer for ref in self._layers):
+            self._layers.append(weakref.ref(layer))
+        self._apply(layer)
+
+    def _apply(self, layer):
+        size = screenPointSize(self._viewer, layer, self._screenPixels)
+        try:
+            layer.current_size = size
+            if len(layer.data):
+                layer.size = size
+        except Exception:
+            pass
+
+    def _resize(self, event=None):
+        alive = []
+        for ref in self._layers:
+            layer = ref()
+            if layer is None:
+                continue
+            alive.append(ref)
+            self._apply(layer)
+        self._layers = alive
 
 
 def addNapariGrayclipColormap():
@@ -1661,16 +1726,23 @@ class ViewerToolManager(QtCore.QObject):
             # napari renamed Points' `edge_color` to `border_color` in 0.5;
             # the kwarg is built rather than passed as None, because passing
             # an unknown keyword is a TypeError whatever its value.
+            # World coordinates (scale 1), like the tools' Shapes layer: the
+            # panels read the points as world positions. Their size is kept
+            # a few screen pixels across (ScreenSizedPoints) -- a fixed 8
+            # here was 8 µm.
             options = {
                 'name': self.POINTS_LAYER_NAME,
                 'face_color': 'yellow',
-                'size': 8,
+                'size': screenPointSize(self._viewer, _UnitScale),
                 'ndim': 2,
             }
             options[
                 'border_color' if self._supports_border_color() else 'edge_color'
             ] = 'black'
             self._points_layer = self._viewer.add_points(**options)
+        if getattr(self, '_screenSizedPoints', None) is None:
+            self._screenSizedPoints = ScreenSizedPoints(self._viewer)
+        self._screenSizedPoints.add(self._points_layer)
         self._points_data_slot = lambda _event=None: self.sigShapesChanged.emit()
         try:
             self._points_layer.events.data.connect(self._points_data_slot)
