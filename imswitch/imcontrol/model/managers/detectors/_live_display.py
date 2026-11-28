@@ -1,5 +1,7 @@
 import time
 
+import numpy as np
+
 
 class LiveDisplayThrottle:
     """Deterministic wall-clock rate limiter for live scan-preview redraws.
@@ -53,3 +55,57 @@ class LiveDisplayThrottle:
         previous scan's final redraw.
         """
         self._last = None
+
+
+def display_from_raw(raw, linestep, mode, view_index, display_ndim, write_index=None):
+    """The display image of a point-scan buffer, and where the scan writes in it.
+
+    ``raw`` is the manager's accumulation buffer, ``(...outer..., Ny, Nx)``,
+    with the line steps outermost (``(S, ...outer..., Ny, Nx)``) when
+    ``linestep`` > 1. The image is what a frame boundary has always published:
+    the buffer squeezed, and with line steps reduced by ``mode`` (``'max'``,
+    ``'sum'``, ``'slice'`` at ``view_index``; None keeps them as a dimension),
+    then cut down to ``display_ndim`` dimensions and never below 2 (a
+    single-line scan is a ``(1, N)`` image).
+
+    ``write_index`` is the index of the line being written into ``raw``'s
+    leading axes (all but the last two). Returned with the image is the same
+    position in the image's leading axes -- the plane the viewer follows --
+    or None when there is none (no index given, or no leading axes left).
+    Without a reduction the image is a view of ``raw``, as before.
+    """
+    raw = np.asarray(raw)
+    leading = list(raw.shape[:-2])
+    index = None if write_index is None else [int(v) for v in write_index]
+    if index is not None and len(index) != len(leading):
+        index = None
+
+    # squeeze: singleton axes go, and with them their (zero) index
+    keep = [axis for axis, size in enumerate(raw.shape) if size != 1]
+    im = np.squeeze(raw)
+    if index is not None:
+        index = [index[axis] for axis in range(len(leading)) if axis in keep]
+
+    if int(linestep) > 1:
+        if mode in ('max', 'sum', 'slice'):
+            if mode == 'max':
+                im = np.nanmax(im, axis=0)
+            elif mode == 'sum':
+                im = np.nansum(im, axis=0)
+            else:
+                im = im[int(view_index) % im.shape[0]]
+            if index is not None:
+                index = index[1:]
+
+    while im.ndim > int(display_ndim) and im.ndim > 2:
+        im = np.squeeze(im[0])
+        if index is not None:
+            index = index[1:]
+    if im.ndim < 2:
+        im = im.reshape(1, -1)
+        index = None
+    if index is not None:
+        index = index[:max(0, im.ndim - 2)]
+        if not index:
+            index = None
+    return im, None if index is None else tuple(index)

@@ -20,7 +20,7 @@ from .DetectorManager import (
     _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
-from ._live_display import LiveDisplayThrottle
+from ._live_display import LiveDisplayThrottle, display_from_raw
 from ._read_ahead import ReadAhead, raster_samples_consumed, read_ahead_samples
 from imswitch.imcontrol.model.scan_parameters import lag_samples_for
 from ._mock_optics import (
@@ -318,6 +318,13 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             plt.figure(1)
         self._linestep = getattr(self._scanWorker, "_linestep", 1)
         self._preparedScanGeneration = generation
+        # The new scan's frame, empty, before its first pixel: the viewer
+        # shapes the layer for it now (a dimension change rebuilds the layer
+        # here, not at the first plane's end) and follows plane 0.
+        if not self._trajectoryMode:
+            self._publishLivePreview(
+                (0,) * max(0, np.ndim(self._image) - 2), force=True
+            )
 
     def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
         try:
@@ -816,6 +823,7 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             # leading singleton axis and raise IndexError for y >= 1.
             self._image[..., y, :n] = converted
             self.__currSlice = (y_expanded,)
+            self.livePlaneIndex = None
             # Time-throttled live preview: bound the redraw rate deterministically
             # instead of gating on image size with a random draw per line.
             if self._liveThrottle.due():
@@ -842,6 +850,7 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             converted = self._convertPixelsForImage(pixels[:n])
             self._image[idx] = converted
             self.__currSlice = outer + (y,)
+            self._publishLivePreview(((s,) if s is not None else ()) + outer)
             return
 
     def initiateImage(self, img_dims):
@@ -1011,6 +1020,43 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
     def flushBuffers(self):
         self.__newFrameReady = False
 
+    #: Where the scan writes in the published display frame: the index of
+    #: the plane being filled in the frame's leading axes (z, t, line steps),
+    #: or None (a 2-D scan, or no scan). Read by the image viewer, which
+    #: follows it, on the thread this manager publishes on.
+    livePlaneIndex = None
+
+    def _publishLivePreview(self, writeIndex=None, *, force=False):
+        """Publish the scan's display frame while its planes fill.
+
+        A scan whose buffer has dimensions beyond the image (a z stack, a time
+        series, line steps) used to be published only at the end of each
+        plane -- a 2-D scan with line steps only once, at its end. The frame is
+        now published as lines arrive, at the rate the plain 2-D path uses
+        (``liveUpdateIntervalMs``, 50 ms by default), with the plane being
+        written in :attr:`livePlaneIndex`. ``force`` publishes regardless of
+        the rate (the empty frame at build). Runs on this manager's thread and
+        only emits: the viewer is touched by its own slot.
+        """
+        if not force and not self._liveThrottle.due():
+            return
+        if np.size(self._image) == 0:
+            return
+        im, plane = display_from_raw(
+            self._image,
+            int(getattr(self, "_linestep", 1)),
+            getattr(self, "_linestep_view_mode", None),
+            getattr(self, "_linestep_view_index", 0),
+            self._image_display.ndim,
+            writeIndex,
+        )
+        self.livePlaneIndex = plane
+        self.sigImageUpdated.emit(
+            display_frame(self, im, current_frame_geometry(self)),
+            True,
+            self.scale,
+        )
+
     def _acceptScanWorkerGeneration(self, generation):
         """Whether a queued worker callback still belongs to local state."""
         if generation is None:
@@ -1061,27 +1107,13 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
                 generation,
                 np.shape(self._image),
             )
-        if S > 1:
-            raw = np.squeeze(self._image)  # (S,..,Ny,Nx)
-            mode = getattr(self, "_linestep_view_mode", None)
-            if mode == "max":
-                im = np.nanmax(raw, axis=0)
-            elif mode == "slice":
-                idx = int(getattr(self, "_linestep_view_index", 0)) % raw.shape[0]
-                im = raw[idx]
-            elif mode == "sum":
-                im = np.nansum(raw, axis=0)
-            else:
-                im = raw
-        else:
-            im = np.squeeze(self._image)
-
-        while im.ndim > self._image_display.ndim:
-            im = np.squeeze(im[0])
-        # a single-line scan squeezes to rank 1; the display contract is a
-        # 2-D (1, N) image
-        if im.ndim < 2:
-            im = im.reshape(1, -1)
+        im, _plane = display_from_raw(
+            self._image,
+            S,
+            getattr(self, "_linestep_view_mode", None),
+            getattr(self, "_linestep_view_index", 0),
+            self._image_display.ndim,
+        )
 
         self._image_display = im
         # Publish the boundary before asking the shared latest-frame broker to
